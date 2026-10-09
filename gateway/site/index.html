@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storage</title>
+<style>
+  :root { color-scheme: light dark; --muted: #6b7280; --ok: #15803d; --missing: #b91c1c; }
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 44rem; margin: 2rem auto; padding: 0 1rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #8884; }
+  td.number { text-align: right; font-variant-numeric: tabular-nums; }
+  .ok { color: var(--ok); } .missing { color: var(--missing); } .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<h1>Storage</h1>
+<p class="muted" id="summary">Loading...</p>
+<table>
+  <thead><tr><th>Drive</th><th>State</th><th>Used</th><th>Size</th></tr></thead>
+  <tbody id="drives"></tbody>
+</table>
+<script>
+const gigabytes = bytes => (bytes / 1e9).toFixed(1) + " GB";
+
+function driveRow(drive) {
+  const row = document.createElement("tr");
+  const cells = [drive.label, drive.mounted ? "mounted" : "missing",
+    drive.mounted ? gigabytes(drive.used) : "", drive.mounted ? gigabytes(drive.size) : ""];
+  cells.forEach((text, index) => {
+    const cell = document.createElement("td");
+    cell.textContent = text;
+    if (index === 1) cell.className = drive.mounted ? "ok" : "missing";
+    if (index > 1) cell.className = "number";
+    row.appendChild(cell);
+  });
+  return row;
+}
+
+async function refresh() {
+  try {
+    const status = await (await fetch("status.json", { cache: "no-store" })).json();
+    document.getElementById("summary").textContent = `Held by ${status.node}, updated ${status.updated}`;
+    document.getElementById("drives").replaceChildren(...status.drives.map(driveRow));
+  } catch {
+    document.getElementById("summary").textContent = "No status yet.";
+  }
+}
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

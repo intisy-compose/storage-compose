@@ -1,0 +1,2 @@
+# Local config (copy config.env from config.env.example, or run init-config)
+config.env
