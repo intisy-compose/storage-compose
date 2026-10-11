@@ -132,7 +132,7 @@ function Disconnect-Enclosures {
 
 function Wait-ForMounter {
     Write-Step "Mounting the array..."
-    docker compose @composeArgs up -d --build mounter
+    docker compose @composeArgs up -d mounter
     $deadline = (Get-Date).AddSeconds(90)
     while ((Get-Date) -lt $deadline) {
         $health = docker inspect -f "{{.State.Health.Status}}" storage-mounter 2>$null
@@ -186,13 +186,21 @@ function Connect-Tailnet {
     }
 }
 
+<#
+.NOTES
+Every build stamps a new image ID, so building again after the array is up would recreate the
+mounter under the running stack; the images are built once, before anything starts.
+#>
 function Start-Array {
     Assert-Config
+    Write-Step "Building the images..."
+    docker compose @composeArgs build --quiet
+    if ($LASTEXITCODE -ne 0) { Write-Err "The build failed."; exit 1 }
     Connect-Enclosures
     Wait-ForMounter
     Connect-Tailnet
     Write-Step "Starting the stack..."
-    docker compose @composeArgs up -d --build
+    docker compose @composeArgs up -d
     if ($LASTEXITCODE -eq 0) { Show-Urls }
 }
 
