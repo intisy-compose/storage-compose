@@ -5,5 +5,5 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY pool.sh /usr/local/bin/pool.sh
 RUN chmod +x /usr/local/bin/pool.sh
-HEALTHCHECK --interval=10s --timeout=3s --start-period=30s CMD mountpoint -q "${STORAGE_ROOT:-/mnt/storage}/pool"
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s CMD mountpoint -q /mnt/storage/pool && test -d /mnt/storage/pool/sync && test -d /mnt/storage/pool/kopia
 ENTRYPOINT ["/usr/local/bin/pool.sh"]

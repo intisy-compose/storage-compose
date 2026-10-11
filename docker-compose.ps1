@@ -214,6 +214,17 @@ function Show-Drives {
     docker run --rm --privileged $probe lsblk -o NAME,SIZE,FSTYPE,LABEL,MODEL,SERIAL,TRAN
 }
 
+function Show-Credentials {
+    $secrets = "/mnt/storage/$(Get-ConfigValue 'ARRAY_PREFIX' 'storage')-data1/.storage/secrets"
+    $read = { param($name) (docker compose @composeArgs exec -T mounter cat "$secrets/$name") -join "" }
+    $hostName = Get-ConfigValue 'STORAGE_HOST' ''
+    Write-Host "  Samba      : \\$hostName\storage   user storage, password $(& $read 'samba')"
+    Write-Host "  Syncthing  : https://${hostName}:8384   user storage, password $(& $read 'syncthing-gui')"
+    Write-Host "  Kopia      : https://${hostName}:51515   web UI user storage, password $(& $read 'kopia-server')"
+    Write-Host "               clients need their own account: .\docker-compose.ps1 kopia-user <user@host>"
+    Write-Host "  Kopia repository password (only for opening the repository without the server): $(& $read 'kopia-repository')"
+}
+
 function Show-Urls {
     Write-Host ""
     Write-Host "  Storage : https://$(Get-ConfigValue 'STORAGE_HOST' '')   (from any device on your tailnet)"
@@ -231,6 +242,8 @@ $commands = @{
     "sync"        = "[--anyway]  run a SnapRAID sync now; --anyway accepts more deletions than SYNC_MAX_DELETED"
     "scrub"       = "Run a SnapRAID scrub now (8 percent, blocks older than 10 days)"
     "snapraid"    = "[args]  run snapraid with the array's config, e.g. snapraid status"
+    "credentials" = "Print the Samba, Syncthing and Kopia logins, which live on the array"
+    "kopia-user"  = "<user@host>  add a Kopia client account (or reset its password) and print it"
 }
 
 switch ($Command.ToLower()) {
@@ -244,6 +257,8 @@ switch ($Command.ToLower()) {
     "url"     { Show-Urls; break }
     "sync"    { docker compose @composeArgs exec -T snapraid snapraid.sh run sync @forwarded; exit $LASTEXITCODE }
     "scrub"   { docker compose @composeArgs exec -T snapraid snapraid.sh run scrub; exit $LASTEXITCODE }
+    "credentials" { Show-Credentials; break }
+    "kopia-user" { docker compose @composeArgs exec -T kopia kopia.sh user @forwarded; exit $LASTEXITCODE }
     "snapraid" {
         docker compose @composeArgs exec -T snapraid snapraid.sh config | Out-Null
         docker compose @composeArgs exec -T snapraid snapraid -c /etc/snapraid.conf @forwarded; exit $LASTEXITCODE

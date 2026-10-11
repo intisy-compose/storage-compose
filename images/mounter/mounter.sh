@@ -12,6 +12,8 @@ state_dir="$root/$prefix-data1/.storage"
 mirror_dir="$root/$prefix-data2/.storage"
 status_file=/status/status.json
 ready_file=/run/mounter.ready
+service_user_id=1000
+secret_names=(samba syncthing-gui kopia-repository kopia-server)
 
 log() { echo "$(date -u +%FT%TZ) $*"; }
 
@@ -27,7 +29,8 @@ mount_new_drives() {
         target="$root/$label"
         mountpoint -q "$target" && continue
         mkdir -p "$target"
-        if mount -o noatime "$device" "$target"; then log "mounted $label from $device"; else log "FAILED to mount $label from $device"; fi
+        if mount -o noatime "$device" "$target"; then log "mounted $label from $device"; else log "FAILED to mount $label from $device"; continue; fi
+        [[ $label == "$prefix-data"* ]] && chown "$service_user_id:$service_user_id" "$target"
     done
 }
 
@@ -46,6 +49,20 @@ lock_holder_is_live_elsewhere() {
     [ -f "$lock" ] || return 1
     read -r holder seen < "$lock"
     [ "$holder" != "$node" ] && [ $(( $(date +%s) - seen )) -lt "$lock_timeout" ]
+}
+
+# The secrets live on the array, so every host that runs it presents the same passwords.
+ensure_service_state() {
+    mkdir -p "$state_dir/secrets" "$state_dir/kopia" "$state_dir/syncthing"
+    chmod 700 "$state_dir/secrets"
+    chown "$service_user_id:$service_user_id" "$state_dir/syncthing"
+    local name
+    for name in "${secret_names[@]}"; do
+        [ -s "$state_dir/secrets/$name" ] && continue
+        head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$state_dir/secrets/$name"
+        chmod 600 "$state_dir/secrets/$name"
+        log "generated the $name secret"
+    done
 }
 
 write_lock() { mkdir -p "$state_dir" && echo "$node $(date +%s)" > "$state_dir/lock.tmp" && mv "$state_dir/lock.tmp" "$state_dir/lock"; }
@@ -90,6 +107,7 @@ if lock_holder_is_live_elsewhere; then
     exit 1
 fi
 write_lock
+ensure_service_state
 touch "$ready_file"
 log "holding the array as $node"
 

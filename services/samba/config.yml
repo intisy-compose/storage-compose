@@ -1,0 +1,23 @@
+auth:
+  - user: storage
+    group: storage
+    uid: 1000
+    gid: 1000
+    password_file: /secrets/samba
+
+global:
+  - "force user = storage"
+  - "force group = storage"
+
+share:
+  - name: storage
+    path: /mnt/storage/pool
+    browsable: yes
+    readonly: no
+    guestok: no
+    validusers: storage
+    writelist: storage
+    veto: no
+    recycle: no
+    options:
+      - "veto files = /.storage/.snapraid.content/lost+found/kopia/"
