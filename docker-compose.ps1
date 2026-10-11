@@ -228,6 +228,9 @@ $commands = @{
     "logs"        = "[service]  follow logs, e.g. logs mounter"
     "drives"      = "List the block devices Docker Desktop's VM sees, with their labels"
     "url"         = "Print the tailnet URL"
+    "sync"        = "[--anyway]  run a SnapRAID sync now; --anyway accepts more deletions than SYNC_MAX_DELETED"
+    "scrub"       = "Run a SnapRAID scrub now (8 percent, blocks older than 10 days)"
+    "snapraid"    = "[args]  run snapraid with the array's config, e.g. snapraid status"
 }
 
 switch ($Command.ToLower()) {
@@ -239,5 +242,11 @@ switch ($Command.ToLower()) {
     "logs"    { docker compose @composeArgs logs -f @forwarded; break }
     "drives"  { Show-Drives; break }
     "url"     { Show-Urls; break }
+    "sync"    { docker compose @composeArgs exec -T snapraid snapraid.sh run sync @forwarded; exit $LASTEXITCODE }
+    "scrub"   { docker compose @composeArgs exec -T snapraid snapraid.sh run scrub; exit $LASTEXITCODE }
+    "snapraid" {
+        docker compose @composeArgs exec -T snapraid snapraid.sh config | Out-Null
+        docker compose @composeArgs exec -T snapraid snapraid -c /etc/snapraid.conf @forwarded; exit $LASTEXITCODE
+    }
     default   { Show-Usage $commands; exit 1 }
 }

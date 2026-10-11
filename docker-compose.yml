@@ -35,6 +35,25 @@ services:
       mounter:
         condition: service_healthy
 
+  snapraid:
+    build: images/snapraid
+    image: storage-snapraid:local
+    container_name: storage-snapraid
+    restart: unless-stopped
+    privileged: true
+    environment:
+      ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
+      SYNC_INTERVAL_HOURS: ${SYNC_INTERVAL_HOURS:-24}
+      SCRUB_INTERVAL_DAYS: ${SCRUB_INTERVAL_DAYS:-7}
+      SYNC_MAX_DELETED: ${SYNC_MAX_DELETED:-500}
+      START_DELAY_SECONDS: ${START_DELAY_SECONDS:-300}
+    volumes:
+      - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
+      - storage-status:/status
+    depends_on:
+      mounter:
+        condition: service_healthy
+
   # Owns the network namespace the gateway shares, and forwards tailnet :443 to Caddy. The node key
   # lives on the array; TS_AUTHKEY is only needed for the first join.
   tailscale:
