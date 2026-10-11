@@ -28,7 +28,7 @@
 <h2>Drives</h2>
 <div class="scroll">
 <table>
-  <thead><tr><th>Drive</th><th>State</th><th>Device</th><th>Used</th><th>Size</th><th>Health</th></tr></thead>
+  <thead><tr><th>Drive</th><th>Asset</th><th>State</th><th>Device</th><th>Used</th><th>Size</th><th>Health</th></tr></thead>
   <tbody id="drives"></tbody>
 </table>
 </div>
@@ -66,6 +66,18 @@ function healthText(smart) {
   return { text: parts.join(", "), className: smart.passed ? "" : "bad" };
 }
 
+function assetCell(drive) {
+  const cell = element("td");
+  if (!drive.asset) return cell;
+  const link = element(drive.asset.url ? "a" : "span", drive.asset.asset);
+  if (drive.asset.url) link.href = drive.asset.url;
+  cell.append(link);
+  if (drive.serialMismatch) {
+    cell.append(element("div", `holds serial ${drive.serial}, not ${drive.asset.serial}; update array.toml`, "bad"));
+  }
+  return cell;
+}
+
 function driveRow(drive) {
   const row = document.createElement("tr");
   const health = healthText(drive.smart);
@@ -73,6 +85,7 @@ function driveRow(drive) {
   const device = drive.mounted ? [drive.model, drive.serial, drive.device].filter(Boolean).join(" · ") : "";
   row.append(
     element("td", drive.label),
+    assetCell(drive),
     element("td", drive.mounted ? "mounted" : "missing", drive.mounted ? "ok" : "bad"),
     element("td", device, "muted"),
     element("td", gigabytes(used), "number"),

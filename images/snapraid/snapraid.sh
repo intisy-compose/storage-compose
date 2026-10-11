@@ -57,6 +57,13 @@ forget_drive() {
     grep -vxF "$1" "$known" > "$known.new"; mv "$known.new" "$known"
 }
 
+# Drops the role's [section] from array.toml, so the dashboard no longer links a removed drive to its asset.
+forget_role_asset() {
+    local description="$state_dir/array.toml"
+    [ -f "$description" ] || return 0
+    awk -v section="[$1]" '/^\[/{skip = ($0 == section)} !skip' "$description" > "$description.new" && mv "$description.new" "$description"
+}
+
 write_config() {
     local parity_drives data_drives role
     mapfile -t parity_drives < <(drive_paths parity)
@@ -201,6 +208,7 @@ run_remove() {
     write_config
     if run_snapraid --force-empty sync; then
         forget_drive "$(role_path "$role")"
+        forget_role_asset "$role"
         grep -vxF "$role" "$state_dir/snapraid.removing" > "$state_dir/snapraid.removing.new"; mv "$state_dir/snapraid.removing.new" "$state_dir/snapraid.removing"
         rmdir "$(role_path "$role")" 2>/dev/null
         write_config
