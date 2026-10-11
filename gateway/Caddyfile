@@ -7,7 +7,8 @@
 
 {$STORAGE_HOST}:443 {
 	encode gzip
-	handle /status.json {
+	@status path /status.json /snapraid.json
+	handle @status {
 		root * /srv/status
 		header Cache-Control no-store
 		file_server

@@ -16,6 +16,7 @@
 <body>
 <h1>Storage</h1>
 <p class="muted" id="summary">Loading...</p>
+<p id="parity" class="muted"></p>
 <table>
   <thead><tr><th>Drive</th><th>State</th><th>Used</th><th>Size</th></tr></thead>
   <tbody id="drives"></tbody>
@@ -37,7 +38,25 @@ function driveRow(drive) {
   return row;
 }
 
+const when = seconds => seconds ? new Date(seconds * 1000).toLocaleString() : "never";
+
+async function refreshParity() {
+  const line = document.getElementById("parity");
+  try {
+    const parity = await (await fetch("snapraid.json", { cache: "no-store" })).json();
+    const parts = [`Last sync ${when(parity.lastSync)} (${parity.lastSyncResult || "none"})`,
+      `last scrub ${when(parity.lastScrub)} (${parity.lastScrubResult || "none"})`];
+    if (parity.running) parts.push(`running: ${parity.running}`);
+    line.textContent = parts.join(", ");
+    line.className = parity.refused || parity.lastSyncResult === "failed" ? "missing" : "muted";
+    if (parity.refused) line.textContent = `Sync refused: ${parity.refused}. ` + line.textContent;
+  } catch {
+    line.textContent = "No parity status yet.";
+  }
+}
+
 async function refresh() {
+  refreshParity();
   try {
     const status = await (await fetch("status.json", { cache: "no-store" })).json();
     document.getElementById("summary").textContent = `Held by ${status.node}, updated ${status.updated}`;
