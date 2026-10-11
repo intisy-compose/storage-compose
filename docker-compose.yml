@@ -3,6 +3,25 @@
 # config.env. All state lives on the array, so the drives carry the node's identity between hosts.
 name: storage
 
+# The scheduler and the dashboard run the same snapraid.sh, sharing its job lock in storage-status.
+x-array-jobs: &array-jobs
+  restart: unless-stopped
+  privileged: true
+  environment:
+    ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
+    SYNC_INTERVAL_HOURS: ${SYNC_INTERVAL_HOURS:-24}
+    SCRUB_INTERVAL_DAYS: ${SCRUB_INTERVAL_DAYS:-7}
+    SYNC_MAX_DELETED: ${SYNC_MAX_DELETED:-500}
+    START_DELAY_SECONDS: ${START_DELAY_SECONDS:-300}
+    CANDIDATE_TRANSPORTS: ${CANDIDATE_TRANSPORTS:-usb}
+  volumes:
+    - /dev:/dev
+    - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
+    - storage-status:/status
+  depends_on:
+    mounter:
+      condition: service_healthy
+
 services:
   mounter:
     build: images/mounter
@@ -36,23 +55,19 @@ services:
         condition: service_healthy
 
   snapraid:
+    <<: *array-jobs
     build: images/snapraid
     image: storage-snapraid:local
     container_name: storage-snapraid
-    restart: unless-stopped
-    privileged: true
-    environment:
-      ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
-      SYNC_INTERVAL_HOURS: ${SYNC_INTERVAL_HOURS:-24}
-      SCRUB_INTERVAL_DAYS: ${SCRUB_INTERVAL_DAYS:-7}
-      SYNC_MAX_DELETED: ${SYNC_MAX_DELETED:-500}
-      START_DELAY_SECONDS: ${START_DELAY_SECONDS:-300}
-    volumes:
-      - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
-      - storage-status:/status
-    depends_on:
-      mounter:
-        condition: service_healthy
+
+  # Anyone on the tailnet can use its actions, the same trust the tailnet gets everywhere else.
+  dashboard:
+    <<: *array-jobs
+    build:
+      context: images
+      dockerfile: dashboard/Dockerfile
+    image: storage-dashboard:local
+    container_name: storage-dashboard
 
   # Owns the network namespace the gateway shares, and forwards tailnet :443 to Caddy. The node key
   # lives on the array; TS_AUTHKEY is only needed for the first join.
@@ -85,12 +100,12 @@ services:
       STORAGE_HOST: ${STORAGE_HOST:-storage.invalid}
     volumes:
       - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./gateway/site:/srv/site:ro
-      - storage-status:/srv/status:ro
       - tailscale-socket:/var/run/tailscale
       - storage-caddy-data:/data
     depends_on:
       tailscale:
+        condition: service_started
+      dashboard:
         condition: service_started
 
 volumes:
