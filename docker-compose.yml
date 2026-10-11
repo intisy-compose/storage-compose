@@ -137,6 +137,11 @@ services:
     environment:
       STGUIADDRESS: 127.0.0.1:8385
       STHOMEDIR: /var/syncthing/config
+    # The image's own check probes 8384, which in the shared namespace is Tailscale serve's TLS port.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -m 2 http://127.0.0.1:8385/rest/noauth/health | grep -q OK"]
+      interval: 60s
+      timeout: 10s
     volumes:
       - ./services/syncthing/start.sh:/start.sh:ro
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/syncthing:/var/syncthing/config
