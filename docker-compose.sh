@@ -44,7 +44,7 @@ prepare_root() {
 
 wait_for_mounter() {
     step "Mounting the array..."
-    "${compose[@]}" up -d --build mounter
+    "${compose[@]}" up -d mounter
     for _ in $(seq 45); do
         [ "$(docker inspect -f '{{.State.Health.Status}}' storage-mounter 2>/dev/null)" = healthy ] && { ok "Array mounted and locked"; return; }
         [ "$(docker inspect -f '{{.State.Running}}' storage-mounter 2>/dev/null)" = false ] && break
@@ -79,13 +79,17 @@ connect_tailnet() {
 
 show_urls() { echo; echo "  Storage : https://$(config_value STORAGE_HOST)   (from any device on your tailnet)"; }
 
+# Every build stamps a new image ID, so building after the array is up would recreate the mounter
+# under the running stack; the images are built once, before anything starts.
 start_array() {
     assert_config
+    step "Building the images..."
+    "${compose[@]}" build --quiet
     prepare_root
     wait_for_mounter
     connect_tailnet
     step "Starting the stack..."
-    "${compose[@]}" up -d --build && show_urls
+    "${compose[@]}" up -d && show_urls
 }
 
 stop_array() { step "Stopping everything and unmounting..."; "${compose[@]}" down; }
