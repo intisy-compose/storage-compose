@@ -4,8 +4,8 @@ with real HTTPS to every device on your tailnet. It runs on whichever computer t
 plugged into, Linux directly and Windows through Docker Desktop and
 [usbipd-win](https://github.com/dorssel/usbipd-win), and all of its state lives on the drives.
 
-Status: mounting, the lock, the pool, SnapRAID parity and the dashboard. Syncthing, Kopia and
-Samba follow.
+Status: complete for test drives (mounting, the lock, the pool, SnapRAID parity, the dashboard,
+Samba, Syncthing and Kopia); the migration onto the real drives follows.
 
 ## Stack
 
@@ -16,7 +16,10 @@ Samba follow.
 | `snapraid` | built, `debian:trixie-slim` + SnapRAID 12.4 | writes SnapRAID's config from the drives it has seen, syncs once the last sync is a day old and scrubs once the last scrub is a week old |
 | `tailscale` | `tailscale/tailscale:v1.102.4` | joins your tailnet as `storage` and forwards `:443`; its node key lives on the array |
 | `dashboard` | built, TypeScript on Node 20 + SnapRAID | the drives with SMART health, parity status, the log, and the actions below |
-| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale, in front of the dashboard |
+| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale, in front of the dashboard, the Syncthing GUI and Kopia |
+| `samba` | `ghcr.io/crazy-max/samba:4.23.8` | the pool as one SMB share, `\\storage.<tailnet>.ts.net\storage` |
+| `syncthing` | `ghcr.io/syncthing/syncthing:2.1.6` | a Syncthing peer; new folders go to `pool/sync`, its GUI is `https://storage.<tailnet>.ts.net:8384` |
+| `kopia` | built from the Kopia 0.23.1 release binary | a Kopia repository server on `pool/kopia`, `https://storage.<tailnet>.ts.net:51515` |
 
 Every image is pinned to a version.
 
@@ -65,6 +68,22 @@ Both erase or give up data, so each needs the role typed as confirmation. Only d
 `CANDIDATE_TRANSPORTS` (USB by default) that are writable, unmounted and carry no array label are
 offered as replacements, so the host's own disks never are. Anyone on your tailnet can use the
 dashboard; there is no second login.
+
+## Sharing, syncing and backups
+
+Tailscale serve forwards the tailnet ports straight into the stack, so nothing is published
+outside the tailnet: 443 (dashboard), 445 (Samba), 8384 (Syncthing GUI), 22000 (Syncthing sync)
+and 51515 (Kopia). The logins are generated once and kept on `storage-data1`, so every host that
+runs the array presents the same ones; `credentials` prints them.
+
+- **Samba**: user `storage`. The share hides the stack's own folders (`.storage`, `kopia`,
+  `lost+found`), so the backup repository cannot be edited by hand.
+- **Syncthing**: add the storage node as a device on your other machines; it is reachable at
+  `tcp://storage.<tailnet>.ts.net:22000`, and Syncthing's relays work too.
+- **Kopia**: each client gets its own account with `kopia-user <user@host>`, then connects with
+  `kopia repository connect server --url=https://storage.<tailnet>.ts.net:51515
+  --override-username=<user> --override-hostname=<host>`. Kopia serves gRPC only over TLS, so it
+  has its own self-signed certificate behind Caddy, which carries the real one.
 
 ## Quick start
 

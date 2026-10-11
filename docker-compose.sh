@@ -79,6 +79,18 @@ connect_tailnet() {
 
 show_urls() { echo; echo "  Storage : https://$(config_value STORAGE_HOST)   (from any device on your tailnet)"; }
 
+show_credentials() {
+    local secrets host
+    secrets="/mnt/storage/$(config_value ARRAY_PREFIX storage)-data1/.storage/secrets"
+    host=$(config_value STORAGE_HOST)
+    secret() { "${compose[@]}" exec -T mounter cat "$secrets/$1"; }
+    echo "  Samba      : smb://$host/storage   user storage, password $(secret samba)"
+    echo "  Syncthing  : https://$host:8384   user storage, password $(secret syncthing-gui)"
+    echo "  Kopia      : https://$host:51515   web UI user storage, password $(secret kopia-server)"
+    echo "               clients need their own account: ./docker-compose.sh kopia-user <user@host>"
+    echo "  Kopia repository password (only for opening the repository without the server): $(secret kopia-repository)"
+}
+
 # Every build stamps a new image ID, so building after the array is up would recreate the mounter
 # under the running stack; the images are built once, before anything starts.
 start_array() {
@@ -96,7 +108,7 @@ stop_array() { step "Stopping everything and unmounting..."; "${compose[@]}" dow
 
 usage() {
     cat <<'EOF'
-Usage: ./docker-compose.sh [down|drives|init-config|logs|restart|scrub|snapraid|status|sync|up|url]
+Usage: ./docker-compose.sh [credentials|down|drives|init-config|kopia-user|logs|restart|scrub|snapraid|status|sync|up|url]
   init-config  Create config.env and name this host
   up           Mount and lock the array, join the tailnet, start the stack (default)
   down         Stop the stack, release the lock and unmount
@@ -108,6 +120,8 @@ Usage: ./docker-compose.sh [down|drives|init-config|logs|restart|scrub|snapraid|
   sync         [--anyway]  run a SnapRAID sync now; --anyway accepts more deletions than SYNC_MAX_DELETED
   scrub        Run a SnapRAID scrub now (8 percent, blocks older than 10 days)
   snapraid     [args]  run snapraid with the array's config, e.g. snapraid status
+  credentials  Print the Samba, Syncthing and Kopia logins, which live on the array
+  kopia-user   <user@host>  add a Kopia client account (or reset its password) and print it
 EOF
     exit 1
 }
@@ -123,6 +137,8 @@ case "$command" in
     logs)        "${compose[@]}" logs -f "$@" ;;
     drives)      lsblk -o NAME,SIZE,FSTYPE,LABEL,MODEL,SERIAL,TRAN ;;
     url)         show_urls ;;
+    credentials) show_credentials ;;
+    kopia-user)  "${compose[@]}" exec -T kopia kopia.sh user "$@" ;;
     sync)        "${compose[@]}" exec -T snapraid snapraid.sh run sync "$@" ;;
     scrub)       "${compose[@]}" exec -T snapraid snapraid.sh run scrub ;;
     snapraid)    "${compose[@]}" exec -T snapraid snapraid.sh config >/dev/null

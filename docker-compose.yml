@@ -108,7 +108,63 @@ services:
       dashboard:
         condition: service_started
 
+  # Samba and Syncthing share the tailscale namespace, so tailnet ports 445 and 22000 reach them
+  # directly through serve.json; the rest of the stack never publishes a port.
+  samba:
+    image: ghcr.io/crazy-max/samba:4.23.8
+    container_name: storage-samba
+    restart: unless-stopped
+    network_mode: "service:tailscale"
+    environment:
+      TZ: ${TIMEZONE:-Europe/Berlin}
+    volumes:
+      - ./services/samba/config.yml:/data/config.yml:ro
+      - samba-data:/data
+      - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
+      - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/secrets:/secrets:ro
+    depends_on:
+      tailscale:
+        condition: service_started
+      pool:
+        condition: service_healthy
+
+  syncthing:
+    image: ghcr.io/syncthing/syncthing:2.1.6
+    container_name: storage-syncthing
+    restart: unless-stopped
+    network_mode: "service:tailscale"
+    entrypoint: ["/bin/sh", "/start.sh"]
+    environment:
+      STGUIADDRESS: 127.0.0.1:8385
+      STHOMEDIR: /var/syncthing/config
+    volumes:
+      - ./services/syncthing/start.sh:/start.sh:ro
+      - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/syncthing:/var/syncthing/config
+      - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/secrets:/secrets:ro
+      - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
+    depends_on:
+      tailscale:
+        condition: service_started
+      pool:
+        condition: service_healthy
+
+  kopia:
+    build: images/kopia
+    image: storage-kopia:local
+    container_name: storage-kopia
+    restart: unless-stopped
+    volumes:
+      - ${STORAGE_ROOT:-/mnt/storage}/pool/kopia:/repository
+      - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/kopia:/state
+      - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/secrets:/secrets:ro
+      - kopia-cache:/cache
+    depends_on:
+      pool:
+        condition: service_healthy
+
 volumes:
+  samba-data:
+  kopia-cache:
   storage-status:
   storage-caddy-data:
   tailscale-socket:

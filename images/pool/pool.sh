@@ -29,6 +29,14 @@ start_pool() {
     mergerfs -f -o "$options" "$branches" "$pool" &
     mergerfs_pid=$!
     log "pool over $*"
+    create_service_folders
+}
+
+# Syncthing and Samba run as uid 1000; Kopia writes its repository as root.
+create_service_folders() {
+    for _ in $(seq 20); do mountpoint -q "$pool" && break; sleep 0.5; done
+    mkdir -p "$pool/sync" "$pool/kopia"
+    chown 1000:1000 "$pool/sync"
 }
 
 # mergerfs swaps its branches in place through the control file, so open files and shares on the pool
