@@ -7,14 +7,5 @@
 
 {$STORAGE_HOST}:443 {
 	encode gzip
-	@status path /status.json /snapraid.json
-	handle @status {
-		root * /srv/status
-		header Cache-Control no-store
-		file_server
-	}
-	handle {
-		root * /srv/site
-		file_server
-	}
+	reverse_proxy dashboard:8080
 }

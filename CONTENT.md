@@ -4,8 +4,8 @@ with real HTTPS to every device on your tailnet. It runs on whichever computer t
 plugged into, Linux directly and Windows through Docker Desktop and
 [usbipd-win](https://github.com/dorssel/usbipd-win), and all of its state lives on the drives.
 
-Status: mounting, the lock, the pool, the gateway and SnapRAID parity. The dashboard's actions,
-Syncthing, Kopia and Samba follow.
+Status: mounting, the lock, the pool, SnapRAID parity and the dashboard. Syncthing, Kopia and
+Samba follow.
 
 ## Stack
 
@@ -15,7 +15,8 @@ Syncthing, Kopia and Samba follow.
 | `pool` | built, `debian:trixie-slim` + mergerfs 2.40 | one view of every data drive at `/mnt/storage/pool` |
 | `snapraid` | built, `debian:trixie-slim` + SnapRAID 12.4 | writes SnapRAID's config from the drives it has seen, syncs once the last sync is a day old and scrubs once the last scrub is a week old |
 | `tailscale` | `tailscale/tailscale:v1.102.4` | joins your tailnet as `storage` and forwards `:443`; its node key lives on the array |
-| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale; a status page of the drives |
+| `dashboard` | built, TypeScript on Node 20 + SnapRAID | the drives with SMART health, parity status, the log, and the actions below |
+| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale, in front of the dashboard |
 
 Every image is pinned to a version.
 
@@ -47,6 +48,23 @@ A sync is refused, and the status page says why, when:
 A drive that ever was part of the array stays in SnapRAID's config while it is missing, so its
 absence stops the sync instead of quietly removing it. The log of every run is
 `/.storage/log/snapraid.log` on `storage-data1`.
+
+## Dashboard
+
+`https://storage.<tailnet>.ts.net` shows every drive the array has known (label, model, serial,
+used and free space, SMART health with temperature, reallocated and pending sectors or NVMe wear),
+the last sync and scrub, why a sync was refused, and the log. It can start a sync or a scrub, and
+for a missing drive it offers:
+
+- **Rebuild onto a replacement**: an unused drive you pick is erased, labelled with the missing
+  role, and SnapRAID restores the files onto it (or recomputes parity), then checks them.
+- **Continue without it** (data drives except `data1`): the drive leaves the array and its files
+  are lost; parity is recomputed without it.
+
+Both erase or give up data, so each needs the role typed as confirmation. Only drives on
+`CANDIDATE_TRANSPORTS` (USB by default) that are writable, unmounted and carry no array label are
+offered as replacements, so the host's own disks never are. Anyone on your tailnet can use the
+dashboard; there is no second login.
 
 ## Quick start
 
