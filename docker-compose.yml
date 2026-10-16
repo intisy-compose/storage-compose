@@ -1,6 +1,7 @@
-# The portable storage array, reachable over Tailscale. Start it through docker-compose.ps1 (Windows,
-# attaches the enclosures with usbipd first) or docker-compose.sh (Linux); both pass --env-file
-# config.env. All state lives on the array, so the drives carry the node's identity between hosts.
+# The portable storage array, reachable over Tailscale and on this host's loopback. Start it through
+# docker-compose.ps1 (Windows, attaches the enclosures with usbipd first) or docker-compose.sh
+# (Linux); both pass --env-file config.env. All state lives on the array, so the drives carry the
+# node's identity between hosts.
 name: storage
 
 # The scheduler and the dashboard run the same snapraid.sh, sharing its job lock in storage-status.
@@ -69,13 +70,32 @@ services:
     image: storage-dashboard:local
     container_name: storage-dashboard
 
-  # Owns the network namespace the gateway shares, and forwards tailnet :443 to Caddy. The node key
-  # lives on the array; TS_AUTHKEY is only needed for the first join.
+  # Owns the network namespace and publishes the local ports, on loopback only, so the local
+  # addresses keep working while tailscale restarts or cannot join.
+  gateway:
+    image: caddy:2.11.4-alpine
+    container_name: storage-gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8442:8442"
+      - "127.0.0.1:8443:8443"
+    environment:
+      STORAGE_HOST: ${STORAGE_HOST:-storage.invalid}
+    volumes:
+      - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
+      - tailscale-socket:/var/run/tailscale
+      - storage-caddy-data:/data
+    depends_on:
+      dashboard:
+        condition: service_started
+
+  # Joins the gateway's namespace and forwards the tailnet ports to it. The node key lives on the
+  # array; TS_AUTHKEY is only needed for the first join.
   tailscale:
     image: tailscale/tailscale:v1.102.4
     container_name: storage-tailscale
-    hostname: ${TS_HOSTNAME:-storage}
     restart: unless-stopped
+    network_mode: "service:gateway"
     environment:
       TS_AUTHKEY: ${TS_AUTHKEY:-}
       TS_HOSTNAME: ${TS_HOSTNAME:-storage}
@@ -90,31 +110,17 @@ services:
     depends_on:
       mounter:
         condition: service_healthy
-
-  gateway:
-    image: caddy:2.11.4-alpine
-    container_name: storage-gateway
-    restart: unless-stopped
-    network_mode: "service:tailscale"
-    environment:
-      STORAGE_HOST: ${STORAGE_HOST:-storage.invalid}
-    volumes:
-      - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
-      - tailscale-socket:/var/run/tailscale
-      - storage-caddy-data:/data
-    depends_on:
-      tailscale:
+      gateway:
         condition: service_started
-      dashboard:
-        condition: service_started
+        restart: true
 
-  # Samba and Syncthing share the tailscale namespace, so tailnet ports 445 and 22000 reach them
-  # directly through serve.json; the rest of the stack never publishes a port.
+  # Samba and Syncthing share the gateway's namespace, so tailnet ports 445 and 22000 reach them
+  # directly through serve.json; only the gateway publishes ports, on loopback.
   samba:
     image: ghcr.io/crazy-max/samba:4.23.8
     container_name: storage-samba
     restart: unless-stopped
-    network_mode: "service:tailscale"
+    network_mode: "service:gateway"
     environment:
       TZ: ${TIMEZONE:-Europe/Berlin}
     volumes:
@@ -123,8 +129,9 @@ services:
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/secrets:/secrets:ro
     depends_on:
-      tailscale:
+      gateway:
         condition: service_started
+        restart: true
       pool:
         condition: service_healthy
 
@@ -132,7 +139,7 @@ services:
     image: ghcr.io/syncthing/syncthing:2.1.6
     container_name: storage-syncthing
     restart: unless-stopped
-    network_mode: "service:tailscale"
+    network_mode: "service:gateway"
     entrypoint: ["/bin/sh", "/start.sh"]
     environment:
       STGUIADDRESS: 127.0.0.1:8385
@@ -148,8 +155,9 @@ services:
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/secrets:/secrets:ro
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
     depends_on:
-      tailscale:
+      gateway:
         condition: service_started
+        restart: true
       pool:
         condition: service_healthy
 
