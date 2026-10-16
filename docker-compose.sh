@@ -77,7 +77,11 @@ connect_tailnet() {
     [ "$(config_value STORAGE_HOST)" = "$tailnet_host" ] || { set_config_value STORAGE_HOST "$tailnet_host"; ok "Wrote STORAGE_HOST to config.env."; }
 }
 
-show_urls() { echo; echo "  Storage : https://$(config_value STORAGE_HOST)   (from any device on your tailnet)"; }
+show_urls() {
+    echo
+    echo "  Storage : https://$(config_value STORAGE_HOST)   (from any device on your tailnet)"
+    echo "  Locally : http://localhost:8442, Syncthing http://localhost:8443   (this host only)"
+}
 
 show_credentials() {
     local secrets host
@@ -85,7 +89,7 @@ show_credentials() {
     host=$(config_value STORAGE_HOST)
     secret() { "${compose[@]}" exec -T mounter cat "$secrets/$1"; }
     echo "  Samba      : smb://$host/storage   user storage, password $(secret samba)"
-    echo "  Syncthing  : https://$host:8384   user storage, password $(secret syncthing-gui)"
+    echo "  Syncthing  : https://$host:8384 or http://localhost:8443   user storage, password $(secret syncthing-gui)"
     echo "  Kopia      : https://$host:51515   web UI user storage, password $(secret kopia-server)"
     echo "               clients need their own account: ./docker-compose.sh kopia-user <user@host>"
     echo "  Kopia repository password (only for opening the repository without the server): $(secret kopia-repository)"

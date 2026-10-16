@@ -1,7 +1,7 @@
 A portable storage array in Docker: USB drive enclosures, mounted by label and pooled with
 [mergerfs](https://github.com/trapexit/mergerfs), served over [Tailscale](https://tailscale.com/)
-with real HTTPS to every device on your tailnet. It runs on whichever computer the enclosures are
-plugged into, Linux directly and Windows through Docker Desktop and
+with real HTTPS to every device on your tailnet, and at `http://localhost:8442` on the host. It runs
+on whichever computer the enclosures are plugged into, Linux directly and Windows through Docker Desktop and
 [usbipd-win](https://github.com/dorssel/usbipd-win), and all of its state lives on the drives.
 
 Status: complete for test drives (mounting, the lock, the pool, SnapRAID parity, the dashboard,
@@ -14,9 +14,9 @@ Samba, Syncthing and Kopia); the migration onto the real drives follows.
 | `mounter` | built, `debian:trixie-slim` | mounts every drive by its ext4 label under `/mnt/storage/<label>`, holds the array's lock, mirrors the stack state from `data1` to `data2` |
 | `pool` | built, `debian:trixie-slim` + mergerfs 2.40 | one view of every data drive at `/mnt/storage/pool` |
 | `snapraid` | built, `debian:trixie-slim` + SnapRAID 12.4 | writes SnapRAID's config from the drives it has seen, syncs once the last sync is a day old and scrubs once the last scrub is a week old |
-| `tailscale` | `tailscale/tailscale:v1.102.4` | joins your tailnet as `storage` and forwards `:443`; its node key lives on the array |
+| `tailscale` | `tailscale/tailscale:v1.102.4` | joins your tailnet as `storage` inside the gateway's network and forwards the tailnet ports; its node key lives on the array |
 | `dashboard` | built, TypeScript on Node 20 + SnapRAID | the drives with SMART health, parity status, the log, and the actions below |
-| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale, in front of the dashboard, the Syncthing GUI and Kopia |
+| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale, in front of the dashboard, the Syncthing GUI and Kopia; the dashboard and the Syncthing GUI also on `127.0.0.1:8442` and `:8443` |
 | `samba` | `ghcr.io/crazy-max/samba:4.23.8` | the pool as one SMB share, `\\storage.<tailnet>.ts.net\storage` |
 | `syncthing` | `ghcr.io/syncthing/syncthing:2.1.6` | a Syncthing peer; new folders go to `pool/sync`, its GUI is `https://storage.<tailnet>.ts.net:8384` |
 | `kopia` | built from the Kopia 0.23.1 release binary | a Kopia repository server on `pool/kopia`, `https://storage.<tailnet>.ts.net:51515` |
@@ -71,9 +71,10 @@ dashboard; there is no second login.
 
 ## Sharing, syncing and backups
 
-Tailscale serve forwards the tailnet ports straight into the stack, so nothing is published
-outside the tailnet: 443 (dashboard), 445 (Samba), 8384 (Syncthing GUI), 22000 (Syncthing sync)
-and 51515 (Kopia). The logins are generated once and kept on `storage-data1`, so every host that
+Tailscale serve forwards the tailnet ports straight into the stack: 443 (dashboard), 445 (Samba),
+8384 (Syncthing GUI), 22000 (Syncthing sync) and 51515 (Kopia). Outside the tailnet only the host
+itself reaches the dashboard (`http://localhost:8442`) and the Syncthing GUI
+(`http://localhost:8443`), both published on 127.0.0.1. The logins are generated once and kept on `storage-data1`, so every host that
 runs the array presents the same ones; `credentials` prints them.
 
 - **Samba**: user `storage`. The share hides the stack's own folders (`.storage`, `kopia`,
