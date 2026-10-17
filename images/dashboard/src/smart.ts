@@ -1,4 +1,6 @@
+import type { BlockDevice } from "./blockDevices.js";
 import { runCommand } from "./commands.js";
+import { readWslDisks, uniqueWslDisk } from "./wslDisks.js";
 
 export interface SmartSummary {
   model: string | null;
@@ -60,11 +62,17 @@ async function readReport(devicePath: string): Promise<SmartctlReport | null> {
   return null;
 }
 
-export async function smartSummary(devicePath: string): Promise<SmartSummary | null> {
-  const cached = cache.get(devicePath);
+/** @implNote Hyper-V's SCSI disk rejects ATA pass-through, so for a disk passed through by WSL the Windows host reads SMART. */
+async function hostReport(disk: BlockDevice): Promise<SmartctlReport | null> {
+  const report = uniqueWslDisk(await readWslDisks(), disk)?.smart as SmartctlReport | null | undefined;
+  return report?.smart_status ? report : null;
+}
+
+export async function smartSummary(disk: BlockDevice): Promise<SmartSummary | null> {
+  const cached = cache.get(disk.path);
   if (cached && Date.now() - cached.at < cacheMilliseconds) return cached.summary;
-  const report = await readReport(devicePath);
+  const report = (await hostReport(disk)) ?? (await readReport(disk.path));
   const summary = report ? summarise(report) : null;
-  cache.set(devicePath, { at: Date.now(), summary });
+  cache.set(disk.path, { at: Date.now(), summary });
   return summary;
 }

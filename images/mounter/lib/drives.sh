@@ -44,6 +44,26 @@ whole_disk_dir() {
 
 whole_disk_node() { local directory; directory=$(whole_disk_dir "$1") && echo "/dev/${directory##*/}"; }
 
+partition_table_id() { blkid -c /dev/null -p -o value -s PTUUID "$1" 2> /dev/null; }
+
+disk_holds_array_label() {
+    local part
+    for part in $(lsblk -lnpo NAME "$1"); do
+        [[ $(blkid -c /dev/null -o value -s LABEL "$part" 2> /dev/null) =~ $label_pattern ]] && return 0
+    done
+    return 1
+}
+
+# For the Windows CLI, which hands a disk passed through to WSL back once it holds no array drive.
+report_disk_labels() {
+    local disk table_id
+    for disk in $(lsblk -dnpo NAME,TYPE | awk '$2 == "disk" {print $1}'); do
+        table_id=$(partition_table_id "$disk")
+        [ -n "$table_id" ] || continue
+        if disk_holds_array_label "$disk"; then echo "$table_id labelled"; else echo "$table_id unlabelled"; fi
+    done
+}
+
 # diskseq grows with every disk the kernel sets up, so a drive that dropped off and came back under
 # the same name still reads as a different disk.
 diskseq_of() { local directory; directory=$(whole_disk_dir "$1") && cat "$directory/diskseq" 2>/dev/null; }

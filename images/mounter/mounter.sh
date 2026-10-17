@@ -5,6 +5,7 @@
 # DROP_GRACE_SECONDS is checked and mounted again; one that stays away, or fails, is notified.
 #   mounter.sh                      the service; releases the lock and unmounts when stopped
 #   mounter.sh accept-smart <role>  take the drive's current SMART counts as its new baseline
+#   mounter.sh disk-labels          each disk's GPT id and whether it holds an array drive
 set -u
 
 root=${STORAGE_ROOT:-/mnt/storage}
@@ -19,6 +20,7 @@ label_pattern="^${prefix}-(data|parity)[0-9]+$"
 state_dir="$root/$prefix-data1/.storage"
 mirror_dir="$root/$prefix-data2/.storage"
 status_dir=/status
+wsl_disks_file=$status_dir/wsl-disks.json
 runtime=/run/mounter
 ready_file=/run/mounter.ready
 service_user_id=1000
@@ -40,6 +42,7 @@ source "$library/state.sh"
 source "$library/notify.sh"
 
 if [ "${1:-}" = accept-smart ]; then accept_smart "${2:?accept-smart needs a role, e.g. data2}"; exit $?; fi
+if [ "${1:-}" = disk-labels ]; then report_disk_labels; exit 0; fi
 [ -n "$node" ] || { log "STORAGE_NODE is not set"; exit 1; }
 
 lock_holder_is_live_elsewhere() {

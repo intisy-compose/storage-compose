@@ -1,8 +1,8 @@
 A portable storage array in Docker: USB drive enclosures, mounted by label and pooled with
 [mergerfs](https://github.com/trapexit/mergerfs), served over [Tailscale](https://tailscale.com/)
 with real HTTPS to every device on your tailnet, and at `http://localhost:8442` on the host. It runs
-on whichever computer the enclosures are plugged into, Linux directly and Windows through Docker Desktop and
-[usbipd-win](https://github.com/dorssel/usbipd-win), and all of its state lives on the drives.
+on whichever computer the enclosures are plugged into, Linux directly and Windows through Docker Desktop, whose
+WSL2 VM gets the drives passed through with `wsl --mount --bare`, and all of its state lives on the drives.
 
 Status: complete for test drives (mounting, the lock, the pool, SnapRAID parity, the dashboard,
 Samba, Syncthing and Kopia); the migration onto the real drives follows.
@@ -117,28 +117,43 @@ runs the array presents the same ones; `credentials` prints them.
 ## Quick start
 
 Requires [Docker](https://docs.docker.com/get-docker/) and a Tailscale account with
-[HTTPS certificates](https://tailscale.com/kb/1153/enabling-https) enabled. On Windows also
-usbipd-win (`winget install --id dorssel.usbipd-win -e`) and PowerShell.
+[HTTPS certificates](https://tailscale.com/kb/1153/enabling-https) enabled. On Windows also Docker
+Desktop on WSL2, PowerShell and smartmontools (`winget install --id smartmontools.smartmontools
+--version 7.5 -e`), which reads the drives' SMART from the Windows side.
 
 ```powershell
 git clone https://github.com/intisy-compose/storage-compose
 cd storage-compose
 
 .\docker-compose.ps1 init-config   # creates config.env, names this host, generates the ntfy topic
-# put the enclosures' VID:PID from `usbipd list` into USB_HARDWARE_IDS, and an auth key from
-# https://login.tailscale.com/admin/settings/keys into TS_AUTHKEY
+# put an auth key from https://login.tailscale.com/admin/settings/keys into TS_AUTHKEY
+.\docker-compose.ps1 install-attach   # Windows, once, in an admin shell
 .\docker-compose.ps1 up            # the one CLI; run it without a known command to list them all
 ```
 
-On Linux, `./docker-compose.sh` takes the same commands. The first `up` on Windows needs an admin
-shell, to bind the enclosures to usbipd once; afterwards `down` only detaches them, so Windows keeps
-using them while the array is down.
+On Linux, `./docker-compose.sh` takes the same commands and nothing needs installing.
 
-## Windows notes
+## Windows: how the drives reach Docker Desktop
 
-- Docker Desktop's kernel ships `usb-storage` and `uas` as modules but never loads them; `up` loads
-  them in the VM.
-- usbipd's virtual host controller has no USB streams, so UAS enclosures run as plain usb-storage:
-  slower, but they work.
-- A device that carries a mounted Windows volume refuses to attach. Array drives are ext4, which
-  Windows does not mount, so this only matters for a drive that still has an NTFS or exFAT volume.
+`ATTACH` in `config.env` picks the way; `wsl` is the default.
+
+- **`wsl`**: every USB disk whose partitions are all of the GPT type "Linux filesystem" (what the
+  stack's format writes) is set offline in Windows and passed through to Docker Desktop's WSL2 VM
+  with `wsl --mount --bare`, at the drive's own speed (161 MB/s read, 258 MB/s write measured,
+  against about 25 MB/s for the whole array over usbipd). A disk with a Windows volume, a blank disk
+  and the system disks are never touched. `wsl --mount` needs administrator rights every time, so
+  an elevated scheduled task does it: `install-attach`, run once in an admin shell, copies it to
+  `C:\Program Files\storage-compose` and registers it to start at logon; `up` and `down` then run
+  from a normal shell and hand it their request through `attach-request.json` beside `config.env`.
+  The task also passes a drive through again when it drops off USB and comes back, or when Docker
+  Desktop or WSL restarts, and reads the drives' SMART counts every 10 minutes, because the VM's
+  virtual disk cannot. Run `install-attach` again after updating the stack; `up` says when it is due.
+- **`attach`** lists the USB disks and what each one is; `attach <disk number>` passes a blank
+  replacement drive through after showing it and asking for its number, so the dashboard offers it
+  under Rebuild. A disk with anything but Linux filesystem partitions is refused.
+- `down` releases the drives from WSL and leaves them offline in Windows.
+- **`usbipd`** attaches the enclosures over [usbipd-win](https://github.com/dorssel/usbipd-win)
+  instead (`winget install --id dorssel.usbipd-win --version 5.3.0 -e`, their VID:PID from
+  `usbipd list` in `USB_HARDWARE_IDS`). The first `up` needs an admin shell to bind them once.
+  It is much slower: usbipd's virtual host controller has no USB streams, so UAS enclosures run as
+  plain usb-storage, and a device that carries a mounted Windows volume refuses to attach.

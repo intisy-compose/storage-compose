@@ -1,2 +1,7 @@
 # Local config (copy config.env from config.env.example, or run init-config)
 config.env
+
+# Written by the WSL attach task and the CLI (docker-compose.ps1 install-attach)
+attach-request.json*
+attach-state.json*
+attach.log*

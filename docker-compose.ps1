@@ -11,6 +11,11 @@ $exampleFile = Join-Path $PSScriptRoot "config.env.example"
 $composeArgs = @("--env-file", $configFile)
 $probe = "debian:trixie-slim"
 $usbipdFolder = "C:\Program Files\usbipd-win"
+$smartctlPackage = "winget install --id smartmontools.smartmontools --version 7.5 -e"
+
+. (Join-Path $PSScriptRoot "windows\disks.ps1")
+$attachRequestFile = Join-Path $PSScriptRoot $attachRequestFileName
+$attachStateFile = Join-Path $PSScriptRoot $attachStateFileName
 
 function Write-Step([string]$msg) { Write-Host $msg -ForegroundColor Cyan }
 function Write-OK([string]$msg)   { Write-Host "  $msg" -ForegroundColor Green }
@@ -145,6 +150,229 @@ function Disconnect-Enclosures {
     }
 }
 
+function Get-AttachMode {
+    $mode = (Get-ConfigValue "ATTACH" "wsl").ToLower()
+    if ($mode -notin @("wsl", "usbipd")) { Write-Err "ATTACH in config.env must be wsl or usbipd, not '$mode'."; exit 1 }
+    return $mode
+}
+
+function Test-InstalledWatcherIsCurrent {
+    foreach ($name in $attachScriptNames) {
+        $installed = Join-Path $attachInstallFolder $name
+        if (-not (Test-Path $installed)) { return $false }
+        if ((Get-FileHash $installed).Hash -ne (Get-FileHash (Join-Path $PSScriptRoot "windows\$name")).Hash) { return $false }
+    }
+    return $true
+}
+
+function Get-WatcherState { return Read-JsonFile $attachStateFile }
+
+function Get-PassedDisks {
+    $state = Get-WatcherState
+    if (-not ($state -and $state.PSObject.Properties["disks"])) { return @() }
+    return @($state.disks | Where-Object { $_ })
+}
+
+function Test-WatcherIsAlive($State) {
+    if (-not ($State -and $State.heartbeat)) { return $false }
+    return ((Get-Date) - [datetime]$State.heartbeat).TotalSeconds -lt 30
+}
+
+function Wait-ForWatcher([int]$Seconds) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-WatcherIsAlive (Get-WatcherState)) { return $true }
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
+
+function Assert-AttachWatcher {
+    if (-not (Test-Path (Join-Path $attachInstallFolder "watcher.ps1"))) {
+        Write-Err "The WSL attach task is not installed. Run this once in an admin shell: .\docker-compose.ps1 install-attach"
+        Write-Err "(or set ATTACH=usbipd in config.env to attach the enclosures with usbipd instead)"
+        exit 1
+    }
+    if (-not (Test-InstalledWatcherIsCurrent)) {
+        Write-Err "The installed attach task is older than this checkout; run '.\docker-compose.ps1 install-attach' again in an admin shell."
+        exit 1
+    }
+    if (Test-WatcherIsAlive (Get-WatcherState)) { return }
+    try { Start-ScheduledTask -TaskName $attachTaskName -ErrorAction Stop } catch { }
+    if (Wait-ForWatcher 20) { return }
+    Write-Err "The attach task '$attachTaskName' is not running for this folder; see $attachLogFileName and the Task Scheduler."
+    Write-Err "install-attach registers it for the checkout it is run from."
+    exit 1
+}
+
+function Read-AttachRequestFile { return Read-JsonFile $attachRequestFile }
+
+function Get-ReleasedDiskIds {
+    $request = Read-AttachRequestFile
+    if (-not ($request -and $request.active)) { return @() }
+    return @($request.release | Where-Object { $_ })
+}
+
+function Show-RequestProblems($State) {
+    foreach ($problem in @($State.requestProblems | Where-Object { $_ })) { Write-Err "  $problem" }
+}
+
+function Send-AttachRequest([bool]$Active, [object[]]$Attach = @(), [string[]]$Release = @()) {
+    $id = [guid]::NewGuid().ToString()
+    Write-JsonFile $attachRequestFile ([pscustomobject]@{ id = $id; active = $Active; attach = @($Attach); release = @($Release) })
+    $deadline = (Get-Date).AddSeconds(120)
+    while ((Get-Date) -lt $deadline) {
+        $state = Get-WatcherState
+        if ($state -and $state.handledRequest -eq $id) { return $state }
+        Start-Sleep -Seconds 1
+    }
+    Write-Err "The attach task did not take the request within 120 s (it waits while Docker Desktop is not running); see $attachLogFileName."
+    exit 1
+}
+
+<#
+.NOTES
+The mounter's container is created first, so its status volume exists and the watcher can put the
+host's SMART reports there before the mounter makes its first check.
+#>
+function Connect-WslDisks {
+    Assert-AttachWatcher
+    Write-Step "Passing the array drives through to WSL..."
+    docker compose @composeArgs up --no-start mounter 2>$null | Out-Null
+    $state = Send-AttachRequest -Active $true
+    Show-RequestProblems $state
+    $disks = @($state.disks | Where-Object { $_ })
+    if (-not $disks) {
+        Write-Err "No USB disk holds only Linux filesystem partitions, so nothing was passed through."
+        Write-Err "'.\docker-compose.ps1 attach' lists the USB disks and what each is."
+        exit 1
+    }
+    foreach ($disk in $disks) { Write-OK "disk $($disk.number) $($disk.model) passed through" }
+}
+
+function Get-DiskLabelReport {
+    $report = @{}
+    foreach ($line in @(docker compose @composeArgs exec -T mounter mounter.sh disk-labels 2>$null)) {
+        $fields = "$line".Trim() -split "\s+"
+        if ($fields.Count -eq 2) { $report[$fields[0].ToLower()] = $fields[1] }
+    }
+    return $report
+}
+
+<#
+.NOTES
+Only a disk the VM shows without an array label is handed back; one the VM does not show yet stays.
+#>
+function Disconnect-UnlabelledWslDisks {
+    $report = Get-DiskLabelReport
+    $unlabelled = @(Get-PassedDisks | Where-Object { $_ -and $_.source -eq "rule" -and $_.guid -and $report[$_.guid] -eq "unlabelled" })
+    if (-not $unlabelled) { return }
+    $state = Send-AttachRequest -Active $true -Release (@(Get-ReleasedDiskIds) + @($unlabelled | ForEach-Object { $_.guid }))
+    Show-RequestProblems $state
+    foreach ($disk in $unlabelled) { Write-OK "disk $($disk.number) $($disk.model) holds no array drive; given back to Windows" }
+}
+
+function Disconnect-WslDisks {
+    if (-not (Test-WatcherIsAlive (Get-WatcherState))) { Write-Err "The attach task is not running, so the drives stay passed through to WSL."; return }
+    $state = Send-AttachRequest -Active $false
+    Show-RequestProblems $state
+    Write-OK "Drives released from WSL; they stay offline in Windows"
+}
+
+function Show-UsbDisks {
+    $passed = Get-PassedDisks
+    $usbDisks = @(Get-Disk | Where-Object { $_.BusType -eq "USB" })
+    if (-not $usbDisks) { Write-Host "No USB disks."; return }
+    foreach ($disk in $usbDisks) {
+        $partitions = Get-DiskPartitions $disk
+        $verdict = "never passed through"
+        if (Test-IsBlankDisk $disk $partitions) { $verdict = "blank: 'attach $($disk.Number)' passes it through as a replacement" }
+        if (Test-IsArrayDisk $disk $partitions) { $verdict = "passed through by up" }
+        if (@($passed | Where-Object { Test-IsSameDisk $disk $_ }).Count -gt 0) { $verdict = "passed through now" }
+        Format-DiskDescription $disk $partitions | ForEach-Object { Write-Host "  $_" }
+        Write-Host "    -> $verdict"
+    }
+}
+
+function Add-WslDisk([string]$NumberText) {
+    if ((Get-AttachMode) -ne "wsl") { Write-Err "attach needs ATTACH=wsl in config.env."; exit 1 }
+    if (-not $NumberText) { Show-UsbDisks; return }
+    $number = 0
+    if (-not [int]::TryParse($NumberText, [ref]$number)) { Write-Err "attach takes a disk number, as listed by '.\docker-compose.ps1 attach'."; exit 1 }
+    $disk = Get-Disk -Number $number -ErrorAction SilentlyContinue
+    if (-not $disk) { Write-Err "There is no disk $number."; exit 1 }
+    $partitions = Get-DiskPartitions $disk
+    Format-DiskDescription $disk $partitions | ForEach-Object { Write-Host "  $_" }
+    if (-not (Test-MayPassThroughOnRequest $disk $partitions)) {
+        Write-Err "Refused: only a USB disk that is blank, or holds only Linux filesystem partitions, is passed through; never a system disk or a Windows volume."
+        exit 1
+    }
+    $request = Read-AttachRequestFile
+    if (-not ($request -and $request.active)) { Write-Err "The array is not up; run '.\docker-compose.ps1 up' first."; exit 1 }
+    Assert-AttachWatcher
+    Write-Host "Disk $number leaves Windows and the dashboard offers it as a replacement, which erases it once chosen."
+    if ((Read-Host "Type the disk number to confirm") -ne "$number") { Write-Host "Nothing changed."; return }
+    $state = Send-AttachRequest -Active $true -Attach @(Get-DiskIdentity $disk) -Release (Get-ReleasedDiskIds)
+    Show-RequestProblems $state
+    if (@(@($state.disks) | Where-Object { $_ -and (Test-IsSameDisk $disk $_) }).Count -eq 0) { exit 1 }
+    Write-OK "disk $number passed through; pick it under Rebuild in the dashboard"
+}
+
+function Get-WatcherProcesses {
+    $watcher = [regex]::Escape((Join-Path $attachInstallFolder "watcher.ps1"))
+    return @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match $watcher })
+}
+
+<#
+.NOTES
+Stop-ScheduledTask returns before the watcher has exited, and a watcher still running would keep its
+single-instance lock and its old code past a reinstall.
+#>
+function Stop-AttachWatcher {
+    Stop-ScheduledTask -TaskName $attachTaskName -ErrorAction SilentlyContinue
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-WatcherProcesses).Count -gt 0 -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+    foreach ($process in Get-WatcherProcesses) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
+function Install-AttachTask {
+    if (-not (Test-IsAdministrator)) { Write-Err "install-attach needs an admin shell; it is the one step that does."; exit 1 }
+    $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    Stop-AttachWatcher
+    New-Item -ItemType Directory -Force -Path $attachInstallFolder | Out-Null
+    foreach ($name in $attachScriptNames) { Copy-Item -Force (Join-Path $PSScriptRoot "windows\$name") (Join-Path $attachInstallFolder $name) }
+    $watcher = Join-Path $attachInstallFolder "watcher.ps1"
+    $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watcher`" -StackFolder `"$PSScriptRoot`""
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
+        -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    Register-ScheduledTask -TaskName $attachTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    Start-ScheduledTask -TaskName $attachTaskName
+    if (Wait-ForWatcher 20) { Write-OK "The attach task runs for $PSScriptRoot and starts at every logon." }
+    else { Write-Err "The attach task was registered but has not reported yet; see $attachLogFileName." }
+    if (-not (Get-Command smartctl.exe -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $env:ProgramFiles "smartmontools\bin\smartctl.exe"))) {
+        Write-Err "smartctl is missing, so the dashboard shows no SMART for passed-through drives: $smartctlPackage"
+    }
+}
+
+function Uninstall-AttachTask {
+    if (-not (Test-IsAdministrator)) { Write-Err "uninstall-attach needs an admin shell."; exit 1 }
+    Stop-AttachWatcher
+    Unregister-ScheduledTask -TaskName $attachTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force -Path $attachInstallFolder -ErrorAction SilentlyContinue
+    Write-OK "The attach task is removed; drives still passed through stay so until the next restart of WSL."
+}
+
+function Connect-Drives {
+    if ((Get-AttachMode) -eq "wsl") { Connect-WslDisks } else { Connect-Enclosures }
+}
+
+function Disconnect-Drives {
+    if ((Get-AttachMode) -eq "wsl") { Disconnect-WslDisks } else { Disconnect-Enclosures }
+}
+
 function Wait-ForMounter {
     Write-Step "Mounting the array..."
     docker compose @composeArgs up -d mounter
@@ -211,8 +439,9 @@ function Start-Array {
     Write-Step "Building the images..."
     docker compose @composeArgs build --quiet
     if ($LASTEXITCODE -ne 0) { Write-Err "The build failed."; exit 1 }
-    Connect-Enclosures
+    Connect-Drives
     Wait-ForMounter
+    if ((Get-AttachMode) -eq "wsl") { Disconnect-UnlabelledWslDisks }
     Connect-Tailnet
     Write-Step "Starting the stack..."
     docker compose @composeArgs up -d
@@ -222,7 +451,7 @@ function Start-Array {
 function Stop-Array {
     Write-Step "Stopping everything and unmounting..."
     docker compose @composeArgs down
-    Disconnect-Enclosures
+    Disconnect-Drives
 }
 
 function Show-Drives {
@@ -248,8 +477,11 @@ function Show-Urls {
 
 $commands = @{
     "init-config" = "Create config.env, name this host and generate the notification topic"
-    "up"          = "Attach the enclosures, mount and lock the array, join the tailnet, start the stack (default)"
-    "down"        = "Stop the stack, release the lock, unmount and give the enclosures back to Windows"
+    "up"          = "Pass the drives through to WSL (or attach the enclosures with usbipd), mount and lock the array, join the tailnet, start the stack (default)"
+    "down"        = "Stop the stack, release the lock, unmount and release the drives from WSL (or give the enclosures back)"
+    "attach"      = "[disk number]  list the USB disks, or pass a blank one through to WSL as a replacement drive"
+    "install-attach"   = "Once, in an admin shell: register the elevated task that passes the drives through to WSL"
+    "uninstall-attach" = "In an admin shell: remove that task"
     "restart"     = "down, then up"
     "status"      = "Show the containers and their health"
     "logs"        = "[service]  follow logs, e.g. logs mounter"
@@ -271,6 +503,9 @@ switch ($Command.ToLower()) {
     "status"  { docker compose @composeArgs ps -a; break }
     "logs"    { docker compose @composeArgs logs -f @forwarded; break }
     "drives"  { Show-Drives; break }
+    "attach"  { Add-WslDisk ($forwarded | Select-Object -First 1); break }
+    "install-attach" { Install-AttachTask; break }
+    "uninstall-attach" { Uninstall-AttachTask; break }
     "url"     { Show-Urls; break }
     "sync"    { docker compose @composeArgs exec -T snapraid snapraid.sh run sync @forwarded; exit $LASTEXITCODE }
     "scrub"   { docker compose @composeArgs exec -T snapraid snapraid.sh run scrub; exit $LASTEXITCODE }

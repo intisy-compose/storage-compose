@@ -1,5 +1,6 @@
 import { runCommand } from "./commands.js";
 import { candidateTransports, roleLabelPattern } from "./settings.js";
+import { type WslDisk, matchingWslDisks, readWslDisks } from "./wslDisks.js";
 
 export interface BlockDevice {
   name: string;
@@ -10,6 +11,7 @@ export interface BlockDevice {
   model: string | null;
   serial: string | null;
   label: string | null;
+  ptuuid: string | null;
   ro: boolean;
   mountpoints: (string | null)[];
   children?: BlockDevice[];
@@ -44,11 +46,30 @@ function applyLabels(device: BlockDevice, labels: Map<string, string>): BlockDev
   };
 }
 
+/** @implNote Without udev lsblk has no GPT id either, and `blkid -o export` leaves whole disks out; `blkid -p` probes one. */
+async function withPartitionTableId(device: BlockDevice): Promise<BlockDevice> {
+  if (device.type !== "disk") return device;
+  const result = await runCommand("blkid", ["-c", "/dev/null", "-p", "-o", "value", "-s", "PTUUID", device.path]);
+  return { ...device, ptuuid: result.stdout.trim() || null };
+}
+
+/**
+ * @implNote Hyper-V's SCSI disks report no transport, so a disk the human partner passed through with
+ * `docker-compose.ps1 attach` is marked "wsl", which CANDIDATE_TRANSPORTS can then offer.
+ */
+function markAttachedWslDisk(device: BlockDevice, wslDisks: WslDisk[]): BlockDevice {
+  if (device.type !== "disk") return device;
+  const isAttached = matchingWslDisks(wslDisks, device).some((disk) => disk.source === "attach");
+  return isAttached ? { ...device, tran: "wsl" } : device;
+}
+
 export async function listBlockDevices(): Promise<BlockDevice[]> {
-  const result = await runCommand("lsblk", ["-J", "-b", "-o", "NAME,PATH,TYPE,TRAN,SIZE,MODEL,SERIAL,LABEL,RO,MOUNTPOINTS"]);
+  const result = await runCommand("lsblk", ["-J", "-b", "-o", "NAME,PATH,TYPE,TRAN,SIZE,MODEL,SERIAL,LABEL,PTUUID,RO,MOUNTPOINTS"]);
   if (result.exitCode !== 0) return [];
-  const labels = await probedLabels();
-  return (JSON.parse(result.stdout) as { blockdevices: BlockDevice[] }).blockdevices.map((device) => applyLabels(device, labels));
+  const [labels, wslDisks] = await Promise.all([probedLabels(), readWslDisks()]);
+  const devices = (JSON.parse(result.stdout) as { blockdevices: BlockDevice[] }).blockdevices.map((device) => applyLabels(device, labels));
+  if (wslDisks.length === 0) return devices;
+  return (await Promise.all(devices.map(withPartitionTableId))).map((device) => markAttachedWslDisk(device, wslDisks));
 }
 
 function withChildren(device: BlockDevice): BlockDevice[] {
