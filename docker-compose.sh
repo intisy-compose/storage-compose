@@ -19,7 +19,9 @@ config_value() {
 
 set_config_value() {
     local name=$1 value=$2
-    sed -i "s|^\s*$name\s*=.*|$name=$value|" "$config_file"
+    if grep -qE "^\s*$name\s*=" "$config_file"; then sed -i "s|^\s*$name\s*=.*|$name=$value|" "$config_file"
+    else echo "$name=$value" >> "$config_file"
+    fi
 }
 
 assert_config() {
@@ -27,11 +29,20 @@ assert_config() {
     [ -n "$(config_value STORAGE_NODE)" ] || fail "config.env is missing STORAGE_NODE - run init-config."
 }
 
+new_ntfy_topic() { echo "storage-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
+
 init_config() {
     [ -f "$config_file" ] || cp "$example_file" "$config_file"
-    if [ -n "$(config_value STORAGE_NODE)" ]; then ok "config.env already names this host; nothing changed."; return; fi
-    set_config_value STORAGE_NODE "$(hostname -s | tr '[:upper:]' '[:lower:]')"
-    ok "Wrote STORAGE_NODE=$(config_value STORAGE_NODE) to config.env."
+    if [ -n "$(config_value STORAGE_NODE)" ]; then ok "config.env already names this host."
+    else
+        set_config_value STORAGE_NODE "$(hostname -s | tr '[:upper:]' '[:lower:]')"
+        ok "Wrote STORAGE_NODE=$(config_value STORAGE_NODE) to config.env."
+    fi
+    if [ -n "$(config_value NTFY_TOPIC)" ]; then ok "config.env already has a notification topic."
+    else
+        set_config_value NTFY_TOPIC "$(new_ntfy_topic)"
+        ok "Wrote NTFY_TOPIC to config.env; subscribe to it in the ntfy app: $(config_value NTFY_URL https://ntfy.sh)/$(config_value NTFY_TOPIC)"
+    fi
 }
 
 # Bind propagation from the mounter needs a shared mount point on the host.
@@ -112,8 +123,8 @@ stop_array() { step "Stopping everything and unmounting..."; "${compose[@]}" dow
 
 usage() {
     cat <<'EOF'
-Usage: ./docker-compose.sh [credentials|down|drives|init-config|kopia-user|logs|restart|scrub|snapraid|status|sync|up|url]
-  init-config  Create config.env and name this host
+Usage: ./docker-compose.sh [accept-smart|credentials|down|drives|init-config|kopia-user|logs|restart|scrub|snapraid|status|sync|up|url]
+  init-config  Create config.env, name this host and generate the notification topic
   up           Mount and lock the array, join the tailnet, start the stack (default)
   down         Stop the stack, release the lock and unmount
   restart      down, then up
@@ -122,10 +133,11 @@ Usage: ./docker-compose.sh [credentials|down|drives|init-config|kopia-user|logs|
   drives       List the block devices with their labels
   url          Print the tailnet URL
   sync         [--anyway]  run a SnapRAID sync now; --anyway accepts more deletions than SYNC_MAX_DELETED
-  scrub        Run a SnapRAID scrub now (8 percent, blocks older than 10 days)
+  scrub        Run a SnapRAID scrub now (SCRUB_PERCENT of the array, blocks older than SCRUB_OLDER_THAN_DAYS)
   snapraid     [args]  run snapraid with the array's config, e.g. snapraid status
   credentials  Print the Samba, Syncthing and Kopia logins, which live on the array
   kopia-user   <user@host>  add a Kopia client account (or reset its password) and print it
+  accept-smart <role>  take a drive's current SMART counts as its baseline, e.g. accept-smart data2
 EOF
     exit 1
 }
@@ -143,6 +155,7 @@ case "$command" in
     url)         show_urls ;;
     credentials) show_credentials ;;
     kopia-user)  "${compose[@]}" exec -T kopia kopia.sh user "$@" ;;
+    accept-smart) "${compose[@]}" exec -T mounter mounter.sh accept-smart "$@" ;;
     sync)        "${compose[@]}" exec -T snapraid snapraid.sh run sync "$@" ;;
     scrub)       "${compose[@]}" exec -T snapraid snapraid.sh run scrub ;;
     snapraid)    "${compose[@]}" exec -T snapraid snapraid.sh config >/dev/null

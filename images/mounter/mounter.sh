@@ -1,48 +1,46 @@
 #!/bin/bash
-# Mounts every array drive by its ext4 label under $STORAGE_ROOT/<label>, holds the array's lock and
-# mirrors the stack state from data1 to data2. Runs until stopped, then releases the lock and unmounts.
+# Mounts every array drive by its ext4 label under $STORAGE_ROOT/<label>, holds the array's lock,
+# mirrors the stack state from data1 to data2, and decides every 10 s whether the array is healthy,
+# degraded or stopped, which the other services follow. A drive that drops off and comes back within
+# DROP_GRACE_SECONDS is checked and mounted again; one that stays away, or fails, is notified.
+#   mounter.sh                      the service; releases the lock and unmounts when stopped
+#   mounter.sh accept-smart <role>  take the drive's current SMART counts as its new baseline
 set -u
 
 root=${STORAGE_ROOT:-/mnt/storage}
 prefix=${ARRAY_PREFIX:-storage}
-node=${STORAGE_NODE:?STORAGE_NODE is not set}
+node=${STORAGE_NODE:-}
 lock_timeout=${LOCK_TIMEOUT_SECONDS:-600}
+drop_grace=${DROP_GRACE_SECONDS:-120}
+smart_interval=$(( ${SMART_INTERVAL_HOURS:-6} * 3600 ))
+ntfy_url=${NTFY_URL:-https://ntfy.sh}
+ntfy_topic=${NTFY_TOPIC:-}
 label_pattern="^${prefix}-(data|parity)[0-9]+$"
 state_dir="$root/$prefix-data1/.storage"
 mirror_dir="$root/$prefix-data2/.storage"
-status_file=/status/status.json
+status_dir=/status
+runtime=/run/mounter
 ready_file=/run/mounter.ready
 service_user_id=1000
 secret_names=(samba syncthing-gui kopia-repository kopia-server)
+array_state=
 
 log() { echo "$(date -u +%FT%TZ) $*"; }
 
-array_devices() {
-    blkid -t TYPE=ext4 -o device 2>/dev/null | while read -r device; do
-        label=$(blkid -o value -s LABEL "$device")
-        [[ $label =~ $label_pattern ]] && echo "$device $label"
-    done
-}
+library=/usr/local/lib/storage
+# shellcheck source=lib/drives.sh
+source "$library/drives.sh"
+# shellcheck source=lib/health.sh
+source "$library/health.sh"
+# shellcheck source=lib/folders.sh
+source "$library/folders.sh"
+# shellcheck source=lib/state.sh
+source "$library/state.sh"
+# shellcheck source=lib/notify.sh
+source "$library/notify.sh"
 
-mount_new_drives() {
-    array_devices | while read -r device label; do
-        target="$root/$label"
-        mountpoint -q "$target" && continue
-        mkdir -p "$target"
-        if mount -o noatime "$device" "$target"; then log "mounted $label from $device"; else log "FAILED to mount $label from $device"; continue; fi
-        [[ $label == "$prefix-data"* ]] && chown "$service_user_id:$service_user_id" "$target"
-    done
-}
-
-is_vanished_mount() { [ ! -b "$1" ]; }
-
-unmount_vanished_drives() {
-    findmnt -rn -o TARGET,SOURCE | while read -r target source; do
-        [[ $target == "$root/$prefix-"* ]] || continue
-        [[ $(basename "$target") =~ $label_pattern ]] || continue
-        if is_vanished_mount "$source"; then umount -l "$target" && log "drive behind $target vanished; unmounted"; fi
-    done
-}
+if [ "${1:-}" = accept-smart ]; then accept_smart "${2:?accept-smart needs a role, e.g. data2}"; exit $?; fi
+[ -n "$node" ] || { log "STORAGE_NODE is not set"; exit 1; }
 
 lock_holder_is_live_elsewhere() {
     local lock="$state_dir/lock" holder seen
@@ -65,27 +63,19 @@ ensure_service_state() {
     done
 }
 
-write_lock() { mkdir -p "$state_dir" && echo "$node $(date +%s)" > "$state_dir/lock.tmp" && mv "$state_dir/lock.tmp" "$state_dir/lock"; }
+write_lock() {
+    state_dir_is_writable || return 0
+    mkdir -p "$state_dir" && echo "$node $(date +%s)" > "$state_dir/lock.tmp" && mv "$state_dir/lock.tmp" "$state_dir/lock"
+}
 
 mirror_state() {
-    mountpoint -q "$root/$prefix-data2" || return 0
+    state_dir_is_writable && is_usable "$prefix-data2" || return 0
     rsync -a --delete "$state_dir/" "$mirror_dir/"
 }
 
-write_status() {
-    local drives=() label used size
-    for target in "$root/$prefix"-*; do
-        label=$(basename "$target")
-        [[ $label =~ $label_pattern ]] || continue
-        if mountpoint -q "$target"; then
-            read -r size used < <(df -B1 --output=size,used "$target" | tail -1)
-            drives+=("{\"label\":\"$label\",\"mounted\":true,\"size\":$size,\"used\":$used}")
-        else
-            drives+=("{\"label\":\"$label\",\"mounted\":false}")
-        fi
-    done
-    local joined; joined=$(IFS=,; echo "${drives[*]}")
-    echo "{\"node\":\"$node\",\"updated\":\"$(date -u +%FT%TZ)\",\"drives\":[${joined}]}" > "$status_file.tmp" && mv "$status_file.tmp" "$status_file"
+unmount_all() {
+    local target
+    for target in "$root/$prefix"-*; do mountpoint -q "$target" && umount "$target" && log "unmounted ${target##*/}"; done
 }
 
 shut_down() {
@@ -93,29 +83,43 @@ shut_down() {
     rm -f "$ready_file"
     [ -f "$state_dir/lock" ] && read -r holder _ < "$state_dir/lock" && [ "$holder" = "$node" ] && rm -f "$state_dir/lock"
     mirror_state
-    for target in "$root/$prefix"-*; do mountpoint -q "$target" && umount "$target" && log "unmounted $(basename "$target")"; done
+    unmount_all
     exit 0
 }
 trap shut_down TERM INT
 
-mkdir -p "$root" /status
-mount_new_drives
-if ! mountpoint -q "$root/$prefix-data1"; then log "no drive labelled $prefix-data1 found; it holds the stack state"; exit 1; fi
+check_round() {
+    unmount_lost_drives
+    notice_lost_drives
+    mount_found_drives
+    register_mounted_drives
+    revive_absent_drives
+    check_due_smart
+    hold_failing_drives_read_only
+    assess_array
+    announce_changes
+    send_notifications
+}
+
+rm -rf "$runtime"
+mkdir -p "$root" "$status_dir" "$runtime"
+mount_found_drives
+if ! is_mounted "$prefix-data1"; then log "no drive labelled $prefix-data1 found; it holds the stack state"; exit 1; fi
 if lock_holder_is_live_elsewhere; then
     log "the array is in use by $(cut -d' ' -f1 "$state_dir/lock") (seen less than ${lock_timeout}s ago); refusing"
-    for target in "$root/$prefix"-*; do mountpoint -q "$target" && umount "$target"; done
+    unmount_all
     exit 1
 fi
 write_lock
 ensure_service_state
-touch "$ready_file"
+register_mounted_drives
 log "holding the array as $node"
+[ -n "$ntfy_topic" ] || log "NTFY_TOPIC is empty: notifications are only logged"
 
 tick=0
 while true; do
-    mount_new_drives
-    unmount_vanished_drives
-    write_status
+    check_round
+    [ "$tick" -eq 0 ] && touch "$ready_file"
     if (( tick % 6 == 0 )); then write_lock; mirror_state; fi
     tick=$(( tick + 1 ))
     sleep 10 & wait $!

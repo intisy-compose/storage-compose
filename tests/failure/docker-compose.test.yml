@@ -1,0 +1,61 @@
+# Layered over docker-compose.yml by tests/failure/run.sh: the array's own services under test names
+# and image tags, on the lab's loop and device-mapper drives, with a second Syncthing as the peer and
+# the lab capturing what would go to ntfy. Nothing is published on the host.
+services:
+  lab:
+    build: tests/failure/lab
+    image: storage-lab:c24test
+    container_name: c24t-lab
+    privileged: true
+    environment:
+      ARRAY_PREFIX: ${ARRAY_PREFIX}
+      PEER_API_KEY: ${PEER_API_KEY}
+    volumes:
+      - /dev:/dev
+      - ${STORAGE_ROOT}:/mnt/storage:rslave
+      - ${LAB_IMAGES}:/images
+      - storage-status:/status
+      - peer-data:/peer:ro
+
+  mounter:
+    image: storage-mounter:c24test
+    container_name: c24t-mounter
+    volumes:
+      - ./tests/failure/fake-smartctl.sh:/usr/sbin/smartctl:ro
+
+  pool:
+    image: storage-pool:c24test
+    container_name: c24t-pool
+
+  snapraid:
+    image: storage-snapraid:c24test
+    container_name: c24t-snapraid
+
+  dashboard:
+    image: storage-dashboard:c24test
+    container_name: c24t-dashboard
+
+  kopia:
+    image: storage-kopia:c24test
+    container_name: c24t-kopia
+
+  syncthing:
+    container_name: c24t-syncthing
+    network_mode: "service:lab"
+    depends_on: !override
+      lab:
+        condition: service_started
+      pool:
+        condition: service_healthy
+
+  peer:
+    image: ghcr.io/syncthing/syncthing:2.1.6
+    container_name: c24t-peer
+    environment:
+      STGUIADDRESS: 0.0.0.0:8384
+      STGUIAPIKEY: ${PEER_API_KEY}
+    volumes:
+      - peer-data:/var/syncthing
+
+volumes:
+  peer-data:

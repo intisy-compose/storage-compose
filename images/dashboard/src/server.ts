@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
+import { arrayStatus } from "./arrayStatus.js";
 import { isReplacementCandidate, listBlockDevices, replacementCandidates } from "./blockDevices.js";
 import { type DriveRow, driveRows } from "./drives.js";
 import { type Job, isJobRunning, parityStatus, recentLog, startJob } from "./jobs.js";
@@ -37,6 +38,7 @@ async function readBody(request: IncomingMessage): Promise<ActionRequest> {
 async function state(): Promise<unknown> {
   const devices = await listBlockDevices();
   return {
+    array: await arrayStatus(),
     drives: await driveRows(devices),
     candidates: replacementCandidates(devices),
     parity: await parityStatus(),
