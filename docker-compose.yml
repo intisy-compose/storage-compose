@@ -12,6 +12,8 @@ x-array-jobs: &array-jobs
     ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
     SYNC_INTERVAL_HOURS: ${SYNC_INTERVAL_HOURS:-24}
     SCRUB_INTERVAL_DAYS: ${SCRUB_INTERVAL_DAYS:-7}
+    SCRUB_PERCENT: ${SCRUB_PERCENT:-8}
+    SCRUB_OLDER_THAN_DAYS: ${SCRUB_OLDER_THAN_DAYS:-10}
     SYNC_MAX_DELETED: ${SYNC_MAX_DELETED:-500}
     START_DELAY_SECONDS: ${START_DELAY_SECONDS:-300}
     CANDIDATE_TRANSPORTS: ${CANDIDATE_TRANSPORTS:-usb}
@@ -34,6 +36,10 @@ services:
       STORAGE_NODE: ${STORAGE_NODE:?run init-config}
       ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
       LOCK_TIMEOUT_SECONDS: ${LOCK_TIMEOUT_SECONDS:-600}
+      DROP_GRACE_SECONDS: ${DROP_GRACE_SECONDS:-120}
+      SMART_INTERVAL_HOURS: ${SMART_INTERVAL_HOURS:-6}
+      NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
     volumes:
       - /dev:/dev
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rshared
@@ -51,6 +57,7 @@ services:
       POOL_MIN_FREE_SPACE: ${POOL_MIN_FREE_SPACE:-4G}
     volumes:
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rshared
+      - storage-status:/status:ro
     depends_on:
       mounter:
         condition: service_healthy
@@ -151,6 +158,8 @@ services:
       timeout: 10s
     volumes:
       - ./services/syncthing/start.sh:/start.sh:ro
+      - ./services/syncthing/guard.sh:/guard.sh:ro
+      - storage-status:/status:ro
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/syncthing:/var/syncthing/config
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/secrets:/secrets:ro
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
@@ -171,6 +180,7 @@ services:
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/kopia:/state
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/secrets:/secrets:ro
       - kopia-cache:/cache
+      - storage-status:/status:ro
     depends_on:
       pool:
         condition: service_healthy

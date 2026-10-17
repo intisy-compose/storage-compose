@@ -47,18 +47,33 @@ function Assert-Config {
 }
 
 function Set-ConfigValues([hashtable]$Values) {
-    $lines = foreach ($line in Get-Content $configFile) {
-        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=' -and $Values.ContainsKey($Matches[1])) { "$($Matches[1])=$($Values[$Matches[1]])" }
+    $written = @{}
+    $lines = @(foreach ($line in Get-Content $configFile) {
+        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=' -and $Values.ContainsKey($Matches[1])) { $written[$Matches[1]] = $true; "$($Matches[1])=$($Values[$Matches[1]])" }
         else { $line }
-    }
+    })
+    foreach ($name in $Values.Keys) { if (-not $written.ContainsKey($name)) { $lines += "$name=$($Values[$name])" } }
     [System.IO.File]::WriteAllText($configFile, (($lines -join "`n") + "`n"))
+}
+
+function New-NtfyTopic {
+    $bytes = New-Object byte[] 16
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    return "storage-" + (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
 }
 
 function Initialize-Config {
     if (-not (Test-Path $configFile)) { Copy-Item $exampleFile $configFile }
-    if (Get-ConfigValue "STORAGE_NODE" "") { Write-OK "config.env already names this host; nothing changed."; return }
-    Set-ConfigValues @{ STORAGE_NODE = $env:COMPUTERNAME.ToLower() }
-    Write-OK "Wrote STORAGE_NODE=$($env:COMPUTERNAME.ToLower()) to config.env."
+    if (Get-ConfigValue "STORAGE_NODE" "") { Write-OK "config.env already names this host." }
+    else {
+        Set-ConfigValues @{ STORAGE_NODE = $env:COMPUTERNAME.ToLower() }
+        Write-OK "Wrote STORAGE_NODE=$($env:COMPUTERNAME.ToLower()) to config.env."
+    }
+    if (Get-ConfigValue "NTFY_TOPIC" "") { Write-OK "config.env already has a notification topic." }
+    else {
+        Set-ConfigValues @{ NTFY_TOPIC = New-NtfyTopic }
+        Write-OK "Wrote NTFY_TOPIC to config.env; subscribe to it in the ntfy app: $(Get-ConfigValue 'NTFY_URL' 'https://ntfy.sh')/$(Get-ConfigValue 'NTFY_TOPIC' '')"
+    }
 }
 
 <#
@@ -232,7 +247,7 @@ function Show-Urls {
 }
 
 $commands = @{
-    "init-config" = "Create config.env and name this host"
+    "init-config" = "Create config.env, name this host and generate the notification topic"
     "up"          = "Attach the enclosures, mount and lock the array, join the tailnet, start the stack (default)"
     "down"        = "Stop the stack, release the lock, unmount and give the enclosures back to Windows"
     "restart"     = "down, then up"
@@ -241,10 +256,11 @@ $commands = @{
     "drives"      = "List the block devices Docker Desktop's VM sees, with their labels"
     "url"         = "Print the tailnet URL"
     "sync"        = "[--anyway]  run a SnapRAID sync now; --anyway accepts more deletions than SYNC_MAX_DELETED"
-    "scrub"       = "Run a SnapRAID scrub now (8 percent, blocks older than 10 days)"
+    "scrub"       = "Run a SnapRAID scrub now (SCRUB_PERCENT of the array, blocks older than SCRUB_OLDER_THAN_DAYS)"
     "snapraid"    = "[args]  run snapraid with the array's config, e.g. snapraid status"
     "credentials" = "Print the Samba, Syncthing and Kopia logins, which live on the array"
     "kopia-user"  = "<user@host>  add a Kopia client account (or reset its password) and print it"
+    "accept-smart" = "<role>  take a drive's current SMART counts as its baseline, e.g. accept-smart data2"
 }
 
 switch ($Command.ToLower()) {
@@ -260,6 +276,7 @@ switch ($Command.ToLower()) {
     "scrub"   { docker compose @composeArgs exec -T snapraid snapraid.sh run scrub; exit $LASTEXITCODE }
     "credentials" { Show-Credentials; break }
     "kopia-user" { docker compose @composeArgs exec -T kopia kopia.sh user @forwarded; exit $LASTEXITCODE }
+    "accept-smart" { docker compose @composeArgs exec -T mounter mounter.sh accept-smart @forwarded; exit $LASTEXITCODE }
     "snapraid" {
         docker compose @composeArgs exec -T snapraid snapraid.sh config | Out-Null
         docker compose @composeArgs exec -T snapraid snapraid -c /etc/snapraid.conf @forwarded; exit $LASTEXITCODE

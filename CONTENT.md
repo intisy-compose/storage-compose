@@ -18,7 +18,7 @@ Samba, Syncthing and Kopia); the migration onto the real drives follows.
 | `dashboard` | built, TypeScript on Node 20 + SnapRAID | the drives with SMART health, parity status, the log, and the actions below |
 | `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale, in front of the dashboard, the Syncthing GUI and Kopia; the dashboard and the Syncthing GUI also on `127.0.0.1:8442` and `:8443` |
 | `samba` | `ghcr.io/crazy-max/samba:4.23.8` | the pool as one SMB share, `\\storage.<tailnet>.ts.net\storage` |
-| `syncthing` | `ghcr.io/syncthing/syncthing:2.1.6` | a Syncthing peer; new folders go to `pool/sync`, its GUI is `https://storage.<tailnet>.ts.net:8384` |
+| `syncthing` | `ghcr.io/syncthing/syncthing:2.1.6` | a Syncthing peer whose folders live anywhere in the pool, nested ones too (`pool/Documents`, `pool/Documents/GitHub`); its GUI is `https://storage.<tailnet>.ts.net:8384` |
 | `kopia` | built from the Kopia 0.23.1 release binary | a Kopia repository server on `pool/kopia`, `https://storage.<tailnet>.ts.net:51515` |
 
 Every image is pinned to a version.
@@ -52,9 +52,37 @@ A drive that ever was part of the array stays in SnapRAID's config while it is m
 absence stops the sync instead of quietly removing it. The log of every run is
 `/.storage/log/snapraid.log` on `storage-data1`.
 
+## When a drive drops off or fails
+
+The mounter checks every drive every 10 seconds and puts the array in one of three states, which
+the dashboard shows at the top and every service follows:
+
+| state | when | the share | Syncthing | Kopia, sync, scrub |
+| --- | --- | --- | --- | --- |
+| **healthy** | every drive present, or one that dropped off is still being waited for | read-write | runs | run once every drive is present |
+| **degraded** | no more drives missing or failing than there are parity drives, and `data1` present | read-write | folders on a missing or failing drive pause, the rest run | wait |
+| **stopped** | more drives lost than parity can rebuild, or `data1` missing or read-only | read-only | every folder pauses | wait |
+
+- **A drop is not a failure.** A drive that falls off the USB bus and is back within
+  `DROP_GRACE_SECONDS` (2 minutes) is checked with `e2fsck -p`, mounted again and the array carries
+  on; meanwhile the Syncthing folders on it pause and Kopia waits. Only a drive that stays away is
+  missing.
+- **Failing** means the filesystem went read-only after an error (every drive is mounted with
+  `errors=remount-ro`), or SMART's reallocated, pending or uncorrectable counts rose above their
+  values at the drive's first check (`accept-smart <role>` takes the current ones as the new
+  baseline), or the drive needs more than `e2fsck -p` after a drop. A failing drive takes no more
+  writes; its files stay readable.
+- **Syncthing never sees a lost drive as deletions.** The pool keeps every folder on one drive
+  (mergerfs `epmfs`), so a folder leaves with its drive, `.stfolder` marker included, and its folders
+  pause before the drive's mount is let go. A folder that lies on more than one drive is reported.
+- **Notifications** go to [ntfy](https://ntfy.sh): a drive dropped, back, missing or failing, a
+  rising SMART count, a state change, a failed or refused sync or scrub, and a reminder every day
+  while the array is not healthy. `init-config` generates the topic (`NTFY_TOPIC`); subscribe to it
+  in the ntfy app. `NTFY_URL` points at a self-hosted ntfy instead.
+
 ## Dashboard
 
-`https://storage.<tailnet>.ts.net` shows every drive the array has known (label, model, serial,
+`https://storage.<tailnet>.ts.net` shows the array's state and every drive the array has known (label, model, serial,
 used and free space, SMART health with temperature, reallocated and pending sectors or NVMe wear),
 the last sync and scrub, why a sync was refused, and the log. It can start a sync or a scrub, and
 for a missing drive it offers:
@@ -96,7 +124,7 @@ usbipd-win (`winget install --id dorssel.usbipd-win -e`) and PowerShell.
 git clone https://github.com/intisy-compose/storage-compose
 cd storage-compose
 
-.\docker-compose.ps1 init-config   # creates config.env and names this host
+.\docker-compose.ps1 init-config   # creates config.env, names this host, generates the ntfy topic
 # put the enclosures' VID:PID from `usbipd list` into USB_HARDWARE_IDS, and an auth key from
 # https://login.tailscale.com/admin/settings/keys into TS_AUTHKEY
 .\docker-compose.ps1 up            # the one CLI; run it without a known command to list them all

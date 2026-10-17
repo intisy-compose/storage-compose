@@ -1,8 +1,8 @@
 #!/bin/bash
 # Keeps SnapRAID's config in step with the drives and runs every job that changes the array.
 #   snapraid.sh                          the scheduler: sync and scrub when they are due
-#   snapraid.sh run sync [--anyway]      run one job now; jobs never overlap, here or in the dashboard
-#   snapraid.sh run scrub
+#   snapraid.sh run sync [--anyway]      run one job now; jobs never overlap, here or in the dashboard;
+#   snapraid.sh run scrub                a sync or scrub waits while the mounter finds a drive away
 #   snapraid.sh run rebuild <role> <device>   erase <device>, label it as <role>, restore onto it
 #   snapraid.sh run remove <role>        drop a missing data drive from the array, losing its files
 #   snapraid.sh config                   write and print the config
@@ -20,9 +20,35 @@ sync_interval=$(( ${SYNC_INTERVAL_HOURS:-24} * 3600 ))
 scrub_interval=$(( ${SCRUB_INTERVAL_DAYS:-7} * 86400 ))
 start_delay=${START_DELAY_SECONDS:-300}
 max_deleted=${SYNC_MAX_DELETED:-500}
+scrub_percent=${SCRUB_PERCENT:-8}
+scrub_older_than_days=${SCRUB_OLDER_THAN_DAYS:-10}
+array_env=/status/array.env
+outbox=/status/outbox
 mount_wait_seconds=90
 
 log() { local line; line="$(date -u +%FT%TZ) $*"; echo "$line"; mkdir -p "$(dirname "$log_file")" && echo "$line" >> "$log_file"; }
+
+# The mounter sends what lands in the outbox; the format is its own: title, priority, tags, message.
+notify() {   # <title> <message>
+    local file
+    mkdir -p "$outbox" && file="$outbox/$(date +%s%N)-$$"
+    printf '%s\n4\nwarning\n%s\n' "$1" "$2" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+
+# A job that fails the same way on every scheduled attempt is announced once, until it succeeds.
+notify_once() {   # <title> <message>
+    [ "$(state_text notified)" = "$1: $2" ] && return 0
+    set_state_value notified "$1: $2"
+    notify "$1" "$2"
+}
+
+array_value() { sed -n "s/^$1=//p" "$array_env" 2>/dev/null; }
+
+# Parity written while a drive is away would record its files as gone, so sync and scrub wait for
+# every drive; the mounter decides that, a missing status counts as not complete.
+array_is_complete() { [ "$(array_value complete)" = yes ]; }
+array_summary() { local state; state=$(array_value state); echo "not every drive is present (the array is ${state:-not assessed yet})"; }
 
 state_value() { cat "$state_dir/snapraid.$1" 2>/dev/null || echo 0; }
 state_text() { cat "$state_dir/snapraid.$1" 2>/dev/null; }
@@ -116,30 +142,38 @@ run_sync() {
     if [ "$deleted" -gt "$max_deleted" ] && [ "$anyway" != "--anyway" ]; then
         set_state_value refused "$deleted files deleted since the last sync (limit $max_deleted); run 'sync --anyway' to accept"
         log "sync refused: $deleted files deleted since the last sync, limit $max_deleted"
+        notify_once "sync refused" "SnapRAID refused to sync: $deleted files were deleted since the last sync (limit $max_deleted). Check them, then sync anyway in the dashboard."
         return 3
     fi
     rm -f "$state_dir/snapraid.refused"
     log "sync started ($deleted deleted since the last one)"
     if run_snapraid sync; then
-        set_state_value sync "$(date +%s)"; set_state_value sync-result ok; log "sync done"
+        set_state_value sync "$(date +%s)"; set_state_value sync-result ok; rm -f "$state_dir/snapraid.notified"; log "sync done"
     elif is_emptied_disk_refusal "$snapraid_output"; then
         local disk; disk=$(grep -o "present in disk '[^']*'" <<< "$snapraid_output" | head -1 | cut -d"'" -f2)
         set_state_value refused "every file on $disk is missing or rewritten; check that it is mounted, then rebuild it or remove it from the array"
         set_state_value sync-result refused; log "sync refused by SnapRAID: every file on $disk is missing or rewritten"
+        notify_once "sync refused" "SnapRAID refused to sync: every file on $disk is missing or rewritten. Check that it is mounted, then rebuild it or remove it from the array."
         return 3
     else
-        set_state_value sync-result failed; log "sync FAILED, see the lines above"; return 1
+        set_state_value sync-result failed; log "sync FAILED, see the lines above"
+        notify_once "sync failed" "The SnapRAID sync failed: $(last_snapraid_line). It runs again once every drive is present; the log is in the dashboard."
+        return 1
     fi
 }
 
+last_snapraid_line() { grep -v '^[[:space:]]*$' <<< "$snapraid_output" | tail -n 1; }
+
 run_scrub() {
-    log "scrub started (8 percent, blocks older than 10 days)"
-    if run_snapraid scrub -p 8 -o 10; then
-        set_state_value scrub "$(date +%s)"; set_state_value scrub-result ok; log "scrub done"
+    log "scrub started ($scrub_percent percent, blocks older than $scrub_older_than_days days)"
+    if run_snapraid scrub -p "$scrub_percent" -o "$scrub_older_than_days"; then
+        set_state_value scrub "$(date +%s)"; set_state_value scrub-result ok; rm -f "$state_dir/snapraid.notified"; log "scrub done"
     elif grep -q "array appears to be empty" <<< "$snapraid_output"; then
         set_state_value scrub "$(date +%s)"; set_state_value scrub-result empty; log "scrub: the array is empty, nothing to check"
     else
-        set_state_value scrub-result failed; log "scrub FAILED, see the lines above"; return 1
+        set_state_value scrub-result failed; log "scrub FAILED, see the lines above"
+        notify_once "scrub failed" "The SnapRAID scrub failed: $(last_snapraid_line). Run 'snapraid status' and 'snapraid fix -e' once the cause is clear; the log is in the dashboard."
+        return 1
     fi
 }
 
@@ -210,6 +244,7 @@ run_remove() {
         forget_drive "$(role_path "$role")"
         forget_role_asset "$role"
         grep -vxF "$role" "$state_dir/snapraid.removing" > "$state_dir/snapraid.removing.new"; mv "$state_dir/snapraid.removing.new" "$state_dir/snapraid.removing"
+        chattr -i "$(role_path "$role")" 2>/dev/null
         rmdir "$(role_path "$role")" 2>/dev/null
         write_config
         rm -f "$state_dir/snapraid.refused"
@@ -221,8 +256,11 @@ run_remove() {
 }
 
 # The subshell holds the lock, so it is released when the job ends, also in the scheduler's own shell.
+is_held() { { [ "$1" = sync ] || [ "$1" = scrub ]; } && ! array_is_complete; }
+
 run_job() {
     local job=$1; shift
+    if is_held "$job"; then echo "$job waits: $(array_summary)"; return 4; fi
     write_config || { echo "no parity or no data drive mounted"; return 1; }
     (
         flock -n 9 || { echo "another job is running: $(cat "$job_lock.name" 2>/dev/null)"; exit 1; }
@@ -256,7 +294,12 @@ trap 'exit 0' TERM INT
 log "scheduler started: sync every ${SYNC_INTERVAL_HOURS:-24} h, scrub every ${SCRUB_INTERVAL_DAYS:-7} days, first check in ${start_delay} s"
 sleep "$start_delay" & wait $!
 while true; do
-    if write_config; then
+    if ! array_is_complete; then
+        [ -n "${holding:-}" ] || log "sync and scrub wait: $(array_summary)"
+        holding=yes
+    elif write_config; then
+        [ -z "${holding:-}" ] || log "every drive is present again; sync and scrub resume"
+        holding=
         is_due sync "$sync_interval" && run_job sync
         is_due scrub "$scrub_interval" && [ -z "$(state_text refused)" ] && run_job scrub
     fi
