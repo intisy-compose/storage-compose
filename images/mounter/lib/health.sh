@@ -5,9 +5,27 @@
 # ext4 reports errors=remount-ro as emergency_ro on newer kernels, as ro on older ones.
 went_read_only() { findmnt -no OPTIONS "$(mount_point "$1")" | grep -qE '(^|,)(ro|emergency_ro)(,|$)'; }
 
+# Hyper-V's SCSI disk rejects ATA pass-through, so for a drive passed through by WSL the Windows host
+# reads SMART and writes it to $wsl_disks_file, at least every 10 minutes while drives are passed
+# through. A disk is found there by its GPT id, or else by its size among the disks Windows saw blank,
+# when only one has that size: a drive formatted inside the VM has a GPT id Windows has not seen.
+host_smart_report() {   # <disk node>
+    local table_id size
+    [ -s "${wsl_disks_file:-}" ] || return 1
+    table_id=$(partition_table_id "$1")
+    size=$(blockdev --getsize64 "$1" 2> /dev/null) || return 1
+    jq -ce --arg table_id "$table_id" --argjson size "$size" '
+        select(.updatedEpoch > (now - 1800)) | .disks as $disks
+        | [$disks[] | select($table_id != "" and .ptuuid == $table_id)] as $by_table
+        | (if ($by_table | length) > 0 then $by_table
+           else [$disks[] | select(.ptuuid == null and .size == $size)] end)
+        | select(length == 1) | first | .smart | select(.smart_status)' "$wsl_disks_file" 2> /dev/null
+}
+
 # -n standby leaves a sleeping drive asleep; it is checked at the next round instead.
 smart_report() {   # <disk node>: smartctl's JSON from the first device type that answers
     local type output
+    host_smart_report "$1" && return 0
     for type in auto sat; do
         output=$(smartctl -j -n standby -i -H -A -d "$type" "$1" 2> /dev/null)
         jq -e '.smart_status' <<< "$output" > /dev/null 2>&1 && { echo "$output"; return 0; }

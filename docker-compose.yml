@@ -1,5 +1,5 @@
 # The portable storage array, reachable over Tailscale and on this host's loopback. Start it through
-# docker-compose.ps1 (Windows, attaches the enclosures with usbipd first) or docker-compose.sh
+# docker-compose.ps1 (Windows, passes the drives through to WSL first) or docker-compose.sh
 # (Linux); both pass --env-file config.env. All state lives on the array, so the drives carry the
 # node's identity between hosts.
 name: storage
@@ -16,7 +16,7 @@ x-array-jobs: &array-jobs
     SCRUB_OLDER_THAN_DAYS: ${SCRUB_OLDER_THAN_DAYS:-10}
     SYNC_MAX_DELETED: ${SYNC_MAX_DELETED:-500}
     START_DELAY_SECONDS: ${START_DELAY_SECONDS:-300}
-    CANDIDATE_TRANSPORTS: ${CANDIDATE_TRANSPORTS:-usb}
+    CANDIDATE_TRANSPORTS: ${CANDIDATE_TRANSPORTS:-usb,wsl}
   volumes:
     - /dev:/dev
     - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave

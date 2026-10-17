@@ -59,7 +59,7 @@ async function driveRow(label: string, sources: Map<string, string>, devices: Bl
   const source = sources.get(path) ?? null;
   const wholeDevice = source ? wholeDeviceOf(devices, source) : undefined;
   const space = source ? await capacity(path) : null;
-  const smart = wholeDevice?.type === "disk" ? await smartSummary(wholeDevice.path) : null;
+  const smart = wholeDevice?.type === "disk" ? await smartSummary(wholeDevice) : null;
   const role = label.slice(arrayPrefix.length + 1);
   const serial = smart?.serial ?? wholeDevice?.serial?.trim() ?? null;
   const asset = assets.get(role) ?? null;
