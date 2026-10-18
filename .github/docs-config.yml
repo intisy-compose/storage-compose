@@ -1,0 +1,2 @@
+kind: generic
+description: "A portable storage array in Docker: USB drive enclosures pooled with mergerfs, protected by SnapRAID parity, and served over Tailscale with Samba, Syncthing and Kopia."
