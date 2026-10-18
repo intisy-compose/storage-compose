@@ -331,7 +331,7 @@ single-instance lock and its old code past a reinstall.
 function Stop-AttachWatcher {
     Stop-ScheduledTask -TaskName $attachTaskName -ErrorAction SilentlyContinue
     $deadline = (Get-Date).AddSeconds(10)
-    while ((Get-WatcherProcesses).Count -gt 0 -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+    while (@(Get-WatcherProcesses).Count -gt 0 -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
     foreach ($process in Get-WatcherProcesses) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
