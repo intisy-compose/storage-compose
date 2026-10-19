@@ -254,6 +254,17 @@ function Remove-ReleasedDisks($State, $Request) {
 
 <#
 .NOTES
+Windows keeps showing a passed blank drive as RAW after the VM formats it, until Update-Disk makes it
+read the drive again.
+#>
+function Update-BlankPassedDisks($State) {
+    foreach ($passed in @($State.disks | Where-Object { -not $_.guid })) {
+        Update-Disk -Number $passed.number -ErrorAction SilentlyContinue
+    }
+}
+
+<#
+.NOTES
 A blank drive is passed through without a GPT id and gets one when it is formatted in the VM; the
 mounter and the dashboard match SMART reports to drives by that id.
 #>
@@ -393,6 +404,7 @@ function Invoke-WatcherRound($State) {
     if ($request) {
         $bootId = Get-DockerVmBootId
         Clear-DisksAfterVmRestart $State $bootId
+        Update-BlankPassedDisks $State
         $disks = @(Get-WindowsDisks)
         Remove-VanishedDisks $State $disks
         $isNewRequest = $request.id -ne $State.handledRequest
