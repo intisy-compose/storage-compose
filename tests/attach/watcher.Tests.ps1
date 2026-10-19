@@ -41,7 +41,7 @@ function Get-SmartctlPath { return "fake-smartctl" }
 function Read-SmartReport([string]$Smartctl, [int]$Number) {
     return [pscustomobject]@{ serial_number = "SERIAL$Number"; smart_status = [pscustomobject]@{ passed = $true } }
 }
-function Get-StatusVolume { return "storage_storage-status" }
+function Get-StatusVolume { return "storage-compose_storage-status" }
 function Publish-WslDisks($State, [string]$Volume) { $global:published += , (Get-PublishedDisks $State); return $true }
 
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "attach-watcher-$([guid]::NewGuid())"

@@ -2,7 +2,7 @@
 # docker-compose.ps1 (Windows, passes the drives through to WSL first) or docker-compose.sh
 # (Linux); both pass --env-file config.env. All state lives on the array, so the drives carry the
 # node's identity between hosts.
-name: storage
+name: storage-compose
 
 # The scheduler and the dashboard run the same snapraid.sh, sharing its job lock in storage-status.
 x-array-jobs: &array-jobs

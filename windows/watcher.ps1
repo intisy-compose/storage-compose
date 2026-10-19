@@ -7,7 +7,7 @@ reads their SMART counts for the VM, which cannot. Registered once by `docker-co
 install-attach`, which copies it to a folder only administrators can change; started without
 -StackFolder it only defines its functions (the tests use that).
 #>
-param([string]$StackFolder, [string]$ProjectName = "storage")
+param([string]$StackFolder, [string]$ProjectName = "storage-compose")
 
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "disks.ps1")
