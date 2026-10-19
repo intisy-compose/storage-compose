@@ -252,6 +252,23 @@ function Remove-ReleasedDisks($State, $Request) {
     }
 }
 
+<#
+.NOTES
+A blank drive is passed through without a GPT id and gets one when it is formatted in the VM; the
+mounter and the dashboard match SMART reports to drives by that id.
+#>
+function Update-PartitionTableIds($State, [object[]]$Disks) {
+    foreach ($passed in @($State.disks)) {
+        $disk = @($Disks | Where-Object { Test-IsSameDisk $_ $passed }) | Select-Object -First 1
+        if (-not $disk) { continue }
+        $guid = (Get-DiskIdentity $disk).Guid
+        if ($guid -and $guid -ne $passed.guid) {
+            $passed.guid = $guid
+            $script:publishIsDue = $true
+        }
+    }
+}
+
 function Remove-AllDisks($State) { foreach ($passed in @($State.disks)) { Remove-PassedDisk $State $passed } }
 
 function Get-SmartctlPath {
@@ -386,6 +403,7 @@ function Invoke-WatcherRound($State) {
             if ($isNewRequest) { Add-RequestedDisks $State $disks $request }
             Remove-ReleasedDisks $State $request
             Add-ArrayDisks $State $disks $request
+            Update-PartitionTableIds $State $disks
             $State.handledRequest = $request.id
         }
         Update-SmartReports $State
