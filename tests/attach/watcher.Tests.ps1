@@ -10,6 +10,7 @@ $global:fakeDisks = @()
 $global:fakePartitions = @{}
 $global:wslCalls = @()
 $global:setDiskCalls = @()
+$global:updateDiskCalls = @()
 $global:bootId = "boot-1"
 $global:dockerRuns = $true
 $global:mountAnswers = @()
@@ -17,6 +18,7 @@ $global:published = @()
 
 function Get-Disk { return $global:fakeDisks }
 function Get-DiskPartitions($Disk) { return $global:fakePartitions[[int]$Disk.Number] }
+function Update-Disk([int]$Number) { $global:updateDiskCalls += $Number }
 function Set-Disk([int]$Number, [bool]$IsOffline) {
     $global:setDiskCalls += "$Number offline=$IsOffline"
     foreach ($disk in $global:fakeDisks) { if ($disk.Number -eq $Number) { $disk.IsOffline = $IsOffline } }
@@ -94,7 +96,7 @@ function New-StandardWorld {
 
 Describe "the fakes" {
     It "shadow every command that could reach a disk or WSL" {
-        foreach ($name in @("Get-Disk", "Set-Disk", "Get-DiskPartitions", "Invoke-Wsl", "Read-SmartReport", "Publish-WslDisks")) {
+        foreach ($name in @("Get-Disk", "Set-Disk", "Update-Disk", "Get-DiskPartitions", "Invoke-Wsl", "Read-SmartReport", "Publish-WslDisks")) {
             (Get-Command $name).CommandType | Should Be "Function"
         }
         (Get-Command Get-Disk).ScriptBlock.ToString() | Should Match "fakeDisks"
@@ -310,6 +312,11 @@ Describe "attach <disk number>" {
         @(Get-MountCalls).Count | Should Be 0
         $state.requestProblems[0] | Should Match "no longer the disk that was confirmed"
     }
+    It "asks Windows to read the passed blank disk again while it has no GPT id" {
+        $global:updateDiskCalls = @()
+        Invoke-WatcherRound $state
+        $global:updateDiskCalls | Should Be @(43)
+    }
     It "keeps the blank disk passed through once the dashboard formats it in the VM" {
         $blank.Guid = "{77777777-2222-4333-8444-555555555555}"
         $global:fakePartitions[43] = @(New-FakePartition)
@@ -370,4 +377,4 @@ Describe "requests and disk lists it must not act on" {
 }
 
 Remove-Item -Recurse -Force $scratch
-Remove-Variable -Scope Global -Name fakeDisks, fakePartitions, wslCalls, setDiskCalls, bootId, dockerRuns, mountAnswers, published
+Remove-Variable -Scope Global -Name fakeDisks, fakePartitions, wslCalls, setDiskCalls, updateDiskCalls, bootId, dockerRuns, mountAnswers, published
