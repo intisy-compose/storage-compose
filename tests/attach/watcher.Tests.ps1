@@ -318,6 +318,10 @@ Describe "attach <disk number>" {
         @(Get-UnmountCalls).Count | Should Be 0
         @($state.disks | Where-Object { $_.number -eq 43 }).Count | Should Be 1
     }
+    It "publishes the partition table id the format gave the blank disk" {
+        @($state.disks | Where-Object { $_.number -eq 43 })[0].guid | Should Be "77777777-2222-4333-8444-555555555555"
+        @($global:published[-1].disks | Where-Object { $_.number -eq 43 })[0].ptuuid | Should Be "77777777-2222-4333-8444-555555555555"
+    }
 }
 
 Describe "a drive that will not attach" {
