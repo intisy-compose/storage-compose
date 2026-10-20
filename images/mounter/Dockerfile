@@ -8,5 +8,5 @@ RUN apt-get update \
 COPY lib/ /usr/local/lib/storage/
 COPY mounter.sh /usr/local/bin/mounter.sh
 RUN chmod +x /usr/local/bin/mounter.sh
-HEALTHCHECK --interval=5s --timeout=3s --start-period=30s CMD test -f /run/mounter.ready
+HEALTHCHECK --interval=5s --timeout=3s --start-period=180s CMD test -f /run/mounter.ready
 ENTRYPOINT ["/usr/local/bin/mounter.sh"]

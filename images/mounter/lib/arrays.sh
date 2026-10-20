@@ -34,10 +34,14 @@ device_path() {   # <sysfs block directory>
     if [ -n "$mapper_name" ]; then echo "/dev/mapper/$mapper_name"; else echo "/dev/${1##*/}"; fi
 }
 
-ext4_label_of() {   # <device>: its label when it holds ext4
-    local probe
-    probe=$(blkid -c /dev/null -o export -s TYPE -s LABEL "$1" 2> /dev/null)
-    grep -qx 'TYPE=ext4' <<< "$probe" && sed -n 's/^LABEL=//p' <<< "$probe"
+ext4_labels_of() {   # <device>...: "<device> <label>" for each that holds ext4, probed in one call
+    [ $# -gt 0 ] || return 0
+    blkid -c /dev/null -o export -s TYPE -s LABEL "$@" 2> /dev/null | awk -F= '
+        /^DEVNAME=/ {device = $2; type = ""; label = ""}
+        /^TYPE=/ {type = $2}
+        /^LABEL=/ {label = substr($0, 7)}
+        /^$/ {if (type == "ext4" && device != "") print device, label; device = ""}
+        END {if (type == "ext4" && device != "") print device, label}'
 }
 
 # Probing reads each device, which is slow on a host with many or slow ones, so a scan probes only
@@ -45,17 +49,23 @@ ext4_label_of() {   # <device>: its label when it holds ext4
 # also catches a label changed in place. blkid's own cache would still list a drive that has dropped
 # off, so it is never used.
 scan_devices() {   # [all]
-    local directory name key path label previous
-    declare -A known_key known_label
+    local directory name key path label index
+    declare -A known_key known_label probed_label
+    local changed=() names=() keys=() paths=()
     [ -f "$(probes_file)" ] && while read -r name key path label; do known_key[$name]=$key; known_label[$name]=$label; done < "$(probes_file)"
     for directory in /sys/class/block/*; do
         name=${directory##*/}
         path=$(device_path "$directory")
         key="$(device_key "$directory")-${path##*/}"
         [[ $key == 0-* ]] && continue
-        previous=${known_key[$name]:-}
-        if [ "${1:-}" = all ] || [ "$previous" != "$key" ]; then label=$(ext4_label_of "$path"); else label=${known_label[$name]}; fi
-        echo "$name $key $path ${label:-}"
+        names+=("$name"); keys+=("$key"); paths+=("$path")
+        if [ "${1:-}" = all ] || [ "${known_key[$name]:-}" != "$key" ]; then changed+=("$path"); fi
+    done
+    while read -r path label; do probed_label[$path]=$label; done < <(ext4_labels_of "${changed[@]}")
+    for index in "${!names[@]}"; do
+        name=${names[$index]} path=${paths[$index]}
+        if [[ " ${changed[*]} " == *" $path "* ]]; then label=${probed_label[$path]:-}; else label=${known_label[$name]:-}; fi
+        echo "$name ${keys[$index]} $path $label"
     done > "$(probes_file).new"
     mv "$(probes_file).new" "$(probes_file)"
     while read -r name key path label; do
