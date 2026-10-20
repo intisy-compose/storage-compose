@@ -93,6 +93,10 @@ Describe "a node's native Syncthing" {
         $options.urAccepted | Should Be -1
     }
 
+    It "lets the dashboard's container call it by host.docker.internal" {
+        ([xml][System.IO.File]::ReadAllText((Join-Path $node.root ".storage\syncthing\config.xml"))).configuration.gui.insecureSkipHostcheck | Should Be "true"
+    }
+
     It "names its own device after the node" {
         (Invoke-Api $instance "/rest/config/devices/$($instance.deviceId)").name | Should Be "ventoy-files"
     }

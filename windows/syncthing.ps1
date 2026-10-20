@@ -87,7 +87,9 @@ function Save-XmlDocument($Document, [string]$Path) {
 <#
 .NOTES
 Discovery, relays and NAT traversal are off because peers reach a node only over the tailnet, by the
-address the dashboard hands out; usage reporting is declined once so Syncthing never asks.
+address the dashboard hands out; usage reporting is declined once so Syncthing never asks. The host
+check is off because the dashboard's container calls as host.docker.internal, which Syncthing
+otherwise answers with 403; the GUI listens on loopback only and every call needs the API key.
 #>
 function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost) {
     $path = Get-SyncthingConfigPath $Node
@@ -100,6 +102,7 @@ function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost) {
     $changed = (Set-XmlChildText $gui "address" "127.0.0.1:$($Ports.gui)") -or $changed
     if ($gui.GetAttribute("tls") -ne "false") { $gui.SetAttribute("tls", "false"); $changed = $true }
     if (-not $gui.SelectSingleNode("apikey").InnerText) { $changed = (Set-XmlChildText $gui "apikey" (New-ApiKey)) -or $changed }
+    $changed = (Set-XmlChildText $gui "insecureSkipHostcheck" "true") -or $changed
     $options = $configuration.SelectSingleNode("options")
     $changed = (Set-ListenAddress $options "tcp://$ListenHost`:$($Ports.listen)") -or $changed
     $settings = [ordered]@{

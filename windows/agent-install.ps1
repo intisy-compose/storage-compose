@@ -146,11 +146,20 @@ function Invoke-ServiceControl([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "sc.exe $($Arguments[0]) failed: $($output -join ' ')" }
 }
 
+<#
+.NOTES
+New-Service rather than `sc.exe create`: Windows PowerShell 5.1 drops the inner quotes of a native
+argument, which breaks the quoted binPath. A registered service is deleted and created again, since
+Set-Service cannot change the path in 5.1.
+#>
 function Register-AgentService {
-    $binaryPath = Get-AgentServiceCommandLine
-    if (Get-AgentService) { Invoke-ServiceControl @("config", $agentServiceName, "binPath=", $binaryPath, "start=", "auto", "obj=", "LocalSystem") }
-    else { Invoke-ServiceControl @("create", $agentServiceName, "binPath=", $binaryPath, "start=", "auto", "obj=", "LocalSystem", "DisplayName=", $agentServiceDisplayName) }
-    Invoke-ServiceControl @("description", $agentServiceName, "Passes the storage array's drives through to WSL and runs the drive and folder nodes' Syncthing while storage-compose runs; removes itself when the stack is gone.")
+    if (Get-AgentService) {
+        Invoke-ServiceControl @("delete", $agentServiceName)
+        $deadline = (Get-Date).AddSeconds(30)
+        while ((Get-AgentService) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+    }
+    New-Service -Name $agentServiceName -BinaryPathName (Get-AgentServiceCommandLine) -DisplayName $agentServiceDisplayName -StartupType Automatic `
+        -Description "Passes the storage array's drives through to WSL and runs the drive and folder nodes' Syncthing while storage-compose runs; removes itself when the stack is gone." | Out-Null
     Invoke-ServiceControl @("failure", $agentServiceName, "reset=", "86400", "actions=", "restart/10000/restart/10000/restart/60000")
 }
 
