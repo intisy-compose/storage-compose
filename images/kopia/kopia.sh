@@ -47,16 +47,31 @@ start_server() {
     log "server started"
 }
 
-# A server whose state went read-only with data1 can take minutes to shut down, which would hold the
-# loop and so the restart onto the returned data1.
+outlives() {   # <pid> <seconds>: true when the process is still there after that long
+    waited=0
+    while kill -0 "$1" 2>/dev/null && [ "$waited" -lt "$2" ]; do sleep 1; waited=$((waited + 1)); done
+    kill -0 "$1" 2>/dev/null
+}
+
+# A server whose state went read-only with data1 can hang for minutes in its shutdown, past even a
+# SIGKILL, which would hold the loop and so the restart onto the returned data1; it is left behind.
 stop_server() {
     [ -n "$server_pid" ] || return 0
     kill "$server_pid" 2>/dev/null || true
-    waited=0
-    while kill -0 "$server_pid" 2>/dev/null && [ "$waited" -lt 10 ]; do sleep 1; waited=$((waited + 1)); done
-    kill -9 "$server_pid" 2>/dev/null || true
-    wait "$server_pid" 2>/dev/null || true
+    if outlives "$server_pid" 10; then
+        kill -9 "$server_pid" 2>/dev/null || true
+        outlives "$server_pid" 5 && log "the server does not stop; leaving it"
+    fi
+    kill -0 "$server_pid" 2>/dev/null || wait "$server_pid" 2>/dev/null || true
     server_pid=
+}
+
+# A read of a dead mount can hang as long as the server's shutdown, and hanging counts as gone.
+repository_answers() {
+    ls "$repository" > /dev/null 2>&1 &
+    probe=$!
+    if outlives "$probe" 5; then kill -9 "$probe" 2>/dev/null; return 1; fi
+    wait "$probe"
 }
 
 server_is_running() { [ -n "$server_pid" ] && kill -0 "$server_pid" 2>/dev/null; }
@@ -82,7 +97,7 @@ while true; do
     current=$(array_value generation)
     [ -n "$generation" ] || generation=$current
     if [ -n "$current" ] && [ "$current" != "$generation" ]; then log "data1 was mounted anew; restarting"; stop_server; exit 0; fi
-    ls "$repository" >/dev/null 2>&1 || { log "the repository is gone; restarting"; stop_server; exit 1; }
+    repository_answers || { log "the repository is gone; restarting"; stop_server; exit 1; }
     sleep 10 &
     wait $! || true
 done
