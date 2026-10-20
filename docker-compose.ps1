@@ -469,8 +469,8 @@ function Invoke-LabelMigration {
     if ($LASTEXITCODE -ne 0) { Write-Err "The build failed."; exit 1 }
     Connect-Drives
     Write-Step "Migrating the labels of the array $from..."
-    $output = @(docker compose @composeArgs run --rm --no-deps -T --entrypoint /usr/local/bin/migrate-labels.sh snapraid --from $from @forwarded 2>&1 | ForEach-Object { "$_" })
-    $output | ForEach-Object { Write-Host $_ }
+    $output = @(docker compose @composeArgs run --rm --no-deps -T --entrypoint /usr/local/bin/migrate-labels.sh snapraid --from $from @forwarded 2>&1 |
+        ForEach-Object { $line = "$_"; Write-Host $line; $line })
     Disconnect-Drives
     $migrated = $output | Where-Object { $_ -match '^migrated ([0-9a-f]{4})$' } | Select-Object -Last 1
     if (-not $migrated) { return }
