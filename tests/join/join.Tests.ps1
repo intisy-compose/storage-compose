@@ -124,6 +124,7 @@ try {
             $node = Read-NodeFile $script:nodeRoot
             $node.kind | Should Be "drive"
             $node.name | Should Be "pc-test"
+            $node.threshold | Should Be 50
             $node.id | Should Match '^[0-9a-f]{4}$'
         }
         It "runs Syncthing at logon from a task, with its home on the node" {
@@ -306,6 +307,33 @@ try {
             $script:joinChanges = 0
             Invoke-JoinCapturingFailure | Should Be "ok"
             $script:joinChanges | Should Be 0
+        }
+    }
+    Describe "keeping everything is for the cluster only" {
+        $fresh = Join-Path $scratch "fresh-root"
+        New-Item -ItemType Directory -Force -Path $fresh | Out-Null
+        $Root = $fresh
+
+        It "refuses threshold 0 for a new device node, saying why and what to use" {
+            $Threshold = 0
+            { Assert-JoinThreshold } | Should Throw "use 50"
+            Invoke-JoinCapturingFailure | Should Match "threshold 0 keeps everything.*STORAGE_JOIN_ALLOW_KEEP_ALL=1"
+            Test-Path (Join-Path $fresh ".storage") | Should Be $false
+        }
+        It "allows it with STORAGE_JOIN_ALLOW_KEEP_ALL=1" {
+            $Threshold = 0
+            $env:STORAGE_JOIN_ALLOW_KEEP_ALL = "1"
+            try { { Assert-JoinThreshold } | Should Not Throw } finally { Remove-Item Env:\STORAGE_JOIN_ALLOW_KEEP_ALL }
+        }
+        It "refuses an existing node file with threshold 0" {
+            New-Item -ItemType Directory -Force -Path (Join-Path $fresh ".storage") | Out-Null
+            [System.IO.File]::WriteAllText((Join-Path $fresh ".storage\node.toml"), "[node]`nid = `"abcd`"`nname = `"old`"`nkind = `"folder`"`nthreshold = 0`n")
+            { Assert-JoinThreshold } | Should Throw "use 50"
+        }
+        It "takes 50 when nothing says otherwise" {
+            Remove-Item -Recurse -Force (Join-Path $fresh ".storage")
+            $Threshold | Should Be 50
+            { Assert-JoinThreshold } | Should Not Throw
         }
     }
 } finally {

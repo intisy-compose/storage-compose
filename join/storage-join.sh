@@ -11,7 +11,8 @@
 #   STORAGE_JOIN_ROOT       the data root that becomes this device's node, default /data
 #   STORAGE_JOIN_NAME       the node and device name, default the host name
 #   STORAGE_JOIN_KIND       drive or folder, default drive
-#   STORAGE_JOIN_THRESHOLD  the layered sync threshold written into a new node file, default 0
+#   STORAGE_JOIN_THRESHOLD  the layered sync threshold written into a new node file, default 50
+#   STORAGE_JOIN_ALLOW_KEEP_ALL  1 lets a device node keep everything (threshold 0)
 #   STORAGE_JOIN_USER       whose home gets the folder links, default the data root's owner
 #   STORAGE_JOIN_OFFLINE_REPO  a pacman repository directory (the stick's `offline`) tried first
 set -euo pipefail
@@ -21,7 +22,7 @@ readonly UNIT_NAME="storage-syncthing.service"
 
 join_root="${STORAGE_JOIN_ROOT:-/data}"
 join_kind="${STORAGE_JOIN_KIND:-drive}"
-join_threshold="${STORAGE_JOIN_THRESHOLD:-0}"
+join_threshold="${STORAGE_JOIN_THRESHOLD:-50}"
 unit_dir="${STORAGE_JOIN_UNIT_DIR:-/etc/systemd/system}"
 gui_port="${STORAGE_JOIN_GUI_PORT:-8384}"
 listen_port="${STORAGE_JOIN_LISTEN_PORT:-22000}"
@@ -221,7 +222,7 @@ dashboard_url() {
 
 join_request() {
     jq -n --arg name "$(device_name)" --arg id "$1" --arg kind "$join_kind" --arg path "$join_root" \
-        --argjson threshold "$(sed -n 's/^threshold *= *\([0-9]*\).*/\1/p' "$node_file" | head -n 1)" \
+        --argjson threshold "$(node_file_threshold)" \
         '{name: $name, os: "linux", syncthingDeviceId: $id, nodes: [{kind: $kind, path: $path, threshold: $threshold}]}'
 }
 
@@ -338,8 +339,21 @@ link_homes() {
     return 0
 }
 
+node_file_threshold() { sed -n 's/^threshold *= *\([0-9]*\).*/\1/p' "$node_file" | head -n 1; }
+
+# Threshold 0 keeps everything the network holds, backups and archives included, which only the
+# cluster is meant to; a device node keeps the working and essential bands (50).
+check_threshold() {
+    local threshold="$join_threshold"
+    [[ -f "$node_file" ]] && threshold="$(node_file_threshold)"
+    [[ "$threshold" =~ ^[0-9]+$ ]] || fail "the threshold must be a whole number, not '$threshold'"
+    [[ "$threshold" -ne 0 || "$join_kind" == array || "${STORAGE_JOIN_ALLOW_KEEP_ALL:-}" == 1 ]] && return 0
+    fail "threshold 0 keeps everything the network holds, backups and archives included, which only the cluster should; use 50 (working and essential), or set STORAGE_JOIN_ALLOW_KEEP_ALL=1"
+}
+
 main() {
     [[ "$(id -u)" -eq 0 ]] || fail "run as root"
+    check_threshold
     install_packages
     join_tailnet
     write_node_file

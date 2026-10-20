@@ -13,13 +13,13 @@ current user. Home folder links are left out on Windows, as tools/drive-sync doe
 
 Settings (parameters, or the same environment variables as the Linux script): STORAGE_JOIN_KEY,
 IMPRINT_PERSONAL, STORAGE_DASHBOARD, STORAGE_JOIN_ROOT (default F:\), STORAGE_JOIN_NAME,
-STORAGE_JOIN_THRESHOLD, STORAGE_JOIN_OFFLINE_DIR (a folder with a Tailscale MSI), and, for a Syncthing
+STORAGE_JOIN_THRESHOLD (default 50; 0 only with STORAGE_JOIN_ALLOW_KEEP_ALL=1), STORAGE_JOIN_OFFLINE_DIR (a folder with a Tailscale MSI), and, for a Syncthing
 this script runs itself, STORAGE_JOIN_GUI_PORT and STORAGE_JOIN_LISTEN_PORT (default 8384 and 22000).
 #>
 param(
     [string]$Root = $(if ($env:STORAGE_JOIN_ROOT) { $env:STORAGE_JOIN_ROOT } else { "F:\" }),
     [string]$Name = $env:STORAGE_JOIN_NAME,
-    [int]$Threshold = $(if ($env:STORAGE_JOIN_THRESHOLD) { [int]$env:STORAGE_JOIN_THRESHOLD } else { 0 }),
+    [int]$Threshold = $(if ($env:STORAGE_JOIN_THRESHOLD) { [int]$env:STORAGE_JOIN_THRESHOLD } else { 50 }),
     [string]$Dashboard = $env:STORAGE_DASHBOARD,
     [string]$AuthKey = $env:STORAGE_JOIN_KEY
 )
@@ -411,7 +411,21 @@ function Move-ExistingSyncthing {
     foreach ($executable in $existing.executables) { Write-JoinLog "left installed: $executable (remove the package, for example with winget, if nothing else uses it)" }
 }
 
+<#
+.NOTES
+Threshold 0 keeps everything the network holds, backups and archives included, which only the
+cluster is meant to; a device node keeps the working and essential bands (50).
+#>
+function Assert-JoinThreshold {
+    $threshold = $Threshold
+    $nodeFile = Get-NodeFilePath ([System.IO.Path]::GetFullPath($Root))
+    if (Test-Path -LiteralPath $nodeFile) { $threshold = (Read-NodeFile ([System.IO.Path]::GetFullPath($Root))).threshold }
+    if ($threshold -ne 0 -or $env:STORAGE_JOIN_ALLOW_KEEP_ALL -eq "1") { return }
+    throw "threshold 0 keeps everything the network holds, backups and archives included, which only the cluster should; use 50 (working and essential), or set STORAGE_JOIN_ALLOW_KEEP_ALL=1"
+}
+
 function Invoke-Join {
+    Assert-JoinThreshold
     Install-Tailscale
     Join-Tailnet
     $script:syncthingPath = Get-SyncthingBinary $repository

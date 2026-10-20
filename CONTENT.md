@@ -195,7 +195,9 @@ tailnet only; registers with the storage dashboard (`STORAGE_DASHBOARD`, default
 `https://storage.<tailnet>`), adds the devices and folders it answers with, and on Linux links the
 home folders (`~/Documents`, `~/code`, ...) into the node, moving what they held. On Windows the
 node's Syncthing is the host agent's when this stack runs there, otherwise a logon task of the user
-runs it. A Syncthing the device already runs (its home in %LOCALAPPDATA%\Syncthing, or the
+runs it. A new device node keeps the working and essential bands (threshold 50,
+`STORAGE_JOIN_THRESHOLD`); 0, which keeps everything the network holds, is for the cluster, and the
+scripts refuse it unless `STORAGE_JOIN_ALLOW_KEEP_ALL=1`. A Syncthing the device already runs (its home in `%LOCALAPPDATA%\Syncthing`, or the
 one its logon task names) is adopted: it is stopped, its home moves into the node with its
 certificate, folders and devices, so its device ID stays, and its logon task is removed; the package
 that installed it stays installed. The script's header lists every setting.

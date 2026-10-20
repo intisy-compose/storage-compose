@@ -75,7 +75,7 @@ echo "The first run, with the auth key in STORAGE_JOIN_KEY:"
 check "exit code" 0 "$(STORAGE_JOIN_KEY=tskey-test run_join)"
 cat /tmp/join.out | sed 's/^/    | /'
 check "tailscale up" "--auth-key=tskey-test --hostname=p53" "$(cat /run/fake-tailscale/up-calls)"
-check_match "node file" '^\[node\] id *= "[0-9a-f]{4}" name *= "p53" kind *= "drive" threshold *= 0 assigned *= \[\]$' "$(tr '\n' ' ' < /data/.storage/node.toml | sed 's/ *$//')"
+check_match "node file" '^\[node\] id *= "[0-9a-f]{4}" name *= "p53" kind *= "drive" threshold *= 50 assigned *= \[\]$' "$(tr '\n' ' ' < /data/.storage/node.toml | sed 's/ *$//')"
 check "Syncthing runs as the data root's owner" finn "$(stat -c %U /data/.storage/syncthing/config.xml)"
 check_match "Syncthing's home is on the node" '--home=/data/.storage/syncthing' "$(grep ExecStart /etc/systemd/system/storage-syncthing.service)"
 options="$(device_api /rest/config/options)"
@@ -89,7 +89,7 @@ check "folder documents-github shared with the peer" "/data/Documents/GitHub $pe
 check "~/Documents is linked" /data/Documents "$(readlink /home/finn/Documents)"
 check "~/code is linked" /data/Documents/GitHub "$(readlink /home/finn/code)"
 check "what ~/Documents held was moved, not lost" kept "$(cat /data/Documents/letter.txt)"
-check "the request" "{\"name\":\"p53\",\"os\":\"linux\",\"syncthingDeviceId\":\"$device_id\",\"nodes\":[{\"kind\":\"drive\",\"path\":\"/data\",\"threshold\":0}]}" "$(head -n 1 /tmp/dashboard/requests.jsonl | jq -c .)"
+check "the request" "{\"name\":\"p53\",\"os\":\"linux\",\"syncthingDeviceId\":\"$device_id\",\"nodes\":[{\"kind\":\"drive\",\"path\":\"/data\",\"threshold\":50}]}" "$(head -n 1 /tmp/dashboard/requests.jsonl | jq -c .)"
 check "the peer connects to the device over the tailnet address" true "$(wait_for_connection "$device_id")"
 
 echo "The second run changes nothing:"
@@ -120,6 +120,18 @@ check_match "says 409 and how to re-admit" "409.*re-admit" "$(cat /tmp/join.out)
 check "a caller outside the tailnet: exit code" 1 "$(STORAGE_JOIN_NAME=stranger run_join)"
 check_match "says 403" "403" "$(cat /tmp/join.out)"
 
+echo "Keeping everything is for the cluster only:"
+mkdir -p /data2 && chown finn:finn /data2
+check "threshold 0 for a new device node: exit code" 1 "$(STORAGE_JOIN_ROOT=/data2 STORAGE_JOIN_THRESHOLD=0 run_join)"
+check_match "says why and what to use" "threshold 0 keeps everything.*use 50.*STORAGE_JOIN_ALLOW_KEEP_ALL=1" "$(cat /tmp/join.out)"
+check "and writes nothing" false "$([[ -e /data2/.storage ]] && echo true || echo false)"
+mkdir -p /data3/.storage && printf '[node]\nid = "abcd"\nname = "old"\nkind = "drive"\nthreshold = 0\n' > /data3/.storage/node.toml
+check "an existing node file with threshold 0: exit code" 1 "$(STORAGE_JOIN_ROOT=/data3 run_join)"
+allowed="$(STORAGE_JOIN_ROOT=/data2 STORAGE_JOIN_THRESHOLD=0 STORAGE_JOIN_ALLOW_KEEP_ALL=1 bash -c "source $join; join_root=/data2; node_file=/data2/.storage/node.toml; check_threshold && echo allowed")"
+check "STORAGE_JOIN_ALLOW_KEEP_ALL=1 allows it" allowed "$allowed"
+check "a threshold that is not a number: exit code" 1 "$(STORAGE_JOIN_ROOT=/data2 STORAGE_JOIN_THRESHOLD=high run_join)"
+
+echo "Installing missing packages, the stick's repository first:"
 mkdir -p /tmp/pacman-bin /tmp/offline-repo && echo "[options]" > /etc/pacman.conf
 cat > /tmp/pacman-bin/pacman << 'EOF'
 #!/usr/bin/env bash
