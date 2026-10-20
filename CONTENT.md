@@ -16,9 +16,9 @@ Samba, Syncthing and Kopia); the migration onto the real drives follows.
 | `snapraid` | built, `debian:trixie-slim` + SnapRAID 12.4 | writes each array's SnapRAID config from the drives it has seen, syncs once the last sync is a day old and scrubs once the last scrub is a week old, each array on its own |
 | `tailscale` | `tailscale/tailscale:v1.102.4` | joins your tailnet as `storage` inside the gateway's network and forwards the tailnet ports; its node key lives on the array |
 | `dashboard` | built, TypeScript on Node 20 + SnapRAID | every node of this host and the other hosts, their drives with SMART health, parity, Syncthing devices and folders, the actions below, and the join of new devices |
-| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale, in front of the dashboard, the Syncthing GUI and Kopia; the dashboard and the Syncthing GUI also on `127.0.0.1:8442` and `:8443` |
+| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale, in front of the dashboard and Kopia; the dashboard also on `127.0.0.1:8442`, the Syncthing GUI only there, on `127.0.0.1:8443` |
 | `samba` | `ghcr.io/crazy-max/samba:4.23.8` | the pool as one SMB share, `\\storage.<tailnet>.ts.net\storage` |
-| `syncthing` | `ghcr.io/syncthing/syncthing:2.1.6` | a Syncthing peer whose folders live anywhere in the pool, nested ones too (`pool/Documents`, `pool/Documents/GitHub`); its GUI is `https://storage.<tailnet>.ts.net:8384` |
+| `syncthing` | `ghcr.io/syncthing/syncthing:2.1.6` | a Syncthing peer whose folders live anywhere in the pool, nested ones too (`pool/Documents`, `pool/Documents/GitHub`); its GUI is on this host only, `http://localhost:8443` |
 | `nodes` | built, `debian:trixie-slim` + Syncthing 2.1.6 | one Syncthing per drive node, folder node and array other than the cluster, each with the identity kept on its own storage, on sync ports 22001 and up |
 | `kopia` | built from the Kopia 0.23.1 release binary | a Kopia repository server on `pool/kopia`, `https://storage.<tailnet>.ts.net:51515` |
 
@@ -40,8 +40,8 @@ storage, so it stays the same node on whichever host it is attached to:
   (`paths = ["files"]`). Nothing below a volume's root is ever searched.
 
 Nodes are found from metadata only: array drives by their labels, drive and folder nodes by those
-two files at the roots of the volumes the host mounts under `NODE_VOLUMES` (Linux; on Windows the
-host agent finds them). A device or mount event starts a discovery at once, and a slow poll
+two files at the roots of the volumes the host mounts under `NODE_VOLUMES` (Linux, opt-in: unset, the
+stack looks only in its own `node-volumes-unset` folder; on Windows the host agent finds them). A device or mount event starts a discovery at once, and a slow poll
 (`DISCOVERY_POLL_SECONDS`) catches a missed one.
 
 The array named by `ARRAY_PREFIX`, the cluster, holds the stack state in `/.storage/` on its
@@ -60,6 +60,11 @@ An array labelled `storage-data1`, ... moves to its id with the stack down:
 .\docker-compose.ps1 migrate-labels --name private-array
 .\docker-compose.ps1 up
 ```
+
+On Windows each `migrate-labels` runs in an admin shell: it installs the host agent, has it pass the
+drives through to WSL without mounting them, runs the migration in a one-off SnapRAID container
+(which the agent counts as the stack running, so the drives stay for as long as SnapRAID's check
+takes), then releases the drives and removes the agent again; `up` installs it for good.
 
 It refuses unless every member listed in `snapraid.drives` is present and none is mounted, rewrites
 only the ext4 labels and the member files (`snapraid.drives`, the folder record, the SMART
@@ -159,9 +164,9 @@ known name with another device ID gets 409.
 ## Sharing, syncing and backups
 
 Tailscale serve forwards the tailnet ports straight into the stack: 443 (dashboard), 445 (Samba),
-8384 (Syncthing GUI), 22000 (Syncthing sync) and 51515 (Kopia). Outside the tailnet only the host
-itself reaches the dashboard (`http://localhost:8442`) and the Syncthing GUI
-(`http://localhost:8443`), both published on 127.0.0.1. The logins are generated once and kept on the cluster's `data1`, so every host that
+22000 (Syncthing sync), 22001 to 22008 (the node Syncthings) and 51515 (Kopia). The host itself
+reaches the dashboard at `http://localhost:8442` and the Syncthing GUI at `http://localhost:8443`,
+both published on 127.0.0.1; the GUI is not on the tailnet. The logins are generated once and kept on the cluster's `data1`, so every host that
 runs the array presents the same ones; `credentials` prints them.
 
 - **Samba**: user `storage`. The share hides the stack's own folders (`.storage`, `kopia`,

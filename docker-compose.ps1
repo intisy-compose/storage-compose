@@ -210,7 +210,7 @@ function Send-AttachRequest([bool]$Active, [object[]]$Attach = @(), [string[]]$R
         if ($state -and $state.handledRequest -eq $id) { return $state }
         Start-Sleep -Seconds 1
     }
-    Write-Err "The attach task did not take the request within 120 s (it waits while Docker Desktop is not running); see $attachLogFileName."
+    Write-Err "The host agent did not take the request within 120 s (it waits while Docker Desktop is not running); see $attachLogFileName."
     exit 1
 }
 
@@ -257,7 +257,7 @@ function Disconnect-UnlabelledWslDisks {
 }
 
 function Disconnect-WslDisks {
-    if (-not (Test-WatcherIsAlive (Get-WatcherState))) { Write-Err "The attach task is not running, so the drives stay passed through to WSL."; return }
+    if (-not (Test-WatcherIsAlive (Get-WatcherState))) { Write-Err "The host agent is not running, so the drives stay passed through to WSL."; return }
     $state = Send-AttachRequest -Active $false
     Show-RequestProblems $state
     Write-OK "Drives released from WSL; they stay offline in Windows"
@@ -423,9 +423,10 @@ function Stop-Array {
 
 <#
 .NOTES
-Runs in a one-off SnapRAID container while the stack is down, with the drives passed through for it
-and released again; on success ARRAY_PREFIX becomes the array's id, so the stack finds its state on
-<id>-data1.
+Runs in a one-off SnapRAID container while the stack is down, with the drives passed through but
+never mounted; on success ARRAY_PREFIX becomes the array's id, so the stack finds its state on
+<id>-data1. The host agent counts that container as the stack running, so it keeps the drives
+passed through however long SnapRAID's check takes, and the agent leaves again with the drives.
 #>
 function Invoke-LabelMigration {
     Assert-Config
@@ -434,11 +435,17 @@ function Invoke-LabelMigration {
     Write-Step "Building the SnapRAID image..."
     docker compose @composeArgs build --quiet snapraid
     if ($LASTEXITCODE -ne 0) { Write-Err "The build failed."; exit 1 }
+    Install-Agent
     Connect-Drives
     Write-Step "Migrating the labels of the array $from..."
-    $output = @(docker compose @composeArgs run --rm --no-deps -T --entrypoint /usr/local/bin/migrate-labels.sh snapraid --from $from @forwarded 2>&1 |
-        ForEach-Object { $line = "$_"; Write-Host $line; $line })
-    Disconnect-Drives
+    try {
+        $output = @(docker compose @composeArgs run --rm --no-deps -T --entrypoint /usr/local/bin/migrate-labels.sh snapraid --from $from @forwarded 2>&1 |
+            ForEach-Object { $line = "$_"; Write-Host $line; $line })
+    } finally {
+        Disconnect-Drives
+        docker compose @composeArgs rm -f -s mounter 2>$null | Out-Null
+        Remove-Agent
+    }
     $migrated = $output | Where-Object { $_ -match '^migrated ([0-9a-f]{4})$' } | Select-Object -Last 1
     if (-not $migrated) { return }
     $id = $migrated.Substring("migrated ".Length)
@@ -455,7 +462,7 @@ function Show-Credentials {
     $read = { param($name) (docker compose @composeArgs exec -T mounter cat "$secrets/$name") -join "" }
     $hostName = Get-ConfigValue 'STORAGE_HOST' ''
     Write-Host "  Samba      : \\$hostName\storage   user storage, password $(& $read 'samba')"
-    Write-Host "  Syncthing  : https://${hostName}:8384 or http://localhost:8443   user storage, password $(& $read 'syncthing-gui')"
+    Write-Host "  Syncthing  : http://localhost:8443 (this host only)   user storage, password $(& $read 'syncthing-gui')"
     Write-Host "  Kopia      : https://${hostName}:51515   web UI user storage, password $(& $read 'kopia-server')"
     Write-Host "               clients need their own account: .\docker-compose.ps1 kopia-user <user@host>"
     Write-Host "  Kopia repository password (only for opening the repository without the server): $(& $read 'kopia-repository')"
@@ -483,7 +490,7 @@ $commands = @{
     "credentials" = "Print the Samba, Syncthing and Kopia logins, which live on the array"
     "kopia-user"  = "<user@host>  add a Kopia client account (or reset its password) and print it"
     "accept-smart" = "<role>  take a drive's current SMART counts as its baseline, e.g. accept-smart data2"
-    "migrate-labels" = "[--id <4 hex>] [--name <name>] [--dry-run]  with the stack down, move the array from the storage-* labels to <id>-*, keeping its parity; ARRAY_PREFIX becomes the id"
+    "migrate-labels" = "[--id <4 hex>] [--name <name>] [--dry-run]  with the stack down, pass the drives through (host agent, admin shell) without mounting them, move the array from the storage-* labels to <id>-* keeping its parity, release the drives; ARRAY_PREFIX becomes the id"
 }
 
 switch ($Command.ToLower()) {

@@ -44,7 +44,7 @@ services:
     volumes:
       - /dev:/dev
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rshared
-      - ${NODE_VOLUMES:-/mnt/storage-volumes}:/mnt/nodes:rslave
+      - ${NODE_VOLUMES:-./node-volumes-unset}:/mnt/nodes:rslave
       - storage-status:/status
     stop_grace_period: 60s
 
@@ -204,7 +204,7 @@ services:
       - ./services/syncthing/guard.sh:/guard.sh:ro
       - storage-status:/status
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
-      - ${NODE_VOLUMES:-/mnt/storage-volumes}:/mnt/nodes:rslave
+      - ${NODE_VOLUMES:-./node-volumes-unset}:/mnt/nodes:rslave
     depends_on:
       gateway:
         condition: service_started
