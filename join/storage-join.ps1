@@ -179,12 +179,27 @@ function Start-UserSyncthing($Node) {
         $identity = Set-SyncthingConfig $Node $ports $listenHost
         if ([System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node)) -ne $before) { Write-JoinChange "set Syncthing to the tailnet only" }
     }
+    Set-UserSyncthingFirewallRules $Node $ports
     Register-UserSyncthingTask $Node
     if (-not $running) {
         Start-ScheduledTask -TaskName (Get-UserTaskName $Node)
         Write-JoinChange "started Syncthing for $($Node.root)"
     }
     return [pscustomobject]@{ ports = $ports; apiKey = $identity.apiKey; owner = "user" }
+}
+
+<#
+.NOTES
+The same rules the host agent makes, set before Syncthing first listens, so Windows never asks to
+allow it and never adds a rule open to every address. They need an admin shell; without one the
+script says so rather than leaving the device to that prompt silently.
+#>
+function Set-UserSyncthingFirewallRules($Node, $Ports) {
+    if (-not (Test-IsElevated)) {
+        Write-JoinLog "not an admin shell: no firewall rules set, so Windows will ask to allow Syncthing; answer for private networks only, or run this script again as admin"
+        return
+    }
+    Set-SyncthingFirewallRule $Node $Ports
 }
 
 function Get-RunningSyncthingIdentity($Node) {

@@ -15,6 +15,8 @@ $repository = Split-Path (Split-Path $PSScriptRoot)
 . (Join-Path $repository "windows\agent-install.ps1")
 
 $syncthing = Get-SyncthingBinary $repository
+. (Join-Path $PSScriptRoot "firewall-guard.ps1")
+Add-TestFirewallGuard $syncthing
 Import-Module Pester -MinimumVersion 3.4.0
 
 <#

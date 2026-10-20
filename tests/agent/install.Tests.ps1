@@ -152,4 +152,63 @@ Describe "install and removal without an admin shell" {
     }
 }
 
+Describe "replacing the old logon task" {
+    $legacyAttachInstallFolder = Join-Path $scratch "legacy\storage-compose"
+    $watcher = Join-Path $legacyAttachInstallFolder "watcher.ps1"
+    $global:legacyTask = $null
+    $global:legacyCalls = @()
+    function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName) if ($TaskName -eq $legacyAttachTaskName) { return $global:legacyTask } }
+    function Stop-ScheduledTask { [CmdletBinding()] param([string]$TaskName) $global:legacyCalls += "stop $TaskName" }
+    function Unregister-ScheduledTask { [CmdletBinding()] param([string]$TaskName, [switch]$Confirm) $global:legacyCalls += "unregister $TaskName" }
+
+    It "does nothing when the task is not registered" {
+        Remove-LegacyAttachTask | Should Be $false
+        @($global:legacyCalls).Count | Should Be 0
+    }
+
+    It "stops and unregisters the task, ends its watcher and removes its folder" {
+        New-Item -ItemType Directory -Force -Path $legacyAttachInstallFolder | Out-Null
+        Set-Content -Path $watcher -Value "# the old watcher"
+        $running = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -Command `"Start-Sleep -Seconds 120 # $watcher`"" -WindowStyle Hidden -PassThru
+        Start-Sleep -Seconds 2
+        $global:legacyTask = [pscustomobject]@{ TaskName = $legacyAttachTaskName }
+        Remove-LegacyAttachTask | Should Be $true
+        ($global:legacyCalls -join ",") | Should Be "stop $legacyAttachTaskName,unregister $legacyAttachTaskName"
+        Start-Sleep -Seconds 1
+        $running.HasExited | Should Be $true
+        Test-Path $legacyAttachInstallFolder | Should Be $false
+    }
+
+    It "asks for an admin shell instead of leaving both running" {
+        function Test-IsElevated { return $false }
+        $global:legacyTask = [pscustomobject]@{ TaskName = $legacyAttachTaskName }
+        { Remove-LegacyAttachTask } | Should Throw "admin shell"
+    }
+}
+
+Describe "up" {
+    $cli = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repository "docker-compose.ps1"), [ref]$null, [ref]$null)
+    function Get-CallOrder([string]$Function) {
+        $definition = $cli.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $Function }, $true)
+        return @($definition.Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ })
+    }
+
+    It "replaces the old task before it installs the agent" {
+        $calls = Get-CallOrder "Install-Agent"
+        [array]::IndexOf($calls, "Remove-LegacyAttachTask") | Should BeLessThan ([array]::IndexOf($calls, "Install-HostAgent"))
+        [array]::IndexOf($calls, "Remove-LegacyAttachTask") | Should Not Be -1
+    }
+
+    It "installs the agent before it passes any drive through" {
+        $calls = Get-CallOrder "Start-Array"
+        [array]::IndexOf($calls, "Install-Agent") | Should BeLessThan ([array]::IndexOf($calls, "Connect-Drives"))
+        [array]::IndexOf($calls, "Install-Agent") | Should Not Be -1
+    }
+
+    It "removes the agent on down, after the drives are released" {
+        $calls = Get-CallOrder "Stop-Array"
+        [array]::IndexOf($calls, "Disconnect-Drives") | Should BeLessThan ([array]::IndexOf($calls, "Remove-Agent"))
+    }
+}
+
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch

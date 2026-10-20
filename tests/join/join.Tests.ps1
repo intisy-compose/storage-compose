@@ -8,6 +8,7 @@ param([string]$Python = "python")
 $repository = Split-Path (Split-Path $PSScriptRoot)
 . (Join-Path $repository "join\storage-join.ps1")
 . (Join-Path $PSScriptRoot "..\agent\test-volumes.ps1")
+. (Join-Path $PSScriptRoot "..\agent\firewall-guard.ps1")
 
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "join-windows-$([guid]::NewGuid())"
 $realLocalAppData = $env:LOCALAPPDATA
@@ -85,8 +86,10 @@ function Stop-Everything {
     Remove-ProgramFirewallRules (Join-Path $repository "host-agent\bin")
     Remove-ProgramFirewallRules $scratch
     $env:LOCALAPPDATA = $realLocalAppData
-    Start-Sleep -Seconds 1
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
+    for ($attempt = 0; $attempt -lt 10 -and (Test-Path $scratch); $attempt++) {
+        Start-Sleep -Seconds 1
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
+    }
 }
 
 function Invoke-JoinCapturingFailure {
@@ -98,6 +101,7 @@ function Get-RequestLines { return @(Get-Content (Join-Path $scratch "dashboard\
 New-Item -ItemType Directory -Force -Path (Split-Path $tailscaleCli), (Join-Path $scratch "volume") | Out-Null
 Set-Content -Path $tailscaleCli -Value "fake"
 $script:syncthingPath = Get-SyncthingBinary $repository
+Add-TestFirewallGuard $script:syncthingPath
 $script:substLetter = Get-FreeDriveLetter
 & subst.exe "$($script:substLetter):" (Join-Path $scratch "volume") | Out-Null
 $script:nodeRoot = "$($script:substLetter):\"
@@ -126,6 +130,13 @@ try {
             $task = $global:tasks["storage-compose syncthing pc-test"]
             $task.Actions[0].Execute | Should Be $script:syncthingPath
             $task.Actions[0].Arguments | Should Match ([regex]::Escape("--home=`"$($script:nodeRoot).storage\syncthing`""))
+        }
+        It "opens its sync port to the tailnet only, before Windows can ask" {
+            $node = Read-NodeFile $script:nodeRoot
+            $rule = Get-NetFirewallRule -Name "storage-compose syncthing $($node.id)" -ErrorAction SilentlyContinue
+            ($rule | Get-NetFirewallPortFilter).LocalPort | Should Be "$userSyncthingListenPort"
+            ($rule | Get-NetFirewallAddressFilter).RemoteAddress | Should Be "100.64.0.0/255.192.0.0"
+            [bool](Get-NetFirewallRule -Name "storage-compose syncthing $($node.id) udp" -ErrorAction SilentlyContinue) | Should Be $true
         }
         It "listens on the tailnet only" {
             $options = Invoke-Device "/rest/config/options"
@@ -238,6 +249,7 @@ try {
         $oldHome = Join-Path $env:LOCALAPPDATA "Syncthing"
         $winget = Join-Path $scratch "winget\syncthing.exe"
         Copy-Item $script:syncthingPath $winget
+        Add-TestFirewallGuard $winget
         & $winget generate "--home=$oldHome" --no-port-probing 2>&1 | Out-Null
         $config = [xml][System.IO.File]::ReadAllText((Join-Path $oldHome "config.xml"))
         $config.configuration.gui.address = "127.0.0.1:18484"
@@ -247,7 +259,9 @@ try {
         $oldKey = Get-ApiKey $oldHome
         $oldApi = { param($Method, $Path, $Body) $arguments = @{ Method = $Method; Uri = "http://127.0.0.1:18484$Path"; Headers = @{ "X-API-Key" = $oldKey }; UseBasicParsing = $true }; if ($Body) { $arguments["Body"] = $Body; $arguments["ContentType"] = "application/json" }; Invoke-RestMethod @arguments }
         $deadline = (Get-Date).AddSeconds(60)
+        $deadline = (Get-Date).AddSeconds(90)
         while ((Get-Date) -lt $deadline) { try { & $oldApi "Get" "/rest/system/status" | Out-Null; break } catch { Start-Sleep -Milliseconds 500 } }
+        if ($old.HasExited) { throw "the fake existing Syncthing exited with $($old.ExitCode)" }
         $deviceBefore = (& $oldApi "Get" "/rest/system/status").myID
         $peerId = (Invoke-Peer "Get" "/rest/system/status").myID
         & $oldApi "Put" "/rest/config/devices/$peerId" "{`"deviceID`": `"$peerId`", `"name`": `"old-peer`"}" | Out-Null
