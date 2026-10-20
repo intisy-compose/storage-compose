@@ -26,6 +26,14 @@ device_key() {   # <sysfs block directory>
     echo "$(cat "$directory/size" 2> /dev/null)-${sequence:-0}"
 }
 
+# A device-mapper device is named by its mapper path, which goes when the device is renamed away,
+# as the kernel's dm-N name does not.
+device_path() {   # <sysfs block directory>
+    local mapper_name
+    mapper_name=$(cat "$1/dm/name" 2> /dev/null)
+    if [ -n "$mapper_name" ]; then echo "/dev/mapper/$mapper_name"; else echo "/dev/${1##*/}"; fi
+}
+
 ext4_label_of() {   # <device>: its label when it holds ext4
     local probe
     probe=$(blkid -c /dev/null -o export -s TYPE -s LABEL "$1" 2> /dev/null)
@@ -37,20 +45,21 @@ ext4_label_of() {   # <device>: its label when it holds ext4
 # also catches a label changed in place. blkid's own cache would still list a drive that has dropped
 # off, so it is never used.
 scan_devices() {   # [all]
-    local directory name key label previous
+    local directory name key path label previous
     declare -A known_key known_label
-    [ -f "$(probes_file)" ] && while read -r name key label; do known_key[$name]=$key; known_label[$name]=$label; done < "$(probes_file)"
+    [ -f "$(probes_file)" ] && while read -r name key path label; do known_key[$name]=$key; known_label[$name]=$label; done < "$(probes_file)"
     for directory in /sys/class/block/*; do
         name=${directory##*/}
-        key=$(device_key "$directory")
+        path=$(device_path "$directory")
+        key="$(device_key "$directory")-${path##*/}"
         [[ $key == 0-* ]] && continue
         previous=${known_key[$name]:-}
-        if [ "${1:-}" = all ] || [ "$previous" != "$key" ]; then label=$(ext4_label_of "/dev/$name"); else label=${known_label[$name]}; fi
-        echo "$name $key ${label:-}"
+        if [ "${1:-}" = all ] || [ "$previous" != "$key" ]; then label=$(ext4_label_of "$path"); else label=${known_label[$name]}; fi
+        echo "$name $key $path ${label:-}"
     done > "$(probes_file).new"
     mv "$(probes_file).new" "$(probes_file)"
-    while read -r name key label; do
-        [[ ${label:-} =~ $any_array_label ]] && echo "/dev/$name $label"
+    while read -r name key path label; do
+        [[ ${label:-} =~ $any_array_label ]] && echo "$path $label"
     done < "$(probes_file)" > "$(devices_file).new"
     mv "$(devices_file).new" "$(devices_file)"
 }
