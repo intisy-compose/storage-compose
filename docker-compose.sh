@@ -121,9 +121,28 @@ start_array() {
 
 stop_array() { step "Stopping everything and unmounting..."; "${compose[@]}" down; }
 
+# Runs in a one-off SnapRAID container while the stack is down; on success ARRAY_PREFIX becomes the
+# array's id, so the stack finds its state on <id>-data1.
+migrate_labels() {
+    local from output id
+    assert_config
+    [ -z "$("${compose[@]}" ps -q --status running)" ] || fail "The stack is running; run './docker-compose.sh down' first."
+    from=$(config_value ARRAY_PREFIX storage)
+    step "Building the SnapRAID image..."
+    "${compose[@]}" build --quiet snapraid
+    step "Migrating the labels of the array $from..."
+    output=$(mktemp)
+    "${compose[@]}" run --rm --no-deps -T --entrypoint /usr/local/bin/migrate-labels.sh snapraid --from "$from" "$@" | tee "$output"
+    id=$(sed -n 's/^migrated //p' "$output")
+    rm -f "$output"
+    [ -n "$id" ] || return 0
+    set_config_value ARRAY_PREFIX "$id"
+    ok "Wrote ARRAY_PREFIX=$id to config.env; start the array with './docker-compose.sh up'."
+}
+
 usage() {
     cat <<'EOF'
-Usage: ./docker-compose.sh [accept-smart|credentials|down|drives|init-config|kopia-user|logs|restart|scrub|snapraid|status|sync|up|url]
+Usage: ./docker-compose.sh [accept-smart|credentials|down|drives|init-config|kopia-user|logs|migrate-labels|restart|scrub|snapraid|status|sync|up|url]
   init-config  Create config.env, name this host and generate the notification topic
   up           Mount and lock the array, join the tailnet, start the stack (default)
   down         Stop the stack, release the lock and unmount
@@ -138,6 +157,8 @@ Usage: ./docker-compose.sh [accept-smart|credentials|down|drives|init-config|kop
   credentials  Print the Samba, Syncthing and Kopia logins, which live on the array
   kopia-user   <user@host>  add a Kopia client account (or reset its password) and print it
   accept-smart <role>  take a drive's current SMART counts as its baseline, e.g. accept-smart data2
+  migrate-labels [--id <4 hex>] [--name <name>] [--dry-run]  with the stack down, move the array from the
+               storage-* labels to <id>-*, keeping its parity; ARRAY_PREFIX becomes the id
 EOF
     exit 1
 }
@@ -156,6 +177,7 @@ case "$command" in
     credentials) show_credentials ;;
     kopia-user)  "${compose[@]}" exec -T kopia kopia.sh user "$@" ;;
     accept-smart) "${compose[@]}" exec -T mounter mounter.sh accept-smart "$@" ;;
+    migrate-labels) migrate_labels "$@" ;;
     sync)        "${compose[@]}" exec -T snapraid snapraid.sh run sync "$@" ;;
     scrub)       "${compose[@]}" exec -T snapraid snapraid.sh run scrub ;;
     snapraid)    "${compose[@]}" exec -T snapraid snapraid.sh config >/dev/null
