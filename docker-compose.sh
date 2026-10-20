@@ -140,9 +140,35 @@ migrate_labels() {
     ok "Wrote ARRAY_PREFIX=$id to config.env; start the array with './docker-compose.sh up'."
 }
 
+data_command() {
+    local subcommand url ref
+    subcommand=$(printf '%s' "${1:-status}" | tr '[:upper:]' '[:lower:]')
+    case "$subcommand" in
+        status) git -C "$here" submodule status -- data ;;
+        use)
+            if [ -n "${2:-}" ]; then
+                url=${2%%@*}
+                ref=main
+                [ "$url" = "$2" ] || ref=${2#*@}
+                [[ $url == *://* || $url == git@* ]] || url="https://github.com/$url.git"
+            else
+                url=$(git -C "$here" config -f .gitmodules submodule.data.url)
+                ref=main
+            fi
+            step "Pointing data at $url @ $ref"
+            [ -e "$here/data/.git" ] || git -C "$here" submodule update --init -- data > /dev/null 2>&1 || true
+            git -C "$here" config submodule.data.url "$url"
+            git -C "$here/data" remote set-url origin "$url"
+            git -C "$here/data" fetch -q origin "$ref"
+            git -C "$here/data" checkout -q FETCH_HEAD
+            ok "data now at $(git -C "$here/data" rev-parse --short HEAD)" ;;
+        *) usage ;;
+    esac
+}
+
 usage() {
     cat <<'EOF'
-Usage: ./docker-compose.sh [accept-smart|credentials|down|drives|init-config|kopia-user|logs|migrate-labels|restart|scrub|snapraid|status|sync|up|url]
+Usage: ./docker-compose.sh [accept-smart|credentials|data|down|drives|init-config|kopia-user|logs|migrate-labels|restart|scrub|snapraid|status|sync|up|url]
   init-config  Create config.env, name this host and generate the notification topic
   up           Mount and lock the array, join the tailnet, start the stack (default)
   down         Stop the stack, release the lock and unmount
@@ -151,6 +177,7 @@ Usage: ./docker-compose.sh [accept-smart|credentials|down|drives|init-config|kop
   logs         [service]  follow logs, e.g. logs mounter
   drives       List the block devices with their labels
   url          Print the tailnet URL
+  data         status | use [owner/repo[@ref]]  point data/ at a data repo (none = template)
   sync         [--anyway]  run a SnapRAID sync now; --anyway accepts more deletions than SYNC_MAX_DELETED
   scrub        Run a SnapRAID scrub now (SCRUB_PERCENT of the array, blocks older than SCRUB_OLDER_THAN_DAYS)
   snapraid     [args]  run snapraid with the array's config, e.g. snapraid status
@@ -174,6 +201,7 @@ case "$command" in
     logs)        "${compose[@]}" logs -f "$@" ;;
     drives)      lsblk -o NAME,SIZE,FSTYPE,LABEL,MODEL,SERIAL,TRAN ;;
     url)         show_urls ;;
+    data)        data_command "$@" ;;
     credentials) show_credentials ;;
     kopia-user)  "${compose[@]}" exec -T kopia kopia.sh user "$@" ;;
     accept-smart) "${compose[@]}" exec -T mounter mounter.sh accept-smart "$@" ;;

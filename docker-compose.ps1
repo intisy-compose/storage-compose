@@ -474,6 +474,33 @@ function Show-Urls {
     Write-Host "  Locally : http://localhost:8442, Syncthing http://localhost:8443   (this host only)"
 }
 
+function Invoke-Data([object[]]$DataArguments) {
+    $subcommand = if ($DataArguments) { "$($DataArguments[0])".ToLower() } else { "status" }
+    switch ($subcommand) {
+        "status" { git -C $PSScriptRoot submodule status -- data; break }
+        "use" {
+            $source = if ($DataArguments.Count -ge 2) { "$($DataArguments[1])" } else { "" }
+            if ($source) {
+                $parts = $source.Split("@", 2)
+                $url = if ($parts[0] -match "://|^git@") { $parts[0] } else { "https://github.com/$($parts[0]).git" }
+                $ref = if ($parts.Count -eq 2) { $parts[1] } else { "main" }
+            } else {
+                $url = git -C $PSScriptRoot config -f .gitmodules submodule.data.url
+                $ref = "main"
+            }
+            Write-Step "Pointing data at $url @ $ref"
+            if (-not (Test-Path "$PSScriptRoot\data\.git")) { git -C $PSScriptRoot submodule update --init -- data 2>$null | Out-Null }
+            git -C $PSScriptRoot config submodule.data.url $url
+            git -C "$PSScriptRoot\data" remote set-url origin $url
+            git -C "$PSScriptRoot\data" fetch -q origin $ref
+            git -C "$PSScriptRoot\data" checkout -q FETCH_HEAD
+            Write-OK "data now at $(git -C "$PSScriptRoot\data" rev-parse --short HEAD)"
+            break
+        }
+        default { Show-Usage $commands; exit 1 }
+    }
+}
+
 $commands = @{
     "init-config" = "Create config.env, name this host and generate the notification topic"
     "up"          = "Install or repair the host agent (admin shell), pass the drives through to WSL (or attach the enclosures with usbipd), mount and lock the array, join the tailnet, start the stack (default)"
@@ -484,6 +511,7 @@ $commands = @{
     "logs"        = "[service]  follow logs, e.g. logs mounter"
     "drives"      = "List the block devices Docker Desktop's VM sees, with their labels"
     "url"         = "Print the tailnet URL"
+    "data"        = "status | use [owner/repo[@ref]]  point data/ at a data repo (none = template)"
     "sync"        = "[--anyway]  run a SnapRAID sync now; --anyway accepts more deletions than SYNC_MAX_DELETED"
     "scrub"       = "Run a SnapRAID scrub now (SCRUB_PERCENT of the array, blocks older than SCRUB_OLDER_THAN_DAYS)"
     "snapraid"    = "[args]  run snapraid with the array's config, e.g. snapraid status"
@@ -503,6 +531,7 @@ switch ($Command.ToLower()) {
     "drives"  { Show-Drives; break }
     "attach"  { Add-WslDisk ($forwarded | Select-Object -First 1); break }
     "url"     { Show-Urls; break }
+    "data"    { Invoke-Data $forwarded; break }
     "sync"    { docker compose @composeArgs exec -T snapraid snapraid.sh run sync @forwarded; exit $LASTEXITCODE }
     "scrub"   { docker compose @composeArgs exec -T snapraid snapraid.sh run scrub; exit $LASTEXITCODE }
     "credentials" { Show-Credentials; break }
