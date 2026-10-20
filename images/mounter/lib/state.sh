@@ -43,8 +43,14 @@ forget_unknown_records() {
     done
 }
 
+# A drive that drops off goes read-only under its mount before its device is seen gone, so a gone
+# device is checked first: that drive dropped, it is not failing.
 assess_drive() {   # <label>: sets condition and detail
     local label=$1 reason away
+    if ! was_away "$label" && is_mounted "$label" && [ -n "$(record_get "$label" device)" ] && ! still_attached "$label"; then
+        record_set "$label" absent_since "$(date +%s)"
+        log "$label dropped off ($(record_get "$label" device) is gone); waiting for it"
+    fi
     if ! was_away "$label" && is_mounted "$label"; then
         reason=$(record_get "$label" smart_reason)
         if [ -n "$reason" ]; then condition[$label]=failing; detail[$label]=$reason
