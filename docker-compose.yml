@@ -40,9 +40,11 @@ services:
       SMART_INTERVAL_HOURS: ${SMART_INTERVAL_HOURS:-6}
       NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
       NTFY_TOPIC: ${NTFY_TOPIC:-}
+      DISCOVERY_POLL_SECONDS: ${DISCOVERY_POLL_SECONDS:-300}
     volumes:
       - /dev:/dev
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rshared
+      - ${NODE_VOLUMES:-./node-volumes-unset}:/mnt/nodes:rslave
       - storage-status:/status
     stop_grace_period: 60s
 
@@ -64,11 +66,15 @@ services:
 
   snapraid:
     <<: *array-jobs
-    build: images/snapraid
+    build:
+      context: images
+      dockerfile: snapraid/Dockerfile
     image: storage-snapraid:local
     container_name: storage-snapraid
 
-  # Anyone on the tailnet can use its actions, the same trust the tailnet gets everywhere else.
+  # Anyone on the tailnet can use its actions, the same trust the tailnet gets everywhere else. It
+  # reads tailscaled's socket to identify a device that joins, and reaches other hosts' dashboards
+  # through tailscale's outbound proxy.
   dashboard:
     <<: *array-jobs
     build:
@@ -76,6 +82,41 @@ services:
       dockerfile: dashboard/Dockerfile
     image: storage-dashboard:local
     container_name: storage-dashboard
+    environment:
+      ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
+      SYNC_INTERVAL_HOURS: ${SYNC_INTERVAL_HOURS:-24}
+      SCRUB_INTERVAL_DAYS: ${SCRUB_INTERVAL_DAYS:-7}
+      SCRUB_PERCENT: ${SCRUB_PERCENT:-8}
+      SCRUB_OLDER_THAN_DAYS: ${SCRUB_OLDER_THAN_DAYS:-10}
+      SYNC_MAX_DELETED: ${SYNC_MAX_DELETED:-500}
+      CANDIDATE_TRANSPORTS: ${CANDIDATE_TRANSPORTS:-usb,wsl}
+      STORAGE_NODE: ${STORAGE_NODE:?run init-config}
+      STORAGE_HOST: ${STORAGE_HOST:-}
+      STORAGE_PEERS: ${STORAGE_PEERS:-}
+      TAILNET_PROXY: http://gateway:1055
+      INVENTORY_ASSET_URL: ${INVENTORY_ASSET_URL:-}
+      JOIN_OWNER: ${JOIN_OWNER:-}
+      SETUP_REPO_DIR: ${SETUP_REPO_DIR:-./data}
+      SETUP_LAYOUT: ${SETUP_LAYOUT:-tools/drive-sync/drive-sync.toml}
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /setup
+      HOST_AGENT_EXPECTED: ${HOST_AGENT_EXPECTED:-}
+      GIT_CONFIG_GLOBAL: /setup-home/.gitconfig
+      GIT_SSH_COMMAND: ssh -o IdentityFile=/setup-home/.ssh/id_ed25519 -o IdentityFile=/setup-home/.ssh/id_rsa -o UserKnownHostsFile=/setup-home/.ssh/known_hosts
+    volumes:
+      - /dev:/dev
+      - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
+      - storage-status:/status
+      - tailscale-socket:/var/run/tailscale:ro
+      - ${SETUP_REPO_DIR:-./data}:/setup
+      - ${SETUP_GIT_HOME:-./setup-repo-unset}:/setup-home:ro
+      - ./host-agent/status:/host-agent:ro
+      # A drive node's volume must show as mounted here, or it is offered as a drive to erase.
+      - ${NODE_VOLUMES:-./node-volumes-unset}:/mnt/nodes:rslave
+    # The Windows host agent's native Syncthing instances answer on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   gateway:
     extends: { file: gateway/gateway.yml, service: gateway }
@@ -95,6 +136,7 @@ services:
     container_name: storage-tailscale
     environment:
       TS_HOSTNAME: ${TS_HOSTNAME:-storage}
+      TS_OUTBOUND_HTTP_PROXY_LISTEN: :1055
     volumes:
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/tailscale:/var/lib/tailscale
     depends_on:
@@ -148,6 +190,28 @@ services:
         condition: service_started
         restart: true
       pool:
+        condition: service_healthy
+
+  # One Syncthing per drive, folder and further array node, each with the identity on its own
+  # storage; they share the gateway's namespace, so tailnet ports 22001 to 22099 reach them.
+  nodes:
+    build: images/nodes
+    image: storage-nodes:local
+    container_name: storage-nodes
+    restart: unless-stopped
+    network_mode: "service:gateway"
+    environment:
+      ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
+    volumes:
+      - ./services/syncthing/guard.sh:/guard.sh:ro
+      - storage-status:/status
+      - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
+      - ${NODE_VOLUMES:-./node-volumes-unset}:/mnt/nodes:rslave
+    depends_on:
+      gateway:
+        condition: service_started
+        restart: true
+      mounter:
         condition: service_healthy
 
   kopia:

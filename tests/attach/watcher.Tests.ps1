@@ -3,7 +3,7 @@
 # and the first test proves the shadowing holds.
 
 $repository = Split-Path (Split-Path $PSScriptRoot)
-. (Join-Path $repository "windows\watcher.ps1")
+. (Join-Path $repository "windows\passthrough.ps1")
 . (Join-Path $PSScriptRoot "fakes.ps1")
 
 $global:fakeDisks = @()
@@ -182,6 +182,26 @@ Describe "a drive that drops off USB and comes back" {
         Invoke-WatcherRound $state
         @($global:wslCalls | Where-Object { $_ -like "--mount*" -or $_ -like "--unmount*" }) | Should Be @("--mount \\.\PHYSICALDRIVE45 --bare", "--unmount \\.\PHYSICALDRIVE45", "--mount \\.\PHYSICALDRIVE45 --bare")
         @($state.disks).Count | Should Be 1
+    }
+}
+
+Describe "a stack whose containers stopped without down" {
+    New-StandardWorld
+    $state = New-WatcherState $null
+    Send-Request -Active $true | Out-Null
+    Invoke-WatcherRound $state
+
+    It "gives the drives back although the request still says active" {
+        $global:wslCalls = @()
+        Invoke-WatcherRound $state $false
+        @($state.disks).Count | Should Be 0
+        Get-UnmountCalls | Should Be @("--unmount \\.\PHYSICALDRIVE41")
+    }
+    It "passes them through again once the stack runs" {
+        $global:wslCalls = @()
+        Invoke-WatcherRound $state $true
+        @($state.disks).Count | Should Be 1
+        Get-MountCalls | Should Be @("--mount \\.\PHYSICALDRIVE41 --bare")
     }
 }
 

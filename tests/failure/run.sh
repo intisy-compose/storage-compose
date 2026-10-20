@@ -222,7 +222,9 @@ scenario_data1() {
     lab return data1 > /dev/null
     wait_state "the array is healthy again" '.state == "healthy" and .complete' 60
     eventually "Syncthing restarted onto the new data1" yes 60 sh -c "[ \"\$(docker inspect -f '{{.State.StartedAt}}' c24t-syncthing)\" != '$syncthing_started' ] && echo yes"
-    eventually "Kopia restarted onto the new data1" yes 60 sh -c "[ \"\$(docker inspect -f '{{.State.StartedAt}}' c24t-kopia)\" != '$kopia_started' ] && echo yes"
+    eventually "Kopia restarted onto the new data1" yes 60 sh -c "[ \"\$(docker inspect -f '{{.State.StartedAt}}' c24t-kopia)\" != '$kopia_started' ] && echo yes" ||
+        docker logs --tail 15 c24t-kopia 2>&1 | sed 's/^/    kopia: /'
+    note "array.env: $(docker exec c24t-lab cat /status/array.env | tr '\n' ' ')"
     eventually "Syncthing answers and runs every folder" "" 90 lab storage-paused
     eventually "Kopia" running 60 lab kopia
     lab wait-synced 120 > /dev/null

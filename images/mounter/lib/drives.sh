@@ -19,13 +19,11 @@ mounted_labels() {
     done
 }
 
-# blkid's cache would still list a drive that has dropped off, so every lookup reads the disks.
-array_devices() {
+array_devices() {   # "<device> <label>" for the selected array, from the last scan
     local device label
-    blkid -c /dev/null -t TYPE=ext4 -o device 2>/dev/null | while read -r device; do
-        label=$(blkid -c /dev/null -o value -s LABEL "$device")
+    while read -r device label; do
         [[ $label =~ $label_pattern ]] && echo "$device $label"
-    done
+    done < "$(devices_file)"
 }
 
 kernel_device_dir() {   # <device node>: its directory under /sys/dev/block
@@ -49,7 +47,7 @@ partition_table_id() { blkid -c /dev/null -p -o value -s PTUUID "$1" 2> /dev/nul
 disk_holds_array_label() {
     local part
     for part in $(lsblk -lnpo NAME "$1"); do
-        [[ $(blkid -c /dev/null -o value -s LABEL "$part" 2> /dev/null) =~ $label_pattern ]] && return 0
+        [[ $(blkid -c /dev/null -o value -s LABEL "$part" 2> /dev/null) =~ $any_array_label ]] && return 0
     done
     return 1
 }

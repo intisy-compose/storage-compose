@@ -1,13 +1,7 @@
-#Requires -Version 5.1
-<#
-.SYNOPSIS
-The elevated attach watcher: passes the array's USB disks through to Docker Desktop's WSL VM with
-`wsl --mount --bare` while the stack is up, hands them back again after a drop or a VM restart, and
-reads their SMART counts for the VM, which cannot. Registered once by `docker-compose.ps1
-install-attach`, which copies it to a folder only administrators can change; started without
--StackFolder it only defines its functions (the tests use that).
-#>
-param([string]$StackFolder, [string]$ProjectName = "storage-compose")
+# The WSL pass-through of the array's USB disks (docs specs/2026-10-11-wsl-passthrough.md), run by the
+# host agent: passes them through to Docker Desktop's WSL VM with `wsl --mount --bare` while the stack
+# is up, hands them back after a drop or a VM restart, and reads their SMART counts for the VM, which
+# cannot. Dot-sourced by the agent and the tests; defines functions only.
 
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "disks.ps1")
@@ -19,6 +13,11 @@ $attemptWindowSeconds = 600
 $attemptsPerWindow = 3
 $dockerDistribution = "docker-desktop"
 $probeImage = "debian:trixie-slim"
+$wslTimeoutSeconds = 120
+$projectName = "storage-compose"
+$userRelay = $null
+$logFile = $null
+$userSid = $null
 $logLimitBytes = 1MB
 $attempts = @{}
 $lastPublished = [datetime]::MinValue
@@ -58,11 +57,14 @@ function Invoke-NativeCommand([string]$FilePath, [string[]]$Arguments, [string]$
 
 <#
 .NOTES
-wsl.exe writes UTF-16 unless WSL_UTF8 is set.
+wsl.exe writes UTF-16 unless WSL_UTF8 is set. The agent runs as SYSTEM, which WSL refuses, so it runs
+wsl.exe as the user whose Docker Desktop owns the VM, through the service's relay.
 #>
 function Invoke-Wsl([string[]]$Arguments) {
     $env:WSL_UTF8 = "1"
-    return Invoke-NativeCommand "wsl.exe" $Arguments
+    if (-not $script:userRelay) { return Invoke-NativeCommand "wsl.exe" $Arguments }
+    $relayArguments = @("run-as-user", $script:userSid, "$wslTimeoutSeconds", "--env", "WSL_UTF8=1", "--", "wsl.exe") + $Arguments
+    return Invoke-NativeCommand $script:userRelay $relayArguments
 }
 
 <#
@@ -349,7 +351,7 @@ function Get-PublishedDisks($State) {
 }
 
 function Get-StatusVolume {
-    $result = Invoke-NativeCommand "docker" @("volume", "ls", "-q", "--filter", "label=com.docker.compose.project=$ProjectName", "--filter", "label=com.docker.compose.volume=storage-status")
+    $result = Invoke-NativeCommand "docker" @("volume", "ls", "-q", "--filter", "label=com.docker.compose.project=$script:projectName", "--filter", "label=com.docker.compose.volume=storage-status")
     if ($result.ExitCode -ne 0) { return $null }
     return @($result.Output -split "`n" | Where-Object { $_ })[0]
 }
@@ -398,9 +400,15 @@ function Get-WindowsDisks {
     return $disks
 }
 
-function Invoke-WatcherRound($State) {
+<#
+.NOTES
+The request says what the CLI wants; the drives are passed through only while the stack also runs,
+so a stack that crashed or was removed without `down` gives its drives back within one round.
+#>
+function Invoke-WatcherRound($State, [bool]$StackIsRunning = $true) {
     $State.problems = @()
     $request = Read-AttachRequest
+    if ($request -and -not $StackIsRunning) { $request.active = $false }
     if ($request) {
         $bootId = Get-DockerVmBootId
         Clear-DisksAfterVmRestart $State $bootId
@@ -425,24 +433,3 @@ function Invoke-WatcherRound($State) {
     $State.heartbeat = (Get-Date).ToString("o")
     Write-JsonFile $script:stateFile $State
 }
-
-function Enter-SingleInstance {
-    $script:instanceMutex = New-Object System.Threading.Mutex($false, "Global\storage-compose-wsl-attach")
-    try { return $script:instanceMutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { return $true }
-}
-
-function Start-Watcher {
-    $script:requestFile = Join-Path $StackFolder $attachRequestFileName
-    $script:stateFile = Join-Path $StackFolder $attachStateFileName
-    $script:logFile = Join-Path $StackFolder $attachLogFileName
-    if (-not (Enter-SingleInstance)) { return }
-    $global:OutputEncoding = New-Object System.Text.UTF8Encoding $false
-    $state = New-WatcherState (Read-JsonFile $script:stateFile)
-    Write-WatcherLog "watcher started for $StackFolder"
-    while ($true) {
-        try { Invoke-WatcherRound $state } catch { Write-WatcherLog "round failed: $_" }
-        Start-Sleep -Seconds $roundSeconds
-    }
-}
-
-if ($StackFolder) { Start-Watcher }

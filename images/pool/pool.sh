@@ -1,90 +1,112 @@
 #!/bin/bash
-# Keeps one mergerfs view of every mounted data drive at $STORAGE_ROOT/pool, and changes it when a data
-# drive appears or vanishes or the mounter's verdict changes: a failing drive takes no more writes, and
-# a stopped array none at all.
+# Keeps one mergerfs view of each array's mounted data drives, the cluster's at $STORAGE_ROOT/pool and
+# any other array's at $STORAGE_ROOT/pool-<id>, and changes it when a data drive appears or vanishes
+# or the mounter's verdict on that array changes: a failing drive takes no more writes, and a stopped
+# array none at all.
 set -u
 
 root=${STORAGE_ROOT:-/mnt/storage}
-prefix=${ARRAY_PREFIX:-storage}
-pool="$root/pool"
-array_env=/status/array.env
+cluster=${ARRAY_PREFIX:-storage}
+arrays_status=/status/arrays
 # epmfs puts a new file on a drive that already holds its folder, so every folder, and so every
 # Syncthing folder, stays on one drive and leaves with it as a whole.
-options="cache.files=off,category.create=epmfs,moveonenospc=true,dropcacheonclose=true,allow_other,fsname=storage-pool,minfreespace=${POOL_MIN_FREE_SPACE:-4G}"
-mergerfs_pid=
+options="cache.files=off,category.create=epmfs,moveonenospc=true,dropcacheonclose=true,allow_other,minfreespace=${POOL_MIN_FREE_SPACE:-4G}"
+declare -A mergerfs_pid current current_mode
 
 log() { echo "$(date -u +%FT%TZ) $*"; }
 
-array_value() { sed -n "s/^$1=//p" "$array_env" 2>/dev/null; }
+array_value() { sed -n "s/^$2=//p" "$arrays_status/$1/array.env" 2>/dev/null; }   # <id> <name>
 
-mounted_data_drives() {
-    for target in "$root/$prefix"-data*; do
-        [[ $(basename "$target") =~ ^${prefix}-data[0-9]+$ ]] && mountpoint -q "$target" && echo "$target"
+pool_of() { if [ "$1" = "$cluster" ]; then echo "$root/pool"; else echo "$root/pool-$1"; fi; }
+
+pool_name() { if [ "$1" = "$cluster" ]; then echo storage-pool; else echo "storage-pool-$1"; fi; }
+
+known_arrays() { local directory; for directory in "$arrays_status"/*/; do [ -f "$directory/array.env" ] && basename "$directory"; done; }
+
+mounted_data_drives() {   # <id>
+    local target
+    for target in "$root/$1"-data*; do
+        [[ $(basename "$target") =~ ^$1-data[0-9]+$ ]] && mountpoint -q "$target" && echo "$target"
     done
 }
 
-branch_mode() {   # <drive mount point>
+branch_mode() {   # <id> <drive mount point>
     local readonly_drives
-    [ "$(array_value share)" = ro ] && { echo RO; return; }
-    readonly_drives=" $(array_value readonly) "
-    [[ $readonly_drives == *" $(basename "$1") "* ]] && echo RO || echo RW
+    [ "$(array_value "$1" share)" = ro ] && { echo RO; return; }
+    readonly_drives=" $(array_value "$1" readonly) "
+    [[ $readonly_drives == *" $(basename "$2") "* ]] && echo RO || echo RW
 }
 
-wanted_branches() {
+wanted_branches() {   # <id>
     local target branches=()
-    for target in $(mounted_data_drives); do branches+=("$target=$(branch_mode "$target")"); done
+    for target in $(mounted_data_drives "$1"); do branches+=("$target=$(branch_mode "$1" "$target")"); done
     (IFS=:; echo "${branches[*]}")
 }
 
 # A lazily unmounted pool lives on while a file in it is open; mergerfs is stopped so none of them can
 # still be written to.
-stop_pool() {
+stop_pool() {   # <id>
+    local pool pid=${mergerfs_pid[$1]:-}
+    pool=$(pool_of "$1")
     mountpoint -q "$pool" && fusermount3 -u "$pool" 2>/dev/null || umount -l "$pool" 2>/dev/null
-    [ -n "$mergerfs_pid" ] && { kill "$mergerfs_pid" 2>/dev/null; wait "$mergerfs_pid" 2>/dev/null; }
-    mergerfs_pid=
+    [ -n "$pid" ] && { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; }
+    mergerfs_pid[$1]=
 }
 
 # The branch modes only keep new files off a drive; a stopped array needs the mount itself read-only,
 # which FUSE sets only when mounting.
-mount_mode() { [ "$(array_value share)" = ro ] && echo ro || echo rw; }
+mount_mode() { [ "$(array_value "$1" share)" = ro ] && echo ro || echo rw; }
 
-start_pool() {   # <branches> <rw or ro>
+start_pool() {   # <id> <branches> <rw or ro>
+    local pool
+    pool=$(pool_of "$1")
     mkdir -p "$pool"
-    mergerfs -f -o "$options,$2" "$1" "$pool" &
-    mergerfs_pid=$!
-    log "pool over $1 ($2)"
-    create_service_folders
+    mergerfs -f -o "$options,fsname=$(pool_name "$1"),$3" "$2" "$pool" &
+    mergerfs_pid[$1]=$!
+    log "pool $pool over $2 ($3)"
+    [ "$1" = "$cluster" ] && create_service_folders "$pool"
 }
 
 # Kopia writes its repository as root; a read-only pool keeps whatever is there.
-create_service_folders() {
-    for _ in $(seq 20); do mountpoint -q "$pool" && break; sleep 0.5; done
-    mkdir -p "$pool/kopia" 2>/dev/null || true
+create_service_folders() {   # <pool>
+    for _ in $(seq 20); do mountpoint -q "$1" && break; sleep 0.5; done
+    mkdir -p "$1/kopia" 2>/dev/null || true
 }
 
 # mergerfs swaps its branches in place through the control file, so open files and shares on the pool
 # survive a drive appearing or vanishing.
-set_branches_live() {   # <branches>
-    mountpoint -q "$pool" && setfattr -n user.mergerfs.branches -v "$1" "$pool/.mergerfs" 2>/dev/null \
-        && log "pool now over $1"
+set_branches_live() {   # <id> <branches>
+    local pool
+    pool=$(pool_of "$1")
+    mountpoint -q "$pool" && setfattr -n user.mergerfs.branches -v "$2" "$pool/.mergerfs" 2>/dev/null \
+        && log "pool $pool now over $2"
 }
 
-shut_down() { log "stopping: unmounting the pool"; stop_pool; exit 0; }
+keep_pool() {   # <id>
+    local id=$1 wanted mode pool
+    wanted=$(wanted_branches "$id")
+    mode=$(mount_mode "$id")
+    pool=$(pool_of "$id")
+    if [ -z "$wanted" ]; then
+        [ -n "${current[$id]:-}" ] && { stop_pool "$id"; log "no data drive of $id mounted; its pool is down"; }
+    elif ! mountpoint -q "$pool" || [ "$mode" != "${current_mode[$id]:-}" ]; then
+        stop_pool "$id"; start_pool "$id" "$wanted" "$mode"
+    elif [ "$wanted" != "${current[$id]:-}" ]; then
+        set_branches_live "$id" "$wanted" || { stop_pool "$id"; start_pool "$id" "$wanted" "$mode"; }
+    fi
+    current[$id]=$wanted
+    current_mode[$id]=$mode
+}
+
+shut_down() {
+    local id
+    log "stopping: unmounting the pools"
+    for id in "${!current[@]}"; do stop_pool "$id"; done
+    exit 0
+}
 trap shut_down TERM INT
 
-current=
-current_mode=
 while true; do
-    wanted=$(wanted_branches)
-    mode=$(mount_mode)
-    if [ -z "$wanted" ]; then
-        [ -n "$current" ] && { stop_pool; log "no data drive mounted; pool is down"; }
-    elif ! mountpoint -q "$pool" || [ "$mode" != "$current_mode" ]; then
-        stop_pool; start_pool "$wanted" "$mode"
-    elif [ "$wanted" != "$current" ]; then
-        set_branches_live "$wanted" || { stop_pool; start_pool "$wanted" "$mode"; }
-    fi
-    current=$wanted
-    current_mode=$mode
+    for id in $(known_arrays); do keep_pool "$id"; done
     sleep 5 & wait $!
 done

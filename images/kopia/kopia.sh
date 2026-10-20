@@ -47,9 +47,14 @@ start_server() {
     log "server started"
 }
 
+# A server whose state went read-only with data1 can take minutes to shut down, which would hold the
+# loop and so the restart onto the returned data1.
 stop_server() {
     [ -n "$server_pid" ] || return 0
     kill "$server_pid" 2>/dev/null || true
+    waited=0
+    while kill -0 "$server_pid" 2>/dev/null && [ "$waited" -lt 10 ]; do sleep 1; waited=$((waited + 1)); done
+    kill -9 "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
     server_pid=
 }
