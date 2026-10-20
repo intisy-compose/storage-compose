@@ -312,7 +312,7 @@ a.warning:hover { filter: brightness(0.98); text-decoration: underline; text-und
 .member-role { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
 .member-asset { min-width: 0; overflow: hidden; }
 .member-space { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.member-space small { color: var(--text-faint); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.member-space small { color: var(--text-faint); font-size: 11.5px; line-height: 1.25; overflow-wrap: anywhere; }
 .member-temperature { color: var(--text-muted); text-align: right; }
 .member-smart { text-align: right; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
