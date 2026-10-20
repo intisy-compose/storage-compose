@@ -78,6 +78,11 @@ server_is_running() { [ -n "$server_pid" ] && kill -0 "$server_pid" 2>/dev/null;
 
 trap 'stop_server; exit 0' TERM INT
 
+# A restart that lands while data1 is still read-only keeps that mount for good; running 10 s before
+# exiting keeps Docker's restart delay short until a restart finds data1 writable.
+if ! touch /state/.writable 2> /dev/null; then log "the state on data1 is read-only; restarting"; sleep 10; exit 1; fi
+rm -f /state/.writable
+
 if [ -f "$repository/kopia.repository.f" ]; then
     kopia repository connect filesystem --path="$repository"
 else
