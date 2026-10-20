@@ -15,12 +15,12 @@ FOLDERS = [
     {"id": "documents", "path": "Documents", "type": "sendreceive"},
     {"id": "documents-github", "path": "Documents/GitHub", "type": "sendreceive"},
 ]
-CALLER_ADDRESS = "tcp://127.0.0.1:22000"
 
 
 class Peer:
-    def __init__(self, url: str, api_key: str, address: str):
+    def __init__(self, url: str, api_key: str, address: str, caller_address: str, folder_root: str):
         self.url, self.api_key, self.address = url, api_key, address
+        self.caller_address, self.folder_root = caller_address, folder_root
 
     def request(self, method: str, path: str, body=None):
         data = None if body is None else json.dumps(body).encode()
@@ -35,10 +35,10 @@ class Peer:
 
     def admit(self, name: str, device_id: str) -> None:
         self.request("PUT", f"/rest/config/devices/{device_id}",
-                     {"deviceID": device_id, "name": name, "addresses": [CALLER_ADDRESS]})
+                     {"deviceID": device_id, "name": name, "addresses": [self.caller_address]})
         for folder in FOLDERS:
             self.request("PUT", f"/rest/config/folders/{folder['id']}", {
-                "id": folder["id"], "label": folder["id"], "path": f"/peer/{folder['path']}", "type": folder["type"],
+                "id": folder["id"], "label": folder["id"], "path": f"{self.folder_root}/{folder['path']}", "type": folder["type"],
                 "devices": [{"deviceID": device_id}],
             })
 
@@ -80,13 +80,14 @@ def handler_for(peer: Peer, state: Path, known: dict):
     return Handler
 
 
-def main(port: int, peer_url: str, peer_key: str, peer_address: str, state_folder: str) -> None:
+def main(port: int, peer_url: str, peer_key: str, peer_address: str, state_folder: str,
+         caller_address: str = "tcp://127.0.0.1:22000", folder_root: str = "/peer") -> None:
     state = Path(state_folder)
     state.mkdir(parents=True, exist_ok=True)
     known = {"taken": "AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA"}
-    server = HTTPServer(("127.0.0.1", port), handler_for(Peer(peer_url, peer_key, peer_address), state, known))
+    server = HTTPServer(("127.0.0.1", port), handler_for(Peer(peer_url, peer_key, peer_address, caller_address, folder_root), state, known))
     server.serve_forever()
 
 
 if __name__ == "__main__":
-    main(int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+    main(int(sys.argv[1]), *sys.argv[2:])

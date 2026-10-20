@@ -16,6 +16,7 @@ $probeImage = "debian:trixie-slim"
 $wslTimeoutSeconds = 120
 $projectName = "storage-compose"
 $userRelay = $null
+$logFile = $null
 $userSid = $null
 $logLimitBytes = 1MB
 $attempts = @{}
