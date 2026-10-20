@@ -84,20 +84,21 @@ else
     kopia repository create filesystem --path="$repository"
 fi
 
-# The state and the repository are bind mounts of one filesystem instance; once data1 is mounted anew
-# or the pool is gone, only a fresh container sees the live ones, so it exits and Docker restarts it.
+# Once data1 is mounted anew or the pool is gone, only a fresh container sees the live bind mounts, so
+# it exits and Docker restarts it; never while data1 is away, as Docker gives up a restart whose bind
+# mounts fail.
 generation=$(array_value generation)
 while true; do
+    current=$(array_value generation)
+    [ -n "$generation" ] || generation=$current
+    if [ -n "$current" ] && [ "$current" != "$generation" ]; then log "data1 was mounted anew; restarting"; stop_server; exit 0; fi
     if [ "$(array_value complete)" = yes ]; then
+        repository_answers || { log "the repository is gone; restarting"; stop_server; exit 1; }
         server_is_running || start_server
     elif server_is_running; then
         log "paused: not every drive of the array is present (the array is $(array_value state))"
         stop_server
     fi
-    current=$(array_value generation)
-    [ -n "$generation" ] || generation=$current
-    if [ -n "$current" ] && [ "$current" != "$generation" ]; then log "data1 was mounted anew; restarting"; stop_server; exit 0; fi
-    repository_answers || { log "the repository is gone; restarting"; stop_server; exit 1; }
     sleep 10 &
     wait $! || true
 done
