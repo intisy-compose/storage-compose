@@ -77,49 +77,29 @@ services:
     image: storage-dashboard:local
     container_name: storage-dashboard
 
-  # Owns the network namespace and publishes the local ports, on loopback only, so the local
-  # addresses keep working while tailscale restarts or cannot join.
   gateway:
-    image: caddy:2.11.4-alpine
+    extends: { file: gateway/gateway.yml, service: gateway }
     container_name: storage-gateway
-    restart: unless-stopped
     ports:
       - "127.0.0.1:8442:8442"
       - "127.0.0.1:8443:8443"
     environment:
-      STORAGE_HOST: ${STORAGE_HOST:-storage.invalid}
-    volumes:
-      - ./gateway/Caddyfile:/etc/caddy/Caddyfile:ro
-      - tailscale-socket:/var/run/tailscale
-      - storage-caddy-data:/data
+      TAILNET_HOST: ${STORAGE_HOST:-storage.invalid}
     depends_on:
       dashboard:
         condition: service_started
 
-  # Joins the gateway's namespace and forwards the tailnet ports to it. The node key lives on the
-  # array; TS_AUTHKEY is only needed for the first join.
+  # The node key lives on the array, so the drives carry the node's identity between hosts.
   tailscale:
-    image: tailscale/tailscale:v1.102.4
+    extends: { file: gateway/gateway.yml, service: tailscale }
     container_name: storage-tailscale
-    restart: unless-stopped
-    network_mode: "service:gateway"
     environment:
-      TS_AUTHKEY: ${TS_AUTHKEY:-}
       TS_HOSTNAME: ${TS_HOSTNAME:-storage}
-      TS_STATE_DIR: /var/lib/tailscale
-      TS_USERSPACE: "true"
-      TS_SOCKET: /var/run/tailscale/tailscaled.sock
-      TS_SERVE_CONFIG: /config/serve.json
     volumes:
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/tailscale:/var/lib/tailscale
-      - ./gateway/serve.json:/config/serve.json:ro
-      - tailscale-socket:/var/run/tailscale
     depends_on:
       mounter:
         condition: service_healthy
-      gateway:
-        condition: service_started
-        restart: true
 
   # Samba and Syncthing share the gateway's namespace, so tailnet ports 445 and 22000 reach them
   # directly through serve.json; only the gateway publishes ports, on loopback.
@@ -189,12 +169,12 @@ x-volume-roles:
   samba-data: rebuilt
   kopia-cache: rebuilt
   storage-status: rebuilt
-  storage-caddy-data: rebuilt
+  gateway-caddy-data: rebuilt
   tailscale-socket: rebuilt
 
 volumes:
   samba-data:
   kopia-cache:
   storage-status:
-  storage-caddy-data:
+  gateway-caddy-data:
   tailscale-socket:
