@@ -153,9 +153,12 @@ while true; do
     tick=$(( tick + 1 ))
     discovering=
     if wait_for_event 10 || take_discovery_request || block_devices_changed; then rescan_until=$(( $(date +%s) + settle_seconds )); fi
-    if [ "$(date +%s)" -le "$rescan_until" ] || [ $(( $(date +%s) - last_discovery )) -ge "$discovery_interval" ]; then
-        scan_devices
+    if [ $(( $(date +%s) - last_discovery )) -ge "$discovery_interval" ]; then
+        scan_devices all
         discovering=yes
         last_discovery=$(date +%s)
+    elif [ "$(date +%s)" -le "$rescan_until" ]; then
+        scan_devices
+        discovering=yes
     fi
 done

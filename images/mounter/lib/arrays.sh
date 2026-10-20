@@ -15,13 +15,43 @@ select_array() {   # <id>
 
 devices_file() { echo "$runtime/devices"; }
 
-# blkid's cache would still list a drive that has dropped off, so every scan reads the disks.
-scan_devices() {
-    local device label
-    blkid -c /dev/null -t TYPE=ext4 -o device 2> /dev/null | while read -r device; do
-        label=$(blkid -c /dev/null -o value -s LABEL "$device")
-        [[ $label =~ $any_array_label ]] && echo "$device $label"
-    done > "$(devices_file).new"
+probes_file() { echo "$runtime/probes"; }
+
+# diskseq grows with every disk the kernel sets up, a partition takes its disk's; with the size it
+# tells a device that is new or changed from one already probed.
+device_key() {   # <sysfs block directory>
+    local directory sequence
+    directory=$(readlink -f "$1")
+    sequence=$(cat "$directory/diskseq" 2> /dev/null || cat "$directory/../diskseq" 2> /dev/null)
+    echo "$(cat "$directory/size" 2> /dev/null)-${sequence:-0}"
+}
+
+ext4_label_of() {   # <device>: its label when it holds ext4
+    local probe
+    probe=$(blkid -c /dev/null -o export -s TYPE -s LABEL "$1" 2> /dev/null)
+    grep -qx 'TYPE=ext4' <<< "$probe" && sed -n 's/^LABEL=//p' <<< "$probe"
+}
+
+# Probing reads each device, which is slow on a host with many or slow ones, so a scan probes only
+# the devices that are new or changed since the last one; the safety poll probes them all, which
+# also catches a label changed in place. blkid's own cache would still list a drive that has dropped
+# off, so it is never used.
+scan_devices() {   # [all]
+    local directory name key label previous
+    declare -A known_key known_label
+    [ -f "$(probes_file)" ] && while read -r name key label; do known_key[$name]=$key; known_label[$name]=$label; done < "$(probes_file)"
+    for directory in /sys/class/block/*; do
+        name=${directory##*/}
+        key=$(device_key "$directory")
+        [[ $key == 0-* ]] && continue
+        previous=${known_key[$name]:-}
+        if [ "${1:-}" = all ] || [ "$previous" != "$key" ]; then label=$(ext4_label_of "/dev/$name"); else label=${known_label[$name]}; fi
+        echo "$name $key ${label:-}"
+    done > "$(probes_file).new"
+    mv "$(probes_file).new" "$(probes_file)"
+    while read -r name key label; do
+        [[ ${label:-} =~ $any_array_label ]] && echo "/dev/$name $label"
+    done < "$(probes_file)" > "$(devices_file).new"
     mv "$(devices_file).new" "$(devices_file)"
 }
 
