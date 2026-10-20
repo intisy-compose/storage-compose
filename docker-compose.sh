@@ -100,7 +100,7 @@ show_credentials() {
     host=$(config_value STORAGE_HOST)
     secret() { "${compose[@]}" exec -T mounter cat "$secrets/$1"; }
     echo "  Samba      : smb://$host/storage   user storage, password $(secret samba)"
-    echo "  Syncthing  : https://$host:8384 or http://localhost:8443   user storage, password $(secret syncthing-gui)"
+    echo "  Syncthing  : http://localhost:8443 (this host only)   user storage, password $(secret syncthing-gui)"
     echo "  Kopia      : https://$host:51515   web UI user storage, password $(secret kopia-server)"
     echo "               clients need their own account: ./docker-compose.sh kopia-user <user@host>"
     echo "  Kopia repository password (only for opening the repository without the server): $(secret kopia-repository)"

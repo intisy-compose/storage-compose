@@ -6,15 +6,14 @@
 	}
 }
 
+# tailscale forwards each tailnet connection from a local port it remembers, so whois on {remote}
+# names the device that calls /api/join.
 {$TAILNET_HOST}:443 {
 	import tailnet
 	encode gzip
-	reverse_proxy dashboard:8080
-}
-
-{$TAILNET_HOST}:8384 {
-	import tailnet
-	import syncthing
+	reverse_proxy dashboard:8080 {
+		header_up X-Tailnet-Peer {remote}
+	}
 }
 
 # Kopia's clients speak gRPC, which needs HTTP/2 through to the server, and Kopia offers HTTP/2
@@ -30,9 +29,12 @@
 
 http://:8442 {
 	encode gzip
-	reverse_proxy dashboard:8080
+	reverse_proxy dashboard:8080 {
+		header_up -X-Tailnet-Peer
+	}
 }
 
+# This host only: the tailnet reaches Syncthing's sync protocol, never its GUI.
 http://:8443 {
 	import syncthing
 }
