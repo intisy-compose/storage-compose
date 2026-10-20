@@ -203,6 +203,7 @@ function Uninstall-HostAgent([string]$StackFolder) {
     if (Get-AgentService) { Invoke-ServiceControl @("delete", $agentServiceName) }
     Stop-StackSyncthings $StackFolder
     Remove-NetFirewallRule -Group $agentFirewallGroup -ErrorAction SilentlyContinue
+    Remove-ProgramFirewallRules (Join-Path (Get-AgentFolder $StackFolder) "bin")
     Remove-Item -Recurse -Force -LiteralPath $agentInstallFolder -ErrorAction SilentlyContinue
     return "removed"
 }

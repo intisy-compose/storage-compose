@@ -41,3 +41,23 @@ function Get-SyncthingFolder([string]$StackFolder) {
 }
 
 function Get-SyncthingPath([string]$StackFolder) { return Join-Path (Get-SyncthingFolder $StackFolder) "syncthing.exe" }
+
+function Test-IsPathUnder([string]$Path, [string]$Folder) {
+    if (-not $Path -or -not $Folder) { return $false }
+    $full = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path))
+    $prefix = [System.IO.Path]::GetFullPath($Folder).TrimEnd('\') + '\'
+    return $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+<#
+.NOTES
+Removes every inbound rule for a program below the folder, the agent's own and any Windows made
+when it asked "allow access?" for one of these binaries (RULES.md section 2: nothing outlives the
+stack). Windows writes such rules with the path in lower case, so paths compare without case.
+#>
+function Remove-ProgramFirewallRules([string]$Folder) {
+    if (-not $Folder) { return }
+    Get-NetFirewallApplicationFilter -All -ErrorAction SilentlyContinue |
+        Where-Object { $_.Program -and $_.Program -ne "Any" -and (Test-IsPathUnder $_.Program $Folder) } |
+        ForEach-Object { $_ | Get-NetFirewallRule -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
+}

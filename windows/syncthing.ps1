@@ -136,20 +136,50 @@ function New-ApiKey {
 
 function Get-FirewallRuleName($Node) { return "storage-compose syncthing $($Node.id)" }
 
-function Set-SyncthingFirewallRule($Node, $Ports) {
-    $name = Get-FirewallRuleName $Node
-    $existing = Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
-    if ($existing) {
-        $filter = $existing | Get-NetFirewallPortFilter
-        $program = ($existing | Get-NetFirewallApplicationFilter).Program
-        if ("$($filter.LocalPort)" -eq "$($Ports.listen)" -and $program -eq $script:syncthingPath) { return }
-        Remove-NetFirewallRule -Name $name
-    }
-    New-NetFirewallRule -Name $name -DisplayName "$name ($($Node.name))" -Group $agentFirewallGroup -Direction Inbound -Action Allow `
-        -Protocol TCP -LocalPort $Ports.listen -RemoteAddress $tailnetAddressRange -Program $script:syncthingPath -Profile Any | Out-Null
+function Get-FirewallUdpRuleName($Node) { return "$(Get-FirewallRuleName $Node) udp" }
+
+function Test-FirewallRuleIsCurrent([string]$Name, [string]$Port) {
+    $existing = Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue
+    if (-not $existing) { return $false }
+    $filter = $existing | Get-NetFirewallPortFilter
+    $program = ($existing | Get-NetFirewallApplicationFilter).Program
+    if ("$($filter.LocalPort)" -eq $Port -and $program -eq $script:syncthingPath) { return $true }
+    Remove-NetFirewallRule -Name $Name
+    return $false
 }
 
-function Remove-SyncthingFirewallRules { Remove-NetFirewallRule -Group $agentFirewallGroup -ErrorAction SilentlyContinue }
+<#
+.NOTES
+Both rules exist before Syncthing first listens. Windows asks "allow access?" for a program no rule
+names, and its answer is a rule open to every address that outlives the stack; with a TCP rule for the
+tailnet and a UDP block (no QUIC, no discovery) for this program, it never asks.
+#>
+function Set-SyncthingFirewallRule($Node, $Ports) {
+    $name = Get-FirewallRuleName $Node
+    if (-not (Test-FirewallRuleIsCurrent $name "$($Ports.listen)")) {
+        New-NetFirewallRule -Name $name -DisplayName "$name ($($Node.name))" -Group $agentFirewallGroup -Direction Inbound -Action Allow `
+            -Protocol TCP -LocalPort $Ports.listen -RemoteAddress $tailnetAddressRange -Program $script:syncthingPath -Profile Any | Out-Null
+    }
+    $udpName = Get-FirewallUdpRuleName $Node
+    if (-not (Test-FirewallRuleIsCurrent $udpName "Any")) {
+        New-NetFirewallRule -Name $udpName -DisplayName "$udpName ($($Node.name))" -Group $agentFirewallGroup -Direction Inbound -Action Block `
+            -Protocol UDP -Program $script:syncthingPath -Profile Any | Out-Null
+    }
+}
+
+function Remove-NodeFirewallRules($Node) {
+    foreach ($name in @((Get-FirewallRuleName $Node), (Get-FirewallUdpRuleName $Node))) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
+}
+
+function Get-SyncthingBinFolder {
+    if (-not $script:syncthingPath) { return $null }
+    return Split-Path (Split-Path $script:syncthingPath)
+}
+
+function Remove-SyncthingFirewallRules {
+    Remove-NetFirewallRule -Group $agentFirewallGroup -ErrorAction SilentlyContinue
+    Remove-ProgramFirewallRules (Get-SyncthingBinFolder)
+}
 
 function Get-SyncthingProcesses {
     if (-not $script:syncthingPath) { return @() }
@@ -259,7 +289,7 @@ function Start-NodeSyncthing($Instance, [string]$ListenHost) {
 
 function Stop-NodeSyncthing($Instance, [string]$Reason) {
     Stop-SyncthingProcess $Instance
-    Remove-NetFirewallRule -Name (Get-FirewallRuleName $Instance.node) -ErrorAction SilentlyContinue
+    Remove-NodeFirewallRules $Instance.node
     $Instance.state = "stopped"
     $Instance.processId = 0
     Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): Syncthing stopped, $Reason"
@@ -303,13 +333,18 @@ function Update-NodeInstances([object[]]$Nodes, [bool]$IsActive) {
     if ($IsActive -and @($Nodes).Count -gt 0) { $binaryProblem = Test-SyncthingBinary }
     $wanted = @{}
     if ($IsActive -and -not $binaryProblem) { foreach ($node in $Nodes) { $wanted[$node.id] = $node } }
+    $stoppedAny = $false
     foreach ($id in @($script:syncthingInstances.Keys)) {
         if ($wanted.ContainsKey($id) -and $wanted[$id].root -eq $script:syncthingInstances[$id].node.root) { continue }
         $instance = $script:syncthingInstances[$id]
         if ($instance.state -eq "running") { Stop-NodeSyncthing $instance $(if ($IsActive) { "its node is gone" } else { "the stack is not running" }) }
         $script:syncthingInstances.Remove($id)
+        $stoppedAny = $true
     }
-    if ($wanted.Count -eq 0) { return $binaryProblem }
+    if ($wanted.Count -eq 0) {
+        if ($stoppedAny) { Remove-SyncthingFirewallRules }
+        return $binaryProblem
+    }
     $listenHost = Get-TailnetAddress
     if (-not $listenHost) { $listenHost = "127.0.0.1" }
     foreach ($node in $wanted.Values) {
@@ -337,6 +372,7 @@ function Stop-AllNodeInstances([string]$Reason) {
         $script:syncthingInstances.Remove($id)
     }
     foreach ($orphan in Get-SyncthingProcesses) { Stop-Process -Id $orphan.ProcessId -Force -ErrorAction SilentlyContinue }
+    Remove-SyncthingFirewallRules
 }
 
 function Get-PublishedInstance($Instance) {

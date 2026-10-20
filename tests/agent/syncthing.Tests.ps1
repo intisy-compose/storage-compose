@@ -11,6 +11,7 @@ $syncthingGuiPortBase = 18450
 $syncthingListenPortBase = 32100
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "agent-syncthing-$([guid]::NewGuid())"
 $global:firewallRules = @{}
+$global:programRuleSweeps = @()
 $global:tailnetAddress = $null
 
 function Get-TailnetAddress { return $global:tailnetAddress }
@@ -23,6 +24,7 @@ function Remove-NetFirewallRule([string]$Name, [string]$Group) {
     if ($Name) { $global:firewallRules.Remove($Name) }
     if ($Group) { foreach ($key in @($global:firewallRules.Keys)) { if ($global:firewallRules[$key].Group -eq $Group) { $global:firewallRules.Remove($key) } } }
 }
+function Remove-ProgramFirewallRules([string]$Folder) { $global:programRuleSweeps += $Folder }
 function Get-NetFirewallPortFilter { param([Parameter(ValueFromPipeline = $true)]$Rule) process { [pscustomobject]@{ LocalPort = $Rule.LocalPort } } }
 function Get-NetFirewallApplicationFilter { param([Parameter(ValueFromPipeline = $true)]$Rule) process { [pscustomobject]@{ Program = $Rule.Program } } }
 
@@ -33,6 +35,7 @@ function Reset-Agent {
     $script:agentState = New-AgentState $null
     $script:logFile = Join-Path $scratch "agent.log"
     $global:firewallRules = @{}
+    $global:programRuleSweeps = @()
     $global:tailnetAddress = $null
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
     New-Item -ItemType Directory -Force -Path $scratch | Out-Null
@@ -108,6 +111,12 @@ Describe "a node's native Syncthing" {
         $rule.Program | Should Be $SyncthingPath
     }
 
+    It "names the program in a UDP block rule too, so Windows never asks to allow it" {
+        $rule = $global:firewallRules["storage-compose syncthing a001 udp"]
+        $rule.Program | Should Be $SyncthingPath
+        $rule.Group | Should Be "storage-compose agent"
+    }
+
     It "publishes what the dashboard needs" {
         $published = Get-PublishedInstance $instance
         $published.syncthing.guiPort | Should Be 18450
@@ -171,6 +180,7 @@ Describe "a node's native Syncthing" {
         $script:syncthingInstances.Count | Should Be 0
         @(Get-SyncthingProcesses).Count | Should Be 0
         $global:firewallRules.Count | Should Be 0
+        $global:programRuleSweeps[-1] | Should Be (Split-Path (Split-Path $SyncthingPath))
     }
 
     It "refuses a binary that does not match its recorded checksum" {
