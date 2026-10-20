@@ -185,6 +185,13 @@ services:
       pool:
         condition: service_healthy
 
+x-volume-roles:
+  samba-data: rebuilt
+  kopia-cache: rebuilt
+  storage-status: rebuilt
+  storage-caddy-data: rebuilt
+  tailscale-socket: rebuilt
+
 volumes:
   samba-data:
   kopia-cache:
