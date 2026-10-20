@@ -2,6 +2,7 @@
 # Runs inside the test bench (run.sh): the Linux join script against a fake dashboard that admits the
 # device into a real Syncthing peer, with the device's own real Syncthing; Tailscale and systemd are
 # faked. Prints PASS or FAIL per check and exits non-zero on any failure.
+# shellcheck disable=SC2088 # "~/name" in a check name is text, never a path
 set -uo pipefail
 
 join=/join/storage-join.sh

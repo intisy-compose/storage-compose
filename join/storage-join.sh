@@ -183,8 +183,7 @@ api_status() {
 }
 
 wait_for_syncthing() {
-    local attempt
-    for attempt in $(seq 1 60); do
+    for _ in $(seq 1 60); do
         api GET /rest/system/status > /dev/null 2>&1 && return 0
         sleep 1
     done
@@ -297,6 +296,7 @@ link_user() {
 
 # A real folder in the way is merged into the target first; a name both hold stops the link, as
 # drive-sync does, so nothing is ever overwritten.
+# shellcheck disable=SC2088 # "~/name" here is log text, never a path
 link_home() {
     local target="$1" link="$2" entry
     if [[ -L "$link" ]]; then

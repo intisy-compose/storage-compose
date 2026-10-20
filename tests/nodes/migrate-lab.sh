@@ -98,7 +98,7 @@ remove() {
     for role in "${roles[@]}"; do
         for loop in $(losetup -j "$(image_of "$role")" -O NAME --noheadings); do losetup -d "$loop"; done
     done
-    rm -rf "$images"/*
+    rm -rf "${images:?}"/*
     echo "removed the test drives"
 }
 
