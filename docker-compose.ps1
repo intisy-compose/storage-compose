@@ -14,6 +14,9 @@ $usbipdFolder = "C:\Program Files\usbipd-win"
 $smartctlPackage = "winget install --id smartmontools.smartmontools --version 7.5 -e"
 
 . (Join-Path $PSScriptRoot "windows\disks.ps1")
+. (Join-Path $PSScriptRoot "windows\agent-files.ps1")
+. (Join-Path $PSScriptRoot "windows\agent-install.ps1")
+$composeProject = "storage-compose"
 $attachRequestFile = Join-Path $PSScriptRoot $attachRequestFileName
 $attachStateFile = Join-Path $PSScriptRoot $attachStateFileName
 
@@ -156,15 +159,6 @@ function Get-AttachMode {
     return $mode
 }
 
-function Test-InstalledWatcherIsCurrent {
-    foreach ($name in $attachScriptNames) {
-        $installed = Join-Path $attachInstallFolder $name
-        if (-not (Test-Path $installed)) { return $false }
-        if ((Get-FileHash $installed).Hash -ne (Get-FileHash (Join-Path $PSScriptRoot "windows\$name")).Hash) { return $false }
-    }
-    return $true
-}
-
 function Get-WatcherState { return Read-JsonFile $attachStateFile }
 
 function Get-PassedDisks {
@@ -188,20 +182,8 @@ function Wait-ForWatcher([int]$Seconds) {
 }
 
 function Assert-AttachWatcher {
-    if (-not (Test-Path (Join-Path $attachInstallFolder "watcher.ps1"))) {
-        Write-Err "The WSL attach task is not installed. Run this once in an admin shell: .\docker-compose.ps1 install-attach"
-        Write-Err "(or set ATTACH=usbipd in config.env to attach the enclosures with usbipd instead)"
-        exit 1
-    }
-    if (-not (Test-InstalledWatcherIsCurrent)) {
-        Write-Err "The installed attach task is older than this checkout; run '.\docker-compose.ps1 install-attach' again in an admin shell."
-        exit 1
-    }
-    if (Test-WatcherIsAlive (Get-WatcherState)) { return }
-    try { Start-ScheduledTask -TaskName $attachTaskName -ErrorAction Stop } catch { }
-    if (Wait-ForWatcher 20) { return }
-    Write-Err "The attach task '$attachTaskName' is not running for this folder; see $attachLogFileName and the Task Scheduler."
-    Write-Err "install-attach registers it for the checkout it is run from."
+    if (Wait-ForWatcher 30) { return }
+    Write-Err "The host agent is not answering for this folder; see $attachLogFileName."
     exit 1
 }
 
@@ -318,51 +300,32 @@ function Add-WslDisk([string]$NumberText) {
     Write-OK "disk $number passed through; pick it under Rebuild in the dashboard"
 }
 
-function Get-WatcherProcesses {
-    $watcher = [regex]::Escape((Join-Path $attachInstallFolder "watcher.ps1"))
-    return @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match $watcher })
+function Get-AgentPassThrough {
+    if ((Get-AttachMode) -eq "wsl") { return "wsl" }
+    return "none"
 }
 
 <#
 .NOTES
-Stop-ScheduledTask returns before the watcher has exited, and a watcher still running would keep its
-single-instance lock and its old code past a reinstall.
+The agent is a service (specs/2026-10-19-storage-nodes-and-dashboard-design.md, the host agent and its
+lifetime): installed or repaired by every up, removed by down, and gone by itself 10 minutes after the
+stack is.
 #>
-function Stop-AttachWatcher {
-    Stop-ScheduledTask -TaskName $attachTaskName -ErrorAction SilentlyContinue
-    $deadline = (Get-Date).AddSeconds(10)
-    while (@(Get-WatcherProcesses).Count -gt 0 -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
-    foreach ($process in Get-WatcherProcesses) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }
-}
-
-function Install-AttachTask {
-    if (-not (Test-IsAdministrator)) { Write-Err "install-attach needs an admin shell; it is the one step that does."; exit 1 }
-    $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    Stop-AttachWatcher
-    New-Item -ItemType Directory -Force -Path $attachInstallFolder | Out-Null
-    foreach ($name in $attachScriptNames) { Copy-Item -Force (Join-Path $PSScriptRoot "windows\$name") (Join-Path $attachInstallFolder $name) }
-    $watcher = Join-Path $attachInstallFolder "watcher.ps1"
-    $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watcher`" -StackFolder `"$PSScriptRoot`""
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
-    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
-        -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    Register-ScheduledTask -TaskName $attachTaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-    Start-ScheduledTask -TaskName $attachTaskName
-    if (Wait-ForWatcher 20) { Write-OK "The attach task runs for $PSScriptRoot and starts at every logon." }
-    else { Write-Err "The attach task was registered but has not reported yet; see $attachLogFileName." }
-    if (-not (Get-Command smartctl.exe -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $env:ProgramFiles "smartmontools\bin\smartctl.exe"))) {
+function Install-Agent {
+    Write-Step "Checking the host agent..."
+    try {
+        if (Remove-LegacyAttachTask) { Write-OK "Removed the old WSL attach task; the host agent replaces it" }
+        $result = Install-HostAgent $PSScriptRoot $composeProject (Get-AgentPassThrough)
+    } catch { Write-Err "$_"; exit 1 }
+    if ($result -eq "installed") { Write-OK "The host agent service is installed and running" } else { Write-OK "The host agent is running" }
+    if ((Get-AgentPassThrough) -eq "wsl" -and -not (Get-Command smartctl.exe -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $env:ProgramFiles "smartmontools\bin\smartctl.exe"))) {
         Write-Err "smartctl is missing, so the dashboard shows no SMART for passed-through drives: $smartctlPackage"
     }
 }
 
-function Uninstall-AttachTask {
-    if (-not (Test-IsAdministrator)) { Write-Err "uninstall-attach needs an admin shell."; exit 1 }
-    Stop-AttachWatcher
-    Unregister-ScheduledTask -TaskName $attachTaskName -Confirm:$false -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force -Path $attachInstallFolder -ErrorAction SilentlyContinue
-    Write-OK "The attach task is removed; drives still passed through stay so until the next restart of WSL."
+function Remove-Agent {
+    try { if ((Uninstall-HostAgent $PSScriptRoot) -eq "removed") { Write-OK "The host agent is removed" } }
+    catch { Write-Err "$_" }
 }
 
 function Connect-Drives {
@@ -439,6 +402,7 @@ function Start-Array {
     Write-Step "Building the images..."
     docker compose @composeArgs build --quiet
     if ($LASTEXITCODE -ne 0) { Write-Err "The build failed."; exit 1 }
+    Install-Agent
     Connect-Drives
     Wait-ForMounter
     if ((Get-AttachMode) -eq "wsl") { Disconnect-UnlabelledWslDisks }
@@ -452,6 +416,7 @@ function Stop-Array {
     Write-Step "Stopping everything and unmounting..."
     docker compose @composeArgs down
     Disconnect-Drives
+    Remove-Agent
 }
 
 function Show-Drives {
@@ -477,11 +442,9 @@ function Show-Urls {
 
 $commands = @{
     "init-config" = "Create config.env, name this host and generate the notification topic"
-    "up"          = "Pass the drives through to WSL (or attach the enclosures with usbipd), mount and lock the array, join the tailnet, start the stack (default)"
-    "down"        = "Stop the stack, release the lock, unmount and release the drives from WSL (or give the enclosures back)"
+    "up"          = "Install or repair the host agent (admin shell), pass the drives through to WSL (or attach the enclosures with usbipd), mount and lock the array, join the tailnet, start the stack (default)"
+    "down"        = "Stop the stack, release the lock, unmount and release the drives from WSL (or give the enclosures back), remove the host agent (admin shell)"
     "attach"      = "[disk number]  list the USB disks, or pass a blank one through to WSL as a replacement drive"
-    "install-attach"   = "Once, in an admin shell: register the elevated task that passes the drives through to WSL"
-    "uninstall-attach" = "In an admin shell: remove that task"
     "restart"     = "down, then up"
     "status"      = "Show the containers and their health"
     "logs"        = "[service]  follow logs, e.g. logs mounter"
@@ -504,8 +467,6 @@ switch ($Command.ToLower()) {
     "logs"    { docker compose @composeArgs logs -f @forwarded; break }
     "drives"  { Show-Drives; break }
     "attach"  { Add-WslDisk ($forwarded | Select-Object -First 1); break }
-    "install-attach" { Install-AttachTask; break }
-    "uninstall-attach" { Uninstall-AttachTask; break }
     "url"     { Show-Urls; break }
     "sync"    { docker compose @composeArgs exec -T snapraid snapraid.sh run sync @forwarded; exit $LASTEXITCODE }
     "scrub"   { docker compose @composeArgs exec -T snapraid snapraid.sh run scrub; exit $LASTEXITCODE }

@@ -1,7 +1,12 @@
 # Local config (copy config.env from config.env.example, or run init-config)
 config.env
 
-# Written by the WSL attach task and the CLI (docker-compose.ps1 install-attach)
+# The CLI's requests to the host agent and its answers
 attach-request.json*
 attach-state.json*
+
+# Written by the host agent: its log, port assignments, heartbeat and the Syncthing it runs
+host-agent/
+
+# The log of the logon task the host agent replaced
 attach.log*
