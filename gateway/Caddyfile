@@ -1,54 +1,15 @@
-# tailscale, Samba and Syncthing share this container's network namespace. Certificates for the
-# ts.net name come from tailscaled over its socket, never from a public CA, so every device on the
-# tailnet gets real HTTPS.
+# The shared gateway from intisy-compose/workflows gateway/, vendored byte for byte; a stack's own
+# sites live in sites.caddy. tailscale shares this container's network namespace, and certificates
+# for the ts.net name come from tailscaled over its socket, never from a public CA.
 {
 	admin off
 	auto_https disable_redirects
 }
 
-# Syncthing's GUI listens on 8385 in this same namespace and rejects any Host but its own; its sync
-# protocol on 22000 bypasses Caddy.
-(syncthing) {
-	reverse_proxy 127.0.0.1:8385 {
-		header_up Host 127.0.0.1:8385
-	}
-}
-
-{$STORAGE_HOST}:443 {
+(tailnet) {
 	tls {
 		get_certificate tailscale
 	}
-	encode gzip
-	reverse_proxy dashboard:8080
 }
 
-{$STORAGE_HOST}:8384 {
-	tls {
-		get_certificate tailscale
-	}
-	import syncthing
-}
-
-# Kopia's clients speak gRPC, which needs HTTP/2 through to the server, and Kopia offers HTTP/2
-# only over TLS: its self-signed certificate is trusted on the stack's private network only.
-{$STORAGE_HOST}:51515 {
-	tls {
-		get_certificate tailscale
-	}
-	reverse_proxy https://kopia:51515 {
-		transport http {
-			tls_insecure_skip_verify
-		}
-	}
-}
-
-# This host only: the ports are published on 127.0.0.1, and tailnet traffic reaches only the ports
-# in serve.json.
-http://:8442 {
-	encode gzip
-	reverse_proxy dashboard:8080
-}
-
-http://:8443 {
-	import syncthing
-}
+import sites.caddy

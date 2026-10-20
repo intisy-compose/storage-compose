@@ -1,0 +1,38 @@
+# Syncthing's GUI listens on 8385 in this same namespace and rejects any Host but its own; its sync
+# protocol on 22000 and Samba on 445 bypass Caddy.
+(syncthing) {
+	reverse_proxy 127.0.0.1:8385 {
+		header_up Host 127.0.0.1:8385
+	}
+}
+
+{$TAILNET_HOST}:443 {
+	import tailnet
+	encode gzip
+	reverse_proxy dashboard:8080
+}
+
+{$TAILNET_HOST}:8384 {
+	import tailnet
+	import syncthing
+}
+
+# Kopia's clients speak gRPC, which needs HTTP/2 through to the server, and Kopia offers HTTP/2
+# only over TLS: its self-signed certificate is trusted on the stack's private network only.
+{$TAILNET_HOST}:51515 {
+	import tailnet
+	reverse_proxy https://kopia:51515 {
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}
+
+http://:8442 {
+	encode gzip
+	reverse_proxy dashboard:8080
+}
+
+http://:8443 {
+	import syncthing
+}
