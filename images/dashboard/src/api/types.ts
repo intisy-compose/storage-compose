@@ -1,43 +1,39 @@
 /**
- * The dashboard's HTTP contract, shared by the server (`src/`) and the page (`public/`).
+ * The dashboard's HTTP contract, shared by the server (`src/`) and the page (`ui/`).
  * Sizes are bytes, rates bytes per second, times ISO 8601 strings in UTC, percentages 0 to 100.
  */
 
-/**
- * @implNote "device" is a Syncthing device seen only through a local Syncthing instance, because its
- * host runs no storage dashboard or could not be reached; it carries Syncthing's view and nothing else.
- */
-export type NodeKind = "array" | "drive" | "folder" | "device";
+export type NodeKind = "array" | "drive" | "folder";
 
 export type SyncState = "idle" | "syncing" | "error" | "offline";
 
 /** "frozen" is the C-24 freeze: more drives lost than parity covers, or data1 gone or read-only. */
-export type ArrayHealth = "healthy" | "degraded" | "frozen";
+export type ArrayState = "healthy" | "degraded" | "frozen";
 
-export type ParityJobKind = "sync" | "scrub" | "rebuild" | "remove" | "fix" | "check" | "diff" | "status" | "unknown";
+export type WarningLevel = "info" | "warning" | "error";
 
 export interface HostInfo {
   name: string;
 }
 
-export interface NodeSpace {
-  size: number | null;
-  used: number | null;
+export interface Space {
+  size: number;
+  used: number;
 }
 
 export interface NodeSync {
   state: SyncState;
-  completion: number | null;
+  completion: number;
   lastSeen: string | null;
 }
 
-export interface SmartHealth {
-  passed: boolean | null;
+/** "warn" is a count that rose but was accepted before; "fail" a drive the mounter holds as failing. */
+export interface MemberSmart {
+  state: "ok" | "warn" | "fail" | "none";
+  detail: string;
   reallocatedSectors: number | null;
   pendingSectors: number | null;
   powerOnHours: number | null;
-  /** Why the mounter holds the drive as failing, or null. */
-  failing: string | null;
 }
 
 export interface ArrayMember {
@@ -45,49 +41,52 @@ export interface ArrayMember {
   label: string;
   serial: string | null;
   size: number | null;
+  used: number | null;
   asset: string | null;
+  /** INVENTORY_ASSET_URL with the asset filled in, when both are set. */
+  assetUrl: string | null;
   present: boolean;
-  smart: SmartHealth | null;
+  smart: MemberSmart | null;
   temperature: number | null;
-  /** The mounter's word for the drive: present, dropped, missing or failing. */
+  /** The mounter's word for the drive. */
   condition: "present" | "dropped" | "missing" | "failing";
   detail: string;
-  used: number | null;
 }
 
 /**
- * @implNote Read from SnapRAID itself (its content lock and the wrapper's progress file), so a job
- * started by hand shows as well as one the dashboard or the schedule started.
+ * @implNote Read from SnapRAID itself, its content lock and the progress its wrapper records, so a job
+ * started by hand shows as well as one the dashboard or the schedule started. A run that bypassed the
+ * wrapper shows as kind "unknown" with progress 0 and the lock's time as its start.
  */
 export interface ParityJob {
-  kind: ParityJobKind;
-  progress: number | null;
-  startedAt: string | null;
+  kind: string;
+  progress: number;
+  startedAt: string;
 }
 
-export interface ParityState {
+export interface Parity {
   job: ParityJob | null;
   lastSync: string | null;
   lastScrub: string | null;
+  /** Why the last sync was refused (the deletion guard), or null; offers "sync anyway". */
+  refused: string | null;
   lastSyncResult: string | null;
   lastScrubResult: string | null;
-  /** Why the last sync was refused, or null. */
-  refused: string | null;
 }
 
-export interface ReplacementCandidate {
+export interface DriveCandidate {
   path: string;
   size: number;
-  model: string;
-  serial: string;
+  model: string | null;
+  serial: string | null;
   transport: string;
 }
 
-export interface ArrayDetail {
-  state: ArrayHealth;
+export interface NodeArray {
+  state: ArrayState;
   members: ArrayMember[];
-  parity: ParityState;
-  candidates: ReplacementCandidate[];
+  parity: Parity;
+  candidates: DriveCandidate[];
   /** The mounter's reasons for a state other than healthy. */
   reasons: string[];
 }
@@ -97,17 +96,17 @@ export interface SyncthingDevice {
   addresses: string[];
   /** For a remote device the connection's type (tcp-client, relay-server, ...); null for this host's own instance. */
   connectionType: string | null;
-  inRate: number | null;
-  outRate: number | null;
+  inRate: number;
+  outRate: number;
   version: string | null;
 }
 
 export interface NodeFolder {
   id: string;
   path: string;
-  type: "sendreceive" | "sendonly" | "receiveonly" | "receiveencrypted";
+  type: string;
   state: string;
-  completion: number | null;
+  completion: number;
 }
 
 export interface StorageNode {
@@ -121,15 +120,18 @@ export interface StorageNode {
   online: boolean;
   /** The host that runs the node, as that host names itself. */
   host: string;
-  space: NodeSpace;
+  space: Space | null;
   sync: NodeSync;
-  array?: ArrayDetail;
+  array?: NodeArray;
   syncthing: SyncthingDevice | null;
   folders: NodeFolder[];
 }
 
 export interface Warning {
-  level: "info" | "warning" | "error";
+  /** Stable while the condition lasts, so the page can keep its place. */
+  id: string;
+  at: string;
+  level: WarningLevel;
   text: string;
   nodeId: string | null;
 }
@@ -139,13 +141,17 @@ export interface NodesResponse {
   host: HostInfo;
   nodes: StorageNode[];
   warnings: Warning[];
+  settings?: { inventoryItemUrl?: string | null };
 }
 
 /**
- * `POST /api/arrays/<id>/sync|scrub|rebuild|remove`. Rebuild and remove need the role repeated in
- * `confirm`; rebuild needs `device`, one of the array's candidates. Answers 202 with `{ started }`.
+ * `POST /api/arrays/<id>/<action>`, answered 202 with `{ started }` or an `ErrorResponse`.
+ * rebuild and remove need the role repeated in `confirm`; rebuild and add need `device`, one of the
+ * array's candidates, and add needs `confirm: "add"`; accept-smart needs `role`.
  */
-export interface ArrayActionRequest {
+export type ArrayAction = "sync" | "scrub" | "add" | "rebuild" | "remove" | "accept-smart";
+
+export interface ArrayActionBody {
   role?: string;
   device?: string;
   confirm?: string;
@@ -206,7 +212,7 @@ export interface NodeRegistryEntry {
   /** Where the node's root is, as the writer of the entry sees it. */
   root: string;
   present: boolean;
-  space: NodeSpace;
+  space: { size: number | null; used: number | null };
   syncthing: { url: string; apiKey: string } | null;
   /** When the writer last confirmed the entry; one older than 5 minutes is shown offline. */
   updated: string;
