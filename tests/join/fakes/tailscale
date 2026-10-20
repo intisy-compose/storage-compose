@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Stands in for the tailscale CLI: the state lives in $FAKE_TAILSCALE_DIR, `up` records its arguments.
+set -euo pipefail
+state_dir="${FAKE_TAILSCALE_DIR:-/run/fake-tailscale}"
+mkdir -p "$state_dir"
+state="$(cat "$state_dir/state" 2> /dev/null || echo NeedsLogin)"
+case "${1:-}" in
+    status) printf '{"BackendState": "%s", "MagicDNSSuffix": "tail-test.ts.net"}\n' "$state" ;;
+    ip) echo 127.0.0.1 ;;
+    up) shift; printf '%s\n' "$*" >> "$state_dir/up-calls"; echo Running > "$state_dir/state" ;;
+    *) echo "fake tailscale: unsupported $*" >&2; exit 2 ;;
+esac

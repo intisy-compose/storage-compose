@@ -186,11 +186,34 @@ cd storage-compose
 
 .\docker-compose.ps1 init-config   # creates config.env, names this host, generates the ntfy topic
 # put an auth key from https://login.tailscale.com/admin/settings/keys into TS_AUTHKEY
-.\docker-compose.ps1 install-attach   # Windows, once, in an admin shell
 .\docker-compose.ps1 up            # the one CLI; run it without a known command to list them all
 ```
 
-On Linux, `./docker-compose.sh` takes the same commands and nothing needs installing.
+On Windows the first `up` runs in an admin shell, because it installs the host agent (below); later
+ones need it only when the agent must be repaired. On Linux, `./docker-compose.sh` takes the same
+commands and nothing needs installing.
+
+## Windows: the host agent
+
+What has to run outside Docker on Windows runs in one Windows service, `storage-compose-agent`,
+which `up` installs or repairs and `down` removes. It runs as SYSTEM, so it serves before anyone logs
+in, and it acts only while the stack's containers run: a stack that crashed or was removed without
+`down` gets its drives back within one round. Ten minutes after the stack is gone (its containers
+stopped or removed, or its folder deleted) the agent releases everything and unregisters itself, so
+a deleted stack leaves nothing behind. It does three things:
+
+- passes the array's drives through to WSL (below), running `wsl.exe` as the user who ran `up`,
+  since WSL refuses SYSTEM and keeps one VM per user;
+- runs one Syncthing per drive or folder node on a Windows volume: a volume whose root holds
+  `.storage\node.toml` is a drive node, and the folders listed in a root's `.storage\nodes.toml`
+  are folder nodes; nothing below a root is ever searched. It looks when a volume arrives and once a
+  minute. Each Syncthing keeps its home in the node's `.storage\syncthing`, so the node keeps its
+  device ID on any host, listens on the tailnet only (ports 22001 and up) with its API on
+  `127.0.0.1` (8450 and up), and is the pinned release that `up` downloads once into
+  `host-agent\bin` and checks against its SHA-256;
+- writes `host-agent\status\heartbeat.json` every 5 seconds for the dashboard, with each node's
+  Syncthing, the drives passed through and when the agent would remove itself. Its log is
+  `host-agent\agent.log`.
 
 ## Windows: how the drives reach Docker Desktop
 
@@ -200,13 +223,11 @@ On Linux, `./docker-compose.sh` takes the same commands and nothing needs instal
   stack's format writes) is set offline in Windows and passed through to Docker Desktop's WSL2 VM
   with `wsl --mount --bare`, at the drive's own speed (161 MB/s read, 258 MB/s write measured,
   against about 25 MB/s for the whole array over usbipd). A disk with a Windows volume, a blank disk
-  and the system disks are never touched. `wsl --mount` needs administrator rights every time, so
-  an elevated scheduled task does it: `install-attach`, run once in an admin shell, copies it to
-  `C:\Program Files\storage-compose` and registers it to start at logon; `up` and `down` then run
-  from a normal shell and hand it their request through `attach-request.json` beside `config.env`.
-  The task also passes a drive through again when it drops off USB and comes back, or when Docker
-  Desktop or WSL restarts, and reads the drives' SMART counts every 10 minutes, because the VM's
-  virtual disk cannot. Run `install-attach` again after updating the stack; `up` says when it is due.
+  and the system disks are never touched. The host agent does it, since `wsl --mount` needs
+  administrator rights every time; `up` and `down` hand it their request through
+  `attach-request.json` beside `config.env`. It also passes a drive through again when it drops off
+  USB and comes back, or when Docker Desktop or WSL restarts, and reads the drives' SMART counts
+  every 10 minutes, because the VM's virtual disk cannot.
 - **`attach`** lists the USB disks and what each one is; `attach <disk number>` passes a blank
   replacement drive through after showing it and asking for its number, so the dashboard offers it
   under Rebuild. A disk with anything but Linux filesystem partitions is refused.
@@ -216,3 +237,26 @@ On Linux, `./docker-compose.sh` takes the same commands and nothing needs instal
   `usbipd list` in `USB_HARDWARE_IDS`). The first `up` needs an admin shell to bind them once.
   It is much slower: usbipd's virtual host controller has no USB streams, so UAS enclosures run as
   plain usb-storage, and a device that carries a mounted Windows volume refuses to attach.
+
+## Joining a device
+
+A newly installed device joins the storage network with one script, run once (an imprint firstboot
+hook does it on a fresh install) and harmless to run again:
+
+- **Linux** (systemd; Arch, Debian or Fedora): `sudo join/storage-join.sh`
+- **Windows**: `.\join\storage-join.ps1` from a checkout of this repository
+
+It installs Tailscale and Syncthing if they are missing (on Arch from the stick's offline repository
+first) and joins the tailnet with the auth key in `STORAGE_JOIN_KEY` or the stick's
+`personal/tailscale.key`; writes the node file for the device's data root (`/data`, or `F:\` on
+Windows; `STORAGE_JOIN_ROOT`) and starts Syncthing with its home on the node, listening on the
+tailnet only; registers with the storage dashboard (`STORAGE_DASHBOARD`, default
+`https://storage.<tailnet>`), adds the devices and folders it answers with, and on Linux links the
+home folders (`~/Documents`, `~/code`, ...) into the node, moving what they held. On Windows the
+node's Syncthing is the host agent's when this stack runs there, otherwise a logon task of the user
+runs it. A new device node keeps the working and essential bands (threshold 50,
+`STORAGE_JOIN_THRESHOLD`); 0, which keeps everything the network holds, is for the cluster, and the
+scripts refuse it unless `STORAGE_JOIN_ALLOW_KEEP_ALL=1`. A Syncthing the device already runs (its home in `%LOCALAPPDATA%\Syncthing`, or the
+one its logon task names) is adopted: it is stopped, its home moves into the node with its
+certificate, folders and devices, so its device ID stays, and its logon task is removed; the package
+that installed it stays installed. The script's header lists every setting.

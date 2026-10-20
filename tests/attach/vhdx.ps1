@@ -13,7 +13,7 @@ param([string]$Scratch = (Join-Path ([System.IO.Path]::GetTempPath()) "storage-w
 Set-StrictMode -Version Latest
 $here = $PSScriptRoot
 $repository = Split-Path (Split-Path $here)
-. (Join-Path $repository "windows\watcher.ps1")
+. (Join-Path $repository "windows\passthrough.ps1")
 
 $prefix = "wslt"
 $labelledTableId = "5e1f0c2a-7b3d-4c9e-8a61-0d2f4b6c8e10"
