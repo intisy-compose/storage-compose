@@ -112,6 +112,8 @@ services:
       - ${SETUP_REPO_DIR:-./data}:/setup
       - ${SETUP_GIT_HOME:-./setup-repo-unset}:/setup-home:ro
       - ./host-agent/status:/host-agent:ro
+      # A drive node's volume must show as mounted here, or it is offered as a drive to erase.
+      - ${NODE_VOLUMES:-./node-volumes-unset}:/mnt/nodes:rslave
     # The Windows host agent's native Syncthing instances answer on the host.
     extra_hosts:
       - "host.docker.internal:host-gateway"
