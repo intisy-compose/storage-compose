@@ -81,24 +81,31 @@ export function fetchTailnetJson<T>(url: string, timeoutMs = 5000): Promise<T> {
   const proxy = new URL(tailnetProxy);
   const port = Number(target.port || (target.protocol === "https:" ? 443 : 80));
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${url}: no answer within ${timeoutMs} ms`)), timeoutMs);
+    const sockets: { destroy(): void }[] = [];
+    let settled = false;
     const finish = (error: Error | null, value?: T) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      for (const socket of sockets) socket.destroy();
       if (error) reject(error);
       else resolve(value as T);
     };
-    const connectRequest = httpRequest({ host: proxy.hostname, port: Number(proxy.port || 80), method: "CONNECT", path: `${target.hostname}:${port}` });
+    const timer = setTimeout(() => finish(new Error(`${url}: no answer within ${timeoutMs} ms`)), timeoutMs);
+    const connectRequest = httpRequest({ host: proxy.hostname, port: Number(proxy.port || 80), method: "CONNECT", path: `${target.hostname}:${port}`, agent: false });
+    sockets.push(connectRequest);
     connectRequest.on("error", (error) => finish(error));
     connectRequest.on("connect", (response, socket) => {
+      sockets.push(socket);
       if (response.statusCode !== 200) return finish(new Error(`${url}: the tailnet proxy answered ${response.statusCode}`));
       const stream = target.protocol === "https:" ? tlsConnect({ socket, servername: target.hostname }) : socket;
+      sockets.push(stream);
       const request = httpRequest(
         { createConnection: () => stream, host: target.hostname, path: `${target.pathname}${target.search}`, method: "GET", headers: { Host: target.host } },
         (answer) => {
           const chunks: Buffer[] = [];
           answer.on("data", (chunk: Buffer) => chunks.push(chunk));
           answer.on("end", () => {
-            socket.destroy();
             if (answer.statusCode !== 200) return finish(new Error(`${url}: HTTP ${answer.statusCode}`));
             try {
               finish(null, JSON.parse(Buffer.concat(chunks).toString("utf8")) as T);

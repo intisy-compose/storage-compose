@@ -69,7 +69,7 @@ function requireConfirmation(body: ArrayActionBody, expected: string): void {
 }
 
 async function requireCandidate(device: string | undefined): Promise<string> {
-  if (!device || !isReplacementCandidate(await listBlockDevices(), device)) throw new RequestError(400, `${device} is not an unused drive that may be erased`);
+  if (!device || !isReplacementCandidate(await listBlockDevices({ fresh: true }), device)) throw new RequestError(400, `${device} is not an unused drive that may be erased`);
   return device;
 }
 
@@ -214,3 +214,5 @@ createServer((request, response) => {
     sendJson(response, status, { error: error instanceof Error ? error.message : String(error) });
   });
 }).listen(port, () => console.log(`dashboard listening on ${port}`));
+
+void listBlockDevices().catch(() => undefined);

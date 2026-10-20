@@ -63,13 +63,42 @@ function markAttachedWslDisk(device: BlockDevice, wslDisks: WslDisk[]): BlockDev
   return isAttached ? { ...device, tran: "wsl" } : device;
 }
 
-export async function listBlockDevices(): Promise<BlockDevice[]> {
+async function readBlockDevices(): Promise<BlockDevice[]> {
   const result = await runCommand("lsblk", ["-J", "-b", "-o", "NAME,PATH,TYPE,TRAN,SIZE,MODEL,SERIAL,LABEL,PTUUID,RO,MOUNTPOINTS"]);
   if (result.exitCode !== 0) return [];
   const [labels, wslDisks] = await Promise.all([probedLabels(), readWslDisks()]);
   const devices = (JSON.parse(result.stdout) as { blockdevices: BlockDevice[] }).blockdevices.map((device) => applyLabels(device, labels));
   if (wslDisks.length === 0) return devices;
   return (await Promise.all(devices.map(withPartitionTableId))).map((device) => markAttachedWslDisk(device, wslDisks));
+}
+
+const refreshAfterMilliseconds = 30_000;
+let latest: BlockDevice[] | null = null;
+let refreshedAt = 0;
+let refreshing: Promise<BlockDevice[]> | null = null;
+
+function refresh(): Promise<BlockDevice[]> {
+  refreshing ??= readBlockDevices()
+    .then((devices) => {
+      latest = devices;
+      refreshedAt = Date.now();
+      return devices;
+    })
+    .finally(() => {
+      refreshing = null;
+    });
+  return refreshing;
+}
+
+/**
+ * @implNote blkid reads every block device, which takes seconds on a host with many or slow ones, so
+ * the page gets the last listing while a new one is read; an action that erases a drive asks for a
+ * fresh one.
+ */
+export async function listBlockDevices(options: { fresh?: boolean } = {}): Promise<BlockDevice[]> {
+  if (options.fresh) return refresh();
+  if (Date.now() - refreshedAt > refreshAfterMilliseconds) void refresh().catch(() => undefined);
+  return latest ?? refresh();
 }
 
 function withChildren(device: BlockDevice): BlockDevice[] {

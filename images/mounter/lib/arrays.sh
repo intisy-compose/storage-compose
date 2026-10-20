@@ -186,3 +186,13 @@ take_accept_smart_request() {
     is_data_label "$prefix-$role" || [[ $role =~ ^parity[0-9]+$ ]] || return 0
     log "$(accept_smart "$role")"
 }
+
+# A loop device being attached, or a disk resized, brings no device node and so no event; the sizes
+# the kernel lists in sysfs show it without reading any disk.
+block_devices_changed() {
+    local signature
+    signature=$(cat /sys/class/block/*/size 2> /dev/null | md5sum)
+    [ "$signature" = "${last_block_signature:-}" ] && return 1
+    last_block_signature=$signature
+    return 0
+}

@@ -141,6 +141,7 @@ log "holding the array $prefix as $node"
 # its table), so every round rescans for a while after an event.
 settle_seconds=30
 rescan_until=0
+block_devices_changed
 tick=0
 discovering=yes
 last_discovery=$(date +%s)
@@ -151,7 +152,7 @@ while true; do
     [ "$tick" -eq 0 ] && touch "$ready_file"
     tick=$(( tick + 1 ))
     discovering=
-    if wait_for_event 10 || take_discovery_request; then rescan_until=$(( $(date +%s) + settle_seconds )); fi
+    if wait_for_event 10 || take_discovery_request || block_devices_changed; then rescan_until=$(( $(date +%s) + settle_seconds )); fi
     if [ "$(date +%s)" -le "$rescan_until" ] || [ $(( $(date +%s) - last_discovery )) -ge "$discovery_interval" ]; then
         scan_devices
         discovering=yes
