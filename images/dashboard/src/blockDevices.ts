@@ -1,5 +1,5 @@
 import { runCommand } from "./commands.js";
-import { candidateTransports, roleLabelPattern } from "./settings.js";
+import { anyArrayLabelPattern, candidateTransports } from "./settings.js";
 import { type WslDisk, matchingWslDisks, readWslDisks } from "./wslDisks.js";
 
 export interface BlockDevice {
@@ -81,7 +81,7 @@ function transportOf(device: BlockDevice): string {
 }
 
 function holdsArrayLabel(device: BlockDevice): boolean {
-  return withChildren(device).some((part) => part.label !== null && roleLabelPattern.test(part.label));
+  return withChildren(device).some((part) => part.label !== null && anyArrayLabelPattern.test(part.label));
 }
 
 function isMounted(device: BlockDevice): boolean {
