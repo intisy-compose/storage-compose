@@ -57,15 +57,23 @@ export function isDeviceId(value: string): boolean {
   return deviceIdPattern.test(value);
 }
 
-/** A caller not on our tailnet, or neither owned by the owner nor tagged for storage, is refused. */
-export async function admitCaller(dependencies: JoinDependencies, address: string | null): Promise<WhoIs> {
-  if (!address) throw new JoinError(403, "the caller's tailnet address is unknown; join over the tailnet");
-  const caller = await dependencies.whois(address).catch(() => null);
-  if (!caller) throw new JoinError(403, `${address} is not a device of this tailnet`);
+/**
+ * A caller not on our tailnet, or neither owned by the owner nor tagged for storage, is refused. The
+ * caller may be known by several addresses (the proxied connection's local port, a forwarded tailnet
+ * address); the first that tailscale knows names it.
+ */
+export async function admitCaller(dependencies: JoinDependencies, addresses: string[]): Promise<WhoIs> {
+  if (addresses.length === 0) throw new JoinError(403, "the caller's tailnet address is unknown; join over the tailnet");
+  let caller: WhoIs | null = null;
+  for (const address of addresses) {
+    caller = await dependencies.whois(address).catch(() => null);
+    if (caller) break;
+  }
+  if (!caller) throw new JoinError(403, `${addresses.join(", ")} is not a device of this tailnet`);
   if (caller.tags.includes(dependencies.requiredTag)) return caller;
   const owner = await dependencies.owner().catch(() => null);
   if (owner && caller.loginName === owner) return caller;
-  throw new JoinError(403, `${caller.nodeName || address} is neither owned by ${owner ?? "the tailnet's owner"} nor tagged ${dependencies.requiredTag}`);
+  throw new JoinError(403, `${caller.nodeName || addresses[0]} is neither owned by ${owner ?? "the tailnet's owner"} nor tagged ${dependencies.requiredTag}`);
 }
 
 export function validateJoinRequest(body: unknown): JoinRequest {
@@ -123,8 +131,8 @@ async function shareWithInstances(instances: JoinInstance[], request: JoinReques
   return devices;
 }
 
-export async function handleJoin(dependencies: JoinDependencies, address: string | null, body: unknown): Promise<{ response: JoinResponse; setup: SetupRecordResult | null }> {
-  const caller = await admitCaller(dependencies, address);
+export async function handleJoin(dependencies: JoinDependencies, addresses: string[], body: unknown): Promise<{ response: JoinResponse; setup: SetupRecordResult | null }> {
+  const caller = await admitCaller(dependencies, addresses);
   const request = validateJoinRequest(body);
   const [layout, records] = await Promise.all([dependencies.layout(), dependencies.records.all()]);
   const conflict = conflictingId(request.name, request.syncthingDeviceId, layout, records);

@@ -72,7 +72,9 @@ services:
     image: storage-snapraid:local
     container_name: storage-snapraid
 
-  # Anyone on the tailnet can use its actions, the same trust the tailnet gets everywhere else.
+  # Anyone on the tailnet can use its actions, the same trust the tailnet gets everywhere else. It
+  # reads tailscaled's socket to identify a device that joins, and reaches other hosts' dashboards
+  # through tailscale's outbound proxy.
   dashboard:
     <<: *array-jobs
     build:
@@ -80,6 +82,33 @@ services:
       dockerfile: dashboard/Dockerfile
     image: storage-dashboard:local
     container_name: storage-dashboard
+    environment:
+      ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
+      SYNC_INTERVAL_HOURS: ${SYNC_INTERVAL_HOURS:-24}
+      SCRUB_INTERVAL_DAYS: ${SCRUB_INTERVAL_DAYS:-7}
+      SCRUB_PERCENT: ${SCRUB_PERCENT:-8}
+      SCRUB_OLDER_THAN_DAYS: ${SCRUB_OLDER_THAN_DAYS:-10}
+      SYNC_MAX_DELETED: ${SYNC_MAX_DELETED:-500}
+      CANDIDATE_TRANSPORTS: ${CANDIDATE_TRANSPORTS:-usb,wsl}
+      STORAGE_NODE: ${STORAGE_NODE:?run init-config}
+      STORAGE_HOST: ${STORAGE_HOST:-}
+      STORAGE_PEERS: ${STORAGE_PEERS:-}
+      TAILNET_PROXY: http://gateway:1055
+      INVENTORY_ASSET_URL: ${INVENTORY_ASSET_URL:-}
+      JOIN_OWNER: ${JOIN_OWNER:-}
+      SETUP_REPO_DIR: ${SETUP_REPO_DIR:-}
+      SETUP_LAYOUT: ${SETUP_LAYOUT:-tools/drive-sync/drive-sync.toml}
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /setup
+    volumes:
+      - /dev:/dev
+      - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
+      - storage-status:/status
+      - tailscale-socket:/var/run/tailscale:ro
+      - ${SETUP_REPO_DIR:-./setup-repo-unset}:/setup
+      - ${SETUP_GIT_CONFIG:-./setup-repo-unset/.gitconfig}:/root/.gitconfig:ro
+      - ${SETUP_SSH_DIR:-./setup-repo-unset/.ssh}:/root/.ssh:ro
 
   # Owns the network namespace and publishes the local ports, on loopback only, so the local
   # addresses keep working while tailscale restarts or cannot join.
@@ -114,6 +143,7 @@ services:
       TS_USERSPACE: "true"
       TS_SOCKET: /var/run/tailscale/tailscaled.sock
       TS_SERVE_CONFIG: /config/serve.json
+      TS_OUTBOUND_HTTP_PROXY_LISTEN: :1055
     volumes:
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/tailscale:/var/lib/tailscale
       - ./gateway/serve.json:/config/serve.json:ro

@@ -26,6 +26,13 @@ container() {   # <entrypoint> <arguments...>: one privileged run of the SnapRAI
         -v "$here/migrate-lab.sh:/lab.sh:ro" -e ARRAY_PREFIX=storage --entrypoint "$entrypoint" "$image" "$@"
 }
 lab() { container bash /lab.sh "$@"; }
+
+holder=storage-test-nodes-hold
+hold_drive() {   # <role>: mounted in another container until it is removed
+    docker run -d --rm --name "$holder" --privileged -v /dev:/dev -v "$images_dir:/images" -v "$here/migrate-lab.sh:/lab.sh:ro"         --entrypoint bash "$image" /lab.sh hold "$1" 600 > /dev/null
+    for _ in $(seq 60); do docker logs "$holder" 2> /dev/null | grep -q holding && return 0; sleep 1; done
+    echo "the drive was not mounted"; return 1
+}
 migrate() { container migrate-labels.sh "$@" 2>&1; }
 
 say "Building the SnapRAID image and the drives"
@@ -38,10 +45,9 @@ say "Refusals"
 lab detach parity2 > /dev/null
 expect_match "refused with a member missing" "every member must be present; missing: parity2" "$(migrate --from storage)"
 lab attach parity2 > /dev/null
-container bash /lab.sh hold data3 25 > /dev/null &
-sleep 5
+hold_drive data3
 expect_match "refused with a member mounted" "the array must be stopped; mounted or in use: data3" "$(migrate --from storage)"
-wait
+docker rm -f "$holder" > /dev/null
 expect_match "a dry run changes nothing" "dry run: nothing changed" "$(migrate --from storage --id a3f9 --dry-run)"
 
 say "Migration"
@@ -58,7 +64,7 @@ say "The array afterwards"
 output=$(lab after a3f9)
 echo "$output" | sed 's/^/  | /'
 expect_match "every label carries the id" "^a3f9-data1 a3f9-data2 a3f9-data3 a3f9-data4 a3f9-data5 a3f9-parity1 a3f9-parity2 $" "$output"
-expect_match "every member has the description" "parity2: 1 \"private-array\"  members 7" "$output"
+expect_match "every member has the description" "parity2: \"private-array\" 1  members 7" "$output"
 expect_match "array.toml's serial and asset moved into node.toml" 'serial = "SERIAL-data1"' "$output"
 expect_match "the backups are kept" "array.toml.before-migration .*snapraid.drives.before-migration" "$output"
 if grep -qE "(^| )array.toml( |$)" <<< "$output"; then fail "array.toml is gone"; else pass "array.toml is gone"; fi

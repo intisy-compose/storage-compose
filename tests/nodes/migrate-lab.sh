@@ -56,7 +56,7 @@ fill() {
     cp -a "$root/storage-data1/.storage/." "$root/storage-data2/.storage/"
     ARRAY_PREFIX=storage snapraid.sh config > /dev/null || fail "no config"
     /usr/bin/snapraid -c /status/arrays/storage/snapraid.conf sync > /tmp/sync.log 2>&1 || { tail -5 /tmp/sync.log; fail "the first sync failed"; }
-    echo "synced: $(grep -cE '^ *100% completed' /tmp/sync.log) run, $(find "$root"/storage-data*/Files -type f | wc -l) files"
+    echo "synced $(find "$root"/storage-data*/Files -type f | wc -l) files: $(tail -n 1 /tmp/sync.log)"
     /usr/bin/snapraid -c /status/arrays/storage/snapraid.conf status 2>&1 | grep -E "No error detected|error" | head -3
     find "$root"/storage-data*/Files -type f -exec md5sum {} + | sed "s|$root/storage-||" | sort > "$images/checksums.before"
 }

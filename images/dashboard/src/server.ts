@@ -109,11 +109,16 @@ async function handleArrayAction(arrayId: string, action: ArrayAction, request: 
   sendJson(response, 202, { started: job });
 }
 
-/** Caddy sets X-Forwarded-For to the address it took from tailscale's PROXY header; nothing else is trusted. */
-function callerAddress(request: IncomingMessage): string | null {
-  const forwarded = String(request.headers["x-forwarded-for"] ?? "").split(",").pop()?.trim();
-  const address = forwarded || request.socket.remoteAddress || "";
-  return address.replace(/^::ffff:/, "") || null;
+/**
+ * @implNote Tailscale forwards a tailnet connection to Caddy from a local port it remembers, so whois on
+ * that port names the caller; Caddy passes it as X-Tailnet-Peer. A forwarded address that is not
+ * loopback is tried too.
+ */
+function callerAddresses(request: IncomingMessage): string[] {
+  const peer = String(request.headers["x-tailnet-peer"] ?? "").trim();
+  const forwarded = String(request.headers["x-forwarded-for"] ?? "").split(",").pop()?.trim().replace(/^::ffff:/, "") ?? "";
+  const isLoopback = (address: string) => address === "" || address.startsWith("127.") || address === "::1";
+  return [...(peer ? [peer] : []), ...(isLoopback(forwarded) ? [] : [forwarded])];
 }
 
 async function syncPortOf(nodeId: string): Promise<number | null> {
@@ -161,7 +166,7 @@ const joinDependencies: JoinDependencies = {
 
 async function handleJoinRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
   try {
-    const { response: answer, setup } = await handleJoin(joinDependencies, callerAddress(request), await readBody(request));
+    const { response: answer, setup } = await handleJoin(joinDependencies, callerAddresses(request), await readBody(request));
     if (setup) console.log(`join: ${setup.message}`);
     sendJson(response, 200, answer);
   } catch (error) {
