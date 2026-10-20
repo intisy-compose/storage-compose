@@ -31,7 +31,7 @@ export const joinOwner = process.env.JOIN_OWNER ?? "";
 export const joinTag = "tag:storage";
 /** The setup repo inside the container: SETUP_REPO_DIR, by default the stack's own data repo. */
 export const setupRepoDirectory = process.env.SETUP_REPO_DIR ? "/setup" : "";
-export const setupLayoutPath = process.env.SETUP_LAYOUT ?? "tools/drive-sync/drive-sync.toml";
+export const setupLayoutPath = process.env.SETUP_LAYOUT ?? "drive-sync.toml";
 /** Where the cluster's Syncthing answers inside the stack: Caddy's local site in front of its GUI. */
 export const clusterSyncthingUrl = process.env.CLUSTER_SYNCTHING_URL ?? "http://gateway:8443";
 

@@ -97,7 +97,7 @@ services:
       INVENTORY_ASSET_URL: ${INVENTORY_ASSET_URL:-}
       JOIN_OWNER: ${JOIN_OWNER:-}
       SETUP_REPO_DIR: ${SETUP_REPO_DIR:-./data}
-      SETUP_LAYOUT: ${SETUP_LAYOUT:-tools/drive-sync/drive-sync.toml}
+      SETUP_LAYOUT: ${SETUP_LAYOUT:-drive-sync.toml}
       GIT_CONFIG_COUNT: 1
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: /setup
