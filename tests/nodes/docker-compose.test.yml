@@ -1,0 +1,41 @@
+# Layered over docker-compose.yml by tests/nodes/run.sh: the stack under test names and image tags on
+# the lab's loop drives, with no tailnet and nothing published on the host.
+services:
+  lab:
+    build: tests/nodes/lab
+    image: storage-lab:nodetest
+    container_name: stn-lab
+    privileged: true
+    volumes:
+      - /dev:/dev
+      - ${STORAGE_ROOT}:/mnt/storage:rslave
+      - ${NODE_VOLUMES}:/volumes:rshared
+      - ${LAB_IMAGES}:/images
+      - storage-status:/status
+
+  mounter:
+    image: storage-mounter:nodetest
+    container_name: stn-mounter
+
+  pool:
+    image: storage-pool:nodetest
+    container_name: stn-pool
+
+  snapraid:
+    image: storage-snapraid:nodetest
+    container_name: stn-snapraid
+
+  dashboard:
+    image: storage-dashboard:nodetest
+    container_name: stn-dashboard
+
+  gateway:
+    container_name: stn-gateway
+    ports: !reset []
+
+  syncthing:
+    container_name: stn-syncthing
+
+  nodes:
+    image: storage-nodes:nodetest
+    container_name: stn-nodes
