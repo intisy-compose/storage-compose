@@ -28,7 +28,8 @@ function syncthing(seed, overrides = {}) {
 function member(role, label, size, used, asset, overrides = {}) {
   return {
     role, label, serial: `ZA${label.length}${role.toUpperCase()}${size}`.slice(0, 12), size, used, asset, present: true,
-    smart: { passed: true, reallocatedSectors: 0, pendingSectors: 0, powerOnHours: 21000 }, temperature: 36, ...overrides,
+    smart: { state: "ok", detail: "passed", reallocatedSectors: 0, pendingSectors: 0, powerOnHours: 21000 }, temperature: 36,
+    condition: "present", detail: "", assetUrl: null, ...overrides,
   };
 }
 
@@ -46,7 +47,7 @@ function privateArray() {
     array: {
       state: "healthy",
       members: [
-        member("data1", "a3f9-data1", 4 * terabyte, 3.68 * terabyte, "SAM-0056", { temperature: 41, smart: { passed: true, reallocatedSectors: 8, pendingSectors: 0 } }),
+        member("data1", "a3f9-data1", 4 * terabyte, 3.68 * terabyte, "SAM-0056", { temperature: 41, smart: { state: "warn", detail: "8 reallocated, 0 pending (accepted as its baseline)", reallocatedSectors: 8, pendingSectors: 0, powerOnHours: 23000 } }),
         member("data2", "a3f9-data2", 4 * terabyte, 2.08 * terabyte, "SAM-0042"),
         member("data3", "a3f9-data3", 2 * terabyte, 1.48 * terabyte, "SAM-0043", { temperature: 35 }),
         member("parity1", "a3f9-parity1", 10 * terabyte, 8 * terabyte, "SAM-0061", { temperature: 38 }),
@@ -71,7 +72,7 @@ function backupArray(startedAt) {
       state: "degraded",
       members: [
         member("data1", "b71c-data1", 3 * terabyte, 2.2 * terabyte, "SAM-0071", { temperature: 39 }),
-        member("data2", "b71c-data2", 3 * terabyte, null, "SAM-0072", { present: false, smart: null, temperature: null }),
+        member("data2", "b71c-data2", 3 * terabyte, null, "SAM-0072", { present: false, smart: null, temperature: null, condition: "missing", detail: "not seen since 2026-10-18" }),
         member("parity1", "b71c-parity1", 4 * terabyte, 3.1 * terabyte, null, { temperature: 37, smart: null }),
       ],
       parity: { job: { kind: "sync", progress, startedAt: new Date(jobStart).toISOString() }, lastSync: ago(3 * day), lastScrub: ago(9 * day) },

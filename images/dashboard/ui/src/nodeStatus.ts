@@ -56,29 +56,20 @@ export interface SmartVerdict {
   tone: Tone;
 }
 
-function verdictFromSummary(smart: MemberSmart): SmartVerdict {
-  if (smart.passed === false) return { label: "failing", tone: "bad" };
-  if (smart.state && smart.state !== "ok") return { label: smart.detail ?? smart.state, tone: smart.state === "failing" ? "bad" : "warn" };
+function countsVerdict(smart: MemberSmart): SmartVerdict {
   const reallocated = smart.reallocatedSectors ?? 0;
   const pending = smart.pendingSectors ?? 0;
-  if (pending > 0) return { label: `${pending} pending`, tone: "bad" };
-  if (reallocated > 0) return { label: `${reallocated} realloc.`, tone: "warn" };
-  if (smart.percentageUsed !== null && smart.percentageUsed !== undefined && smart.percentageUsed >= 80) {
-    return { label: `${smart.percentageUsed}% worn`, tone: "warn" };
-  }
-  if (smart.passed === null && !smart.state) return { label: "no SMART", tone: "muted" };
-  return { label: "ok", tone: "ok" };
+  if (pending > 0) return { label: `${pending} pending`, tone: smart.state === "fail" ? "bad" : "warn" };
+  if (reallocated > 0) return { label: `${reallocated} realloc.`, tone: smart.state === "fail" ? "bad" : "warn" };
+  return { label: smart.state === "fail" ? "failing" : "ok", tone: smart.state === "fail" ? "bad" : "ok" };
 }
 
 export function smartVerdict(member: ArrayMember): SmartVerdict {
   if (!member.present) return { label: "missing", tone: "bad" };
   const smart = member.smart;
-  if (smart === null || smart === undefined) return { label: "no SMART", tone: "muted" };
-  if (typeof smart === "string") {
-    const tone: Tone = smart === "ok" || smart === "passed" ? "ok" : smart === "failing" ? "bad" : "warn";
-    return { label: smart, tone };
-  }
-  return verdictFromSummary(smart);
+  if (smart === null || smart.state === "none") return { label: "no SMART", tone: "muted" };
+  if (smart.state === "ok") return { label: "ok", tone: "ok" };
+  return countsVerdict(smart);
 }
 
 export function isSmartWarning(member: ArrayMember): boolean {
