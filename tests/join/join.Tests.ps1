@@ -10,6 +10,7 @@ $repository = Split-Path (Split-Path $PSScriptRoot)
 . (Join-Path $PSScriptRoot "..\agent\test-volumes.ps1")
 
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "join-windows-$([guid]::NewGuid())"
+$realLocalAppData = $env:LOCALAPPDATA
 $userSyncthingGuiPort = 18490
 $userSyncthingListenPort = 32190
 $peerGuiPort = 18491
@@ -19,6 +20,7 @@ $global:tailnetState = "NeedsLogin"
 $global:tailscaleUps = @()
 $global:tasks = @{}
 $global:registrations = 0
+$global:taskCalls = @()
 $realNativeCommand = ${function:Invoke-NativeCommand}
 
 function Invoke-NativeCommand([string]$FilePath, [string[]]$Arguments, [string]$InputText) {
@@ -30,12 +32,14 @@ function Invoke-NativeCommand([string]$FilePath, [string[]]$Arguments, [string]$
     }
 }
 function Get-TailnetAddress { return "127.0.0.1" }
-function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName);  return $global:tasks[$TaskName] }
+function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName);  if ($TaskName) { return $global:tasks[$TaskName] }; return @($global:tasks.Values) }
+function Disable-ScheduledTask { [CmdletBinding()] param([string]$TaskName, [string]$TaskPath); $global:taskCalls += "disable $TaskName" }
+function Unregister-ScheduledTask { [CmdletBinding()] param([string]$TaskName, [string]$TaskPath, [switch]$Confirm); $global:taskCalls += "unregister $TaskName"; $global:tasks.Remove($TaskName) }
 function New-ScheduledTaskAction { [CmdletBinding()] param([string]$Execute, [string]$Argument);  return [pscustomobject]@{ Execute = $Execute; Arguments = $Argument } }
 function New-ScheduledTaskTrigger { [CmdletBinding()] param([switch]$AtLogOn, [string]$User);  return "at logon of $User" }
 function New-ScheduledTaskSettingsSet { [CmdletBinding()] param($ExecutionTimeLimit, $RestartCount, $RestartInterval, [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries);  return "settings" }
 function Register-ScheduledTask { [CmdletBinding()] param([string]$TaskName, $Action, $Trigger, $Settings, [switch]$Force); 
-    $global:tasks[$TaskName] = [pscustomobject]@{ Actions = @($Action) }
+    $global:tasks[$TaskName] = [pscustomobject]@{ TaskName = $TaskName; TaskPath = "\"; Actions = @($Action) }
     $global:registrations++
 }
 function Start-ScheduledTask { [CmdletBinding()] param([string]$TaskName); 
@@ -76,6 +80,12 @@ function Stop-Everything {
     foreach ($process in @(Get-SyncthingProcesses)) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }
     if ($script:dashboardProcess) { Stop-Process -Id $script:dashboardProcess.Id -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 1
+    Get-CimInstance Win32_Process -Filter "Name='syncthing.exe'" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($scratch) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    if ($script:adoptLetter) { & subst.exe "$($script:adoptLetter):" /D | Out-Null }
+    Remove-ProgramFirewallRules (Join-Path $repository "host-agent\bin")
+    Remove-ProgramFirewallRules $scratch
+    $env:LOCALAPPDATA = $realLocalAppData
+    Start-Sleep -Seconds 1
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
 }
 
@@ -99,6 +109,7 @@ $AuthKey = "tskey-test"
 try {
     Start-Peer
     Start-Dashboard
+    $env:LOCALAPPDATA = Join-Path $scratch "localappdata"
 
     Describe "the first run" {
         $outcome = Invoke-JoinCapturingFailure
@@ -213,6 +224,74 @@ try {
             } finally {
                 if ($saved) { [System.IO.File]::WriteAllText($heartbeatFile, $saved) } else { Remove-Item -Force $heartbeatFile }
             }
+        }
+    }
+    Describe "adopting a Syncthing the device already runs" {
+        $userSyncthingGuiPort = 18492
+        $userSyncthingListenPort = 32192
+        $Name = "adopted-pc"
+        $script:adoptLetter = Get-FreeDriveLetter
+        New-Item -ItemType Directory -Force -Path (Join-Path $scratch "volume2"), (Join-Path $scratch "winget"), (Join-Path $scratch "photos") | Out-Null
+        & subst.exe "$($script:adoptLetter):" (Join-Path $scratch "volume2") | Out-Null
+        $Root = "$($script:adoptLetter):\"
+        $nodeHome = "$($Root).storage\syncthing"
+        $oldHome = Join-Path $env:LOCALAPPDATA "Syncthing"
+        $winget = Join-Path $scratch "winget\syncthing.exe"
+        Copy-Item $script:syncthingPath $winget
+        & $winget generate "--home=$oldHome" --no-port-probing 2>&1 | Out-Null
+        $config = [xml][System.IO.File]::ReadAllText((Join-Path $oldHome "config.xml"))
+        $config.configuration.gui.address = "127.0.0.1:18484"
+        foreach ($listen in @($config.configuration.options.SelectNodes("listenAddress"))) { $listen.InnerText = "tcp://0.0.0.0:32184" }
+        $config.Save((Join-Path $oldHome "config.xml"))
+        $old = Start-Process -FilePath $winget -ArgumentList "serve --no-browser --no-console" -WindowStyle Hidden -PassThru
+        $oldKey = Get-ApiKey $oldHome
+        $oldApi = { param($Method, $Path, $Body) $arguments = @{ Method = $Method; Uri = "http://127.0.0.1:18484$Path"; Headers = @{ "X-API-Key" = $oldKey }; UseBasicParsing = $true }; if ($Body) { $arguments["Body"] = $Body; $arguments["ContentType"] = "application/json" }; Invoke-RestMethod @arguments }
+        $deadline = (Get-Date).AddSeconds(60)
+        while ((Get-Date) -lt $deadline) { try { & $oldApi "Get" "/rest/system/status" | Out-Null; break } catch { Start-Sleep -Milliseconds 500 } }
+        $deviceBefore = (& $oldApi "Get" "/rest/system/status").myID
+        $peerId = (Invoke-Peer "Get" "/rest/system/status").myID
+        & $oldApi "Put" "/rest/config/devices/$peerId" "{`"deviceID`": `"$peerId`", `"name`": `"old-peer`"}" | Out-Null
+        & $oldApi "Put" "/rest/config/folders/photos" (ConvertTo-Json -Compress @{ id = "photos"; label = "photos"; path = (Join-Path $scratch "photos"); devices = @(@{ deviceID = $peerId }) }) | Out-Null
+        Start-Sleep -Seconds 2
+        $certificate = (Get-FileHash (Join-Path $oldHome "cert.pem")).Hash
+        $global:tasks["Syncthing"] = [pscustomobject]@{ TaskName = "Syncthing"; TaskPath = "\"; Actions = @([pscustomobject]@{ Execute = $winget; Arguments = "serve --no-browser --no-console" }) }
+        $global:taskCalls = @()
+        $realBefore = @(Get-Process syncthing -ErrorAction SilentlyContinue | Where-Object { $_.Path -and -not $_.Path.StartsWith($scratch) -and $_.Path -ne $script:syncthingPath }).Count
+        $outcome = Invoke-JoinCapturingFailure
+        $adoptedKey = Get-ApiKey $nodeHome
+        $adopted = { param($Path) Invoke-RestMethod -Uri "http://127.0.0.1:18492$Path" -Headers @{ "X-API-Key" = $adoptedKey } -UseBasicParsing }
+        $deadline = (Get-Date).AddSeconds(60)
+        while ((Get-Date) -lt $deadline) { try { & $adopted "/rest/system/status" | Out-Null; break } catch { Start-Sleep -Milliseconds 500 } }
+
+        It "never sees this PC's own Syncthing home" { $oldHome.StartsWith($scratch) | Should Be $true }
+        It "succeeds" { $outcome | Should Be "ok" }
+        It "stops the old Syncthing" { $old.HasExited | Should Be $true }
+        It "moves the home onto the node, certificate and key included" {
+            Test-Path $oldHome | Should Be $false
+            (Get-FileHash (Join-Path $nodeHome "cert.pem")).Hash | Should Be $certificate
+            Test-Path (Join-Path $nodeHome "key.pem") | Should Be $true
+        }
+        It "keeps the device ID" { (& $adopted "/rest/system/status").myID | Should Be $deviceBefore }
+        It "keeps its folders and devices" {
+            (& $adopted "/rest/config/folders/photos").path | Should Be (Join-Path $scratch "photos")
+            (& $adopted "/rest/config/devices/$peerId").name | Should Be "storage"
+        }
+        It "listens on the tailnet only, with its GUI on loopback" {
+            @((& $adopted "/rest/config/options").listenAddresses) | Should Be @("tcp://127.0.0.1:32192")
+            (& $adopted "/rest/config/gui").address | Should Be "127.0.0.1:18492"
+        }
+        It "removes the old logon task, after disabling it first" {
+            ($global:taskCalls -join ",") | Should Be "disable Syncthing,unregister Syncthing"
+            $global:tasks.ContainsKey("Syncthing") | Should Be $false
+        }
+        It "leaves the old executable installed" { Test-Path $winget | Should Be $true }
+        It "leaves every other Syncthing on this PC running" {
+            @(Get-Process syncthing -ErrorAction SilentlyContinue | Where-Object { $_.Path -and -not $_.Path.StartsWith($scratch) -and $_.Path -ne $script:syncthingPath }).Count | Should Be $realBefore
+        }
+        It "changes nothing when run again" {
+            $script:joinChanges = 0
+            Invoke-JoinCapturingFailure | Should Be "ok"
+            $script:joinChanges | Should Be 0
         }
     }
 } finally {
