@@ -3,10 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "build:ui": "tsc -p ui/tsconfig.json && node ui/build.mjs",
+    "fixture": "node ui/fixture/server.mjs"
   },
   "devDependencies": {
     "@types/node": "20.19.43",
+    "esbuild": "0.28.2",
     "typescript": "7.0.2"
   }
 }
