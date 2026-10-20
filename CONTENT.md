@@ -157,8 +157,9 @@ The dashboard asks tailscaled who the caller is: a device tagged `tag:storage`, 
 `JOIN_OWNER` (by default the owner of this host's tailnet node), is admitted; anyone else gets 403.
 It adds the device to every Syncthing on this host, shares the folders the device's thresholds
 admit (from the setup repo's folder list, priority 80 for `synced`, 30 for `archive`, 0 never
-leaves its node), and records the device in the setup repo (`SETUP_REPO_DIR`) with a commit and a
-push, or, without one, on this host only. Calling it again with the same name and ID is harmless; a
+leaves its node), and records the device in the setup repo (`SETUP_REPO_DIR`, by default the stack's own data repo
+in `data/`) with a commit and a push, or, while that repo holds no `SETUP_LAYOUT`, on this host
+only. Calling it again with the same name and ID is harmless; a
 known name with another device ID gets 409.
 
 ## Sharing, syncing and backups

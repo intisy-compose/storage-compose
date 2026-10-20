@@ -11,7 +11,7 @@ host-agent/
 # The log of the logon task the host agent replaced
 attach.log*
 
-# Mounted in place of the setup repo and its git home while SETUP_REPO_DIR and SETUP_GIT_HOME are unset
+# Mounted in place of the setup repo's git home while SETUP_GIT_HOME is unset
 setup-repo-unset/
 
 # Built from images/dashboard/ui by npm run build:ui (also in the image build)

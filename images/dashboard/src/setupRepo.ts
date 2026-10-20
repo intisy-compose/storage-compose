@@ -96,9 +96,20 @@ export function upsertDevice(text: string, name: string, deviceId: string, root:
   return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
+async function readLayoutText(): Promise<string | null> {
+  try {
+    return await readFile(`${setupRepoDirectory}/${setupLayoutPath}`, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/** Null while the setup repo holds no layout yet, as a fresh data repo does. */
 export async function readLayout(): Promise<SetupLayout | null> {
   if (!setupRepoDirectory) return null;
-  return parseLayout(await readFile(`${setupRepoDirectory}/${setupLayoutPath}`, "utf8"));
+  const text = await readLayoutText();
+  return text === null ? null : parseLayout(text);
 }
 
 async function git(...args: string[]): Promise<{ ok: boolean; output: string }> {
@@ -109,7 +120,8 @@ async function git(...args: string[]): Promise<{ ok: boolean; output: string }> 
 /** Writes the device into the layout, commits with the repo's own identity, and pushes. */
 export async function recordDevice(name: string, deviceId: string, root: string | null): Promise<SetupRecordResult> {
   const path = `${setupRepoDirectory}/${setupLayoutPath}`;
-  const before = await readFile(path, "utf8");
+  const before = await readLayoutText();
+  if (before === null) return { committed: false, pushed: false, message: `the setup repo has no ${setupLayoutPath}; the admission is recorded on this host only` };
   const after = upsertDevice(before, name, deviceId, root);
   if (after === before) return { committed: true, pushed: true, message: `${name} is already in the setup repo` };
   await writeFile(path, after);

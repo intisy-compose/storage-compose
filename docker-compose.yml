@@ -96,7 +96,7 @@ services:
       TAILNET_PROXY: http://gateway:1055
       INVENTORY_ASSET_URL: ${INVENTORY_ASSET_URL:-}
       JOIN_OWNER: ${JOIN_OWNER:-}
-      SETUP_REPO_DIR: ${SETUP_REPO_DIR:-}
+      SETUP_REPO_DIR: ${SETUP_REPO_DIR:-./data}
       SETUP_LAYOUT: ${SETUP_LAYOUT:-tools/drive-sync/drive-sync.toml}
       GIT_CONFIG_COUNT: 1
       GIT_CONFIG_KEY_0: safe.directory
@@ -109,7 +109,7 @@ services:
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
       - storage-status:/status
       - tailscale-socket:/var/run/tailscale:ro
-      - ${SETUP_REPO_DIR:-./setup-repo-unset}:/setup
+      - ${SETUP_REPO_DIR:-./data}:/setup
       - ${SETUP_GIT_HOME:-./setup-repo-unset}:/setup-home:ro
       - ./host-agent/status:/host-agent:ro
     # The Windows host agent's native Syncthing instances answer on the host.

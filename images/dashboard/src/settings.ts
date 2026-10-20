@@ -29,7 +29,7 @@ export const tailscaleSocket = process.env.TAILSCALE_SOCKET ?? "/var/run/tailsca
 /** The tailnet login allowed to join devices besides `tag:storage`; empty takes this node's owner. */
 export const joinOwner = process.env.JOIN_OWNER ?? "";
 export const joinTag = "tag:storage";
-/** The setup repo's clone inside the container; empty when SETUP_REPO_DIR is not set. */
+/** The setup repo inside the container: SETUP_REPO_DIR, by default the stack's own data repo. */
 export const setupRepoDirectory = process.env.SETUP_REPO_DIR ? "/setup" : "";
 export const setupLayoutPath = process.env.SETUP_LAYOUT ?? "tools/drive-sync/drive-sync.toml";
 /** Where the cluster's Syncthing answers inside the stack: Caddy's local site in front of its GUI. */
