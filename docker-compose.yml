@@ -40,9 +40,11 @@ services:
       SMART_INTERVAL_HOURS: ${SMART_INTERVAL_HOURS:-6}
       NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
       NTFY_TOPIC: ${NTFY_TOPIC:-}
+      DISCOVERY_POLL_SECONDS: ${DISCOVERY_POLL_SECONDS:-300}
     volumes:
       - /dev:/dev
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rshared
+      - ${NODE_VOLUMES:-/mnt/storage-volumes}:/mnt/nodes:rslave
       - storage-status:/status
     stop_grace_period: 60s
 
@@ -64,7 +66,9 @@ services:
 
   snapraid:
     <<: *array-jobs
-    build: images/snapraid
+    build:
+      context: images
+      dockerfile: snapraid/Dockerfile
     image: storage-snapraid:local
     container_name: storage-snapraid
 
