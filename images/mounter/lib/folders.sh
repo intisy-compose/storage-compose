@@ -28,8 +28,8 @@ syncthing_folders() {   # "<id><tab><path>" for every configured folder
 pool_relative() {   # <folder path>: the path inside the pool, or nothing for a folder outside it
     local path=${1%/}
     case $path in
-        "$root/pool") echo . ;;
-        "$root/pool/"*) echo "${path#"$root/pool/"}" ;;
+        "$(pool_path)") echo . ;;
+        "$(pool_path)/"*) echo "${path#"$(pool_path)/"}" ;;
     esac
 }
 

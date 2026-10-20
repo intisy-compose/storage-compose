@@ -5,3 +5,6 @@ config.env
 attach-request.json*
 attach-state.json*
 attach.log*
+
+# Mounted in place of the setup repo and its git home while SETUP_REPO_DIR and SETUP_GIT_HOME are unset
+setup-repo-unset/

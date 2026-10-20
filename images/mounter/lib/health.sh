@@ -69,10 +69,12 @@ judge_smart() {   # <label> <values>: why the drive is failing, or nothing
 }
 
 check_smart() {   # <label>
-    local report
+    local report values
     record_set "$1" smart_checked "$(date +%s)"
     report=$(smart_report "$(whole_disk_node "$(record_get "$1" device)")") || return 0
-    record_set "$1" smart_reason "$(judge_smart "$1" "$(smart_values <<< "$report")")"
+    values=$(smart_values <<< "$report")
+    record_set "$1" serial "$(jq -r '.serial // empty' <<< "$values")"
+    record_set "$1" smart_reason "$(judge_smart "$1" "$values")"
 }
 
 smart_is_due() {

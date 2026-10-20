@@ -9,6 +9,8 @@ Set-StrictMode -Version Latest
 $configFile  = Join-Path $PSScriptRoot "config.env"
 $exampleFile = Join-Path $PSScriptRoot "config.env.example"
 $composeArgs = @("--env-file", $configFile)
+# A Windows host runs the host agent, so the dashboard reports it when it is not running.
+$env:HOST_AGENT_EXPECTED = "yes"
 $probe = "debian:trixie-slim"
 $usbipdFolder = "C:\Program Files\usbipd-win"
 $smartctlPackage = "winget install --id smartmontools.smartmontools --version 7.5 -e"
@@ -454,6 +456,31 @@ function Stop-Array {
     Disconnect-Drives
 }
 
+<#
+.NOTES
+Runs in a one-off SnapRAID container while the stack is down, with the drives passed through for it
+and released again; on success ARRAY_PREFIX becomes the array's id, so the stack finds its state on
+<id>-data1.
+#>
+function Invoke-LabelMigration {
+    Assert-Config
+    if (docker compose @composeArgs ps -q --status running) { Write-Err "The stack is running; run '.\docker-compose.ps1 down' first."; exit 1 }
+    $from = Get-ConfigValue "ARRAY_PREFIX" "storage"
+    Write-Step "Building the SnapRAID image..."
+    docker compose @composeArgs build --quiet snapraid
+    if ($LASTEXITCODE -ne 0) { Write-Err "The build failed."; exit 1 }
+    Connect-Drives
+    Write-Step "Migrating the labels of the array $from..."
+    $output = @(docker compose @composeArgs run --rm --no-deps -T --entrypoint /usr/local/bin/migrate-labels.sh snapraid --from $from @forwarded 2>&1 |
+        ForEach-Object { $line = "$_"; Write-Host $line; $line })
+    Disconnect-Drives
+    $migrated = $output | Where-Object { $_ -match '^migrated ([0-9a-f]{4})$' } | Select-Object -Last 1
+    if (-not $migrated) { return }
+    $id = $migrated.Substring("migrated ".Length)
+    Set-ConfigValues @{ ARRAY_PREFIX = $id }
+    Write-OK "Wrote ARRAY_PREFIX=$id to config.env; start the array with '.\docker-compose.ps1 up'."
+}
+
 function Show-Drives {
     docker run --rm --privileged $probe lsblk -o NAME,SIZE,FSTYPE,LABEL,MODEL,SERIAL,TRAN
 }
@@ -493,6 +520,7 @@ $commands = @{
     "credentials" = "Print the Samba, Syncthing and Kopia logins, which live on the array"
     "kopia-user"  = "<user@host>  add a Kopia client account (or reset its password) and print it"
     "accept-smart" = "<role>  take a drive's current SMART counts as its baseline, e.g. accept-smart data2"
+    "migrate-labels" = "[--id <4 hex>] [--name <name>] [--dry-run]  with the stack down, move the array from the storage-* labels to <id>-*, keeping its parity; ARRAY_PREFIX becomes the id"
 }
 
 switch ($Command.ToLower()) {
@@ -512,6 +540,7 @@ switch ($Command.ToLower()) {
     "credentials" { Show-Credentials; break }
     "kopia-user" { docker compose @composeArgs exec -T kopia kopia.sh user @forwarded; exit $LASTEXITCODE }
     "accept-smart" { docker compose @composeArgs exec -T mounter mounter.sh accept-smart @forwarded; exit $LASTEXITCODE }
+    "migrate-labels" { Invoke-LabelMigration; break }
     "snapraid" {
         docker compose @composeArgs exec -T snapraid snapraid.sh config | Out-Null
         docker compose @composeArgs exec -T snapraid snapraid -c /etc/snapraid.conf @forwarded; exit $LASTEXITCODE

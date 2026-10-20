@@ -11,27 +11,63 @@ Samba, Syncthing and Kopia); the migration onto the real drives follows.
 
 | service | image | role |
 | --- | --- | --- |
-| `mounter` | built, `debian:trixie-slim` | mounts every drive by its ext4 label under `/mnt/storage/<label>`, holds the array's lock, mirrors the stack state from `data1` to `data2` |
-| `pool` | built, `debian:trixie-slim` + mergerfs 2.40 | one view of every data drive at `/mnt/storage/pool` |
-| `snapraid` | built, `debian:trixie-slim` + SnapRAID 12.4 | writes SnapRAID's config from the drives it has seen, syncs once the last sync is a day old and scrubs once the last scrub is a week old |
+| `mounter` | built, `debian:trixie-slim` | finds every node on the host by metadata: mounts each array's drives by their ext4 labels under `/mnt/storage/<label>`, holds each array's lock, mirrors the stack state from `data1` to `data2`, and lists the drive and folder nodes it finds under `NODE_VOLUMES` |
+| `pool` | built, `debian:trixie-slim` + mergerfs 2.40 | one view of each array's data drives, the cluster's at `/mnt/storage/pool`, any other's at `/mnt/storage/pool-<id>` |
+| `snapraid` | built, `debian:trixie-slim` + SnapRAID 12.4 | writes each array's SnapRAID config from the drives it has seen, syncs once the last sync is a day old and scrubs once the last scrub is a week old, each array on its own |
 | `tailscale` | `tailscale/tailscale:v1.102.4` | joins your tailnet as `storage` inside the gateway's network and forwards the tailnet ports; its node key lives on the array |
-| `dashboard` | built, TypeScript on Node 20 + SnapRAID | the drives with SMART health, parity status, the log, and the actions below |
+| `dashboard` | built, TypeScript on Node 20 + SnapRAID | every node of this host and the other hosts, their drives with SMART health, parity, Syncthing devices and folders, the actions below, and the join of new devices |
 | `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale, in front of the dashboard, the Syncthing GUI and Kopia; the dashboard and the Syncthing GUI also on `127.0.0.1:8442` and `:8443` |
 | `samba` | `ghcr.io/crazy-max/samba:4.23.8` | the pool as one SMB share, `\\storage.<tailnet>.ts.net\storage` |
 | `syncthing` | `ghcr.io/syncthing/syncthing:2.1.6` | a Syncthing peer whose folders live anywhere in the pool, nested ones too (`pool/Documents`, `pool/Documents/GitHub`); its GUI is `https://storage.<tailnet>.ts.net:8384` |
+| `nodes` | built, `debian:trixie-slim` + Syncthing 2.1.6 | one Syncthing per drive node, folder node and array other than the cluster, each with the identity kept on its own storage, on sync ports 22001 and up |
 | `kopia` | built from the Kopia 0.23.1 release binary | a Kopia repository server on `pool/kopia`, `https://storage.<tailnet>.ts.net:51515` |
 
 Every image is pinned to a version.
 
-## Drives
+## Nodes
 
-Every drive is ext4 with a label naming its role: `storage-data1`, `storage-data2`, ...,
-`storage-parity1`. The USB port, the device order and the host never matter. `storage-data1`
-holds the stack state in `/.storage/`, mirrored to `storage-data2`.
+Every place that holds data is a node, with its identity in `.storage/node.toml` on its own
+storage, so it stays the same node on whichever host it is attached to:
 
-**One host at a time**: the mounter writes its host name and a heartbeat into the lock on
-`storage-data1` every minute and refuses to start while another host was seen in the last ten
-minutes. `down` releases it.
+- **array**: several drives with SnapRAID parity. Each drive is ext4 with a label naming its array's
+  4 hex digit id and its role: `a3f9-data1`, `a3f9-data2`, ..., `a3f9-parity1`. The USB port, the
+  device order and the host never matter, and any number of arrays run side by side. Every member
+  carries the whole array's description (its members' roles, labels, serials, sizes and inventory
+  assets), the copy with the highest `revision` winning, so any one drive names the members that
+  are missing.
+- **drive**: one volume whose root holds `.storage/node.toml`.
+- **folder**: a folder on any volume, listed in `.storage/nodes.toml` at that volume's root
+  (`paths = ["files"]`). Nothing below a volume's root is ever searched.
+
+Nodes are found from metadata only: array drives by their labels, drive and folder nodes by those
+two files at the roots of the volumes the host mounts under `NODE_VOLUMES` (Linux; on Windows the
+host agent finds them). A device or mount event starts a discovery at once, and a slow poll
+(`DISCOVERY_POLL_SECONDS`) catches a missed one.
+
+The array named by `ARRAY_PREFIX`, the cluster, holds the stack state in `/.storage/` on its
+`data1`, mirrored to `data2`. **One host at a time**: each array's mounter writes its host name and
+a heartbeat into the lock on that array's `data1` every minute; the stack refuses to start while
+another host held the cluster's lock in the last ten minutes, and leaves any other array alone
+while its lock is held elsewhere. `down` releases them.
+
+### Moving an array from the old labels
+
+An array labelled `storage-data1`, ... moves to its id with the stack down:
+
+```powershell
+.\docker-compose.ps1 down
+.\docker-compose.ps1 migrate-labels --dry-run   # shows each drive, its new label, serial and asset
+.\docker-compose.ps1 migrate-labels --name private-array
+.\docker-compose.ps1 up
+```
+
+It refuses unless every member listed in `snapraid.drives` is present and none is mounted, rewrites
+only the ext4 labels and the member files (`snapraid.drives`, the folder record, the SMART
+baselines), writes the node file with `array.toml`'s assets and serials on every member, keeps
+`snapraid.drives.before-migration` and `array.toml.before-migration` beside the new files, and
+checks with `snapraid status` and `snapraid diff` that SnapRAID, whose disks keep their names, sees
+the same array. It can be run again after an interruption. `ARRAY_PREFIX` in `config.env` becomes
+the id.
 
 ## Parity
 
@@ -49,13 +85,15 @@ A sync is refused, and the status page says why, when:
   drive's parity; `snapraid --force-empty sync` accepts it once you are sure.
 
 A drive that ever was part of the array stays in SnapRAID's config while it is missing, so its
-absence stops the sync instead of quietly removing it. The log of every run is
-`/.storage/log/snapraid.log` on `storage-data1`.
+absence stops the sync instead of quietly removing it. Each array has its own config, job lock,
+schedule and log, `/.storage/log/snapraid.log` on its `data1`. Every SnapRAID run goes through a
+small wrapper that records it and its progress, so the dashboard shows a sync started by hand
+(`docker-compose.ps1 snapraid sync`) as well as its own.
 
 ## When a drive drops off or fails
 
-The mounter checks every drive every 10 seconds and puts the array in one of three states, which
-the dashboard shows at the top and every service follows:
+The mounter checks every drive every 10 seconds and puts each array in one of three states, which
+the dashboard shows and every service follows; the dashboard calls a stopped array frozen:
 
 | state | when | the share | Syncthing | Kopia, sync, scrub |
 | --- | --- | --- | --- | --- |
@@ -94,15 +132,36 @@ for a missing drive it offers:
 
 Both erase or give up data, so each needs the role typed as confirmation. Only drives on
 `CANDIDATE_TRANSPORTS` (USB by default) that are writable, unmounted and carry no array label are
-offered as replacements, so the host's own disks never are. Anyone on your tailnet can use the
-dashboard; there is no second login.
+offered as replacements, so the host's own disks never are. The same unused drives can be **added**
+as the array's next data drive (typed `add` as confirmation), and a drive whose SMART counts rose
+can have them **accepted** as its new baseline. Every action is scoped to one array
+(`POST /api/arrays/<id>/<action>`). Anyone on your tailnet can use the dashboard; there is no second
+login.
+
+`GET /api/nodes` lists this host's nodes and, read over the tailnet from `STORAGE_PEERS`, the other
+hosts'; a device only Syncthing knows shows Syncthing's view of it.
+
+## Joining devices
+
+A device on the tailnet joins with one call, which the join scripts in `join/` make on a device's
+first boot:
+
+`POST /api/join` with `{"name": "p53", "os": "linux", "syncthingDeviceId": "...", "nodes": [{"kind": "drive", "path": "/data", "threshold": 80}]}`
+
+The dashboard asks tailscaled who the caller is: a device tagged `tag:storage`, or owned by
+`JOIN_OWNER` (by default the owner of this host's tailnet node), is admitted; anyone else gets 403.
+It adds the device to every Syncthing on this host, shares the folders the device's thresholds
+admit (from the setup repo's folder list, priority 80 for `synced`, 30 for `archive`, 0 never
+leaves its node), and records the device in the setup repo (`SETUP_REPO_DIR`) with a commit and a
+push, or, without one, on this host only. Calling it again with the same name and ID is harmless; a
+known name with another device ID gets 409.
 
 ## Sharing, syncing and backups
 
 Tailscale serve forwards the tailnet ports straight into the stack: 443 (dashboard), 445 (Samba),
 8384 (Syncthing GUI), 22000 (Syncthing sync) and 51515 (Kopia). Outside the tailnet only the host
 itself reaches the dashboard (`http://localhost:8442`) and the Syncthing GUI
-(`http://localhost:8443`), both published on 127.0.0.1. The logins are generated once and kept on `storage-data1`, so every host that
+(`http://localhost:8443`), both published on 127.0.0.1. The logins are generated once and kept on the cluster's `data1`, so every host that
 runs the array presents the same ones; `credentials` prints them.
 
 - **Samba**: user `storage`. The share hides the stack's own folders (`.storage`, `kopia`,
