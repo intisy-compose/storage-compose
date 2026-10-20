@@ -1,0 +1,66 @@
+# A list shaped like a real one: a device with its own path for one folder, a device not joined yet,
+# the array as the archive, and folders nested inside each other with every category.
+[devices.pc]
+id         = "PC-DEVICE-ID"
+root       = 'F:\'
+joined     = true
+not_synced = ["$RECYCLE.BIN", "System Volume Information"]
+
+[devices.pc.paths]
+Desktop = 'C:\Users\someone\Desktop'
+
+[devices.p53]
+id     = "P53-ID-AFTER-INSTALL"
+joined = false
+
+[devices.array]
+id         = "ARRAY-ID-AFTER-INSTALL"
+role       = "archive"
+root       = "/mnt/storage/pool"
+address    = "tcp://storage.example.ts.net:22000"
+joined     = false
+not_synced = ["Backups", "kopia", ".storage"]
+
+[folders.Documents]
+category = "synced"
+ignore = [
+    "/GitHub",
+    "/Backup",
+    "/Virtual Machines",
+    "/desktop.ini",
+    "/My Games",
+]
+
+[folders."Documents/GitHub"]
+category      = "synced"
+versions_days = 30
+ignore = [
+    "!/project/scripts/build/**",
+    "(?d)node_modules",
+    "(?d)build",
+    "(?d)__pycache__",
+]
+
+[folders."Documents/Backup"]
+category = "archive"
+
+[folders."Documents/Virtual Machines"]
+category = "local"
+
+[folders.Pictures]
+category = "synced"
+
+[folders.Desktop]
+category = "synced"
+
+[folders.Videos]
+category = "archive"
+
+[folders."Program Installers"]
+category = "archive"
+
+[folders.Backup-Old]
+category = "archive"
+
+[folders.sites]
+category = "local"

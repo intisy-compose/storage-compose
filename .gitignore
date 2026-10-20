@@ -19,3 +19,7 @@ images/dashboard/public/index.html
 
 # Mounted in place of NODE_VOLUMES while it is unset
 node-volumes-unset/
+
+# The drive-sync integration test's Syncthing homes, and Python's bytecode
+tools/drive-sync/tests/integration/work/
+__pycache__/

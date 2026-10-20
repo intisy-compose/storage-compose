@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply the drive sync list
+After=syncthing.service
+Wants=syncthing.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/sleep 20
+ExecStart=/usr/bin/python3 %h/.local/share/drive-sync/drive-sync.py apply --config %h/.config/drive-sync/drive-sync.toml
+
+[Install]
+WantedBy=default.target

@@ -157,10 +157,28 @@ The dashboard asks tailscaled who the caller is: a device tagged `tag:storage`, 
 `JOIN_OWNER` (by default the owner of this host's tailnet node), is admitted; anyone else gets 403.
 It adds the device to every Syncthing on this host, shares the folders the device's thresholds
 admit (from the setup repo's folder list, priority 80 for `synced`, 30 for `archive`, 0 never
-leaves its node), and records the device in the setup repo (`SETUP_REPO_DIR`, by default the stack's own data repo
-in `data/`) with a commit and a push, or, while that repo holds no `SETUP_LAYOUT`, on this host
-only. Calling it again with the same name and ID is harmless; a
-known name with another device ID gets 409.
+leaves its node), and records the device in the setup repo (`SETUP_REPO_DIR`, by default the stack's
+own data repo in `data/`, with the list at `SETUP_LAYOUT`, by default `data/drive-sync.toml`) with a
+commit and a push, or, while that repo holds no list, on this host only. Calling it again with the
+same name and ID is harmless; a known name with another device ID gets 409.
+
+## The data repo
+
+`data/` is a submodule: the public
+[storage-compose-data-template](https://github.com/intisy-compose/storage-compose-data-template),
+so a fresh clone runs, holding an example `drive-sync.toml`. Swap in your own private repo with
+`.\docker-compose.ps1 data use <owner/repo[@ref]>` (`./docker-compose.sh` on Linux; no source goes
+back to the template) and check which one is in place with `data status`. Commit and push inside
+`data/`; the submodule pointer in this repo stays on the template.
+
+## drive-sync
+
+`tools/drive-sync` applies the device list in `data/drive-sync.toml` to a device's own Syncthing:
+it adds the other devices and every folder the list gives this device, links the home folders on
+Linux and reports unlisted folders and sync conflicts. `systemd/drive-sync.service` runs it at
+login. Its tests read `tests/fixtures/drive-sync.toml`, never a real list:
+`python -m unittest discover -s tests -t .` from `tools/drive-sync`, and with
+`DRIVE_SYNC_INTEGRATION=1` also the two-Syncthing test in Docker.
 
 ## Sharing, syncing and backups
 
