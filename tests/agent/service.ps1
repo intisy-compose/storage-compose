@@ -80,6 +80,8 @@ function Test-NothingLeft([string]$When) {
     Test-Expectation "$When`: service registered" $false ([bool](Get-AgentService))
     Test-Expectation "$When`: install folder" $false (Test-Path $agentInstallFolder)
     Test-Expectation "$When`: firewall rules" 0 @(Get-NetFirewallRule -Group $agentFirewallGroup -ErrorAction SilentlyContinue).Count
+    $bin = Join-Path (Get-AgentFolder $stack) "bin"
+    Test-Expectation "$When`: any rule for a binary in host-agent\bin" 0 @(Get-NetFirewallApplicationFilter -All | Where-Object { $_.Program -and $_.Program -ne "Any" -and (Test-IsPathUnder $_.Program $bin) }).Count
     $binary = Get-SyncthingPath $stack
     Test-Expectation "$When`: Syncthing processes" 0 @(Get-CimInstance Win32_Process -Filter "Name='syncthing.exe'" | Where-Object { $_.ExecutablePath -eq $binary }).Count
 }
@@ -125,6 +127,9 @@ try {
         $fromContainer = (& docker run --rm --add-host "host.docker.internal:host-gateway" -v "${scratch}:/probe:ro" python:3.13-alpine python /probe/probe.py 2>&1 | Select-Object -Last 1)
         Test-Expectation "a container reaches its API at host.docker.internal" $node.syncthing.deviceId "$fromContainer"
     }
+
+    New-NetFirewallRule -DisplayName "Syncthing - as Windows makes it after its prompt (test)" -Program (Get-SyncthingPath $stack).ToLower() `
+        -Direction Inbound -Action Allow -Protocol TCP -Enabled False -Profile Any | Out-Null
 
     Write-Host "The stack goes away without down:" -ForegroundColor Cyan
     & docker rm -f $probeContainer | Out-Null
