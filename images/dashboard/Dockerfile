@@ -10,6 +10,8 @@ COPY dashboard/package.json dashboard/package-lock.json dashboard/tsconfig.json 
 RUN npm ci --no-audit --no-fund
 COPY dashboard/src ./src
 RUN npx tsc -p tsconfig.json
+COPY dashboard/ui ./ui
+RUN npm run build:ui
 
 FROM debian:trixie-slim
 ARG DEBIAN_FRONTEND=noninteractive
@@ -21,5 +23,5 @@ COPY snapraid/snapraid.sh /usr/local/bin/snapraid.sh
 RUN chmod +x /usr/local/bin/snapraid.sh
 WORKDIR /app
 COPY --from=build /build/dist ./dist
-COPY dashboard/public ./public
+COPY --from=build /build/public ./public
 ENTRYPOINT ["node", "/app/dist/server.js"]
