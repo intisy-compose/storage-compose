@@ -1,12 +1,14 @@
 #!/bin/sh
 # Pauses the Syncthing folders the mounter names in /status/syncthing.pause (those a missing or
 # failing drive touches, every folder once the array has stopped) and resumes them when they leave
-# the list. A folder paused by hand is never resumed here.
+# the list. A folder paused by hand is never resumed here. The nodes service runs one per array
+# instance, with its own files and the instance's pid.
 set -u
 config="$STHOMEDIR/config.xml"
 api="http://${STGUIADDRESS:-127.0.0.1:8385}/rest"
-wanted=/status/syncthing.pause
-array_env=/status/array.env
+wanted=${PAUSE_FILE:-/status/syncthing.pause}
+array_env=${ARRAY_ENV:-/status/array.env}
+syncthing_pid=${SYNCTHING_PID:-1}
 paused_here="$STHOMEDIR/guard-paused"
 
 log() { echo "$(date -u +%FT%TZ) guard: $*"; }
@@ -59,6 +61,6 @@ while true; do
     fi
     current=$(generation)
     [ -n "$started_on" ] || started_on=$current
-    if [ -n "$current" ] && [ "$current" != "$started_on" ]; then log "data1 was mounted anew; restarting Syncthing"; kill -TERM 1; exit 0; fi
+    if [ -n "$current" ] && [ "$current" != "$started_on" ]; then log "data1 was mounted anew; restarting Syncthing"; kill -TERM "$syncthing_pid"; exit 0; fi
     sleep 5
 done

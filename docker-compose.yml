@@ -101,14 +101,15 @@ services:
       GIT_CONFIG_COUNT: 1
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: /setup
+      GIT_CONFIG_GLOBAL: /setup-home/.gitconfig
+      GIT_SSH_COMMAND: ssh -o IdentityFile=/setup-home/.ssh/id_ed25519 -o IdentityFile=/setup-home/.ssh/id_rsa -o UserKnownHostsFile=/setup-home/.ssh/known_hosts
     volumes:
       - /dev:/dev
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
       - storage-status:/status
       - tailscale-socket:/var/run/tailscale:ro
       - ${SETUP_REPO_DIR:-./setup-repo-unset}:/setup
-      - ${SETUP_GIT_CONFIG:-./setup-repo-unset/.gitconfig}:/root/.gitconfig:ro
-      - ${SETUP_SSH_DIR:-./setup-repo-unset/.ssh}:/root/.ssh:ro
+      - ${SETUP_GIT_HOME:-./setup-repo-unset}:/setup-home:ro
 
   # Owns the network namespace and publishes the local ports, on loopback only, so the local
   # addresses keep working while tailscale restarts or cannot join.
@@ -202,6 +203,28 @@ services:
         condition: service_started
         restart: true
       pool:
+        condition: service_healthy
+
+  # One Syncthing per drive, folder and further array node, each with the identity on its own
+  # storage; they share the gateway's namespace, so tailnet ports 22001 to 22099 reach them.
+  nodes:
+    build: images/nodes
+    image: storage-nodes:local
+    container_name: storage-nodes
+    restart: unless-stopped
+    network_mode: "service:gateway"
+    environment:
+      ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
+    volumes:
+      - ./services/syncthing/guard.sh:/guard.sh:ro
+      - storage-status:/status
+      - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
+      - ${NODE_VOLUMES:-/mnt/storage-volumes}:/mnt/nodes:rslave
+    depends_on:
+      gateway:
+        condition: service_started
+        restart: true
+      mounter:
         condition: service_healthy
 
   kopia:
