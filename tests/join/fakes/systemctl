@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Stands in for systemctl in a container without systemd: a unit's ExecStart runs in the background as
+# its User=, with its Environment=, and its pid is kept in $FAKE_SYSTEMD_DIR.
+set -euo pipefail
+state_dir="${FAKE_SYSTEMD_DIR:-/run/fake-systemd}"
+unit_dir="${STORAGE_JOIN_UNIT_DIR:-/etc/systemd/system}"
+mkdir -p "$state_dir"
+printf '%s\n' "$*" >> "$state_dir/calls"
+
+unit_value() { sed -n "s/^$2=//p" "$unit_dir/$1" | head -n 1; }
+
+is_active() {
+    [[ "$1" == tailscaled* ]] && { [[ -f "$state_dir/tailscaled" ]]; return; }
+    [[ -f "$state_dir/$1.pid" ]] && kill -0 "$(cat "$state_dir/$1.pid")" 2> /dev/null
+}
+
+start() {
+    if [[ "$1" == tailscaled* ]]; then touch "$state_dir/tailscaled"; return; fi
+    is_active "$1" && return
+    local user environment command
+    user="$(unit_value "$1" User)"
+    environment="$(unit_value "$1" Environment)"
+    command="$(unit_value "$1" ExecStart)"
+    # shellcheck disable=SC2086
+    env $environment su-exec "$user" $command > "$state_dir/$1.log" 2>&1 &
+    echo $! > "$state_dir/$1.pid"
+}
+
+stop() {
+    is_active "$1" || return 0
+    local pid
+    pid="$(cat "$state_dir/$1.pid")"
+    kill "$pid"
+    while kill -0 "$pid" 2> /dev/null; do sleep 0.2; done
+}
+
+quiet=false
+arguments=()
+for argument in "$@"; do
+    case "$argument" in
+        --quiet) quiet=true ;;
+        --now) arguments+=(now) ;;
+        *) arguments+=("$argument") ;;
+    esac
+done
+case "${arguments[0]}" in
+    is-active) is_active "${arguments[1]}" || { $quiet || echo inactive; exit 3; } ;;
+    enable) [[ "${arguments[1]}" == now ]] && start "${arguments[2]}" ;;
+    start) start "${arguments[1]}" ;;
+    restart) stop "${arguments[1]}"; start "${arguments[1]}" ;;
+    stop) stop "${arguments[1]}" ;;
+    daemon-reload) ;;
+    *) echo "fake systemctl: unsupported $*" >&2; exit 2 ;;
+esac
