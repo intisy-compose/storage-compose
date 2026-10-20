@@ -9,6 +9,8 @@ Set-StrictMode -Version Latest
 $configFile  = Join-Path $PSScriptRoot "config.env"
 $exampleFile = Join-Path $PSScriptRoot "config.env.example"
 $composeArgs = @("--env-file", $configFile)
+# A Windows host runs the host agent, so the dashboard reports it when it is not running.
+$env:HOST_AGENT_EXPECTED = "yes"
 $probe = "debian:trixie-slim"
 $usbipdFolder = "C:\Program Files\usbipd-win"
 $smartctlPackage = "winget install --id smartmontools.smartmontools --version 7.5 -e"

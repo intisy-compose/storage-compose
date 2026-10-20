@@ -107,9 +107,9 @@ describe("join admission", () => {
     assert.deepEqual(
       response.folders.map((folder) => [folder.id, folder.path]),
       [
-        ["documents", "/data/Documents"],
-        ["documents-github", "/data/Documents/GitHub"],
-        ["projects", "/data/Projects"],
+        ["documents", "Documents"],
+        ["documents-github", "Documents/GitHub"],
+        ["projects", "Projects"],
       ],
     );
     assert.equal(response.devices.length, 1);
@@ -204,7 +204,7 @@ describe("admitted folders", () => {
     assert.deepEqual(folders.map((folder) => folder.id).sort(), ["documents", "documents-github", "projects", "videos"]);
   });
 
-  it("places a folder on the node with the lowest threshold that keeps it, with Windows paths", () => {
+  it("places a folder on the node with the lowest threshold that keeps it, relative to the first node and absolute on another", () => {
     const folders = admittedFolders(layout, {
       name: "pc",
       os: "windows",

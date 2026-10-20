@@ -107,7 +107,8 @@ function joinPath(root: string, relativePath: string, os: JoinRequest["os"]): st
 
 /**
  * The folders the device's thresholds admit, each placed on the node with the lowest threshold that
- * keeps it. Priority 0 never leaves its node.
+ * keeps it. A path is relative to the device's first node, as the join scripts resolve it, and
+ * absolute on any other node. Priority 0 never leaves its node.
  */
 export function admittedFolders(layout: SetupLayout | null, request: JoinRequest): JoinFolder[] {
   if (!layout) return [];
@@ -116,7 +117,9 @@ export function admittedFolders(layout: SetupLayout | null, request: JoinRequest
   for (const folder of layout.folders) {
     if (folder.priority <= 0) continue;
     const node = nodes.find((candidate) => folder.priority >= candidate.threshold);
-    if (node) folders.push({ id: folder.id, path: joinPath(node.path, folder.relativePath, request.os), type: "sendreceive" });
+    if (!node) continue;
+    const path = node === request.nodes[0] ? folder.relativePath : joinPath(node.path, folder.relativePath, request.os);
+    folders.push({ id: folder.id, path, type: "sendreceive" });
   }
   return folders;
 }

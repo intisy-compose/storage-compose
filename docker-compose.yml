@@ -101,6 +101,7 @@ services:
       GIT_CONFIG_COUNT: 1
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: /setup
+      HOST_AGENT_EXPECTED: ${HOST_AGENT_EXPECTED:-}
       GIT_CONFIG_GLOBAL: /setup-home/.gitconfig
       GIT_SSH_COMMAND: ssh -o IdentityFile=/setup-home/.ssh/id_ed25519 -o IdentityFile=/setup-home/.ssh/id_rsa -o UserKnownHostsFile=/setup-home/.ssh/known_hosts
     volumes:
@@ -110,6 +111,10 @@ services:
       - tailscale-socket:/var/run/tailscale:ro
       - ${SETUP_REPO_DIR:-./setup-repo-unset}:/setup
       - ${SETUP_GIT_HOME:-./setup-repo-unset}:/setup-home:ro
+      - ./host-agent/status:/host-agent:ro
+    # The Windows host agent's native Syncthing instances answer on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # Owns the network namespace and publishes the local ports, on loopback only, so the local
   # addresses keep working while tailscale restarts or cannot join.

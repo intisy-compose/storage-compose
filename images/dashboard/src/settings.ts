@@ -46,3 +46,8 @@ export function arrayStatusDirectory(arrayId: string): string {
 export function poolPath(arrayId: string): string {
   return arrayId === clusterArrayId ? `${storageRoot}/pool` : `${storageRoot}/pool-${arrayId}`;
 }
+
+/** Set by docker-compose.ps1: a Windows host runs the host agent, and its absence is a problem. */
+export const hostAgentExpected = process.env.HOST_AGENT_EXPECTED === "yes";
+export const hostAgentHeartbeatFile = "/host-agent/heartbeat.json";
+export const hostAgentSyncthingHost = process.env.HOST_AGENT_SYNCTHING_HOST ?? "host.docker.internal";

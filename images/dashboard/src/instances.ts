@@ -1,5 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import type { NodeRegistryEntry } from "./api/types.js";
+import { agentEntries, readHeartbeat } from "./hostAgent.js";
 import { type SyncthingEndpoint, apiKeyFromConfig } from "./syncthing.js";
 import { arrayStateDirectory, clusterArrayId, clusterSyncthingUrl, registryDirectory } from "./settings.js";
 
@@ -13,8 +14,15 @@ async function readJson<T>(path: string): Promise<T | null> {
   }
 }
 
-/** Drive and folder nodes from the registry; an entry its writer stopped confirming counts as absent. */
+/**
+ * Drive and folder nodes from the registry and the Windows host agent's heartbeat; an entry its
+ * writer stopped confirming counts as absent.
+ */
 export async function registryEntries(): Promise<NodeRegistryEntry[]> {
+  return [...(await statusRegistryEntries()), ...agentEntries(await readHeartbeat())];
+}
+
+async function statusRegistryEntries(): Promise<NodeRegistryEntry[]> {
   const names = await readdir(registryDirectory).catch(() => [] as string[]);
   const entries = await Promise.all(
     names.filter((name) => /^[0-9a-f]{4}\.json$/.test(name)).map((name) => readJson<NodeRegistryEntry>(`${registryDirectory}/${name}`)),

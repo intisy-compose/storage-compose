@@ -1,6 +1,7 @@
 import type { NodeArray, NodeRegistryEntry, NodesResponse, StorageNode, Warning, WarningLevel } from "./api/types.js";
 import { type ArrayStatus, arrayIds, arrayStatus } from "./arrayStatus.js";
 import { type BlockDevice, listBlockDevices, replacementCandidates } from "./blockDevices.js";
+import { agentProblem, readHeartbeat } from "./hostAgent.js";
 import { registryEntries, registryWarnings, syncthingEndpoint } from "./instances.js";
 import { type JoinRecords } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
@@ -116,6 +117,10 @@ async function localNodes(warnings: Warning[], views: InstanceView[]): Promise<S
     if (!entry.present) warnings.push(warning(`absent:${entry.id}`, "info", `${entry.name} is not attached to this host`, entry.id));
   }
   for (const text of await registryWarnings()) warnings.push(warning(`registry:${text}`, "warning", text, null));
+  const heartbeat = await readHeartbeat();
+  const problem = agentProblem(heartbeat);
+  if (problem) warnings.push(warning("host-agent", "error", problem, null));
+  for (const text of heartbeat?.problems ?? []) warnings.push(warning(`host-agent:${text}`, "warning", `host agent: ${text}`, null));
   return nodes;
 }
 
