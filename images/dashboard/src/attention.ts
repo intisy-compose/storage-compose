@@ -21,6 +21,46 @@ export function warning({ id, level, kind, text, nodeId, folderId = null, at }: 
   return { id, at: at ?? firstSeen.get(id)!, level, kind, text, nodeId, folderId };
 }
 
+/** Forgets when a condition was first seen once it is gone, so a recurrence starts a new entry. */
+export function pruneFirstSeen(current: Warning[]): void {
+  const ids = new Set(current.map((entry) => entry.id));
+  for (const id of firstSeen.keys()) if (!ids.has(id)) firstSeen.delete(id);
+}
+
+export function withoutDuplicates(warnings: Warning[]): Warning[] {
+  return [...new Map(warnings.map((entry) => [entry.id, entry])).values()];
+}
+
+/** Problems of the host itself rather than of one node; the id names the host, so two hosts' entries stay apart. */
+export function hostWarnings(host: string, registryTexts: string[], agentProblem: string | null, agentProblems: string[]): Warning[] {
+  const warnings = registryTexts.map((text) => warning({ id: `registry:${host}:${text}`, level: "warning", kind: "registry", text, nodeId: null }));
+  if (agentProblem) warnings.push(warning({ id: `host-agent:${host}`, level: "error", kind: "agent", text: agentProblem, nodeId: null }));
+  for (const text of agentProblems) warnings.push(warning({ id: `host-agent:${host}:${text}`, level: "warning", kind: "agent", text: `host agent: ${text}`, nodeId: null }));
+  return warnings;
+}
+
+const kindsByIdPrefix: Record<string, WarningKind> = {
+  array: "array",
+  split: "array",
+  serial: "array",
+  refused: "array",
+  smart: "smart",
+  absent: "offline",
+  registry: "registry",
+  "host-agent": "agent",
+  peer: "peer",
+};
+
+/**
+ * Another host's warning, with that host in its id and text.
+ * @implNote A host on an older dashboard sends warnings without a kind or folder; the kind is read
+ * from the id's prefix.
+ */
+export function fromOtherHost(entry: Warning, host: string): Warning {
+  const kind = entry.kind ?? kindsByIdPrefix[entry.id.split(":")[0]] ?? "other";
+  return { ...entry, id: `${host}:${entry.id}`, text: `${entry.text} (on ${host})`, kind, folderId: entry.folderId ?? null };
+}
+
 function plural(count: number, singular: string): string {
   return `${count} ${count === 1 ? singular : `${singular}s`}`;
 }
@@ -87,19 +127,24 @@ export function pendingWarnings(node: StorageNode, devices: PendingDevices, fold
 
 function percentUsed(size: number | null | undefined, used: number | null | undefined): number | null {
   if (!size || size <= 0 || used === null || used === undefined) return null;
-  return Math.floor((100 * used) / size);
+  return (100 * used) / size;
+}
+
+/** Rounded down to a tenth, so a drive is never shown fuller than it is. */
+function shownPercent(percent: number): number {
+  return Math.floor(percent * 10) / 10;
 }
 
 export function fullWarnings(node: StorageNode, thresholds: AttentionThresholds): Warning[] {
   const warnings: Warning[] = [];
   const nodePercent = percentUsed(node.space?.size, node.space?.used);
   if (nodePercent !== null && nodePercent > thresholds.fullPercent) {
-    warnings.push(warning({ id: `full:${node.id}`, level: "warning", kind: "full", text: `${node.name} is ${nodePercent}% full`, nodeId: node.id }));
+    warnings.push(warning({ id: `full:${node.id}`, level: "warning", kind: "full", text: `${node.name} is ${shownPercent(nodePercent)}% full`, nodeId: node.id }));
   }
   for (const member of node.array?.members ?? []) {
     const memberPercent = member.present ? percentUsed(member.size, member.used) : null;
     if (memberPercent === null || memberPercent <= thresholds.fullPercent) continue;
-    warnings.push(warning({ id: `full:${node.id}:${member.label}`, level: "warning", kind: "full", text: `${member.label} in ${node.name} is ${memberPercent}% full`, nodeId: node.id }));
+    warnings.push(warning({ id: `full:${node.id}:${member.label}`, level: "warning", kind: "full", text: `${member.label} in ${node.name} is ${shownPercent(memberPercent)}% full`, nodeId: node.id }));
   }
   return warnings;
 }
@@ -121,10 +166,11 @@ function isOffline(node: StorageNode): boolean {
 /**
  * This host's nodes, and the devices their Syncthing instances know, that have been away longer than
  * the threshold.
+ * @param localDeviceIds device ID to node ID for local nodes whose device is known while they are offline.
  * @implNote A device that belongs to a node some dashboard reports is left to that node's own entry;
  * one seen by several instances is listed once. A device never seen, or paused on purpose, is not offline.
  */
-export function offlineWarnings(nodes: StorageNode[], thresholds: AttentionThresholds, now = Date.now()): Warning[] {
+export function offlineWarnings(nodes: StorageNode[], thresholds: AttentionThresholds, now = Date.now(), localDeviceIds = new Map<string, string>()): Warning[] {
   const local = nodes.filter((node) => node.local);
   const warnings: Warning[] = [];
   for (const node of local) {
@@ -132,7 +178,7 @@ export function offlineWarnings(nodes: StorageNode[], thresholds: AttentionThres
     if (elapsed === null) continue;
     warnings.push(warning({ id: `offline:node:${node.id}`, level: "warning", kind: "offline", text: `${node.name} has been offline for ${offlineDuration(elapsed)}`, nodeId: node.id, at: node.sync.lastSeen! }));
   }
-  const reported = new Set(nodes.filter((node) => node.local || node.dashboardUrl).map((node) => node.syncthing?.deviceId));
+  const reported = new Set([...nodes.filter((node) => node.local || node.dashboardUrl).map((node) => node.syncthing?.deviceId), ...localDeviceIds.keys()]);
   const listed = new Set<string>();
   for (const node of local) {
     for (const peer of node.peers) {

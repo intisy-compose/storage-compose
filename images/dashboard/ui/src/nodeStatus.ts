@@ -39,6 +39,7 @@ export function waitingForNames(response: NodesResponse, node: StorageNode): str
 export function shortSyncState(node: StorageNode, response?: NodesResponse): ShortState {
   if (isOffline(node)) return { symbol: "", label: formatAge(node.sync.lastSeen), tone: "muted" };
   if (node.sync.state === "error") return { symbol: "!", label: "error", tone: "bad" };
+  if (node.sync.state === "unknown") return { symbol: "?", label: "completion unavailable", tone: "muted" };
   if (node.sync.state === "syncing") {
     return { symbol: transferSymbol(node), label: formatPercent(normaliseCompletion(node.sync.completion)), tone: "accent" };
   }

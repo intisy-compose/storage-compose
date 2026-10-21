@@ -1,6 +1,6 @@
 import type { NodeArray, NodeRegistryEntry, NodesResponse, StorageNode, Warning } from "./api/types.js";
 import { type ArrayStatus, arrayIds, arrayStatus } from "./arrayStatus.js";
-import { folderErrorWarnings, fullWarnings, offlineWarnings, pendingWarnings, systemErrorWarnings, warning } from "./attention.js";
+import { folderErrorWarnings, fromOtherHost, fullWarnings, hostWarnings, offlineWarnings, pendingWarnings, pruneFirstSeen, systemErrorWarnings, warning, withoutDuplicates } from "./attention.js";
 import { type BlockDevice, listBlockDevices, replacementCandidates } from "./blockDevices.js";
 import { agentProblem, readHeartbeat } from "./hostAgent.js";
 import { registryEntries, registryWarnings, syncthingEndpoint } from "./instances.js";
@@ -8,7 +8,7 @@ import { type JoinRecords } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { parityState } from "./parity.js";
 import { attentionSettings, hostName, peerDashboards, poolPath } from "./settings.js";
-import { type InstanceView, instanceView } from "./syncthing.js";
+import { type InstanceView, instanceView, peerSync } from "./syncthing.js";
 import { fetchTailnetJson } from "./tailnet.js";
 import { statfs } from "node:fs/promises";
 
@@ -109,7 +109,11 @@ function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
   return warnings;
 }
 
-async function localNodes(warnings: Warning[], views: InstanceView[]): Promise<StorageNode[]> {
+/**
+ * @param deviceIds filled with the Syncthing device ID of each local node the host agent names, so an
+ * offline node is not listed a second time as an offline device.
+ */
+async function localNodes(warnings: Warning[], views: InstanceView[], deviceIds: Map<string, string>): Promise<StorageNode[]> {
   const [devices, sources, entries] = await Promise.all([listBlockDevices(), mountSources(), registryEntries()]);
   const nodes: StorageNode[] = [];
   for (const id of await arrayIds()) {
@@ -131,21 +135,10 @@ async function localNodes(warnings: Warning[], views: InstanceView[]): Promise<S
     warnings.push(...nodeWarnings(node, view));
     if (!entry.present) warnings.push(warning({ id: `absent:${entry.id}`, level: "info", kind: "offline", text: `${entry.name} is not attached to this host`, nodeId: entry.id }));
   }
-  for (const text of await registryWarnings()) warnings.push(warning({ id: `registry:${text}`, level: "warning", kind: "registry", text, nodeId: null }));
   const heartbeat = await readHeartbeat();
-  const problem = agentProblem(heartbeat);
-  if (problem) warnings.push(warning({ id: "host-agent", level: "error", kind: "agent", text: problem, nodeId: null }));
-  for (const text of heartbeat?.problems ?? []) warnings.push(warning({ id: `host-agent:${text}`, level: "warning", kind: "agent", text: `host agent: ${text}`, nodeId: null }));
+  for (const agentNode of heartbeat?.nodes ?? []) if (agentNode.syncthing?.deviceId) deviceIds.set(agentNode.syncthing.deviceId, agentNode.id);
+  warnings.push(...hostWarnings(hostName, await registryWarnings(), agentProblem(heartbeat), heartbeat?.problems ?? []));
   return nodes;
-}
-
-/** @implNote A host on an older dashboard sends warnings without a kind or folder. */
-function fromOtherHost(entry: Warning): Warning {
-  return { ...entry, kind: entry.kind ?? "peer", folderId: entry.folderId ?? null };
-}
-
-function withoutDuplicates(warnings: Warning[]): Warning[] {
-  return [...new Map(warnings.map((entry) => [entry.id, entry])).values()];
 }
 
 async function remoteNodes(warnings: Warning[]): Promise<StorageNode[]> {
@@ -154,7 +147,7 @@ async function remoteNodes(warnings: Warning[]): Promise<StorageNode[]> {
       try {
         const dashboardUrl = peer.replace(/\/$/, "");
         const answer = await fetchTailnetJson<NodesResponse>(`${dashboardUrl}/api/nodes?scope=local`);
-        warnings.push(...answer.warnings.map(fromOtherHost));
+        warnings.push(...answer.warnings.map((entry) => fromOtherHost(entry, answer.host.name)));
         return answer.nodes.map((node) => ({ ...node, local: false, host: node.host || answer.host.name, dashboardUrl }));
       } catch (error) {
         const text = `${peer} could not be reached (${(error as Error).message}); its nodes show Syncthing's view`;
@@ -190,7 +183,7 @@ async function syncthingOnlyNodes(known: StorageNode[], views: InstanceView[], r
         online: peer.connected,
         host: record?.tailnetName || peer.name || "unknown",
         space: null,
-        sync: peer.connected ? { state: peer.completion < 100 ? "syncing" : "idle", completion: peer.completion, lastSeen: new Date().toISOString() } : offlineSync(peer.lastSeen),
+        sync: peerSync(peer),
         syncthing: { deviceId: peer.deviceId, addresses: peer.address ? [peer.address] : [], connectionType: peer.connectionType, inRate: peer.inRate, outRate: peer.outRate, version: peer.version },
         instance: null,
         peers: [],
@@ -208,14 +201,17 @@ const otherHostNodesMaxAgeMilliseconds = 60_000;
 export async function nodesResponse(scope: "all" | "local", records: JoinRecords): Promise<NodesResponse> {
   const warnings: Warning[] = [];
   const views: InstanceView[] = [];
-  const nodes = await localNodes(warnings, views);
+  const deviceIds = new Map<string, string>();
+  const nodes = await localNodes(warnings, views, deviceIds);
   if (scope === "all") {
     nodes.push(...(await remoteNodes(warnings)));
     nodes.push(...(await syncthingOnlyNodes(nodes, views, records)));
     lastOtherHostNodes = { at: Date.now(), nodes: nodes.filter((node) => !node.local) };
   }
-  warnings.push(...offlineWarnings(nodes, attentionSettings));
-  return { host: { name: hostName }, nodes, warnings: withoutDuplicates(warnings) };
+  warnings.push(...offlineWarnings(nodes, attentionSettings, Date.now(), deviceIds));
+  const unique = withoutDuplicates(warnings);
+  if (scope === "all") pruneFirstSeen(unique);
+  return { host: { name: hostName }, nodes, warnings: unique };
 }
 
 /**

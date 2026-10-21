@@ -252,6 +252,13 @@ export function overallSync(folders: NodeFolder[], peers: Peer[] = []): NodeSync
   return { state: "waiting", completion: lowest, lastSeen: now, waitingFor: waited.map((peer) => peer.deviceId) };
 }
 
+/** A device's state as one instance sees it, for a device no dashboard reports. */
+export function peerSync(peer: Peer, now = new Date()): NodeSync {
+  if (!peer.connected) return { state: "offline", completion: 0, lastSeen: peer.lastSeen };
+  if (peer.remoteState === "unavailable") return { state: "unknown", completion: 0, lastSeen: now.toISOString() };
+  return { state: peer.completion < 100 ? "syncing" : "idle", completion: peer.completion, lastSeen: now.toISOString() };
+}
+
 function emptyFolder(folder: SyncthingFolderConfig, sharedWith: FolderPeer[], state: string): NodeFolder {
   return {
     id: folder.id,

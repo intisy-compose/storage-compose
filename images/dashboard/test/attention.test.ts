@@ -3,9 +3,20 @@ import { type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
 import type { NodeFolder, Peer, StorageNode } from "../src/api/types.js";
-import { folderErrorWarnings, fullWarnings, offlineWarnings, pendingWarnings, systemErrorWarnings } from "../src/attention.js";
+import {
+  folderErrorWarnings,
+  fromOtherHost,
+  fullWarnings,
+  hostWarnings,
+  offlineWarnings,
+  pendingWarnings,
+  pruneFirstSeen,
+  systemErrorWarnings,
+  warning,
+  withoutDuplicates,
+} from "../src/attention.js";
 import { attentionThresholds } from "../src/settings.js";
-import { SyncthingClient } from "../src/syncthing.js";
+import { SyncthingClient, peerSync } from "../src/syncthing.js";
 
 const pcId = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 const phoneId = "PHONEAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
@@ -201,5 +212,50 @@ describe("attention", () => {
       ],
     );
     assert.equal(fullWarnings(array, { ...defaults, fullPercent: 96 }).length, 0);
+  });
+
+  it("a node just above the full percent warns", () => {
+    const drive = node({ space: { size: 1000, used: 909 } });
+    assert.deepEqual(fullWarnings(drive, defaults).map((entry) => entry.text), ["pc is 90.9% full"]);
+    assert.equal(fullWarnings(node({ space: { size: 1000, used: 900 } }), defaults).length, 0);
+  });
+
+  it("a long offline local node is listed once, not again as an offline device", () => {
+    const lastSeen = new Date(now - 72 * hour).toISOString();
+    const pc = node({ online: false, sync: { state: "offline", completion: 0, lastSeen } });
+    const array = node({ id: "5784", name: "private-array", kind: "array", peers: [peer({ deviceId: pcId, name: "pc", lastSeen })] });
+    const warnings = offlineWarnings([pc, array], defaults, now, new Map([[pcId, "fb98"]]));
+    assert.deepEqual(warnings.map((entry) => entry.text), ["pc has been offline for 3 days"]);
+  });
+
+  it("two hosts with a host agent problem give two entries", () => {
+    const here = hostWarnings("finn", [], "host agent not running: it is stopped", []);
+    const there = hostWarnings("p53", [], "host agent not running: it is stopped", []).map((entry) => fromOtherHost(entry, "p53"));
+    const merged = withoutDuplicates([...here, ...there]);
+    assert.equal(merged.length, 2);
+    assert.equal(merged[1].text, "host agent not running: it is stopped (on p53)");
+    assert.notEqual(merged[0].id, merged[1].id);
+  });
+
+  it("a warning from an older host takes its kind from its id", () => {
+    const legacy = { id: "host-agent", at: "2026-10-21T10:00:00Z", level: "error", text: "host agent not running", nodeId: null } as unknown as Parameters<typeof fromOtherHost>[0];
+    assert.equal(fromOtherHost(legacy, "p53").kind, "agent");
+    assert.equal(fromOtherHost({ ...legacy, id: "something-new" }, "p53").kind, "other");
+    assert.equal(fromOtherHost(legacy, "p53").folderId, null);
+  });
+
+  it("a condition that is gone starts a new entry when it returns", async () => {
+    const first = warning({ id: "test:returning", level: "warning", kind: "other", text: "x", nodeId: null });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(warning({ id: "test:returning", level: "warning", kind: "other", text: "x", nodeId: null }).at, first.at);
+    pruneFirstSeen([]);
+    assert.notEqual(warning({ id: "test:returning", level: "warning", kind: "other", text: "x", nodeId: null }).at, first.at);
+  });
+
+  it("a device whose completion cannot be read is unknown, not syncing", () => {
+    const sync = peerSync(peer({ connected: true, completion: 0, remoteState: "unavailable" }));
+    assert.equal(sync.state, "unknown");
+    assert.equal(peerSync(peer({ connected: true, completion: 40 })).state, "syncing");
+    assert.equal(peerSync(peer({ connected: false, lastSeen: "2026-10-20T10:00:00Z" })).state, "offline");
   });
 });

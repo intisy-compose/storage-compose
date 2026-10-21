@@ -5,7 +5,8 @@
 
 export type NodeKind = "array" | "drive" | "folder";
 
-export type SyncState = "idle" | "syncing" | "waiting" | "error" | "offline";
+/** "unknown" is a connected device whose completion could not be read. */
+export type SyncState = "idle" | "syncing" | "waiting" | "error" | "offline" | "unknown";
 
 /** "frozen" is the C-24 freeze: more drives lost than parity covers, or data1 gone or read-only. */
 export type ArrayState = "healthy" | "degraded" | "frozen";
@@ -210,7 +211,8 @@ export type WarningKind =
   | "pending-folder"
   | "offline"
   | "full"
-  | "conflicts";
+  | "conflicts"
+  | "other";
 
 export interface Warning {
   /** Stable while the condition lasts, so the page can keep its place. */
