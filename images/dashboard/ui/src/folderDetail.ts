@@ -100,7 +100,7 @@ function settingsRows(settings: FolderSettings, names: Map<string, string>): [st
     ["Sync ownership", onOff(settings.syncOwnership)],
     ["Sync extended attributes", onOff(settings.syncXattrs)],
     ["Versioning", versioningText(settings)],
-    ["Devices", settings.devices.map((device) => names.get(device.deviceId) ?? device.deviceId.slice(0, 7)).join(", ")],
+    ["Devices", settings.devices.map((device) => `${names.get(device.deviceId) ?? device.deviceId.slice(0, 7)}${device.encrypted ? " (encrypted)" : ""}`).join(", ")],
   ];
 }
 

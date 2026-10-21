@@ -1,5 +1,5 @@
 import type { StorageNode } from "./api/types.js";
-import { arrayStatus } from "./arrayStatus.js";
+import { arrayIds, arrayStatus } from "./arrayStatus.js";
 import { agentEntries, readHeartbeat } from "./hostAgent.js";
 import { RequestError } from "./http.js";
 import { statusRegistryEntries, syncthingEndpoint } from "./instances.js";
@@ -58,13 +58,33 @@ async function arrayNode(nodeId: string, sources: ResolverSources): Promise<Loca
   };
 }
 
-async function registryNode(nodeId: string, sources: ResolverSources): Promise<LocalNode | null> {
+async function registryNodes(sources: ResolverSources): Promise<LocalNode[]> {
   const fromStatus = (await statusRegistryEntries(sources.registryDirectory)).map((entry) => ({ entry, os: "linux" as const }));
   const fromAgent = agentEntries(await readHeartbeat(sources.heartbeatPath)).map((entry) => ({ entry, os: "windows" as const }));
-  const found = [...fromStatus, ...fromAgent].find(({ entry }) => entry.id === nodeId);
-  if (!found) return null;
-  const { entry, os } = found;
-  return { nodeId, name: entry.name, root: entry.root || null, os, present: entry.present, endpoint: () => syncthingEndpoint(entry.id, entry, sources.registryDirectory) };
+  return [...fromStatus, ...fromAgent].map(({ entry, os }) => ({
+    nodeId: entry.id,
+    name: entry.name,
+    root: entry.root || null,
+    os,
+    present: entry.present,
+    endpoint: () => syncthingEndpoint(entry.id, entry, sources.registryDirectory),
+  }));
+}
+
+async function registryNode(nodeId: string, sources: ResolverSources): Promise<LocalNode | null> {
+  return (await registryNodes(sources)).find((node) => node.nodeId === nodeId) ?? null;
+}
+
+async function toInstance(node: LocalNode): Promise<LocalInstance | null> {
+  const endpoint = node.present ? await node.endpoint() : null;
+  return endpoint ? { kind: "local", nodeId: node.nodeId, name: node.name, client: new SyncthingClient(endpoint), root: node.root, os: node.os } : null;
+}
+
+/** Every node of this host whose Syncthing can be addressed: each array, the cluster, registry entries and host agent nodes. */
+export async function localInstances(sources: ResolverSources = defaultResolverSources): Promise<LocalInstance[]> {
+  const arrays = (await Promise.all((await arrayIds()).map((nodeId) => arrayNode(nodeId, sources)))).filter((node): node is LocalNode => node !== null);
+  const instances = await Promise.all([...arrays, ...(await registryNodes(sources))].map(toInstance));
+  return instances.filter((instance): instance is LocalInstance => instance !== null);
 }
 
 function notAnswering(name: string): RequestError {
@@ -78,9 +98,9 @@ function notAnswering(name: string): RequestError {
 export async function resolveInstance(nodeId: string, sources: ResolverSources = defaultResolverSources): Promise<ResolvedInstance> {
   const local = (await arrayNode(nodeId, sources)) ?? (await registryNode(nodeId, sources));
   if (local) {
-    const endpoint = local.present ? await local.endpoint() : null;
-    if (!endpoint) throw notAnswering(local.name);
-    return { kind: "local", nodeId, name: local.name, client: new SyncthingClient(endpoint), root: local.root, os: local.os };
+    const instance = await toInstance(local);
+    if (!instance) throw notAnswering(local.name);
+    return instance;
   }
   const remote = (await sources.otherHostNodes()).find((node) => node.id === nodeId);
   if (!remote) throw new RequestError(404, `no node ${nodeId}`);

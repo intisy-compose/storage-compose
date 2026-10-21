@@ -112,6 +112,7 @@ export function renderFoldersPage(): HTMLElement {
     { className: "page folders-page" },
     header,
     appState.foldersError ? element("div", { className: "warning level-error connection-lost" }, `Folders could not be refreshed: ${appState.foldersError}`) : null,
+    ...response.offersUnreadable.map((entry) => element("div", { className: "warning level-warning connection-lost" }, `Offers to ${entry.nodeName} could not be read: ${entry.error}`)),
     element("div", { className: "filter-bar" }, searchBox()),
     folderList(response),
   );

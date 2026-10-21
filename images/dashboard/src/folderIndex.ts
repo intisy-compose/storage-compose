@@ -1,7 +1,7 @@
 import type { FolderCopy, FolderDetailResponse, FolderSettings, FolderSummary, FoldersResponse, PendingFolderOffer } from "./api/types.js";
 import { RequestError } from "./http.js";
 import type { SetupLayout } from "./setupRepo.js";
-import { type SyncthingClient, type SyncthingDeviceConfig, type SyncthingFolderSettings, instanceFolders } from "./syncthing.js";
+import { type SyncthingClient, type SyncthingDeviceConfig, SyncthingError, type PendingFolders, type SyncthingFolderSettings, SyncthingUnavailable, instanceFolders } from "./syncthing.js";
 
 /** A node of this host whose Syncthing answers. */
 export interface FolderInstance {
@@ -24,14 +24,14 @@ export interface FolderIndexSources {
 interface InstanceFolders {
   copies: FolderCopy[];
   offers: PendingFolderOffer[];
+  offersError: string | null;
 }
 
 function deviceName(devices: SyncthingDeviceConfig[], deviceId: string): string {
   return devices.find((device) => device.deviceID === deviceId)?.name || deviceId.slice(0, 7);
 }
 
-async function offersOf(instance: FolderInstance, devices: SyncthingDeviceConfig[]): Promise<PendingFolderOffer[]> {
-  const pending = await instance.client.pendingFolders();
+function offersOf(instance: FolderInstance, devices: SyncthingDeviceConfig[], pending: PendingFolders): PendingFolderOffer[] {
   return Object.entries(pending).flatMap(([folderId, entry]) =>
     Object.entries(entry.offeredBy).map(([offeredBy, offer]) => ({
       nodeId: instance.nodeId,
@@ -46,14 +46,26 @@ async function offersOf(instance: FolderInstance, devices: SyncthingDeviceConfig
   );
 }
 
+/** A refused read costs only the offers; a Syncthing that stops answering mid-read is left to the caller. */
+async function readPending(client: SyncthingClient): Promise<{ pending: PendingFolders; error: string | null }> {
+  try {
+    return { pending: await client.pendingFolders(), error: null };
+  } catch (error) {
+    if (error instanceof SyncthingError && !(error instanceof SyncthingUnavailable)) return { pending: {}, error: error.message };
+    throw error;
+  }
+}
+
 /** @implNote An instance that does not answer is left out, as the Nodes page shows it without folders. */
 async function readInstance(instance: FolderInstance): Promise<InstanceFolders> {
   try {
     const { folders, devices } = await instanceFolders(instance.client);
     const copies = folders.map(({ config, view }) => ({ ...view, nodeId: instance.nodeId, nodeName: instance.nodeName, host: instance.host, local: true, paused: config.paused }));
-    return { copies, offers: await offersOf(instance, devices) };
-  } catch {
-    return { copies: [], offers: [] };
+    const { pending, error } = await readPending(instance.client);
+    return { copies, offers: offersOf(instance, devices, pending), offersError: error };
+  } catch (error) {
+    if (error instanceof SyncthingUnavailable) return { copies: [], offers: [], offersError: null };
+    throw error;
   }
 }
 
@@ -72,7 +84,7 @@ function byLabel(left: FolderSummary, right: FolderSummary): number {
 }
 
 /** Groups copies and offers by folder ID; a remote summary's copies are marked as not this host's. */
-function mergeSummaries(local: InstanceFolders[], remote: FolderSummary[], layout: SetupLayout | null): FolderSummary[] {
+function mergeSummaries(local: Omit<InstanceFolders, "offersError">[], remote: FolderSummary[], layout: SetupLayout | null): FolderSummary[] {
   const summaries = new Map<string, FolderSummary>();
   const summaryFor = (id: string, label: string) => {
     const existing = summaries.get(id) ?? emptySummary(id, label || id);
@@ -92,13 +104,14 @@ function mergeSummaries(local: InstanceFolders[], remote: FolderSummary[], layou
   return [...summaries.values()].map((summary) => ({ ...summary, ...priorityFor(summary, layout) })).sort(byLabel);
 }
 
-async function localFolders(sources: FolderIndexSources): Promise<InstanceFolders[]> {
-  return Promise.all((await sources.localInstances()).map(readInstance));
-}
-
 export async function foldersResponse(scope: "all" | "local", sources: FolderIndexSources): Promise<FoldersResponse> {
-  const [local, remote, layout] = await Promise.all([localFolders(sources), scope === "all" ? sources.peerFolders() : Promise.resolve([]), sources.layout()]);
-  return { folders: mergeSummaries(local, remote, layout) };
+  const instances = await sources.localInstances();
+  const [local, remote, layout] = await Promise.all([Promise.all(instances.map(readInstance)), scope === "all" ? sources.peerFolders() : Promise.resolve([]), sources.layout()]);
+  const offersUnreadable = instances.flatMap((instance, index) => {
+    const error = local[index].offersError;
+    return error ? [{ nodeId: instance.nodeId, nodeName: instance.nodeName, error }] : [];
+  });
+  return { folders: mergeSummaries(local, remote, layout), offersUnreadable };
 }
 
 function oneOf<Value extends string>(value: string | undefined, allowed: readonly Value[], fallback: Value): Value {
@@ -126,7 +139,7 @@ export function folderSettings(config: SyncthingFolderSettings): FolderSettings 
     maxConflicts: config.maxConflicts ?? 0,
     syncOwnership: config.syncOwnership ?? false,
     syncXattrs: config.syncXattrs ?? false,
-    devices: config.devices.map((device) => ({ deviceId: device.deviceID, encryptionPassword: "" })),
+    devices: config.devices.map((device) => ({ deviceId: device.deviceID, encrypted: Boolean(device.encryptionPassword) })),
     versioning: {
       type: oneOf(config.versioning?.type, versioningTypes, ""),
       params: { ...(config.versioning?.params ?? {}) },

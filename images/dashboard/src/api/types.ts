@@ -301,6 +301,8 @@ export interface FolderSummary {
 /** `GET /api/folders`; `?scope=local` leaves the other hosts out, which is what hosts ask each other. */
 export interface FoldersResponse {
   folders: FolderSummary[];
+  /** Nodes whose Syncthing answered but whose pending offers could not be read, with the reason. */
+  offersUnreadable: { nodeId: string; nodeName: string; error: string }[];
 }
 
 export interface Versioning {
@@ -310,10 +312,7 @@ export interface Versioning {
   fsPath: string;
 }
 
-/**
- * A node's Syncthing settings for one folder.
- * @implNote `encryptionPassword` is always empty: the dashboard never hands out a password.
- */
+/** A node's Syncthing settings for one folder. */
 export interface FolderSettings {
   id: string;
   label: string;
@@ -329,7 +328,8 @@ export interface FolderSettings {
   maxConflicts: number;
   syncOwnership: boolean;
   syncXattrs: boolean;
-  devices: { deviceId: string; encryptionPassword: string }[];
+  /** `encrypted`: the device gets this folder encrypted; the password itself never leaves Syncthing. */
+  devices: { deviceId: string; encrypted: boolean }[];
   versioning: Versioning;
 }
 

@@ -1,6 +1,9 @@
 const registeredForms = new Set<string>();
 
-/** Marks the element with this ID as a form the poll must not rebuild while it is in use. */
+/**
+ * Marks the element with this ID as a form the poll must not rebuild while it is in use.
+ * @implNote A control must set both `value` and `defaultValue` when rendered, or it counts as unsaved and the poll freezes.
+ */
 export function registerForm(id: string): void {
   registeredForms.add(id);
 }
@@ -28,7 +31,10 @@ function hasUnsavedInput(form: HTMLElement): boolean {
   return [...form.querySelectorAll("input, textarea, select")].some(isChanged);
 }
 
-/** True while a registered form on the page has focus or holds input that was not saved. */
+/**
+ * True while a registered form on the page has focus or holds input that was not saved.
+ * @implNote Unsaved means a control differs from its default, so every control must set both `value` and `defaultValue`.
+ */
 export function isFormOpen(): boolean {
   for (const id of registeredForms) {
     const form = document.getElementById(id);

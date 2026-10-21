@@ -143,6 +143,11 @@ describe("instance resolver", () => {
     assert.equal(instance.client.endpoint.url, `http://127.0.0.1:${syncthingPort}`);
   });
 
+  it("lists this host's addressable instances, the cluster first, without a detached node", async () => {
+    const instances = await resolver.localInstances(sources);
+    assert.deepEqual(instances.map((instance) => instance.nodeId), ["storage", "d7e5", "fb98"]);
+  });
+
   it("an unknown node is 404", async () => {
     await assert.rejects(resolver.resolveInstance("beef", sources), { status: 404, message: "no node beef" });
   });

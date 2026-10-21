@@ -22,6 +22,7 @@ interface FakeInstance {
   apiKey: string;
   folders: FakeFolder[];
   pending: Record<string, { offeredBy: Record<string, { time: string; label: string; receiveEncrypted: boolean; remoteEncrypted: boolean }> }>;
+  pendingFails?: boolean;
 }
 
 function reply(response: ServerResponse, body: unknown, status = 200): void {
@@ -75,7 +76,7 @@ function fakeSyncthing(instance: FakeInstance): Server {
       case "/rest/db/status":
         return reply(response, { state: "idle", globalBytes: 2000, globalFiles: 918_000, globalDirectories: 700, needBytes: 0, needFiles: 0, pullErrors: url.searchParams.get("folder") === "documents" ? 1 : 0 });
       case "/rest/cluster/pending/folders":
-        return reply(response, instance.pending);
+        return instance.pendingFails ? reply(response, { error: "pending folders broke" }, 500) : reply(response, instance.pending);
       default:
         return reply(response, { error: "not found" }, 404);
     }
@@ -219,10 +220,24 @@ describe("folder index", () => {
     const detail = await folderDetail("music", "all", sources);
     assert.deepEqual(Object.keys(detail.settings).sort(), ["5784", "fb98"]);
     assert.equal(detail.settings.fb98.versioning.type, "staggered");
+    assert.deepEqual(detail.settings.fb98.devices, [
+      { deviceId: pcId, encrypted: false },
+      { deviceId: arrayId, encrypted: true },
+    ]);
     assert.deepEqual(detail.settings.fb98.minDiskFree, { value: 1, unit: "%" });
     const text = JSON.stringify(detail);
     for (const secret of [encryptionSecret, pc.apiKey, privateArray.apiKey]) assert(!text.includes(secret), `the detail holds ${secret}`);
-    assert(!/"(apiKey|apikey|password)"/.test(text), "the detail has an api key or password field");
+    assert(!/"[A-Za-z]*(apiKey|apikey|password|Password)"/.test(text), "the detail has an api key or password field");
+  });
+
+  it("pending folders that cannot be read keep the copies and name the node", async () => {
+    privateArray.pendingFails = true;
+    const answer = await foldersResponse("local", sources).finally(() => (privateArray.pendingFails = false));
+    assert.deepEqual(byId(answer.folders, "music").copies.map((copy) => copy.nodeId).sort(), ["5784", "fb98"]);
+    assert.deepEqual(byId(answer.folders, "documents").offers, []);
+    assert.equal(answer.offersUnreadable.length, 1);
+    assert.equal(answer.offersUnreadable[0].nodeId, "5784");
+    assert.match(answer.offersUnreadable[0].error, /HTTP 500/);
   });
 
   it("a folder no node has and nobody offers is 404", async () => {
