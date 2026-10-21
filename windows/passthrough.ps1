@@ -161,15 +161,13 @@ function Read-AttachRequest {
     return $request
 }
 
-function Get-AttemptKey($Disk) { return "$($Disk.UniqueId)|$($Disk.Size)" }
-
 <#
 .NOTES
 A drive that fails to attach, or keeps vanishing right after it was attached, is left alone for a
 while instead of being toggled offline and online every round.
 #>
 function Test-IsBackingOff($Disk) {
-    $key = Get-AttemptKey $Disk
+    $key = Get-DiskKey $Disk
     if (-not $script:attempts.ContainsKey($key)) { return $false }
     $since = (Get-Date).AddSeconds(-$attemptWindowSeconds)
     $script:attempts[$key] = @($script:attempts[$key] | Where-Object { $_ -gt $since })
@@ -177,7 +175,7 @@ function Test-IsBackingOff($Disk) {
 }
 
 function Register-Attempt($Disk) {
-    $key = Get-AttemptKey $Disk
+    $key = Get-DiskKey $Disk
     if (-not $script:attempts.ContainsKey($key)) { $script:attempts[$key] = @() }
     $script:attempts[$key] = @($script:attempts[$key]) + (Get-Date)
 }
@@ -279,6 +277,22 @@ function Update-PartitionTableIds($State, [object[]]$Disks) {
             $passed.guid = $guid
             $script:publishIsDue = $true
         }
+    }
+}
+
+<#
+.NOTES
+A serial is never part of a disk's identity (see Test-IsSameDisk), so a changed one is only logged.
+#>
+function Update-PassedSerials($State, [object[]]$Disks) {
+    foreach ($passed in @($State.disks)) {
+        $disk = @($Disks | Where-Object { Test-IsSameDisk $_ $passed }) | Select-Object -First 1
+        if (-not $disk) { continue }
+        $serial = "$($disk.SerialNumber)".Trim()
+        if ($serial -eq $passed.serial) { continue }
+        Write-WatcherLog "warning: disk $($passed.number) reports the serial $serial, not $($passed.serial)"
+        $passed.serial = $serial
+        $script:publishIsDue = $true
     }
 }
 
@@ -424,6 +438,7 @@ function Invoke-WatcherRound($State, [bool]$StackIsRunning = $true) {
             Remove-ReleasedDisks $State $request
             Add-ArrayDisks $State $disks $request
             Update-PartitionTableIds $State $disks
+            Update-PassedSerials $State $disks
             $State.handledRequest = $request.id
         }
         Update-SmartReports $State

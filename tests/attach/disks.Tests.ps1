@@ -74,10 +74,16 @@ Describe "disk identity" {
     It "stays the same disk when the VM gives it a GPT id" {
         Test-IsSameDisk (New-FakeDisk -Number 43 -Guid "{99999999-2222-4333-8444-555555555555}") $identity | Should Be $true
     }
-    It "is another disk under another number, unique id or size" {
+    It "is another disk under another number or size" {
         Test-IsSameDisk (New-FakeDisk -Number 44 -Guid $disk.Guid) $identity | Should Be $false
-        Test-IsSameDisk (New-FakeDisk -Number 43 -Guid $disk.Guid -UniqueId "other") $identity | Should Be $false
         Test-IsSameDisk (New-FakeDisk -Number 43 -Guid $disk.Guid -Size 1000204886016) $identity | Should Be $false
+    }
+    It "is the same disk under another unique id while its GPT id matches" {
+        Test-IsSameDisk (New-FakeDisk -Number 43 -Guid $disk.Guid -UniqueId "other") $identity | Should Be $true
+    }
+    It "is another disk under another unique id when it has no GPT id" {
+        $blank = Get-DiskIdentity (New-FakeDisk -Number 43)
+        Test-IsSameDisk (New-FakeDisk -Number 43 -UniqueId "other") $blank | Should Be $false
     }
     It "survives the trip through a request file" {
         $path = Join-Path ([System.IO.Path]::GetTempPath()) "attach-identity-$([guid]::NewGuid()).json"
@@ -85,6 +91,28 @@ Describe "disk identity" {
         $read = Read-JsonFile $path
         Remove-Item $path
         Test-IsSameDisk $disk @($read.attach)[0] | Should Be $true
+    }
+}
+
+Describe "two drives behind one bridge, which share a serial and a unique id" {
+    $first = New-FakeDisk -Number 3 -Guid "{fad2958e-1eea-41fe-a77e-8b7cdb39cda6}" -Size 1000204886016 -UniqueId "5000000000000001" -SerialNumber "920021404202"
+    $second = New-FakeDisk -Number 4 -Guid "{ae97b07c-8b17-4464-b53c-8f683fcadaa2}" -Size 1000204886016 -UniqueId "5000000000000001" -SerialNumber "920021404202"
+    It "are two disks" {
+        Test-IsSameDisk $first (Get-DiskIdentity $second) | Should Be $false
+        Test-IsSameDisk $second (Get-DiskIdentity $first) | Should Be $false
+    }
+    It "have two keys, taken from the GPT id and the size" {
+        Get-DiskKey $first | Should Not Be (Get-DiskKey $second)
+        Get-DiskKey $first | Should Be "gpt fad2958e-1eea-41fe-a77e-8b7cdb39cda6 1000204886016"
+    }
+    It "keep their keys when Windows numbers them anew" {
+        $renumbered = New-FakeDisk -Number 9 -Guid $first.Guid -Size $first.Size -UniqueId $first.UniqueId
+        Get-DiskKey $renumbered | Should Be (Get-DiskKey $first)
+    }
+    It "have two keys while blank, through their numbers" {
+        $firstBlank = New-FakeDisk -Number 3 -Size 1000204886016 -UniqueId "5000000000000001"
+        $secondBlank = New-FakeDisk -Number 4 -Size 1000204886016 -UniqueId "5000000000000001"
+        Get-DiskKey $firstBlank | Should Not Be (Get-DiskKey $secondBlank)
     }
 }
 

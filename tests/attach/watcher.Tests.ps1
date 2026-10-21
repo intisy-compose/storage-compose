@@ -373,6 +373,63 @@ Describe "a drive that will not attach" {
     }
 }
 
+function New-BridgeWorld {
+    $d8Size = [uint64]1000204886016
+    $bridgeId = "5000000000000001"
+    $disks = @(
+        (New-SystemDisk),
+        (New-FakeDisk -Number 45 -Guid "{cf526c79-9766-47e9-8568-6bb978732023}" -Size $d8Size -UniqueId $bridgeId -SerialNumber "A00022304202"),
+        (New-FakeDisk -Number 46 -Guid "{a99e47ea-bdd3-4083-841a-d7cc6c0f2c66}" -Size $d8Size -UniqueId $bridgeId -SerialNumber "A00022304202"),
+        (New-FakeDisk -Number 44 -Guid "{ae97b07c-8b17-4464-b53c-8f683fcadaa2}" -Size $d8Size -UniqueId $bridgeId -SerialNumber "920021404202"),
+        (New-FakeDisk -Number 43 -Guid "{fad2958e-1eea-41fe-a77e-8b7cdb39cda6}" -Size $d8Size -UniqueId $bridgeId -SerialNumber "920021404202")
+    )
+    $partitions = @{ 40 = @(New-FakePartition -GptType $basicDataType -DriveLetter "C") }
+    foreach ($number in 43..46) { $partitions[$number] = @(New-FakePartition) }
+    Reset-World $disks $partitions
+}
+
+Describe "the D8's drives, two behind each bridge with one serial and one unique id" {
+    New-BridgeWorld
+    $state = New-WatcherState $null
+    Send-Request -Active $true | Out-Null
+    Invoke-WatcherRound $state
+
+    It "passes all four through in one round" {
+        (@($state.disks | ForEach-Object { $_.number } | Sort-Object) -join ",") | Should Be "43,44,45,46"
+        @(Get-MountCalls).Count | Should Be 4
+    }
+    It "backs off only the drive that fails, not its bridge sibling" {
+        New-BridgeWorld
+        $state = New-WatcherState $null
+        $failure = [pscustomobject]@{ Output = "Error code: Wsl/Service/AttachDisk/E_ACCESSDENIED"; ExitCode = -1 }
+        $success = [pscustomobject]@{ Output = "The operation completed successfully."; ExitCode = 0 }
+        $global:mountAnswers = @($failure, $success, $success, $success, $failure, $failure)
+        Send-Request -Active $true | Out-Null
+        Invoke-WatcherRound $state
+        Invoke-WatcherRound $state
+        Invoke-WatcherRound $state
+        $global:wslCalls = @()
+        Invoke-WatcherRound $state
+        @(Get-MountCalls).Count | Should Be 0
+        (@($state.disks | ForEach-Object { $_.number } | Sort-Object) -join ",") | Should Be "43,44,46"
+    }
+    It "keeps a drive whose serial changed and logs it as a warning" {
+        New-BridgeWorld
+        $state = New-WatcherState $null
+        Send-Request -Active $true | Out-Null
+        Invoke-WatcherRound $state
+        ($global:fakeDisks | Where-Object { $_.Number -eq 43 }).SerialNumber = "OTHER"
+        Remove-Item -Force -ErrorAction SilentlyContinue $logFile
+        $global:wslCalls = @()
+        Invoke-WatcherRound $state
+        @(Get-UnmountCalls).Count | Should Be 0
+        @($state.disks).Count | Should Be 4
+        @($state.disks | Where-Object { $_.number -eq 43 })[0].serial | Should Be "OTHER"
+        (Get-Content -Raw $logFile) | Should Match "warning: disk 43 reports the serial OTHER, not 920021404202"
+        @($state.problems).Count | Should Be 0
+    }
+}
+
 Describe "requests and disk lists it must not act on" {
     New-StandardWorld
     $state = New-WatcherState $null
