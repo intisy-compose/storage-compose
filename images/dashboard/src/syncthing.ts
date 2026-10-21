@@ -73,15 +73,69 @@ interface Connections {
   connections: Record<string, Connection>;
 }
 
-interface FolderStatus {
+/** `/rest/db/status`; `sequence` counts up with every change of the folder's local index. */
+export interface FolderStatus {
   state: string;
   globalBytes: number;
   globalFiles?: number;
   globalDirectories?: number;
   needBytes: number;
   needFiles?: number;
+  needTotalItems?: number;
+  errors?: number;
   pullErrors?: number;
   receiveOnlyTotalItems?: number;
+  sequence?: number;
+}
+
+/** One entry of `/rest/db/browse`; `type` is e.g. `FILE_INFO_TYPE_DIRECTORY`. */
+export interface BrowseEntry {
+  name: string;
+  modTime: string;
+  size: number;
+  type: string;
+}
+
+export interface IndexEntry {
+  name: string;
+  type: string;
+  size: number;
+  modified: string;
+  deleted: boolean;
+  ignored: boolean;
+  invalid: boolean;
+}
+
+/** `/rest/db/file`: `local` is absent where the instance has no entry of its own; `availability` lists the devices holding the global version. */
+export interface IndexFile {
+  availability: { id: string; fromTemporary?: boolean }[] | null;
+  global: IndexEntry;
+  local?: IndexEntry | null;
+}
+
+/**
+ * The paged lists name items by their path inside the folder, with the instance's own separator
+ * (`\` on Windows).
+ */
+export interface NeedPage {
+  progress: { name: string }[] | null;
+  queued: { name: string }[] | null;
+  rest: { name: string }[] | null;
+}
+
+export interface ErrorsPage {
+  errors: { path: string; error: string }[] | null;
+}
+
+export interface LocalChangedPage {
+  files: { name: string }[] | null;
+}
+
+/** @implNote Item lists of a folder with 900,000 items take far longer than the 4 s the rest of the API gets. */
+export const listTimeoutMs = 30_000;
+
+function pageQuery(folderId: string, page: number, perPage: number): string {
+  return new URLSearchParams({ folder: folderId, page: String(page), perpage: String(perPage) }).toString();
 }
 
 interface FolderStats {
@@ -199,6 +253,41 @@ export class SyncthingClient {
     const known = await this.devices();
     if (known.some((entry) => entry.deviceID === device.deviceID)) return;
     await this.request("POST", "/config/devices", device);
+  }
+
+  /** One level of the folder's global tree below `prefix` (`/` separated, "" for the folder root) with `levels` 0. */
+  browse(folderId: string, prefix: string, levels: number): Promise<BrowseEntry[]> {
+    const query = new URLSearchParams({ folder: folderId, levels: String(levels) });
+    if (prefix) query.set("prefix", prefix);
+    return this.request<BrowseEntry[] | null>("GET", `/db/browse?${query.toString()}`, undefined, listTimeoutMs).then((entries) => entries ?? []);
+  }
+
+  /** The global and local index entry of one path, or null when the index has no such path. */
+  async file(folderId: string, path: string): Promise<IndexFile | null> {
+    const query = new URLSearchParams({ folder: folderId, file: path });
+    const response = await this.raw("GET", `/rest/db/file?${query.toString()}`, listTimeoutMs);
+    const text = await response.text().catch((error: Error) => {
+      throw new SyncthingUnavailable(`GET /db/file: ${error.message}`);
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new SyncthingError(`GET /db/file: HTTP ${response.status} ${text}`);
+    return JSON.parse(text) as IndexFile;
+  }
+
+  folderStatus(folderId: string): Promise<FolderStatus> {
+    return this.request("GET", `/db/status?folder=${encodeURIComponent(folderId)}`, undefined, listTimeoutMs);
+  }
+
+  needPage(folderId: string, page: number, perPage: number): Promise<NeedPage> {
+    return this.request("GET", `/db/need?${pageQuery(folderId, page, perPage)}`, undefined, listTimeoutMs);
+  }
+
+  errorsPage(folderId: string, page: number, perPage: number): Promise<ErrorsPage> {
+    return this.request("GET", `/folder/errors?${pageQuery(folderId, page, perPage)}`, undefined, listTimeoutMs);
+  }
+
+  localChangedPage(folderId: string, page: number, perPage: number): Promise<LocalChangedPage> {
+    return this.request("GET", `/db/localchanged?${pageQuery(folderId, page, perPage)}`, undefined, listTimeoutMs);
   }
 
   async shareFolder(folderId: string, deviceId: string): Promise<boolean> {

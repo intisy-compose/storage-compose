@@ -16,6 +16,7 @@ export type LocalInstance = {
   client: SyncthingClient;
   root: string | null;
   os: "linux" | "windows";
+  threshold: number;
 };
 
 /** A node of another host, read through that host's dashboard; `dashboardUrl` is null for a device no dashboard reported. */
@@ -41,6 +42,7 @@ interface LocalNode {
   name: string;
   root: string | null;
   os: LocalInstance["os"];
+  threshold: number;
   present: boolean;
   endpoint: () => Promise<SyncthingEndpoint | null>;
 }
@@ -53,6 +55,7 @@ async function arrayNode(nodeId: string, sources: ResolverSources): Promise<Loca
     name: status?.name ?? nodeId,
     root: poolPath(nodeId),
     os: "linux",
+    threshold: status?.description?.node.threshold ?? 0,
     present: status?.present ?? true,
     endpoint: () => syncthingEndpoint(nodeId, undefined, sources.registryDirectory),
   };
@@ -66,6 +69,7 @@ async function registryNodes(sources: ResolverSources): Promise<LocalNode[]> {
     name: entry.name,
     root: entry.root || null,
     os,
+    threshold: entry.threshold,
     present: entry.present,
     endpoint: () => syncthingEndpoint(entry.id, entry, sources.registryDirectory),
   }));
@@ -77,7 +81,7 @@ async function registryNode(nodeId: string, sources: ResolverSources): Promise<L
 
 async function toInstance(node: LocalNode): Promise<LocalInstance | null> {
   const endpoint = node.present ? await node.endpoint() : null;
-  return endpoint ? { kind: "local", nodeId: node.nodeId, name: node.name, client: new SyncthingClient(endpoint), root: node.root, os: node.os } : null;
+  return endpoint ? { kind: "local", nodeId: node.nodeId, name: node.name, client: new SyncthingClient(endpoint), root: node.root, os: node.os, threshold: node.threshold } : null;
 }
 
 /** Every node of this host whose Syncthing can be addressed: each array, the cluster, registry entries and host agent nodes. */
@@ -85,6 +89,22 @@ export async function localInstances(sources: ResolverSources = defaultResolverS
   const arrays = (await Promise.all((await arrayIds()).map((nodeId) => arrayNode(nodeId, sources)))).filter((node): node is LocalNode => node !== null);
   const instances = await Promise.all([...arrays, ...(await registryNodes(sources))].map(toInstance));
   return instances.filter((instance): instance is LocalInstance => instance !== null);
+}
+
+/** A node of this host whether or not its Syncthing can be addressed; `instance` is null while it cannot. */
+export interface LocalNodeInfo {
+  nodeId: string;
+  name: string;
+  root: string | null;
+  os: LocalInstance["os"];
+  threshold: number;
+  instance: LocalInstance | null;
+}
+
+export async function findLocalNode(nodeId: string, sources: ResolverSources = defaultResolverSources): Promise<LocalNodeInfo | null> {
+  const local = (await arrayNode(nodeId, sources)) ?? (await registryNode(nodeId, sources));
+  if (!local) return null;
+  return { nodeId: local.nodeId, name: local.name, root: local.root, os: local.os, threshold: local.threshold, instance: await toInstance(local) };
 }
 
 function notAnswering(name: string): RequestError {
@@ -96,11 +116,10 @@ function notAnswering(name: string): RequestError {
  * agent node, otherwise the other host whose dashboard reported the node.
  */
 export async function resolveInstance(nodeId: string, sources: ResolverSources = defaultResolverSources): Promise<ResolvedInstance> {
-  const local = (await arrayNode(nodeId, sources)) ?? (await registryNode(nodeId, sources));
+  const local = await findLocalNode(nodeId, sources);
   if (local) {
-    const instance = await toInstance(local);
-    if (!instance) throw notAnswering(local.name);
-    return instance;
+    if (!local.instance) throw notAnswering(local.name);
+    return local.instance;
   }
   const remote = (await sources.otherHostNodes()).find((node) => node.id === nodeId);
   if (!remote) throw new RequestError(404, `no node ${nodeId}`);

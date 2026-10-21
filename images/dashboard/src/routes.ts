@@ -10,6 +10,7 @@ import { nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
 import { activityRoutes } from "./routes/activity.js";
 import { folderRoutes } from "./routes/folders.js";
+import { treeRoutes } from "./routes/tree.js";
 import { arrayStatusDirectory, clusterArrayId, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
 import { SyncthingError, SyncthingUnavailable } from "./syncthing.js";
 
@@ -134,6 +135,7 @@ const routes: Route[] = [
   },
   ...folderRoutes,
   ...activityRoutes,
+  ...treeRoutes,
   { pattern: /^\/api\/join$/, handle: async () => joinElsewhere() },
 ];
 

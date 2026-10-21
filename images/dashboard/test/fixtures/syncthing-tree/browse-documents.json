@@ -1,0 +1,32 @@
+[
+  {
+    "name": ".notes",
+    "modTime": "2025-06-05T15:28:14+02:00",
+    "size": 0,
+    "type": "FILE_INFO_TYPE_FILE"
+  },
+  {
+    "name": "Garden Plans",
+    "modTime": "2026-10-16T06:55:40.1487875+02:00",
+    "size": 0,
+    "type": "FILE_INFO_TYPE_DIRECTORY"
+  },
+  {
+    "name": "bike-receipt",
+    "modTime": "2026-09-23T18:40:59.4374514+02:00",
+    "size": 1269962,
+    "type": "FILE_INFO_TYPE_FILE"
+  },
+  {
+    "name": "Recipes",
+    "modTime": "2026-07-09T18:22:40.4063856+02:00",
+    "size": 0,
+    "type": "FILE_INFO_TYPE_DIRECTORY"
+  },
+  {
+    "name": "Taxes",
+    "modTime": "2026-06-22T23:01:53.9822917+02:00",
+    "size": 0,
+    "type": "FILE_INFO_TYPE_DIRECTORY"
+  }
+]

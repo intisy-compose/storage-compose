@@ -80,3 +80,10 @@ export function activityBufferSize(environment: Record<string, string | undefine
 }
 
 export const activitySettings = { bufferSize: activityBufferSize(process.env) };
+
+/** EXPLORER_NEED_LIMIT from config.env: above this many outstanding or failed items a folder's list is not placed in the tree. */
+export function explorerNeedLimit(environment: Record<string, string | undefined>): number {
+  return Math.max(1, Math.floor(positiveNumber(environment.EXPLORER_NEED_LIMIT, 20_000)));
+}
+
+export const explorerSettings = { needLimit: explorerNeedLimit(process.env) };

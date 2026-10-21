@@ -353,6 +353,48 @@ export interface PriorityInfo {
   overridesParent: boolean;
 }
 
+/**
+ * A directory's or file's state on one node, the explorer's colours: "failed" red, "syncing" orange,
+ * "missing" grey (not on that node yet), "unknown" while the node's Syncthing does not answer.
+ */
+export type EntryStatus = "failed" | "syncing" | "missing" | "ignored" | "local-only" | "below-threshold" | "paused" | "unknown" | "in-sync";
+
+/** `detail` says why, e.g. `3 items outstanding below`, `offered, not accepted`. */
+export interface NodeEntryState {
+  nodeId: string;
+  nodeName: string;
+  host: string;
+  status: EntryStatus;
+  detail: string | null;
+}
+
+/**
+ * One row of the explorer. `path` is relative to the tree root with `/` separators; `folder` is set
+ * on a Syncthing folder's root row; `availability` lists the devices that hold the entry.
+ */
+export interface TreeEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+  size: number | null;
+  modified: string | null;
+  folder: { id: string; label: string } | null;
+  priority: PriorityInfo;
+  nodes: NodeEntryState[];
+  availability: { deviceId: string; name: string }[];
+}
+
+/** `GET /api/tree?node=<nodeId>&path=<relative path>&page=<n>`: one page of a directory, pages counted from 1. */
+export interface TreeListing {
+  path: string;
+  view: string;
+  priority: PriorityInfo;
+  overridesBelow: { path: string; priority: number; parent: number }[];
+  entries: TreeEntry[];
+  nextPage: number | null;
+  notes: string[];
+}
+
 /** Every copy of one Syncthing folder ID across the nodes, and the offers of it nobody accepted yet. */
 export interface FolderSummary {
   id: string;

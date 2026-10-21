@@ -1,0 +1,43 @@
+{
+  "availability": null,
+  "global": {
+    "blocksHash": "Xfbg4nYTWdMKgnUFjimfzAOBU0VF9Vz0PkGYP11MlFY=",
+    "deleted": false,
+    "ignored": false,
+    "invalid": false,
+    "localFlags": 0,
+    "modified": "2025-06-05T15:28:14+02:00",
+    "modifiedBy": "QWERTYU",
+    "mustRescan": false,
+    "name": ".notes",
+    "noPermissions": false,
+    "numBlocks": 1,
+    "permissions": "0644",
+    "platform": { "Unix": null, "Windows": null, "Linux": null, "Darwin": null, "FreeBSD": null, "NetBSD": null },
+    "previousBlocksHash": null,
+    "sequence": 167020,
+    "size": 0,
+    "type": "FILE_INFO_TYPE_FILE",
+    "version": ["QWERTYU:1792546686"]
+  },
+  "local": {
+    "blocksHash": "Xfbg4nYTWdMKgnUFjimfzAOBU0VF9Vz0PkGYP11MlFY=",
+    "deleted": false,
+    "ignored": false,
+    "invalid": false,
+    "localFlags": 0,
+    "modified": "2025-06-05T15:28:14+02:00",
+    "modifiedBy": "QWERTYU",
+    "mustRescan": false,
+    "name": ".notes",
+    "noPermissions": false,
+    "numBlocks": 1,
+    "permissions": "0644",
+    "platform": { "Unix": null, "Windows": null, "Linux": null, "Darwin": null, "FreeBSD": null, "NetBSD": null },
+    "previousBlocksHash": null,
+    "sequence": 167020,
+    "size": 0,
+    "type": "FILE_INFO_TYPE_FILE",
+    "version": ["QWERTYU:1792546686"]
+  }
+}
