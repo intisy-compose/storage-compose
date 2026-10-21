@@ -280,7 +280,18 @@ home folders (`~/Documents`, `~/code`, ...) into the node, moving what they held
 node's Syncthing is the host agent's when this stack runs there, otherwise a logon task of the user
 runs it. A new device node keeps the working and essential bands (threshold 50,
 `STORAGE_JOIN_THRESHOLD`); 0, which keeps everything the network holds, is for the cluster, and the
-scripts refuse it unless `STORAGE_JOIN_ALLOW_KEEP_ALL=1`. A Syncthing the device already runs (its home in `%LOCALAPPDATA%\Syncthing`, or the
+scripts refuse it unless `STORAGE_JOIN_ALLOW_KEEP_ALL=1`.
+
+Run from a terminal with no parameters and no `STORAGE_JOIN_*` variable set, either script asks the
+three questions of imprint's review screen first: the node (a drive root, a folder, or none), the
+threshold (0 to 100, with the bands named; 0 only after confirming that it keeps everything, backups
+included; an existing node keeps its own) and whether to join now. Anything else (imprint's hook,
+CI) runs without asking, from the settings. A folder node is also listed in its volume's
+`.storage/nodes.toml`, which is how the host agent finds it, and a node inside another (a folder in
+a listed folder node or on a drive node's volume, or a drive node over listed folders) is refused
+before anything is written.
+
+A Syncthing the device already runs (its home in `%LOCALAPPDATA%\Syncthing`, or the
 one its logon task names) is adopted: it is stopped, its home moves into the node with its
 certificate, folders and devices, so its device ID stays, and its logon task is removed; the package
 that installed it stays installed. The script's header lists every setting.

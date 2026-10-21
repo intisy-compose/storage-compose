@@ -15,6 +15,10 @@ Settings (parameters, or the same environment variables as the Linux script): ST
 IMPRINT_PERSONAL, STORAGE_DASHBOARD, STORAGE_JOIN_ROOT (default F:\), STORAGE_JOIN_NAME,
 STORAGE_JOIN_THRESHOLD (default 50; 0 only with STORAGE_JOIN_ALLOW_KEEP_ALL=1), STORAGE_JOIN_OFFLINE_DIR (a folder with a Tailscale MSI), and, for a Syncthing
 this script runs itself, STORAGE_JOIN_GUI_PORT and STORAGE_JOIN_LISTEN_PORT (default 8384 and 22000).
+
+Run from a console with no parameters and none of the STORAGE_JOIN_* variables set, it asks for the
+node, the threshold and whether to join, as imprint's review screen does. A folder node is also listed
+in its drive's .storage\nodes.toml; a node inside another is refused.
 #>
 param(
     [string]$Root = $(if ($env:STORAGE_JOIN_ROOT) { $env:STORAGE_JOIN_ROOT } else { "F:\" }),
@@ -36,7 +40,10 @@ $repository = Split-Path $PSScriptRoot
 $userSyncthingGuiPort = $(if ($env:STORAGE_JOIN_GUI_PORT) { [int]$env:STORAGE_JOIN_GUI_PORT } else { 8384 })
 $userSyncthingListenPort = $(if ($env:STORAGE_JOIN_LISTEN_PORT) { [int]$env:STORAGE_JOIN_LISTEN_PORT } else { 22000 })
 $userSyncthingTaskPrefix = "storage-compose syncthing"
+$essentialThreshold = 80
+$workingThreshold = 50
 $joinChanges = 0
+$keepAllConfirmed = $false
 
 function Write-JoinLog([string]$Message) { Write-Host "storage-join: $Message" }
 
@@ -110,6 +117,48 @@ function Write-NodeFile {
     Write-JoinChange "wrote $path"
 }
 
+function Get-RelativeNodePath([string]$Path) {
+    return [System.IO.Path]::GetFullPath($Path).Substring((Get-VolumeRoot $Path).Length).TrimEnd('\').Replace('\', '/')
+}
+
+function Get-IndexPaths([string]$VolumeRoot) {
+    $index = Get-NodeIndexPath $VolumeRoot
+    if (-not (Test-Path -LiteralPath $index)) { return @() }
+    $table = (Read-TomlFile $index)[""]
+    if (-not $table.ContainsKey("paths")) { return @() }
+    return @($table["paths"] | Where-Object { $_ } | ForEach-Object { "$_" })
+}
+
+function Test-IsNestedPath([string]$First, [string]$Second) {
+    $ignoreCase = [System.StringComparison]::OrdinalIgnoreCase
+    return $First.StartsWith("$Second/", $ignoreCase) -or $Second.StartsWith("$First/", $ignoreCase)
+}
+
+<#
+.NOTES
+The host agent's rule: a node is never nested in another, or its files would be synced twice.
+#>
+function Get-NodePlacementProblem([string]$Path) {
+    $full = [System.IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) { return $null }
+    $volume = Get-VolumeRoot $full
+    if (Test-IsVolumeRoot $full) {
+        if (@(Get-IndexPaths $volume).Count -gt 0) { return "$(Get-NodeIndexPath $volume) lists folder nodes, and a node is never nested in another, so $volume cannot be a drive node" }
+        return $null
+    }
+    if (Test-Path -LiteralPath (Get-NodeFilePath $volume)) { return "the drive $volume is a drive node, and a node is never nested in another" }
+    $relative = Get-RelativeNodePath $full
+    foreach ($listed in Get-IndexPaths $volume) {
+        if ($listed -ne $relative -and (Test-IsNestedPath $relative $listed)) { return "$($full.TrimEnd('\')) and $volume$($listed.Replace('/', '\')) are nested; a folder node cannot hold another" }
+    }
+    return $null
+}
+
+function Assert-NodePlacement {
+    $problem = Get-NodePlacementProblem $Root
+    if ($problem) { throw $problem }
+}
+
 <#
 .NOTES
 A folder node is found only through its volume's index, never by searching, so it is listed there.
@@ -117,10 +166,9 @@ A folder node is found only through its volume's index, never by searching, so i
 function Register-FolderNode {
     if ((Get-NodeKind) -ne "folder") { return }
     $volume = Get-VolumeRoot $Root
-    $relative = [System.IO.Path]::GetFullPath($Root).Substring($volume.Length).TrimEnd('\').Replace('\', '/')
+    $relative = Get-RelativeNodePath $Root
     $index = Get-NodeIndexPath $volume
-    $paths = @()
-    if (Test-Path -LiteralPath $index) { $paths = @((Read-TomlFile $index)[""]["paths"]) }
+    $paths = @(Get-IndexPaths $volume)
     if ($paths -contains $relative) { return }
     $paths += $relative
     Write-TextFile $index ("paths = [" + (($paths | ForEach-Object { "`"$_`"" }) -join ", ") + "]`n")
@@ -420,12 +468,131 @@ function Assert-JoinThreshold {
     $threshold = $Threshold
     $nodeFile = Get-NodeFilePath ([System.IO.Path]::GetFullPath($Root))
     if (Test-Path -LiteralPath $nodeFile) { $threshold = (Read-NodeFile ([System.IO.Path]::GetFullPath($Root))).threshold }
-    if ($threshold -ne 0 -or $env:STORAGE_JOIN_ALLOW_KEEP_ALL -eq "1") { return }
+    if ($threshold -ne 0 -or $env:STORAGE_JOIN_ALLOW_KEEP_ALL -eq "1" -or $script:keepAllConfirmed) { return }
     throw "threshold 0 keeps everything the network holds, backups and archives included, which only the cluster should; use 50 (working and essential), or set STORAGE_JOIN_ALLOW_KEEP_ALL=1"
+}
+
+function Read-JoinAnswer([string]$Question, [string]$Default) {
+    $prompt = if ($Default) { "$Question [$Default]" } else { $Question }
+    $answer = Read-Host $prompt
+    if ($null -eq $answer) { throw "no answer to: $Question" }
+    if ($answer.Trim() -eq "") { return $Default }
+    return $answer.Trim()
+}
+
+function Confirm-JoinChoice([string]$Question, [bool]$Default) {
+    $hint = if ($Default) { "Y/n" } else { "y/N" }
+    while ($true) {
+        $answer = Read-JoinAnswer "$Question [$hint]" ""
+        if (-not $answer) { return $Default }
+        if ($answer -match '^(y|yes)$') { return $true }
+        if ($answer -match '^(n|no)$') { return $false }
+        Write-JoinLog "yes or no, please"
+    }
+}
+
+function Get-ThresholdBands([int]$Value) {
+    if ($Value -le 0) { return "keeps EVERYTHING, backups included" }
+    if ($Value -ge $essentialThreshold) { return "keeps essential" }
+    if ($Value -ge $workingThreshold) { return "keeps essential and working" }
+    return "keeps essential, working and archive"
+}
+
+function Get-RootChoiceProblem([string]$Kind, [string]$Path) {
+    if ($Path -notmatch '^[A-Za-z]:\\') { return "a full path with its drive letter, like F:\ or F:\storage, please" }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return "$Path does not exist" }
+    if ($Kind -eq "drive" -and -not (Test-IsVolumeRoot $Path)) { return "$Path is not a drive root (its drive is $(Get-VolumeRoot $Path)); choose it as a folder" }
+    if ($Kind -eq "folder" -and (Test-IsVolumeRoot $Path)) { return "$Path is a drive root; a folder node is a folder below one" }
+    return Get-NodePlacementProblem $Path
+}
+
+function ConvertTo-RootChoice([string]$Path) {
+    if ($Path -match '^[A-Za-z]:\\?$') { return "$($Path.Substring(0, 2).ToUpper())\" }
+    return $Path.TrimEnd('\')
+}
+
+function Select-JoinRoot([string]$Kind, [string]$Question, [string]$Default) {
+    while ($true) {
+        $path = ConvertTo-RootChoice (Read-JoinAnswer $Question $Default)
+        $problem = Get-RootChoiceProblem $Kind $path
+        if (-not $problem) { $script:Root = $path; return }
+        Write-JoinLog $problem
+    }
+}
+
+function Select-JoinNode {
+    $isDrive = (Test-Path -LiteralPath $Root -PathType Container) -and (Test-IsVolumeRoot $Root)
+    $default = if ($isDrive) { "1" } else { "3" }
+    Write-JoinLog "the drive or folder this device keeps in the storage network:"
+    Write-JoinLog "  1) a drive root"
+    Write-JoinLog "  2) a folder"
+    Write-JoinLog "  3) none: this device does not join the storage network"
+    while ($true) {
+        switch (Read-JoinAnswer "choose 1, 2 or 3" $default) {
+            "1" { Select-JoinRoot "drive" "the drive root that becomes the storage node (like F:\)" $(if ($isDrive) { $Root } else { "" }); return $true }
+            "2" { Select-JoinRoot "folder" "the folder that becomes the storage node (a full path)" ""; return $true }
+            "3" { return $false }
+            default { Write-JoinLog "1, 2 or 3, please" }
+        }
+    }
+}
+
+function Select-JoinThreshold {
+    $full = [System.IO.Path]::GetFullPath($Root)
+    if (Test-Path -LiteralPath (Get-NodeFilePath $full)) { Write-JoinLog "$(Get-NodeFilePath $full) keeps its threshold, $((Read-NodeFile $full).threshold)"; return }
+    while ($true) {
+        $answer = Read-JoinAnswer "threshold, 0 to 100 (essential 80+, working 50+, archive 1+, 0 keeps everything)" "$Threshold"
+        if ($answer -notmatch '^\d{1,3}$' -or [int]$answer -gt 100) { Write-JoinLog "the threshold is a whole number from 0 to 100, not '$answer'"; continue }
+        $value = [int]$answer
+        if ($value -eq 0) {
+            if (-not (Confirm-JoinChoice "threshold 0 keeps EVERYTHING the storage network holds, backups and archives included. Keep everything?" $false)) {
+                Write-JoinLog "the threshold was not changed"
+                continue
+            }
+            $script:keepAllConfirmed = $true
+        }
+        $script:Threshold = $value
+        Write-JoinLog "threshold $value, $(Get-ThresholdBands $value)"
+        return
+    }
+}
+
+function Test-HasAuthKey {
+    if ($AuthKey) { return $true }
+    return [bool]($env:IMPRINT_PERSONAL -and (Test-Path -LiteralPath (Join-Path $env:IMPRINT_PERSONAL "tailscale.key")))
+}
+
+function Select-JoinNow {
+    $default = $true
+    if (-not (Test-HasAuthKey) -and (Get-TailnetState) -ne "Running") {
+        $default = $false
+        Write-JoinLog "no Tailscale key (-AuthKey or personal\tailscale.key) and not on the tailnet yet: a join now stops at the tailnet"
+    }
+    return Confirm-JoinChoice "join the storage network now?" $default
+}
+
+<#
+.NOTES
+Returns false when the answers mean there is nothing to do.
+#>
+function Read-JoinChoices {
+    if (-not (Select-JoinNode)) { Write-JoinLog "no storage node chosen; this device does not join the storage network"; return $false }
+    Select-JoinThreshold
+    if (-not (Select-JoinNow)) { Write-JoinLog "not joining; run this again to join"; return $false }
+    Write-JoinLog "joining with the $(Get-NodeKind) node at $Root"
+    return $true
+}
+
+function Test-InputIsTerminal { return [Environment]::UserInteractive -and -not [Console]::IsInputRedirected }
+
+function Test-IsInteractiveJoin([int]$BoundParameterCount) {
+    if ($BoundParameterCount -gt 0 -or -not (Test-InputIsTerminal)) { return $false }
+    return @(Get-ChildItem Env: | Where-Object { $_.Name -like "STORAGE_JOIN_*" }).Count -eq 0
 }
 
 function Invoke-Join {
     Assert-JoinThreshold
+    Assert-NodePlacement
     Install-Tailscale
     Join-Tailnet
     $script:syncthingPath = Get-SyncthingBinary $repository
@@ -441,5 +608,8 @@ function Invoke-Join {
 }
 
 if ($MyInvocation.InvocationName -ne ".") {
-    try { Invoke-Join } catch { Write-Host "storage-join: $_" -ForegroundColor Red; exit 1 }
+    try {
+        if ((Test-IsInteractiveJoin $PSBoundParameters.Count) -and -not (Read-JoinChoices)) { exit 0 }
+        Invoke-Join
+    } catch { Write-Host "storage-join: $_" -ForegroundColor Red; exit 1 }
 }
