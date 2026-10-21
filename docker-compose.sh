@@ -100,7 +100,7 @@ show_credentials() {
     host=$(config_value STORAGE_HOST)
     secret() { "${compose[@]}" exec -T mounter cat "$secrets/$1"; }
     echo "  Samba      : smb://$host/storage   user storage, password $(secret samba)"
-    echo "  Syncthing  : https://$host:8384 or http://localhost:8443   user storage, password $(secret syncthing-gui)"
+    echo "  Syncthing  : http://localhost:8443 (this host only)   user storage, password $(secret syncthing-gui)"
     echo "  Kopia      : https://$host:51515   web UI user storage, password $(secret kopia-server)"
     echo "               clients need their own account: ./docker-compose.sh kopia-user <user@host>"
     echo "  Kopia repository password (only for opening the repository without the server): $(secret kopia-repository)"
@@ -121,9 +121,54 @@ start_array() {
 
 stop_array() { step "Stopping everything and unmounting..."; "${compose[@]}" down; }
 
+# Runs in a one-off SnapRAID container while the stack is down; on success ARRAY_PREFIX becomes the
+# array's id, so the stack finds its state on <id>-data1.
+migrate_labels() {
+    local from output id
+    assert_config
+    [ -z "$("${compose[@]}" ps -q --status running)" ] || fail "The stack is running; run './docker-compose.sh down' first."
+    from=$(config_value ARRAY_PREFIX storage)
+    step "Building the SnapRAID image..."
+    "${compose[@]}" build --quiet snapraid
+    step "Migrating the labels of the array $from..."
+    output=$(mktemp)
+    "${compose[@]}" run --rm --no-deps -T --entrypoint /usr/local/bin/migrate-labels.sh snapraid --from "$from" "$@" | tee "$output"
+    id=$(sed -n 's/^migrated //p' "$output")
+    rm -f "$output"
+    [ -n "$id" ] || return 0
+    set_config_value ARRAY_PREFIX "$id"
+    ok "Wrote ARRAY_PREFIX=$id to config.env; start the array with './docker-compose.sh up'."
+}
+
+data_command() {
+    local subcommand url ref
+    subcommand=$(printf '%s' "${1:-status}" | tr '[:upper:]' '[:lower:]')
+    case "$subcommand" in
+        status) git -C "$here" submodule status -- data ;;
+        use)
+            if [ -n "${2:-}" ]; then
+                url=${2%%@*}
+                ref=main
+                [ "$url" = "$2" ] || ref=${2#*@}
+                [[ $url == *://* || $url == git@* ]] || url="https://github.com/$url.git"
+            else
+                url=$(git -C "$here" config -f .gitmodules submodule.data.url)
+                ref=main
+            fi
+            step "Pointing data at $url @ $ref"
+            [ -e "$here/data/.git" ] || git -C "$here" submodule update --init -- data > /dev/null 2>&1 || true
+            git -C "$here" config submodule.data.url "$url"
+            git -C "$here/data" remote set-url origin "$url"
+            git -C "$here/data" fetch -q origin "$ref"
+            git -C "$here/data" checkout -q FETCH_HEAD
+            ok "data now at $(git -C "$here/data" rev-parse --short HEAD)" ;;
+        *) usage ;;
+    esac
+}
+
 usage() {
     cat <<'EOF'
-Usage: ./docker-compose.sh [accept-smart|credentials|down|drives|init-config|kopia-user|logs|restart|scrub|snapraid|status|sync|up|url]
+Usage: ./docker-compose.sh [accept-smart|credentials|data|down|drives|init-config|kopia-user|logs|migrate-labels|restart|scrub|snapraid|status|sync|up|url]
   init-config  Create config.env, name this host and generate the notification topic
   up           Mount and lock the array, join the tailnet, start the stack (default)
   down         Stop the stack, release the lock and unmount
@@ -132,12 +177,15 @@ Usage: ./docker-compose.sh [accept-smart|credentials|down|drives|init-config|kop
   logs         [service]  follow logs, e.g. logs mounter
   drives       List the block devices with their labels
   url          Print the tailnet URL
+  data         status | use [owner/repo[@ref]]  point data/ at a data repo (none = template)
   sync         [--anyway]  run a SnapRAID sync now; --anyway accepts more deletions than SYNC_MAX_DELETED
   scrub        Run a SnapRAID scrub now (SCRUB_PERCENT of the array, blocks older than SCRUB_OLDER_THAN_DAYS)
   snapraid     [args]  run snapraid with the array's config, e.g. snapraid status
   credentials  Print the Samba, Syncthing and Kopia logins, which live on the array
   kopia-user   <user@host>  add a Kopia client account (or reset its password) and print it
   accept-smart <role>  take a drive's current SMART counts as its baseline, e.g. accept-smart data2
+  migrate-labels [--id <4 hex>] [--name <name>] [--dry-run]  with the stack down, move the array from the
+               storage-* labels to <id>-*, keeping its parity; ARRAY_PREFIX becomes the id
 EOF
     exit 1
 }
@@ -153,9 +201,11 @@ case "$command" in
     logs)        "${compose[@]}" logs -f "$@" ;;
     drives)      lsblk -o NAME,SIZE,FSTYPE,LABEL,MODEL,SERIAL,TRAN ;;
     url)         show_urls ;;
+    data)        data_command "$@" ;;
     credentials) show_credentials ;;
     kopia-user)  "${compose[@]}" exec -T kopia kopia.sh user "$@" ;;
     accept-smart) "${compose[@]}" exec -T mounter mounter.sh accept-smart "$@" ;;
+    migrate-labels) migrate_labels "$@" ;;
     sync)        "${compose[@]}" exec -T snapraid snapraid.sh run sync "$@" ;;
     scrub)       "${compose[@]}" exec -T snapraid snapraid.sh run scrub ;;
     snapraid)    "${compose[@]}" exec -T snapraid snapraid.sh config >/dev/null

@@ -1,13 +1,11 @@
-# Which Windows disks may be passed through to WSL, and the files the CLI and the attach watcher
-# share. Dot-sourced by docker-compose.ps1 and by the watcher; defines functions only.
+# Which Windows disks may be passed through to WSL, and the files the CLI and the host agent share.
+# Dot-sourced by docker-compose.ps1 and by the agent; defines functions only.
 
 $linuxFilesystemPartitionType = "{0fc63daf-8483-4772-8e79-3d69d8477de4}"
-$attachTaskName = "storage-compose WSL attach"
-$attachInstallFolder = Join-Path $env:ProgramFiles "storage-compose"
-$attachScriptNames = @("disks.ps1", "watcher.ps1")
+$legacyAttachTaskName = "storage-compose WSL attach"
 $attachRequestFileName = "attach-request.json"
 $attachStateFileName = "attach-state.json"
-$attachLogFileName = "attach.log"
+$attachLogFileName = "host-agent\agent.log"
 
 function Test-IsWindowsSystemDisk($Disk) { return [bool]($Disk.IsBoot -or $Disk.IsSystem) }
 

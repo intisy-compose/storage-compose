@@ -3,7 +3,7 @@
 # mounter alone sends them to ntfy, in order, and keeps whatever could not be sent for the next round.
 # An outbox file holds the title, the priority (1 to 5), the tags and then the message.
 
-outbox="$status_dir/outbox"
+outbox="$status_root/outbox"
 reminder_seconds=86400
 
 queue_notification() {   # <priority> <tags> <title> <message>
@@ -27,7 +27,10 @@ send_notifications() {
     done
 }
 
-asset_of() {   # <label>: the role's asset id from array.toml
+asset_of() {   # <label>: the member's asset from the description, or for the legacy prefix from array.toml
+    local asset
+    asset=$(jq -r --arg label "$1" '.array.members[]? | select(.label == $label) | .asset // empty' "$(description_file)" 2> /dev/null)
+    [ -n "$asset" ] && { echo "$asset"; return 0; }
     awk -v section="[${1#"$prefix-"}]" '/^\[/ {inside = ($0 == section)} inside && /^asset *=/ {gsub(/.*= *"|".*/, ""); print; exit}' \
         "$state_dir/array.toml" 2> /dev/null
 }
@@ -92,25 +95,25 @@ state_priority() { case $1 in healthy) echo 3 ;; degraded) echo 4 ;; *) echo 5 ;
 
 announce_state() {   # <state>
     local before reasons last_reminder
-    before=$(cat "$runtime/announced_state" 2> /dev/null)
+    before=$(cat "$array_runtime/announced_state" 2> /dev/null)
     reasons=$(state_reasons | sed '/ is dropped /d' | paste -sd ';' | sed 's/;/; /g')
     if [ "$1" != "$before" ]; then
-        echo "$1" > "$runtime/announced_state"
-        date +%s > "$runtime/reminded"
+        echo "$1" > "$array_runtime/announced_state"
+        date +%s > "$array_runtime/reminded"
         [ -z "$before" ] && [ "$1" = healthy ] && return 0
         queue_notification "$(state_priority "$1")" "$([ "$1" = healthy ] && echo white_check_mark || echo rotating_light)" \
-            "storage is $1" "$(state_message "$1" "$reasons")"
+            "$(array_display_name) is $1" "$(state_message "$1" "$reasons")"
         return 0
     fi
     [ "$1" = healthy ] && return 0
-    last_reminder=$(cat "$runtime/reminded" 2> /dev/null || echo 0)
+    last_reminder=$(cat "$array_runtime/reminded" 2> /dev/null || echo 0)
     [ $(( $(date +%s) - last_reminder )) -ge "$reminder_seconds" ] || return 0
-    date +%s > "$runtime/reminded"
-    queue_notification "$(state_priority "$1")" rotating_light "storage is still $1" "Still $1 since $(cat "$runtime/state.since"): $reasons."
+    date +%s > "$array_runtime/reminded"
+    queue_notification "$(state_priority "$1")" rotating_light "$(array_display_name) is still $1" "Still $1 since $(cat "$array_runtime/state.since"): $reasons."
 }
 
 announce_split_folders() {
-    local id drives path announced="$runtime/announced_splits"
+    local id drives path announced="$array_runtime/announced_splits"
     touch "$announced"
     while IFS=$'\t' read -r id drives; do
         [ -n "$id" ] || continue

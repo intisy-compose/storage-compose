@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stands in for util-linux's runuser (`runuser -u USER -- COMMAND...`), which Alpine lacks.
+set -euo pipefail
+[[ "$1" == "-u" && "$3" == "--" ]] || { echo "fake runuser: unsupported $*" >&2; exit 2; }
+user="$2"
+shift 3
+exec su-exec "$user" "$@"

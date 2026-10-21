@@ -1,0 +1,20 @@
+name: drive-sync-test
+services:
+  alpha:
+    image: ghcr.io/syncthing/syncthing:2.1.6
+    environment:
+      STGUIADDRESS: 0.0.0.0:8384
+      STGUIAPIKEY: alpha-test-key
+    ports:
+      - 127.0.0.1:18384:8384
+    volumes:
+      - ./work/alpha:/data
+  beta:
+    image: ghcr.io/syncthing/syncthing:2.1.6
+    environment:
+      STGUIADDRESS: 0.0.0.0:8384
+      STGUIAPIKEY: beta-test-key
+    ports:
+      - 127.0.0.1:28384:8384
+    volumes:
+      - ./work/beta:/data

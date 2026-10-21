@@ -47,16 +47,41 @@ start_server() {
     log "server started"
 }
 
+outlives() {   # <pid> <seconds>: true when the process is still there after that long
+    waited=0
+    while kill -0 "$1" 2>/dev/null && [ "$waited" -lt "$2" ]; do sleep 1; waited=$((waited + 1)); done
+    kill -0 "$1" 2>/dev/null
+}
+
+# A server whose state went read-only with data1 can hang for minutes in its shutdown, past even a
+# SIGKILL, which would hold the loop and so the restart onto the returned data1; it is left behind.
 stop_server() {
     [ -n "$server_pid" ] || return 0
     kill "$server_pid" 2>/dev/null || true
-    wait "$server_pid" 2>/dev/null || true
+    if outlives "$server_pid" 10; then
+        kill -9 "$server_pid" 2>/dev/null || true
+        outlives "$server_pid" 5 && log "the server does not stop; leaving it"
+    fi
+    kill -0 "$server_pid" 2>/dev/null || wait "$server_pid" 2>/dev/null || true
     server_pid=
+}
+
+# A read of a dead mount can hang as long as the server's shutdown, and hanging counts as gone.
+repository_answers() {
+    ls "$repository" > /dev/null 2>&1 &
+    probe=$!
+    if outlives "$probe" 5; then kill -9 "$probe" 2>/dev/null; return 1; fi
+    wait "$probe"
 }
 
 server_is_running() { [ -n "$server_pid" ] && kill -0 "$server_pid" 2>/dev/null; }
 
 trap 'stop_server; exit 0' TERM INT
+
+# A restart that lands while data1 is still read-only keeps that mount for good; running 10 s before
+# exiting keeps Docker's restart delay short until a restart finds data1 writable.
+if ! touch /state/.writable 2> /dev/null; then log "the state on data1 is read-only; restarting"; sleep 10; exit 1; fi
+rm -f /state/.writable
 
 if [ -f "$repository/kopia.repository.f" ]; then
     kopia repository connect filesystem --path="$repository"
@@ -64,20 +89,21 @@ else
     kopia repository create filesystem --path="$repository"
 fi
 
-# The state and the repository are bind mounts of one filesystem instance; once data1 is mounted anew
-# or the pool is gone, only a fresh container sees the live ones, so it exits and Docker restarts it.
+# Once data1 is mounted anew or the pool is gone, only a fresh container sees the live bind mounts, so
+# it exits and Docker restarts it; never while data1 is away, as Docker gives up a restart whose bind
+# mounts fail.
 generation=$(array_value generation)
 while true; do
+    current=$(array_value generation)
+    [ -n "$generation" ] || generation=$current
+    if [ -n "$current" ] && [ "$current" != "$generation" ]; then log "data1 was mounted anew; restarting"; stop_server; exit 0; fi
     if [ "$(array_value complete)" = yes ]; then
+        repository_answers || { log "the repository is gone; restarting"; stop_server; exit 1; }
         server_is_running || start_server
     elif server_is_running; then
         log "paused: not every drive of the array is present (the array is $(array_value state))"
         stop_server
     fi
-    current=$(array_value generation)
-    [ -n "$generation" ] || generation=$current
-    if [ -n "$current" ] && [ "$current" != "$generation" ]; then log "data1 was mounted anew; restarting"; stop_server; exit 0; fi
-    ls "$repository" >/dev/null 2>&1 || { log "the repository is gone; restarting"; stop_server; exit 1; }
     sleep 10 &
     wait $! || true
 done

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
-# The array's state, decided every round from the condition of each known drive, and written to the
-# status volume for every other service:
+# An array's state, decided every round from the condition of each known drive, and written to its
+# folder of the status volume, /status/arrays/<id>/, for every other service:
 #   status.json      everything, for the dashboard
 #   array.env        state, complete, share, readonly, generation; for the pool, SnapRAID, Kopia and
 #                    Syncthing's guard
@@ -27,22 +27,30 @@ register_mounted_drives() {
     done
 }
 
+# The description on any one member names the others, so a member that was never mounted on this host
+# is known as missing too.
 known_labels() {
-    { mounted_labels; members_file > /dev/null && sed 's|.*/||' "$(members_file)"; } |
+    { mounted_labels; members_file > /dev/null && sed 's|.*/||' "$(members_file)"; jq -r '.array.members[]?.label' "$(description_file)" 2> /dev/null; } |
         grep -E "$label_pattern" | sort -uV
 }
 
 forget_unknown_records() {
     local directory label known
     known=" $(known_labels | tr '\n' ' ') "
-    for directory in "$runtime/drives"/*; do
+    for directory in "$runtime/drives/$prefix"-*; do
         label=${directory##*/}
         [ -d "$directory" ] && [[ $known != *" $label "* ]] && rm -rf "$directory"
     done
 }
 
+# A drive that drops off goes read-only under its mount before its device is seen gone, so a gone
+# device is checked first: that drive dropped, it is not failing.
 assess_drive() {   # <label>: sets condition and detail
     local label=$1 reason away
+    if ! was_away "$label" && is_mounted "$label" && [ -n "$(record_get "$label" device)" ] && ! still_attached "$label"; then
+        record_set "$label" absent_since "$(date +%s)"
+        log "$label dropped off ($(record_get "$label" device) is gone); waiting for it"
+    fi
     if ! was_away "$label" && is_mounted "$label"; then
         reason=$(record_get "$label" smart_reason)
         if [ -n "$reason" ]; then condition[$label]=failing; detail[$label]=$reason
@@ -95,9 +103,10 @@ drive_json() {   # <label>
     is_mounted "$label" && read -r size used < <(df -B1 --output=size,used "$(mount_point "$label")" | tail -1)
     jq -nc --arg label "$label" --arg role "${label#"$prefix-"}" --arg condition "${condition[$label]}" \
         --arg detail "${detail[$label]}" --arg asset "$(asset_of "$label")" --arg size "$size" --arg used "$used" \
-        --argjson mounted "$(is_mounted "$label" && echo true || echo false)" \
+        --arg serial "$(record_get "$label" serial)" --argjson mounted "$(is_mounted "$label" && echo true || echo false)" \
         '{label: $label, role: $role, condition: $condition, detail: $detail, asset: (if $asset == "" then null else $asset end),
-          mounted: $mounted, size: ($size | tonumber? // null), used: ($used | tonumber? // null)}'
+          mounted: $mounted, size: ($size | tonumber? // null), used: ($used | tonumber? // null),
+          serial: (if $serial == "" then null else $serial end)}'
 }
 
 split_folders_json() {
@@ -111,13 +120,15 @@ write_atomically() { cat > "$1.tmp" && mv "$1.tmp" "$1"; }
 write_status_json() {   # <state> <since> <complete> <paused folders>
     local label drives=()
     for label in $(known_labels); do drives+=("$(drive_json "$label")"); done
-    jq -n --arg node "$node" --arg updated "$(date -u +%FT%TZ)" --arg state "$1" --arg since "$2" \
+    jq -n --arg id "$prefix" --arg name "$(array_display_name)" --arg node "$node" --arg updated "$(date -u +%FT%TZ)" --arg state "$1" --arg since "$2" \
         --argjson complete "$([ "$3" = yes ] && echo true || echo false)" \
+        --argjson present "$([ -n "$(mounted_labels)" ] && echo true || echo false)" \
         --argjson reasons "$(state_reasons | lines_json)" \
         --argjson drives "$(printf '%s\n' "${drives[@]}" | jq -sc '.')" \
         --argjson splitFolders "$(split_folders_json)" --argjson pausedFolders "$(printf '%s' "$4" | lines_json)" \
-        '{node: $node, updated: $updated, state: $state, since: $since, complete: $complete, reasons: $reasons,
-          drives: $drives, splitFolders: $splitFolders, pausedFolders: $pausedFolders}' |
+        --argjson description "$(array_description || echo null)" \
+        '{id: $id, name: $name, node: $node, updated: $updated, state: $state, since: $since, complete: $complete, present: $present,
+          reasons: $reasons, drives: $drives, splitFolders: $splitFolders, pausedFolders: $pausedFolders, description: $description}' |
         write_atomically "$status_dir/status.json"
 }
 
@@ -132,12 +143,12 @@ write_array_env() {   # <state> <complete>
 }
 
 state_since() {   # <state>
-    [ "$(cat "$runtime/state" 2>/dev/null)" = "$1" ] || { echo "$1" > "$runtime/state"; date -u +%FT%TZ > "$runtime/state.since"; }
-    cat "$runtime/state.since"
+    [ "$(cat "$array_runtime/state" 2>/dev/null)" = "$1" ] || { echo "$1" > "$array_runtime/state"; date -u +%FT%TZ > "$array_runtime/state.since"; }
+    cat "$array_runtime/state.since"
 }
 
 pool_branch_labels() {
-    getfattr --only-values -n user.mergerfs.branches "$root/pool/.mergerfs" 2> /dev/null | tr ':' '\n' | sed -e 's/=.*//' -e 's|.*/||'
+    getfattr --only-values -n user.mergerfs.branches "$(pool_path)/.mergerfs" 2> /dev/null | tr ':' '\n' | sed -e 's/=.*//' -e 's|.*/||'
 }
 
 # A drive that is mounted again is back for Syncthing only once the pool shows its files; resuming a

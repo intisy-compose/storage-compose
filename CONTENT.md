@@ -11,27 +11,68 @@ Samba, Syncthing and Kopia); the migration onto the real drives follows.
 
 | service | image | role |
 | --- | --- | --- |
-| `mounter` | built, `debian:trixie-slim` | mounts every drive by its ext4 label under `/mnt/storage/<label>`, holds the array's lock, mirrors the stack state from `data1` to `data2` |
-| `pool` | built, `debian:trixie-slim` + mergerfs 2.40 | one view of every data drive at `/mnt/storage/pool` |
-| `snapraid` | built, `debian:trixie-slim` + SnapRAID 12.4 | writes SnapRAID's config from the drives it has seen, syncs once the last sync is a day old and scrubs once the last scrub is a week old |
+| `mounter` | built, `debian:trixie-slim` | finds every node on the host by metadata: mounts each array's drives by their ext4 labels under `/mnt/storage/<label>`, holds each array's lock, mirrors the stack state from `data1` to `data2`, and lists the drive and folder nodes it finds under `NODE_VOLUMES` |
+| `pool` | built, `debian:trixie-slim` + mergerfs 2.40 | one view of each array's data drives, the cluster's at `/mnt/storage/pool`, any other's at `/mnt/storage/pool-<id>` |
+| `snapraid` | built, `debian:trixie-slim` + SnapRAID 12.4 | writes each array's SnapRAID config from the drives it has seen, syncs once the last sync is a day old and scrubs once the last scrub is a week old, each array on its own |
 | `tailscale` | `tailscale/tailscale:v1.102.4` | joins your tailnet as `storage` inside the gateway's network and forwards the tailnet ports; its node key lives on the array |
-| `dashboard` | built, TypeScript on Node 20 + SnapRAID | the drives with SMART health, parity status, the log, and the actions below |
-| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale, in front of the dashboard, the Syncthing GUI and Kopia; the dashboard and the Syncthing GUI also on `127.0.0.1:8442` and `:8443` |
+| `dashboard` | built, TypeScript on Node 20 + SnapRAID | every node of this host and the other hosts, their drives with SMART health, parity, Syncthing devices and folders, the actions below, and the join of new devices |
+| `gateway` | `caddy:2.11.4-alpine` | HTTPS for the `ts.net` name with certificates from Tailscale, in front of the dashboard and Kopia; the dashboard also on `127.0.0.1:8442`, the Syncthing GUI only there, on `127.0.0.1:8443` |
 | `samba` | `ghcr.io/crazy-max/samba:4.23.8` | the pool as one SMB share, `\\storage.<tailnet>.ts.net\storage` |
-| `syncthing` | `ghcr.io/syncthing/syncthing:2.1.6` | a Syncthing peer whose folders live anywhere in the pool, nested ones too (`pool/Documents`, `pool/Documents/GitHub`); its GUI is `https://storage.<tailnet>.ts.net:8384` |
+| `syncthing` | `ghcr.io/syncthing/syncthing:2.1.6` | a Syncthing peer whose folders live anywhere in the pool, nested ones too (`pool/Documents`, `pool/Documents/GitHub`); its GUI is on this host only, `http://localhost:8443` |
+| `nodes` | built, `debian:trixie-slim` + Syncthing 2.1.6 | one Syncthing per drive node, folder node and array other than the cluster, each with the identity kept on its own storage, on sync ports 22001 and up |
 | `kopia` | built from the Kopia 0.23.1 release binary | a Kopia repository server on `pool/kopia`, `https://storage.<tailnet>.ts.net:51515` |
 
 Every image is pinned to a version.
 
-## Drives
+## Nodes
 
-Every drive is ext4 with a label naming its role: `storage-data1`, `storage-data2`, ...,
-`storage-parity1`. The USB port, the device order and the host never matter. `storage-data1`
-holds the stack state in `/.storage/`, mirrored to `storage-data2`.
+Every place that holds data is a node, with its identity in `.storage/node.toml` on its own
+storage, so it stays the same node on whichever host it is attached to:
 
-**One host at a time**: the mounter writes its host name and a heartbeat into the lock on
-`storage-data1` every minute and refuses to start while another host was seen in the last ten
-minutes. `down` releases it.
+- **array**: several drives with SnapRAID parity. Each drive is ext4 with a label naming its array's
+  4 hex digit id and its role: `a3f9-data1`, `a3f9-data2`, ..., `a3f9-parity1`. The USB port, the
+  device order and the host never matter, and any number of arrays run side by side. Every member
+  carries the whole array's description (its members' roles, labels, serials, sizes and inventory
+  assets), the copy with the highest `revision` winning, so any one drive names the members that
+  are missing.
+- **drive**: one volume whose root holds `.storage/node.toml`.
+- **folder**: a folder on any volume, listed in `.storage/nodes.toml` at that volume's root
+  (`paths = ["files"]`). Nothing below a volume's root is ever searched.
+
+Nodes are found from metadata only: array drives by their labels, drive and folder nodes by those
+two files at the roots of the volumes the host mounts under `NODE_VOLUMES` (Linux, opt-in: unset, the
+stack looks only in its own `node-volumes-unset` folder; on Windows the host agent finds them). A device or mount event starts a discovery at once, and a slow poll
+(`DISCOVERY_POLL_SECONDS`) catches a missed one.
+
+The array named by `ARRAY_PREFIX`, the cluster, holds the stack state in `/.storage/` on its
+`data1`, mirrored to `data2`. **One host at a time**: each array's mounter writes its host name and
+a heartbeat into the lock on that array's `data1` every minute; the stack refuses to start while
+another host held the cluster's lock in the last ten minutes, and leaves any other array alone
+while its lock is held elsewhere. `down` releases them.
+
+### Moving an array from the old labels
+
+An array labelled `storage-data1`, ... moves to its id with the stack down:
+
+```powershell
+.\docker-compose.ps1 down
+.\docker-compose.ps1 migrate-labels --dry-run   # shows each drive, its new label, serial and asset
+.\docker-compose.ps1 migrate-labels --name private-array
+.\docker-compose.ps1 up
+```
+
+On Windows each `migrate-labels` runs in an admin shell: it installs the host agent, has it pass the
+drives through to WSL without mounting them, runs the migration in a one-off SnapRAID container
+(which the agent counts as the stack running, so the drives stay for as long as SnapRAID's check
+takes), then releases the drives and removes the agent again; `up` installs it for good.
+
+It refuses unless every member listed in `snapraid.drives` is present and none is mounted, rewrites
+only the ext4 labels and the member files (`snapraid.drives`, the folder record, the SMART
+baselines), writes the node file with `array.toml`'s assets and serials on every member, keeps
+`snapraid.drives.before-migration` and `array.toml.before-migration` beside the new files, and
+checks with `snapraid status` and `snapraid diff` that SnapRAID, whose disks keep their names, sees
+the same array. It can be run again after an interruption. `ARRAY_PREFIX` in `config.env` becomes
+the id.
 
 ## Parity
 
@@ -49,13 +90,15 @@ A sync is refused, and the status page says why, when:
   drive's parity; `snapraid --force-empty sync` accepts it once you are sure.
 
 A drive that ever was part of the array stays in SnapRAID's config while it is missing, so its
-absence stops the sync instead of quietly removing it. The log of every run is
-`/.storage/log/snapraid.log` on `storage-data1`.
+absence stops the sync instead of quietly removing it. Each array has its own config, job lock,
+schedule and log, `/.storage/log/snapraid.log` on its `data1`. Every SnapRAID run goes through a
+small wrapper that records it and its progress, so the dashboard shows a sync started by hand
+(`docker-compose.ps1 snapraid sync`) as well as its own.
 
 ## When a drive drops off or fails
 
-The mounter checks every drive every 10 seconds and puts the array in one of three states, which
-the dashboard shows at the top and every service follows:
+The mounter checks every drive every 10 seconds and puts each array in one of three states, which
+the dashboard shows and every service follows; the dashboard calls a stopped array frozen:
 
 | state | when | the share | Syncthing | Kopia, sync, scrub |
 | --- | --- | --- | --- | --- |
@@ -94,15 +137,55 @@ for a missing drive it offers:
 
 Both erase or give up data, so each needs the role typed as confirmation. Only drives on
 `CANDIDATE_TRANSPORTS` (USB by default) that are writable, unmounted and carry no array label are
-offered as replacements, so the host's own disks never are. Anyone on your tailnet can use the
-dashboard; there is no second login.
+offered as replacements, so the host's own disks never are. The same unused drives can be **added**
+as the array's next data drive (typed `add` as confirmation), and a drive whose SMART counts rose
+can have them **accepted** as its new baseline. Every action is scoped to one array
+(`POST /api/arrays/<id>/<action>`). Anyone on your tailnet can use the dashboard; there is no second
+login.
+
+`GET /api/nodes` lists this host's nodes and, read over the tailnet from `STORAGE_PEERS`, the other
+hosts'; a device only Syncthing knows shows Syncthing's view of it.
+
+## Joining devices
+
+A device on the tailnet joins with one call, which the join scripts in `join/` make on a device's
+first boot:
+
+`POST /api/join` with `{"name": "p53", "os": "linux", "syncthingDeviceId": "...", "nodes": [{"kind": "drive", "path": "/data", "threshold": 80}]}`
+
+The dashboard asks tailscaled who the caller is: a device tagged `tag:storage`, or owned by
+`JOIN_OWNER` (by default the owner of this host's tailnet node), is admitted; anyone else gets 403.
+It adds the device to every Syncthing on this host, shares the folders the device's thresholds
+admit (from the setup repo's folder list, priority 80 for `synced`, 30 for `archive`, 0 never
+leaves its node), and records the device in the setup repo (`SETUP_REPO_DIR`, by default the stack's
+own data repo in `data/`, with the list at `SETUP_LAYOUT`, by default `data/drive-sync.toml`) with a
+commit and a push, or, while that repo holds no list, on this host only. Calling it again with the
+same name and ID is harmless; a known name with another device ID gets 409.
+
+## The data repo
+
+`data/` is a submodule: the public
+[storage-compose-data-template](https://github.com/intisy-compose/storage-compose-data-template),
+so a fresh clone runs, holding an example `drive-sync.toml`. Swap in your own private repo with
+`.\docker-compose.ps1 data use <owner/repo[@ref]>` (`./docker-compose.sh` on Linux; no source goes
+back to the template) and check which one is in place with `data status`. Commit and push inside
+`data/`; the submodule pointer in this repo stays on the template.
+
+## drive-sync
+
+`tools/drive-sync` applies the device list in `data/drive-sync.toml` to a device's own Syncthing:
+it adds the other devices and every folder the list gives this device, links the home folders on
+Linux and reports unlisted folders and sync conflicts. `systemd/drive-sync.service` runs it at
+login. Its tests read `tests/fixtures/drive-sync.toml`, never a real list:
+`python -m unittest discover -s tests -t .` from `tools/drive-sync`, and with
+`DRIVE_SYNC_INTEGRATION=1` also the two-Syncthing test in Docker.
 
 ## Sharing, syncing and backups
 
 Tailscale serve forwards the tailnet ports straight into the stack: 443 (dashboard), 445 (Samba),
-8384 (Syncthing GUI), 22000 (Syncthing sync) and 51515 (Kopia). Outside the tailnet only the host
-itself reaches the dashboard (`http://localhost:8442`) and the Syncthing GUI
-(`http://localhost:8443`), both published on 127.0.0.1. The logins are generated once and kept on `storage-data1`, so every host that
+22000 (Syncthing sync), 22001 to 22008 (the node Syncthings) and 51515 (Kopia). The host itself
+reaches the dashboard at `http://localhost:8442` and the Syncthing GUI at `http://localhost:8443`,
+both published on 127.0.0.1; the GUI is not on the tailnet. The logins are generated once and kept on the cluster's `data1`, so every host that
 runs the array presents the same ones; `credentials` prints them.
 
 - **Samba**: user `storage`. The share hides the stack's own folders (`.storage`, `kopia`,
@@ -127,11 +210,34 @@ cd storage-compose
 
 .\docker-compose.ps1 init-config   # creates config.env, names this host, generates the ntfy topic
 # put an auth key from https://login.tailscale.com/admin/settings/keys into TS_AUTHKEY
-.\docker-compose.ps1 install-attach   # Windows, once, in an admin shell
 .\docker-compose.ps1 up            # the one CLI; run it without a known command to list them all
 ```
 
-On Linux, `./docker-compose.sh` takes the same commands and nothing needs installing.
+On Windows the first `up` runs in an admin shell, because it installs the host agent (below); later
+ones need it only when the agent must be repaired. On Linux, `./docker-compose.sh` takes the same
+commands and nothing needs installing.
+
+## Windows: the host agent
+
+What has to run outside Docker on Windows runs in one Windows service, `storage-compose-agent`,
+which `up` installs or repairs and `down` removes. It runs as SYSTEM, so it serves before anyone logs
+in, and it acts only while the stack's containers run: a stack that crashed or was removed without
+`down` gets its drives back within one round. Ten minutes after the stack is gone (its containers
+stopped or removed, or its folder deleted) the agent releases everything and unregisters itself, so
+a deleted stack leaves nothing behind. It does three things:
+
+- passes the array's drives through to WSL (below), running `wsl.exe` as the user who ran `up`,
+  since WSL refuses SYSTEM and keeps one VM per user;
+- runs one Syncthing per drive or folder node on a Windows volume: a volume whose root holds
+  `.storage\node.toml` is a drive node, and the folders listed in a root's `.storage\nodes.toml`
+  are folder nodes; nothing below a root is ever searched. It looks when a volume arrives and once a
+  minute. Each Syncthing keeps its home in the node's `.storage\syncthing`, so the node keeps its
+  device ID on any host, listens on the tailnet only (ports 22001 and up) with its API on
+  `127.0.0.1` (8450 and up), and is the pinned release that `up` downloads once into
+  `host-agent\bin` and checks against its SHA-256;
+- writes `host-agent\status\heartbeat.json` every 5 seconds for the dashboard, with each node's
+  Syncthing, the drives passed through and when the agent would remove itself. Its log is
+  `host-agent\agent.log`.
 
 ## Windows: how the drives reach Docker Desktop
 
@@ -141,13 +247,11 @@ On Linux, `./docker-compose.sh` takes the same commands and nothing needs instal
   stack's format writes) is set offline in Windows and passed through to Docker Desktop's WSL2 VM
   with `wsl --mount --bare`, at the drive's own speed (161 MB/s read, 258 MB/s write measured,
   against about 25 MB/s for the whole array over usbipd). A disk with a Windows volume, a blank disk
-  and the system disks are never touched. `wsl --mount` needs administrator rights every time, so
-  an elevated scheduled task does it: `install-attach`, run once in an admin shell, copies it to
-  `C:\Program Files\storage-compose` and registers it to start at logon; `up` and `down` then run
-  from a normal shell and hand it their request through `attach-request.json` beside `config.env`.
-  The task also passes a drive through again when it drops off USB and comes back, or when Docker
-  Desktop or WSL restarts, and reads the drives' SMART counts every 10 minutes, because the VM's
-  virtual disk cannot. Run `install-attach` again after updating the stack; `up` says when it is due.
+  and the system disks are never touched. The host agent does it, since `wsl --mount` needs
+  administrator rights every time; `up` and `down` hand it their request through
+  `attach-request.json` beside `config.env`. It also passes a drive through again when it drops off
+  USB and comes back, or when Docker Desktop or WSL restarts, and reads the drives' SMART counts
+  every 10 minutes, because the VM's virtual disk cannot.
 - **`attach`** lists the USB disks and what each one is; `attach <disk number>` passes a blank
   replacement drive through after showing it and asking for its number, so the dashboard offers it
   under Rebuild. A disk with anything but Linux filesystem partitions is refused.
@@ -157,3 +261,26 @@ On Linux, `./docker-compose.sh` takes the same commands and nothing needs instal
   `usbipd list` in `USB_HARDWARE_IDS`). The first `up` needs an admin shell to bind them once.
   It is much slower: usbipd's virtual host controller has no USB streams, so UAS enclosures run as
   plain usb-storage, and a device that carries a mounted Windows volume refuses to attach.
+
+## Joining a device
+
+A newly installed device joins the storage network with one script, run once (an imprint firstboot
+hook does it on a fresh install) and harmless to run again:
+
+- **Linux** (systemd; Arch, Debian or Fedora): `sudo join/storage-join.sh`
+- **Windows**: `.\join\storage-join.ps1` from a checkout of this repository
+
+It installs Tailscale and Syncthing if they are missing (on Arch from the stick's offline repository
+first) and joins the tailnet with the auth key in `STORAGE_JOIN_KEY` or the stick's
+`personal/tailscale.key`; writes the node file for the device's data root (`/data`, or `F:\` on
+Windows; `STORAGE_JOIN_ROOT`) and starts Syncthing with its home on the node, listening on the
+tailnet only; registers with the storage dashboard (`STORAGE_DASHBOARD`, default
+`https://storage.<tailnet>`), adds the devices and folders it answers with, and on Linux links the
+home folders (`~/Documents`, `~/code`, ...) into the node, moving what they held. On Windows the
+node's Syncthing is the host agent's when this stack runs there, otherwise a logon task of the user
+runs it. A new device node keeps the working and essential bands (threshold 50,
+`STORAGE_JOIN_THRESHOLD`); 0, which keeps everything the network holds, is for the cluster, and the
+scripts refuse it unless `STORAGE_JOIN_ALLOW_KEEP_ALL=1`. A Syncthing the device already runs (its home in `%LOCALAPPDATA%\Syncthing`, or the
+one its logon task names) is adopted: it is stopped, its home moves into the node with its
+certificate, folders and devices, so its device ID stays, and its logon task is removed; the package
+that installed it stays installed. The script's header lists every setting.

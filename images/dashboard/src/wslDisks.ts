@@ -20,7 +20,7 @@ const staleAfterSeconds = 1800;
 
 /**
  * The disks the Windows host passed through to WSL, with the SMART reports it read for them.
- * @implNote Written by the host's attach watcher at least every 10 minutes while drives are passed
+ * @implNote Written by the host agent at least every 10 minutes while drives are passed
  * through, so an older file is left over from an earlier run.
  */
 export async function readWslDisks(): Promise<WslDisk[]> {
