@@ -125,6 +125,8 @@ export interface StorageNode {
   array?: NodeArray;
   syncthing: SyncthingDevice | null;
   folders: NodeFolder[];
+  /** The other host's dashboard this node was read from; null for this host's nodes and for a device no dashboard reported. */
+  dashboardUrl: string | null;
 }
 
 export interface Warning {

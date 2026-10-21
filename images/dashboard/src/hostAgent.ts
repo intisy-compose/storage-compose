@@ -25,9 +25,9 @@ export interface HostAgentNode {
 
 const staleAfterSeconds = 30;
 
-export async function readHeartbeat(): Promise<HostAgentHeartbeat | null> {
+export async function readHeartbeat(path = hostAgentHeartbeatFile): Promise<HostAgentHeartbeat | null> {
   try {
-    return JSON.parse((await readFile(hostAgentHeartbeatFile, "utf8")).replace(/^﻿/, "")) as HostAgentHeartbeat;
+    return JSON.parse((await readFile(path, "utf8")).replace(/^﻿/, "")) as HostAgentHeartbeat;
   } catch {
     return null;
   }

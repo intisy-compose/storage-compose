@@ -67,21 +67,35 @@ export interface PeerView {
 
 export class SyncthingError extends Error {}
 
+/** The instance did not answer at all: refused, unreachable or past the timeout. */
+export class SyncthingUnavailable extends SyncthingError {}
+
 export class SyncthingClient {
   constructor(
     readonly endpoint: SyncthingEndpoint,
     private readonly timeoutMs = 4000,
   ) {}
 
-  async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const response = await fetch(`${this.endpoint.url.replace(/\/$/, "")}/rest${path}`, {
-      method,
-      headers: { "X-API-Key": this.endpoint.apiKey, "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(this.timeoutMs),
+  /** Any path of the instance's GUI, `/qr/` or `/rest/debug/support` included, answered as it comes. */
+  async raw(method: string, path: string, timeoutMs = this.timeoutMs, body?: unknown): Promise<Response> {
+    try {
+      return await fetch(`${this.endpoint.url.replace(/\/$/, "")}${path}`, {
+        method,
+        headers: { "X-API-Key": this.endpoint.apiKey, "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      throw new SyncthingUnavailable(`${method} ${path}: ${(error as Error).message}`);
+    }
+  }
+
+  async request<T>(method: string, path: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
+    const response = await this.raw(method, `/rest${path}`, timeoutMs, body);
+    const text = await response.text().catch((error: Error) => {
+      throw new SyncthingUnavailable(`${method} ${path}: ${error.message}`);
     });
-    if (!response.ok) throw new SyncthingError(`${method} ${path}: HTTP ${response.status} ${await response.text()}`);
-    const text = await response.text();
+    if (!response.ok) throw new SyncthingError(`${method} ${path}: HTTP ${response.status} ${text}`);
     return (text ? JSON.parse(text) : null) as T;
   }
 

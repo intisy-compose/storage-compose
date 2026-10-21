@@ -57,6 +57,7 @@ async function arrayNode(status: ArrayStatus, devices: BlockDevice[], sources: M
     },
     syncthing: view?.device ?? null,
     folders: view?.folders ?? [],
+    dashboardUrl: null,
   };
 }
 
@@ -75,6 +76,7 @@ function registryNode(entry: NodeRegistryEntry, view: InstanceView | null): Stor
     sync: entry.present ? (view?.sync ?? offlineSync()) : offlineSync(entry.updated),
     syncthing: view?.device ?? null,
     folders: view?.folders ?? [],
+    dashboardUrl: null,
   };
 }
 
@@ -128,8 +130,9 @@ async function remoteNodes(warnings: Warning[]): Promise<StorageNode[]> {
   const answers = await Promise.all(
     peerDashboards.map(async (peer) => {
       try {
-        const answer = await fetchTailnetJson<NodesResponse>(`${peer.replace(/\/$/, "")}/api/nodes?scope=local`);
-        return answer.nodes.map((node) => ({ ...node, local: false, host: node.host || answer.host.name }));
+        const dashboardUrl = peer.replace(/\/$/, "");
+        const answer = await fetchTailnetJson<NodesResponse>(`${dashboardUrl}/api/nodes?scope=local`);
+        return answer.nodes.map((node) => ({ ...node, local: false, host: node.host || answer.host.name, dashboardUrl }));
       } catch (error) {
         warnings.push(warning(`peer:${peer}`, "warning", `${peer} could not be reached (${(error as Error).message}); its nodes show Syncthing's view`, null));
         return [];
@@ -166,11 +169,15 @@ async function syncthingOnlyNodes(known: StorageNode[], views: InstanceView[], r
         sync: peer.connected ? { state: peer.completion < 100 ? "syncing" : "idle", completion: peer.completion, lastSeen: new Date().toISOString() } : offlineSync(peer.lastSeen),
         syncthing: { deviceId: peer.deviceId, addresses: peer.address ? [peer.address] : [], connectionType: peer.connectionType, inRate: peer.inRate, outRate: peer.outRate, version: peer.version },
         folders: [],
+        dashboardUrl: null,
       });
     }
   }
   return [...nodes.values()];
 }
+
+let lastOtherHostNodes: { at: number; nodes: StorageNode[] } | null = null;
+const otherHostNodesMaxAgeMilliseconds = 60_000;
 
 export async function nodesResponse(scope: "all" | "local", records: JoinRecords): Promise<NodesResponse> {
   const warnings: Warning[] = [];
@@ -179,6 +186,17 @@ export async function nodesResponse(scope: "all" | "local", records: JoinRecords
   if (scope === "all") {
     nodes.push(...(await remoteNodes(warnings)));
     nodes.push(...(await syncthingOnlyNodes(nodes, views, records)));
+    lastOtherHostNodes = { at: Date.now(), nodes: nodes.filter((node) => !node.local) };
   }
   return { host: { name: hostName }, nodes, warnings, settings: { inventoryItemUrl: inventoryAssetUrl || null } };
+}
+
+/**
+ * The nodes of other hosts and those only Syncthing knows, as the last full `/api/nodes` built them.
+ * @implNote The page polls `/api/nodes` every 5 s, so the list is nearly always fresh; only a stale or
+ * missing one costs a full build, which reads every peer dashboard and every local instance.
+ */
+export async function otherHostNodes(records: JoinRecords): Promise<StorageNode[]> {
+  if (lastOtherHostNodes && Date.now() - lastOtherHostNodes.at < otherHostNodesMaxAgeMilliseconds) return lastOtherHostNodes.nodes;
+  return (await nodesResponse("all", records)).nodes.filter((node) => !node.local);
 }
