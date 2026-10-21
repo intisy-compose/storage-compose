@@ -7,6 +7,7 @@ import { RequestError, readBody, sendJson } from "./http.js";
 import { fileJoinRecords } from "./join.js";
 import { nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
+import { folderRoutes } from "./routes/folders.js";
 import { arrayStatusDirectory, clusterArrayId, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
 import { SyncthingError, SyncthingUnavailable } from "./syncthing.js";
 
@@ -20,7 +21,7 @@ export interface RouteContext {
   params: string[];
 }
 
-interface Route {
+export interface Route {
   /** Any method when absent. */
   method?: string;
   pattern: RegExp;
@@ -126,6 +127,7 @@ const routes: Route[] = [
     pattern: /^\/api\/(sync|scrub|rebuild|remove)$/,
     handle: ({ request, response, params: [action] }) => handleArrayAction(clusterArrayId, action as ArrayAction, request, response),
   },
+  ...folderRoutes,
   { pattern: /^\/api\/join$/, handle: async () => joinElsewhere() },
 ];
 

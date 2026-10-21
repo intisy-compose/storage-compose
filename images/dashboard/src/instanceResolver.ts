@@ -7,7 +7,7 @@ import { fileJoinRecords } from "./join.js";
 import { otherHostNodes } from "./nodes.js";
 import { clusterArrayId, hostAgentHeartbeatFile, joinsFile, poolPath, registryDirectory } from "./settings.js";
 import { type SyncthingEndpoint, SyncthingClient, SyncthingUnavailable } from "./syncthing.js";
-import { fetchTailnetJson } from "./tailnet.js";
+import { fetchTailnet } from "./tailnet.js";
 
 export type LocalInstance = {
   kind: "local";
@@ -102,14 +102,30 @@ export async function callSyncthing<T>(instance: LocalInstance, call: (client: S
   }
 }
 
+function peerError(body: unknown): string | null {
+  const error = (body as { error?: unknown } | null)?.error;
+  return typeof error === "string" ? error : null;
+}
+
+/**
+ * A GET from another host's dashboard with `scope=local` added to the path's own query. A refusal
+ * keeps the dashboard's status and `error`; only a dashboard that cannot be reached is a 502.
+ */
+export async function readDashboard(dashboardUrl: string, host: string, path: string): Promise<unknown> {
+  const url = new URL(`${dashboardUrl}${path}`);
+  url.searchParams.set("scope", "local");
+  let answer;
+  try {
+    answer = await fetchTailnet(url.toString());
+  } catch (error) {
+    throw new RequestError(502, `${host}'s dashboard: ${(error as Error).message}`);
+  }
+  if (answer.status >= 200 && answer.status < 300) return answer.body;
+  throw new RequestError(answer.status, peerError(answer.body) ?? `${host}'s dashboard answered HTTP ${answer.status}`);
+}
+
 /** A GET of a remote node's data from its own host's dashboard, which answers for its local nodes only. */
 export async function forwardRead(instance: RemoteInstance, path: string): Promise<unknown> {
   if (!instance.dashboardUrl) throw new RequestError(404, `no dashboard for ${instance.name}`);
-  const url = new URL(`${instance.dashboardUrl}${path}`);
-  url.searchParams.set("scope", "local");
-  try {
-    return await fetchTailnetJson<unknown>(url.toString());
-  } catch (error) {
-    throw new RequestError(502, `${instance.host}'s dashboard: ${(error as Error).message}`);
-  }
+  return readDashboard(instance.dashboardUrl, instance.host, path);
 }

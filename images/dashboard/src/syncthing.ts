@@ -15,6 +15,23 @@ export interface SyncthingFolderConfig {
   devices: { deviceID: string; introducedBy?: string; encryptionPassword?: string }[];
 }
 
+/** The fields of a folder's full configuration the dashboard reads; Syncthing sends many more. */
+export interface SyncthingFolderSettings extends SyncthingFolderConfig {
+  rescanIntervalS?: number;
+  fsWatcherEnabled?: boolean;
+  fsWatcherDelayS?: number;
+  ignorePerms?: boolean;
+  order?: string;
+  minDiskFree?: { value: number; unit: string };
+  maxConflicts?: number;
+  syncOwnership?: boolean;
+  syncXattrs?: boolean;
+  versioning?: { type?: string; params?: Record<string, string>; cleanupIntervalS?: number; fsPath?: string };
+}
+
+/** `/rest/cluster/pending/folders`: folder ID, then the offering device's ID. */
+export type PendingFolders = Record<string, { offeredBy: Record<string, { time: string; label: string; receiveEncrypted: boolean }> }>;
+
 export interface SyncthingDeviceConfig {
   deviceID: string;
   name: string;
@@ -43,6 +60,7 @@ interface FolderStatus {
   state: string;
   globalBytes: number;
   globalFiles?: number;
+  globalDirectories?: number;
   needBytes: number;
   needFiles?: number;
   pullErrors?: number;
@@ -122,6 +140,14 @@ export class SyncthingClient {
 
   devices(): Promise<SyncthingDeviceConfig[]> {
     return this.request("GET", "/config/devices");
+  }
+
+  folderSettings(folderId: string): Promise<SyncthingFolderSettings> {
+    return this.request("GET", `/config/folders/${encodeURIComponent(folderId)}`);
+  }
+
+  pendingFolders(): Promise<PendingFolders> {
+    return this.request<PendingFolders | null>("GET", "/cluster/pending/folders").then((pending) => pending ?? {});
   }
 
   /** Adds the device, or leaves one with the same ID as it is. */
@@ -217,6 +243,7 @@ function emptyFolder(folder: SyncthingFolderConfig, sharedWith: FolderPeer[], st
     needBytes: 0,
     globalBytes: 0,
     globalFiles: 0,
+    globalDirectories: 0,
     lastScan: null,
     lastFile: null,
     localChanged: 0,
@@ -240,6 +267,7 @@ async function folderView(client: SyncthingClient, folder: SyncthingFolderConfig
       needBytes: status.needBytes ?? 0,
       globalBytes: status.globalBytes ?? 0,
       globalFiles: status.globalFiles ?? 0,
+      globalDirectories: status.globalDirectories ?? 0,
       lastScan: usableTime(stats?.lastScan),
       lastFile: stats?.lastFile && usableTime(stats.lastFile.at) ? stats.lastFile : null,
       localChanged: status.receiveOnlyTotalItems ?? 0,
@@ -320,6 +348,18 @@ async function optionalFolderStats(client: SyncthingClient): Promise<Record<stri
   }
 }
 
+function folderViews(client: SyncthingClient, ownId: string, folderConfigs: SyncthingFolderConfig[], deviceConfigs: SyncthingDeviceConfig[], folderStats: Record<string, FolderStats>): Promise<NodeFolder[]> {
+  const names = new Map(deviceConfigs.map((device) => [device.deviceID, device.name]));
+  return Promise.all(folderConfigs.map((folder) => folderView(client, folder, sharedWithOf(folder, ownId, names), folderStats[folder.id])));
+}
+
+/** One instance's folders as the Nodes page shows them, with each folder's configuration and the devices it knows. */
+export async function instanceFolders(client: SyncthingClient): Promise<{ folders: { config: SyncthingFolderConfig; view: NodeFolder }[]; devices: SyncthingDeviceConfig[] }> {
+  const [ownId, folderConfigs, deviceConfigs, folderStats] = await Promise.all([client.myId(), client.folders(), client.devices(), optionalFolderStats(client)]);
+  const views = await folderViews(client, ownId, folderConfigs, deviceConfigs, folderStats);
+  return { folders: folderConfigs.map((config, index) => ({ config, view: views[index] })), devices: deviceConfigs };
+}
+
 /** Everything the Nodes page needs from one instance, or null while it does not answer. */
 export async function instanceView(key: string, endpoint: SyncthingEndpoint): Promise<InstanceView | null> {
   const client = new SyncthingClient(endpoint);
@@ -333,9 +373,8 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint): Pr
       client.request<Record<string, { lastSeen: string }>>("GET", "/stats/device"),
       optionalFolderStats(client),
     ]);
-    const names = new Map(deviceConfigs.map((device) => [device.deviceID, device.name]));
     const folderRates = rates(key, connections);
-    const folders = await Promise.all(folderConfigs.map((folder) => folderView(client, folder, sharedWithOf(folder, status.myID, names), folderStats[folder.id])));
+    const folders = await folderViews(client, status.myID, folderConfigs, deviceConfigs, folderStats);
     const total = folderRates.get("total") ?? { inRate: 0, outRate: 0 };
     const peers = await Promise.all(
       deviceConfigs

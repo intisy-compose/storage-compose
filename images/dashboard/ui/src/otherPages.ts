@@ -5,11 +5,7 @@ import { applyTheme } from "./preferences.js";
 import { requestRender } from "./renderRequest.js";
 import { type PageId, appState } from "./state.js";
 
-const upcoming: Record<Exclude<PageId, "nodes" | "attention" | "settings">, { title: string; summary: string }> = {
-  folders: {
-    title: "Folders",
-    summary: "The whole folder tree with priorities, where each folder is kept, conflicts and the Syncthing folder settings.",
-  },
+const upcoming: Record<Exclude<PageId, "nodes" | "folders" | "attention" | "settings">, { title: string; summary: string }> = {
   activity: {
     title: "Activity",
     summary: "One timeline of parity jobs, Syncthing events, hand-offs and notifications, filtered by node or folder.",

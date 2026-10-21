@@ -60,6 +60,14 @@ describe("instance resolver", () => {
     syncthingPort = await listen(fakeSyncthing);
     fakeDashboard = createServer((request, response) => {
       dashboardPaths.push(request.url ?? "");
+      if (request.url?.startsWith("/api/refused")) {
+        response.writeHead(409, { "Content-Type": "application/json" });
+        return response.end(JSON.stringify({ error: "no folder dashboard-test-x on p53-data" }));
+      }
+      if (request.url?.startsWith("/api/broken")) {
+        response.writeHead(500, { "Content-Type": "text/plain" });
+        return response.end("panic");
+      }
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ items: [] }));
     });
@@ -109,6 +117,7 @@ describe("instance resolver", () => {
       otherHostNodes: async () => [
         remoteNode({ dashboardUrl }),
         remoteNode({ id: "device-abcdefg", name: "laptop", host: "laptop", dashboardUrl: null }),
+        remoteNode({ id: "dead", name: "gone-data", host: "gone", dashboardUrl: `http://127.0.0.1:${deadPort}` }),
       ],
     };
   });
@@ -161,6 +170,24 @@ describe("instance resolver", () => {
     assert(instance.kind === "remote");
     assert.deepEqual(await resolver.forwardRead(instance, "/api/nodes/a1b2/need?page=2"), { items: [] });
     assert.equal(dashboardPaths.at(-1), "/api/nodes/a1b2/need?page=2&scope=local");
+  });
+
+  it("a remote refusal keeps the peer dashboard's status and error", async () => {
+    const instance = await resolver.resolveInstance("a1b2", sources);
+    assert(instance.kind === "remote");
+    await assert.rejects(resolver.forwardRead(instance, "/api/refused"), { status: 409, message: "no folder dashboard-test-x on p53-data" });
+  });
+
+  it("a remote answer without an error keeps its status and names the host", async () => {
+    const instance = await resolver.resolveInstance("a1b2", sources);
+    assert(instance.kind === "remote");
+    await assert.rejects(resolver.forwardRead(instance, "/api/broken"), { status: 500, message: "p53's dashboard answered HTTP 500" });
+  });
+
+  it("a peer dashboard that cannot be reached is 502", async () => {
+    const instance = await resolver.resolveInstance("dead", sources);
+    assert(instance.kind === "remote");
+    await assert.rejects(resolver.forwardRead(instance, "/api/nodes"), (error: { status: number; message: string }) => error.status === 502 && error.message.startsWith("gone's dashboard: "));
   });
 
   it("a node known only to Syncthing has no dashboard to read and refuses writes", async () => {

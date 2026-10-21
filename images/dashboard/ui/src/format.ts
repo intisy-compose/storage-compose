@@ -65,3 +65,11 @@ export function formatDate(timestamp: string | null | undefined): string {
 export function shortDeviceId(deviceId: string): string {
   return deviceId.split("-")[0] ?? deviceId;
 }
+
+export function formatCount(count: number): string {
+  return count.toLocaleString("en-US");
+}
+
+export function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${formatCount(count)} ${count === 1 ? singular : pluralForm}`;
+}

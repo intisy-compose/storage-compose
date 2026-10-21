@@ -75,30 +75,42 @@ export async function ownLogin(): Promise<string | null> {
   return parseOwnLogin((await localApi<StatusResponse>("/localapi/v0/status")).body);
 }
 
+/** A dashboard's answer: its HTTP status and its body, parsed as JSON when it is JSON, otherwise null. */
+export interface TailnetAnswer {
+  status: number;
+  body: unknown;
+}
+
+function parsedBody(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * GET a JSON document from another host on the tailnet. Tailscale runs in userspace, so the request
- * goes through its HTTP proxy with CONNECT, then TLS to the host itself.
+ * GET from another host on the tailnet, whatever status it answers; only a transport failure (no
+ * connection, no answer in time) rejects. Tailscale runs in userspace, so the request goes through
+ * its HTTP proxy with CONNECT, then TLS to the host itself.
  */
-export function fetchTailnetJson<T>(url: string, timeoutMs = 5000): Promise<T> {
+export function fetchTailnet(url: string, timeoutMs = 5000): Promise<TailnetAnswer> {
   const target = new URL(url);
   if (!tailnetProxy) {
-    return fetch(url, { signal: AbortSignal.timeout(timeoutMs) }).then(async (response) => {
-      if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-      return (await response.json()) as T;
-    });
+    return fetch(url, { signal: AbortSignal.timeout(timeoutMs) }).then(async (response) => ({ status: response.status, body: parsedBody(await response.text()) }));
   }
   const proxy = new URL(tailnetProxy);
   const port = Number(target.port || (target.protocol === "https:" ? 443 : 80));
   return new Promise((resolve, reject) => {
     const sockets: { destroy(): void }[] = [];
     let settled = false;
-    const finish = (error: Error | null, value?: T) => {
+    const finish = (error: Error | null, value?: TailnetAnswer) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       for (const socket of sockets) socket.destroy();
       if (error) reject(error);
-      else resolve(value as T);
+      else resolve(value as TailnetAnswer);
     };
     const timer = setTimeout(() => finish(new Error(`${url}: no answer within ${timeoutMs} ms`)), timeoutMs);
     const connectRequest = httpRequest({ host: proxy.hostname, port: Number(proxy.port || 80), method: "CONNECT", path: `${target.hostname}:${port}`, agent: false });
@@ -114,14 +126,7 @@ export function fetchTailnetJson<T>(url: string, timeoutMs = 5000): Promise<T> {
         (answer) => {
           const chunks: Buffer[] = [];
           answer.on("data", (chunk: Buffer) => chunks.push(chunk));
-          answer.on("end", () => {
-            if (answer.statusCode !== 200) return finish(new Error(`${url}: HTTP ${answer.statusCode}`));
-            try {
-              finish(null, JSON.parse(Buffer.concat(chunks).toString("utf8")) as T);
-            } catch (error) {
-              finish(error as Error);
-            }
-          });
+          answer.on("end", () => finish(null, { status: answer.statusCode ?? 0, body: parsedBody(Buffer.concat(chunks).toString("utf8")) }));
         },
       );
       request.on("error", (error) => finish(error));
@@ -129,4 +134,12 @@ export function fetchTailnetJson<T>(url: string, timeoutMs = 5000): Promise<T> {
     });
     connectRequest.end();
   });
+}
+
+/** GET a JSON document from another host on the tailnet; anything but a 200 with JSON rejects. */
+export async function fetchTailnetJson<T>(url: string, timeoutMs = 5000): Promise<T> {
+  const answer = await fetchTailnet(url, timeoutMs);
+  if (answer.status !== 200) throw new Error(`${url}: HTTP ${answer.status}`);
+  if (answer.body === null) throw new Error(`${url}: the answer is not JSON`);
+  return answer.body as T;
 }

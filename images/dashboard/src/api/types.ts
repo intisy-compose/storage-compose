@@ -128,6 +128,7 @@ export interface NodeFolder {
   needBytes: number;
   globalBytes: number;
   globalFiles: number;
+  globalDirectories: number;
   lastScan: string | null;
   lastFile: FolderFile | null;
   /** Items changed here that a receive-only folder will not send on. */
@@ -262,6 +263,80 @@ export interface JoinResponse {
 
 export interface ErrorResponse {
   error: string;
+}
+
+/** One node's copy of a folder. */
+export interface FolderCopy extends NodeFolder {
+  nodeId: string;
+  nodeName: string;
+  host: string;
+  /** Runs on this host, so its actions are offered here. */
+  local: boolean;
+  paused: boolean;
+}
+
+/** A folder another device offers a node that the node has not accepted. */
+export interface PendingFolderOffer {
+  nodeId: string;
+  nodeName: string;
+  folderId: string;
+  label: string;
+  offeredBy: string;
+  offeredByName: string;
+  time: string;
+  receiveEncrypted: boolean;
+}
+
+/** Every copy of one Syncthing folder ID across the nodes, and the offers of it nobody accepted yet. */
+export interface FolderSummary {
+  id: string;
+  label: string;
+  /** From the setup repo's layout; null while the layered sync has not set one. */
+  priority: number | null;
+  prioritySource: "setup-repo" | "none";
+  copies: FolderCopy[];
+  offers: PendingFolderOffer[];
+}
+
+/** `GET /api/folders`; `?scope=local` leaves the other hosts out, which is what hosts ask each other. */
+export interface FoldersResponse {
+  folders: FolderSummary[];
+}
+
+export interface Versioning {
+  type: "" | "trashcan" | "simple" | "staggered" | "external";
+  params: Record<string, string>;
+  cleanupIntervalS: number;
+  fsPath: string;
+}
+
+/**
+ * A node's Syncthing settings for one folder.
+ * @implNote `encryptionPassword` is always empty: the dashboard never hands out a password.
+ */
+export interface FolderSettings {
+  id: string;
+  label: string;
+  path: string;
+  type: FolderType;
+  paused: boolean;
+  rescanIntervalS: number;
+  fsWatcherEnabled: boolean;
+  fsWatcherDelayS: number;
+  ignorePerms: boolean;
+  order: "random" | "alphabetic" | "smallestFirst" | "largestFirst" | "oldestFirst" | "newestFirst";
+  minDiskFree: { value: number; unit: "%" | "kB" | "MB" | "GB" | "TB" };
+  maxConflicts: number;
+  syncOwnership: boolean;
+  syncXattrs: boolean;
+  devices: { deviceId: string; encryptionPassword: string }[];
+  versioning: Versioning;
+}
+
+/** `GET /api/folders/<folderId>`; `settings` is keyed by node ID. */
+export interface FolderDetailResponse {
+  summary: FolderSummary;
+  settings: Record<string, FolderSettings>;
 }
 
 /**

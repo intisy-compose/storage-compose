@@ -1,4 +1,4 @@
-import type { NodeKind, NodesResponse } from "./api.js";
+import type { FolderDetailResponse, FoldersResponse, NodeKind, NodesResponse } from "./api.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
 export type PageId = "nodes" | "folders" | "attention" | "activity" | "requests" | "settings";
@@ -31,6 +31,14 @@ export interface AppState {
   notice: Notice | null;
   showCandidates: boolean;
   theme: ThemeChoice;
+  selectedFolderId: string | null;
+  folders: FoldersResponse | null;
+  foldersError: string | null;
+  folderDetail: FolderDetailResponse | null;
+  folderDetailError: string | null;
+  folderSearch: string;
+  /** `<folder id>/<node id>` of the settings a person folded away. */
+  foldedSettings: Set<string>;
 }
 
 export const appState: AppState = {
@@ -46,16 +54,30 @@ export const appState: AppState = {
   notice: null,
   showCandidates: false,
   theme: storedTheme(),
+  selectedFolderId: null,
+  folders: null,
+  foldersError: null,
+  folderDetail: null,
+  folderDetailError: null,
+  folderSearch: "",
+  foldedSettings: new Set(),
 };
 
 const pages: PageId[] = ["nodes", "folders", "attention", "activity", "requests", "settings"];
 
 export function readLocation(): void {
-  const [page, nodeId] = location.hash.replace(/^#\/?/, "").split("/");
+  const [page, itemId] = location.hash.replace(/^#\/?/, "").split("/");
   appState.page = pages.includes(page as PageId) ? (page as PageId) : "nodes";
-  appState.selectedNodeId = appState.page === "nodes" && nodeId ? decodeURIComponent(nodeId) : null;
+  const selected = itemId ? decodeURIComponent(itemId) : null;
+  appState.selectedNodeId = appState.page === "nodes" ? selected : null;
+  appState.selectedFolderId = appState.page === "folders" ? selected : null;
 }
 
-export function locationFor(page: PageId, nodeId: string | null = null): string {
-  return nodeId ? `#/${page}/${encodeURIComponent(nodeId)}` : `#/${page}`;
+/** The address of a page, or of one node or folder on it. */
+export function locationFor(page: PageId, itemId: string | null = null): string {
+  return itemId ? `#/${page}/${encodeURIComponent(itemId)}` : `#/${page}`;
+}
+
+export function selectedItemId(): string | null {
+  return appState.selectedNodeId ?? appState.selectedFolderId;
 }

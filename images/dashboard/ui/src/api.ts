@@ -4,8 +4,13 @@ export type {
   ArrayMember,
   ArrayState,
   DriveCandidate,
+  FolderCopy,
+  FolderDetailResponse,
   FolderFile,
   FolderPeer,
+  FolderSettings,
+  FolderSummary,
+  FoldersResponse,
   FolderType,
   MemberSmart,
   NodeArray,
@@ -15,6 +20,7 @@ export type {
   NodeSync,
   Parity,
   ParityJob,
+  PendingFolderOffer,
   Peer,
   RemoteState,
   Space,
@@ -23,20 +29,36 @@ export type {
   SyncthingDevice,
   SyncthingInstance,
   SyncthingListener,
+  Versioning,
   Warning,
   WarningLevel,
 } from "../../src/api/types.js";
-import type { ArrayAction, ArrayActionBody, NodesResponse } from "../../src/api/types.js";
+import type { ArrayAction, ArrayActionBody, FolderDetailResponse, FoldersResponse, NodesResponse } from "../../src/api/types.js";
 
 export interface ActionResult {
   ok: boolean;
   message: string;
 }
 
-export async function fetchNodes(): Promise<NodesResponse> {
-  const response = await fetch("api/nodes", { cache: "no-store" });
-  if (!response.ok) throw new Error(`api/nodes answered ${response.status}`);
-  return (await response.json()) as NodesResponse;
+async function getJson<T>(path: string): Promise<T> {
+  const response = await fetch(path, { cache: "no-store" });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(payload.error ?? `${path} answered ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
+export function fetchNodes(): Promise<NodesResponse> {
+  return getJson("api/nodes");
+}
+
+export function fetchFolders(): Promise<FoldersResponse> {
+  return getJson("api/folders");
+}
+
+export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {
+  return getJson(`api/folders/${encodeURIComponent(folderId)}`);
 }
 
 async function postJson(path: string, body: ArrayActionBody): Promise<{ status: number; error: string | null }> {
