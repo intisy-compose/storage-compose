@@ -3,7 +3,7 @@ import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, describe, it } from "node:test";
 import type { ParityJob } from "../src/api/types.js";
-import { ActivityLog, EventFeeds, type FeedInstance, ParityWatcher } from "../src/eventFeed.js";
+import { ActivityLog, EventFeeds, type FeedInstance, ParityWatcher, failedItemsPerFolder } from "../src/eventFeed.js";
 import { SyncthingClient, type SyncthingEvent } from "../src/syncthing.js";
 
 const pcDevice = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
@@ -149,6 +149,36 @@ describe("event feeds", () => {
     assert.deepEqual(texts(log, { folder: "documents" }).sort(), ["pc: Documents is scanning", "private-array: Documents is syncing"]);
     assert.deepEqual(texts(log, { node: "5784", folder: "music" }), []);
     assert.deepEqual(texts(log, { types: ["state-changed"], source: "parity" }), []);
+    assert.deepEqual(texts(log, { routine: false }), []);
+  });
+
+  it("a feed started again for the same instance does not enter its events twice", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    const feeds = feedsFor(log);
+    feeds.reconcile([feed]);
+    fake.emit(scanned("documents", "scanning"), scanned("documents", "idle"));
+    await until(() => log.query({}).entries.length === 2, "the first events");
+    feeds.reconcile([]);
+    feeds.reconcile([feed]);
+    fake.emit(scanned("documents", "syncing"));
+    await until(() => log.query({}).entries.length >= 3, "the next event");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(texts(log), ["pc: Documents is syncing", "pc: Documents is idle", "pc: Documents is scanning"]);
+  });
+
+  it("failed items of one folder are capped, so device events stay", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(30);
+    feedsFor(log).reconcile([feed]);
+    fake.emit({ type: "DeviceConnected", data: { id: arrayDevice, addr: "tcp://10.0.0.2:22000" } });
+    const failures = Array.from({ length: 25 }, (_, index) => ({ type: "ItemFinished", data: { folder: "documents", item: `file${index}`, error: "locked", type: "file", action: "update" } }));
+    fake.emit(...failures);
+    await until(() => texts(log).includes("pc: Documents failed to sync file24 (locked)"), "the last failure");
+    const failed = texts(log, { types: ["item-failed"] });
+    assert.equal(failed.length, failedItemsPerFolder);
+    assert.ok(failed.includes("pc: Documents failed to sync file24 (locked)") && !failed.includes("pc: Documents failed to sync file4 (locked)"));
+    assert.deepEqual(texts(log, { types: ["device-connected"] }), ["pc: connected to private-array (tcp://10.0.0.2:22000)"]);
   });
 
   it("the buffer keeps the newest entries", () => {
@@ -245,6 +275,20 @@ describe("parity watcher", () => {
     await watcher.tick();
     await watcher.tick();
     assert.deepEqual(texts(log), ["private-array: scrub ended", "private-array: scrub running"]);
+  });
+
+  it("the previous job's logged end is not taken for the next job's end", async () => {
+    const stamp = (milliseconds: number) => new Date(milliseconds).toISOString().replace(/\.\d+Z$/, "Z");
+    const now = Date.now();
+    const lines = [`${stamp(now - 90_000)} sync started (0 deleted since the last one)`, `${stamp(now - 60_000)} sync done`];
+    let job: ParityJob | null = { kind: "scrub", progress: 0, startedAt: new Date(now - 30_000).toISOString() };
+    const log = new ActivityLog(100);
+    const watcher = new ParityWatcher(log, sources(lines, () => job));
+    await watcher.tick();
+    job = null;
+    await watcher.tick();
+    await watcher.tick();
+    assert.deepEqual(texts(log).slice(0, 2), ["private-array: scrub ended", "private-array: scrub running"]);
   });
 
   it("a logged job is not entered twice from the job state", async () => {

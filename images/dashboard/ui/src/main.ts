@@ -155,10 +155,11 @@ async function refreshPage(): Promise<void> {
 }
 
 const activityActions = {
+  /** @implNote Renders even while the chosen filter keeps focus, which the poll waits out, so the new answer shows at once. */
   onFiltersChanged: () => {
     appState.activityLimit = activityPageSize;
     render();
-    void refreshPage();
+    void loadPageData().then(render);
   },
   onMore: () => {
     appState.activityLimit += activityPageSize;

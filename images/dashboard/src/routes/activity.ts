@@ -26,6 +26,7 @@ export function activityQuery(url: URL): ActivityQuery {
     folder: parameter("folder"),
     types: (parameter("type") ?? "").split(",").map((type) => type.trim()).filter(Boolean),
     source: sourceOf(parameter("source")),
+    routine: parameter("routine") !== "false",
     limit: limitOf(parameter("limit")),
   };
 }

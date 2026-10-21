@@ -70,7 +70,7 @@ export const appState: AppState = {
   foldedSettings: new Set(),
   activity: null,
   activityError: null,
-  activityFilters: { node: "", folder: "", source: "" },
+  activityFilters: { node: "", folder: "", source: "", routine: false },
   activityLimit: activityPageSize,
 };
 

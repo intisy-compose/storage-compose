@@ -66,15 +66,20 @@ export function fetchFolderDetail(folderId: string): Promise<FolderDetailRespons
   return getJson(`api/folders/${encodeURIComponent(folderId)}`);
 }
 
+export { routineActivityTypes } from "../../src/api/types.js";
+
 export interface ActivityFilters {
   node: string;
   folder: string;
   source: string;
+  /** Scans and file changes are shown only when this is on. */
+  routine: boolean;
 }
 
 export function fetchActivity(filters: ActivityFilters, limit: number): Promise<ActivityResponse> {
   const query = new URLSearchParams({ limit: String(limit) });
-  for (const [name, value] of Object.entries(filters)) if (value) query.set(name, value);
+  for (const name of ["node", "folder", "source"] as const) if (filters[name]) query.set(name, filters[name]);
+  if (!filters.routine) query.set("routine", "false");
   return getJson(`api/activity?${query.toString()}`);
 }
 

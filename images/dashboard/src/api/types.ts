@@ -243,9 +243,13 @@ export interface ActivityEntry {
   text: string;
 }
 
+/** Scans and file changes, which a busy folder produces every few seconds; `routine=false` leaves them out. */
+export const routineActivityTypes = ["state-changed", "local-change", "remote-change"] as const;
+
 /**
- * `GET /api/activity?after=<id>&node=&folder=&type=&source=&limit=`, newest first; `type` takes a
- * comma-separated list, `limit` defaults to 200. `cursor` is the newest entry's ID, for the next `after`.
+ * `GET /api/activity?after=<id>&node=&folder=&type=&source=&routine=&limit=`, newest first; `type` takes a
+ * comma-separated list, `routine=false` leaves out `routineActivityTypes`, `limit` defaults to 200.
+ * `cursor` is the newest entry's ID, for the next `after`.
  */
 export interface ActivityResponse {
   entries: ActivityEntry[];

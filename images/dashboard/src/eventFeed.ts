@@ -1,4 +1,4 @@
-import type { ActivityEntry, ActivityLevel, ActivityResponse, ActivitySource, ParityJob } from "./api/types.js";
+import { type ActivityEntry, type ActivityLevel, type ActivityResponse, type ActivitySource, type ParityJob, routineActivityTypes } from "./api/types.js";
 import { arrayIds, arrayStatus } from "./arrayStatus.js";
 import { localInstances } from "./instanceResolver.js";
 import { recentLog, runningJob } from "./parity.js";
@@ -13,6 +13,8 @@ export interface ActivityQuery {
   folder?: string | null;
   types?: string[];
   source?: ActivitySource | null;
+  /** False leaves out scans and file changes. */
+  routine?: boolean;
   limit?: number;
 }
 
@@ -54,6 +56,22 @@ export class ActivityLog {
     return stored.entry;
   }
 
+  /** Drops the oldest entries of the buffer that match, so at most `count` of them stay. */
+  keepNewest(bufferKey: string, matches: (entry: ActivityEntry) => boolean, count: number): void {
+    const buffer = this.buffers.get(bufferKey);
+    if (!buffer) return;
+    let excess = buffer.filter((stored) => matches(stored.entry)).length - count;
+    if (excess <= 0) return;
+    this.buffers.set(
+      bufferKey,
+      buffer.filter((stored) => {
+        if (excess <= 0 || !matches(stored.entry)) return true;
+        excess -= 1;
+        return false;
+      }),
+    );
+  }
+
   entriesOf(bufferKey: string): readonly ActivityEntry[] {
     return (this.buffers.get(bufferKey) ?? []).map((stored) => stored.entry);
   }
@@ -71,7 +89,8 @@ export class ActivityLog {
       (!query.node || entry.nodeId === query.node) &&
       (!query.folder || entry.folderId === query.folder) &&
       (!query.source || entry.source === query.source) &&
-      (!types || types.has(entry.type)),
+      (!types || types.has(entry.type)) &&
+      (query.routine !== false || !routineTypes.has(entry.type)),
     );
     const entries = matches.sort(newestFirst).slice(0, query.limit ?? defaultLimit).map((stored) => stored.entry);
     return { entries, cursor: `${this.start}-${this.sequence}` };
@@ -273,7 +292,7 @@ const repeatedTypes = new Set(["item-failed", "folder-errors"]);
  * Scans and file changes, which a busy folder produces every few seconds.
  * @implNote They fill a buffer of their own, so they never push a failure, a device or a request out of the instance's history.
  */
-const routineTypes = new Set(["state-changed", "local-change", "remote-change"]);
+const routineTypes = new Set<string>(routineActivityTypes);
 
 export function feedBufferKey(nodeId: string, type: string): string {
   return routineTypes.has(type) ? `${nodeId}:routine` : nodeId;
@@ -288,19 +307,33 @@ function namesFrom(list: unknown, key: string, value: string): Map<string, strin
   return new Map(entries.map((entry) => [text(entry[key]), text(entry[value])]));
 }
 
+/**
+ * Where an instance's events were read up to, kept by `EventFeeds` beyond the life of one feed.
+ * @implNote A feed started again for the same instance would otherwise read the instance's whole event buffer a second time.
+ */
+interface FeedPosition {
+  since: number;
+  startTime: string | null;
+  /** The last completion seen per `<folder>/<device>`. */
+  completions: Map<string, number>;
+}
+
+/** How many failed items of one folder the instance's buffer keeps besides the folder's summary entry. */
+export const failedItemsPerFolder = 20;
+
 /** The long poll of one instance's events into its buffer. */
 class InstanceFeed {
-  private since = 0;
-  private startTime: string | null = null;
   private stopped = false;
+  private namesRead = false;
   private readonly context: EventContext;
 
   constructor(
     private instance: FeedInstance,
+    private readonly position: FeedPosition,
     private readonly log: ActivityLog,
     private readonly options: FeedOptions,
   ) {
-    this.context = { nodeName: instance.name, deviceNames: new Map(), folderLabels: new Map(), completions: new Map() };
+    this.context = { nodeName: instance.name, deviceNames: new Map(), folderLabels: new Map(), completions: position.completions };
   }
 
   update(instance: FeedInstance): void {
@@ -317,7 +350,7 @@ class InstanceFeed {
     while (!this.stopped) {
       try {
         if (mayHaveRestarted) await this.followRestart();
-        const events = await this.instance.client.events(this.since, followedEventTypes, this.options.waitSeconds, this.options.requestTimeoutMs);
+        const events = await this.instance.client.events(this.position.since, followedEventTypes, this.options.waitSeconds, this.options.requestTimeoutMs);
         if (this.stopped) return;
         this.take(events);
         mayHaveRestarted = events.length === 0;
@@ -332,27 +365,35 @@ class InstanceFeed {
   private async followRestart(): Promise<void> {
     const client = this.instance.client;
     const startTime = await client.startTime();
-    if (this.startTime === startTime) return;
-    if (this.startTime !== null) this.forgetRun();
-    this.startTime = startTime;
+    const isNewRun = this.position.startTime !== startTime;
+    if (isNewRun && this.position.startTime !== null) this.forgetRun();
+    this.position.startTime = startTime;
+    if (!isNewRun && this.namesRead) return;
+    this.namesRead = true;
     const [devices, folders] = await Promise.all([client.devices().catch(() => []), client.folders().catch(() => [])]);
     this.context.deviceNames = namesFrom(devices, "deviceID", "name");
     this.context.folderLabels = namesFrom(folders, "id", "label");
   }
 
   private forgetRun(): void {
-    this.since = 0;
+    this.position.since = 0;
     this.context.completions.clear();
   }
 
   private take(events: SyncthingEvent[]): void {
-    if (events.some((event) => event.id <= this.since)) this.forgetRun();
+    if (events.some((event) => event.id <= this.position.since)) this.forgetRun();
     for (const event of events) {
       if (event.type === "ConfigSaved") this.learnNames(event.data);
       const entry = eventEntry(event, this.instance.nodeId, this.context);
-      if (entry && !this.isRepeat(entry)) this.log.append(feedBufferKey(this.instance.nodeId, entry.type), entry);
-      this.since = Math.max(this.since, event.id);
+      if (entry && !this.isRepeat(entry)) this.enter(entry);
+      this.position.since = Math.max(this.position.since, event.id);
     }
+  }
+
+  private enter(entry: NewActivityEntry): void {
+    const bufferKey = feedBufferKey(this.instance.nodeId, entry.type);
+    this.log.append(bufferKey, entry);
+    if (entry.type === "item-failed") this.log.keepNewest(bufferKey, (known) => known.type === "item-failed" && known.folderId === entry.folderId, failedItemsPerFolder);
   }
 
   private learnNames(config: unknown): void {
@@ -369,6 +410,7 @@ class InstanceFeed {
 /** One feed per Syncthing instance of this host, kept in step with the instances that exist. */
 export class EventFeeds {
   private readonly feeds = new Map<string, InstanceFeed>();
+  private readonly positions = new Map<string, FeedPosition>();
 
   constructor(
     private readonly log: ActivityLog,
@@ -388,7 +430,9 @@ export class EventFeeds {
         known.update(instance);
         continue;
       }
-      const feed = new InstanceFeed(instance, this.log, this.options);
+      const position = this.positions.get(instance.nodeId) ?? { since: 0, startTime: null, completions: new Map() };
+      this.positions.set(instance.nodeId, position);
+      const feed = new InstanceFeed(instance, position, this.log, this.options);
       this.feeds.set(instance.nodeId, feed);
       void feed.run();
     }
@@ -479,9 +523,16 @@ export class ParityWatcher {
     watch.seen = new Set(jobLines);
   }
 
+  /**
+   * @implNote A logged start must name the job's kind (`sync started`, `adding`, `removing`: the kind's first
+   * four letters); a logged end counts only from the job's own start, less the log's whole seconds. Either
+   * way the previous job's lines are not taken for this one.
+   */
   private isLogged(arrayId: string, type: string, job: ParityJob): boolean {
-    const from = timeOf(job.startedAt) - sameJobMilliseconds;
-    return this.log.entriesOf(this.bufferKey(arrayId)).some((entry) => entry.type === type && timeOf(entry.at) >= from);
+    const isStart = type === "parity-start";
+    const from = timeOf(job.startedAt) - (isStart ? sameJobMilliseconds : 1000);
+    const namesKind = (entry: ActivityEntry) => !isStart || entry.text.includes(`: ${job.kind.slice(0, 4)}`);
+    return this.log.entriesOf(this.bufferKey(arrayId)).some((entry) => entry.type === type && timeOf(entry.at) >= from && namesKind(entry));
   }
 
   private settlePending(array: { id: string; name: string }, watch: ArrayWatch): void {

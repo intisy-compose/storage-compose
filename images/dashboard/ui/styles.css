@@ -500,6 +500,7 @@ a.warning:hover { filter: brightness(0.98); text-decoration: underline; text-und
   max-width: 240px;
 }
 .activity-filters select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.activity-routine { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 13px; cursor: pointer; }
 .activity-day { margin-bottom: 22px; }
 .activity-list { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .activity-entry {

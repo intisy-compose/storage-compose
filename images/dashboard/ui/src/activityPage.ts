@@ -1,5 +1,6 @@
-import type { ActivityEntry, ActivityFilters, ActivityLevel, ActivitySource } from "./api.js";
+import { type ActivityEntry, type ActivityFilters, type ActivityLevel, type ActivitySource, routineActivityTypes } from "./api.js";
 import { button, element } from "./dom.js";
+import { registerForm } from "./forms.js";
 import type { Tone } from "./nodeStatus.js";
 import { appState, locationFor } from "./state.js";
 
@@ -39,8 +40,22 @@ function folderChoices(entries: ActivityEntry[]): [string, string][] {
     .map((id): [string, string] => [id, id]);
 }
 
+const filterBarId = "activity-filters";
+registerForm(filterBarId);
+
+function routineToggle(onChange: () => void): HTMLElement {
+  const toggle = element("input", { attributes: { type: "checkbox", id: "activity-routine" } });
+  toggle.checked = appState.activityFilters.routine;
+  toggle.defaultChecked = appState.activityFilters.routine;
+  toggle.addEventListener("change", () => {
+    appState.activityFilters = { ...appState.activityFilters, routine: toggle.checked };
+    onChange();
+  });
+  return element("label", { className: "activity-routine" }, toggle, element("span", {}, "Scans and file changes"));
+}
+
 function filterBar(entries: ActivityEntry[], onChange: () => void): HTMLElement {
-  const set = (name: keyof ActivityFilters) => (value: string) => {
+  const set = (name: "node" | "folder" | "source") => (value: string) => {
     appState.activityFilters = { ...appState.activityFilters, [name]: value };
     onChange();
   };
@@ -48,16 +63,23 @@ function filterBar(entries: ActivityEntry[], onChange: () => void): HTMLElement 
   const sources = Object.entries(sourceLabels) as [string, string][];
   return element(
     "div",
-    { className: "filter-bar activity-filters" },
+    { className: "filter-bar activity-filters", attributes: { id: filterBarId } },
     chooser("activity-node", "All nodes", nodeChoices(entries), filters.node, set("node")),
     chooser("activity-folder", "All folders", folderChoices(entries), filters.folder, set("folder")),
     chooser("activity-source", "All sources", sources, filters.source, set("source")),
+    routineToggle(onChange),
   );
 }
 
 /** The filters applied here too, so a changed filter shows at once and the next answer only refreshes it. */
 function matchesFilters(entry: ActivityEntry, filters: ActivityFilters): boolean {
-  return (!filters.node || entry.nodeId === filters.node) && (!filters.folder || entry.folderId === filters.folder) && (!filters.source || entry.source === filters.source);
+  const isRoutine = (routineActivityTypes as readonly string[]).includes(entry.type);
+  return (
+    (!filters.node || entry.nodeId === filters.node) &&
+    (!filters.folder || entry.folderId === filters.folder) &&
+    (!filters.source || entry.source === filters.source) &&
+    (filters.routine || !isRoutine)
+  );
 }
 
 function entryHref(entry: ActivityEntry): string | null {
@@ -127,7 +149,8 @@ export function renderActivityPage(actions: ActivityPageActions): HTMLElement {
     return element("div", { className: "page activity-page" }, header, status);
   }
   const entries = response.entries.filter((entry) => matchesFilters(entry, appState.activityFilters));
-  const isFiltered = Object.values(appState.activityFilters).some(Boolean);
+  const { node, folder, source } = appState.activityFilters;
+  const isFiltered = Boolean(node || folder || source);
   const empty = isFiltered ? "Nothing matches the filters." : "Nothing has happened since the dashboard started.";
   return element(
     "div",
