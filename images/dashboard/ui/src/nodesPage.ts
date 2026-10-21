@@ -63,7 +63,7 @@ function remoteChip(node: StorageNode): HTMLElement | null {
 
 function nodeRow(response: NodesResponse, node: StorageNode): HTMLElement {
   const tone = nodeTone(response, node);
-  const state = shortSyncState(node);
+  const state = shortSyncState(node, response);
   const fraction = usedFraction(node.space);
   const spaceTitle = node.space ? `${formatBytes(node.space.used)} of ${formatBytes(node.space.size)} used` : "space unknown";
   const isSelected = appState.selectedNodeId === node.id;

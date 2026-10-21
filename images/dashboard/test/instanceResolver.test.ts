@@ -31,6 +31,8 @@ function remoteNode(overrides: Partial<StorageNode>): StorageNode {
     space: null,
     sync: { state: "idle", completion: 100, lastSeen: null },
     syncthing: null,
+    instance: null,
+    peers: [],
     folders: [],
     dashboardUrl: null,
     ...overrides,

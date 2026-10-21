@@ -119,8 +119,28 @@ function remoteArray() {
   });
 }
 
-export function nodesFixture(startedAt) {
+function folderDetail(folder) {
+  return { label: "", errors: 0, needItems: 0, needBytes: 0, globalBytes: 0, globalFiles: 0, lastScan: ago(hour), lastFile: null, localChanged: 0, sharedWith: [], ...folder };
+}
+
+function ownInstance() {
   return {
+    uptime: 3 * 86_400, cpuPercent: 0.8, memoryBytes: 90_000_000, inTotal: 4e9, outTotal: 9e9, discoveryErrors: [],
+    listeners: [{ address: "tcp://0.0.0.0:22000", error: null }, { address: "quic://0.0.0.0:22000", error: null }],
+  };
+}
+
+function withNodeDetail(response) {
+  return { ...response, nodes: response.nodes.map(withDetail) };
+}
+
+function withDetail(node) {
+  const instance = node.instance ?? (node.local && node.syncthing ? ownInstance() : null);
+  return { ...node, instance, peers: node.peers ?? [], folders: node.folders.map(folderDetail) };
+}
+
+export function nodesFixture(startedAt) {
+  return withNodeDetail({
     host: { name: "finn-pc" },
     nodes: [
       privateArray(),
@@ -163,5 +183,5 @@ export function nodesFixture(startedAt) {
       { level: "warning", text: "attic-nas is 94% full", nodeId: "6d07" },
       { level: "warning", text: "old-laptop has been offline for 9 days", nodeId: "0c5b" },
     ],
-  };
+  });
 }

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { NodeFolder, NodeSync, SyncthingDevice } from "./api/types.js";
+import type { FolderFile, FolderPeer, FolderType, NodeFolder, NodeSync, Peer, RemoteState, SyncthingDevice, SyncthingInstance } from "./api/types.js";
 
 export interface SyncthingEndpoint {
   url: string;
@@ -10,7 +10,7 @@ export interface SyncthingFolderConfig {
   id: string;
   label: string;
   path: string;
-  type: string;
+  type: FolderType;
   paused: boolean;
   devices: { deviceID: string; introducedBy?: string; encryptionPassword?: string }[];
 }
@@ -19,6 +19,7 @@ export interface SyncthingDeviceConfig {
   deviceID: string;
   name: string;
   addresses: string[];
+  paused?: boolean;
 }
 
 interface ConnectionTotals {
@@ -41,28 +42,40 @@ interface Connections {
 interface FolderStatus {
   state: string;
   globalBytes: number;
+  globalFiles?: number;
   needBytes: number;
+  needFiles?: number;
+  pullErrors?: number;
+  receiveOnlyTotalItems?: number;
+}
+
+interface FolderStats {
+  lastScan?: string;
+  lastFile?: FolderFile;
+}
+
+interface Completion {
+  completion: number;
+  needBytes: number;
+  remoteState?: string;
+}
+
+interface SystemStatus {
+  myID: string;
+  uptime?: number;
+  cpuPercent?: number;
+  sys?: number;
+  connectionServiceStatus?: Record<string, { error?: string | null; lanAddresses?: string[]; wanAddresses?: string[] }>;
+  discoveryStatus?: Record<string, { error?: string | null }>;
 }
 
 /** What one Syncthing instance says about itself, its folders and the devices it knows. */
 export interface InstanceView {
   device: SyncthingDevice;
+  instance: SyncthingInstance;
   folders: NodeFolder[];
   sync: NodeSync;
-  peers: PeerView[];
-}
-
-export interface PeerView {
-  deviceId: string;
-  name: string;
-  connected: boolean;
-  connectionType: string | null;
-  address: string | null;
-  version: string | null;
-  inRate: number;
-  outRate: number;
-  lastSeen: string | null;
-  completion: number;
+  peers: Peer[];
 }
 
 export class SyncthingError extends Error {}
@@ -166,36 +179,144 @@ export function folderCompletion(status: FolderStatus): number {
   return Math.max(0, Math.min(100, (100 * (status.globalBytes - status.needBytes)) / status.globalBytes));
 }
 
-export function overallSync(folders: NodeFolder[]): NodeSync {
+function isWaitedFor(peer: Peer): boolean {
+  if (!peer.connected || peer.remoteState === "paused" || peer.remoteState === "notSharing") return false;
+  return peer.remoteState === "unknown" || peer.completion < 100;
+}
+
+/**
+ * @implNote A node is "waiting" when its own folders are done and a connected peer that shares
+ * folders with it has not accepted them or does not hold everything yet. A disconnected peer is not
+ * waited for: its last known completion says nothing about now. A folder that is only scanning
+ * does not hide the wait.
+ */
+export function overallSync(folders: NodeFolder[], peers: Peer[] = []): NodeSync {
   const now = new Date().toISOString();
   const active = folders.filter((folder) => folder.state !== "paused");
   const completion = active.length ? active.reduce((sum, folder) => sum + folder.completion, 0) / active.length : 100;
   if (active.some((folder) => folder.state === "error")) return { state: "error", completion, lastSeen: now };
-  const isSyncing = active.some((folder) => /sync|scan|clean/.test(folder.state) || folder.completion < 100);
-  return { state: isSyncing ? "syncing" : "idle", completion, lastSeen: now };
+  const isTransferring = active.some((folder) => /sync/.test(folder.state) || folder.completion < 100);
+  if (isTransferring) return { state: "syncing", completion, lastSeen: now };
+  const waited = peers.filter(isWaitedFor);
+  const isChecking = active.some((folder) => /scan|clean/.test(folder.state));
+  if (!waited.length) return { state: isChecking ? "syncing" : "idle", completion, lastSeen: now };
+  const lowest = Math.min(completion, ...waited.map((peer) => peer.completion));
+  return { state: "waiting", completion: lowest, lastSeen: now, waitingFor: waited.map((peer) => peer.deviceId) };
 }
 
-async function folderView(client: SyncthingClient, folder: SyncthingFolderConfig): Promise<NodeFolder> {
-  if (folder.paused) return { id: folder.id, path: folder.path, type: folder.type, state: "paused", completion: 0 };
+function emptyFolder(folder: SyncthingFolderConfig, sharedWith: FolderPeer[], state: string): NodeFolder {
+  return {
+    id: folder.id,
+    label: folder.label,
+    path: folder.path,
+    type: folder.type,
+    state,
+    completion: 0,
+    errors: 0,
+    needItems: 0,
+    needBytes: 0,
+    globalBytes: 0,
+    globalFiles: 0,
+    lastScan: null,
+    lastFile: null,
+    localChanged: 0,
+    sharedWith,
+  };
+}
+
+function usableTime(value: string | undefined): string | null {
+  return value && !value.startsWith("0001") && !value.startsWith("1970") ? value : null;
+}
+
+async function folderView(client: SyncthingClient, folder: SyncthingFolderConfig, sharedWith: FolderPeer[], stats: FolderStats | undefined): Promise<NodeFolder> {
+  if (folder.paused) return emptyFolder(folder, sharedWith, "paused");
   try {
     const status = await client.request<FolderStatus>("GET", `/db/status?folder=${encodeURIComponent(folder.id)}`);
-    return { id: folder.id, path: folder.path, type: folder.type, state: status.state || "unknown", completion: folderCompletion(status) };
+    return {
+      ...emptyFolder(folder, sharedWith, status.state || "unknown"),
+      completion: folderCompletion(status),
+      errors: status.pullErrors ?? 0,
+      needItems: status.needFiles ?? 0,
+      needBytes: status.needBytes ?? 0,
+      globalBytes: status.globalBytes ?? 0,
+      globalFiles: status.globalFiles ?? 0,
+      lastScan: usableTime(stats?.lastScan),
+      lastFile: stats?.lastFile && usableTime(stats.lastFile.at) ? stats.lastFile : null,
+      localChanged: status.receiveOnlyTotalItems ?? 0,
+    };
   } catch {
-    return { id: folder.id, path: folder.path, type: folder.type, state: "unknown", completion: 0 };
+    return emptyFolder(folder, sharedWith, "unknown");
   }
 }
 
-function addressesOf(status: { connectionServiceStatus?: Record<string, { lanAddresses?: string[]; wanAddresses?: string[] }> }): string[] {
+function addressesOf(status: SystemStatus): string[] {
   const addresses = Object.values(status.connectionServiceStatus ?? {}).flatMap((service) => [...(service.lanAddresses ?? []), ...(service.wanAddresses ?? [])]);
   return [...new Set(addresses)];
 }
 
-async function peerCompletion(client: SyncthingClient, deviceId: string): Promise<number> {
+function instanceOf(status: SystemStatus, connections: Connections): SyncthingInstance {
+  return {
+    uptime: status.uptime ?? 0,
+    cpuPercent: status.cpuPercent ?? 0,
+    memoryBytes: status.sys ?? 0,
+    listeners: Object.entries(status.connectionServiceStatus ?? {}).map(([address, service]) => ({ address, error: service.error ?? null })),
+    discoveryErrors: Object.entries(status.discoveryStatus ?? {}).flatMap(([method, entry]) => (entry.error ? [`${method}: ${entry.error}`] : [])),
+    inTotal: connections.total.inBytesTotal,
+    outTotal: connections.total.outBytesTotal,
+  };
+}
+
+async function peerCompletion(client: SyncthingClient, deviceId: string): Promise<Completion> {
   try {
-    const result = await client.request<{ completion: number }>("GET", `/db/completion?device=${encodeURIComponent(deviceId)}`);
-    return result.completion;
+    return await client.request<Completion>("GET", `/db/completion?device=${encodeURIComponent(deviceId)}`);
   } catch {
-    return 0;
+    return { completion: 0, needBytes: 0, remoteState: "unknown" };
+  }
+}
+
+function remoteStateOf(device: SyncthingDeviceConfig, sharedFolders: string[], completion: Completion): RemoteState {
+  if (device.paused) return "paused";
+  if (!sharedFolders.length) return "notSharing";
+  return completion.remoteState === "unknown" ? "unknown" : "valid";
+}
+
+interface PeerInputs {
+  device: SyncthingDeviceConfig;
+  connection: Connection | undefined;
+  rate: { inRate: number; outRate: number };
+  lastSeen: string | undefined;
+  sharedFolders: string[];
+  completion: Completion;
+}
+
+function peerOf({ device, connection, rate, lastSeen, sharedFolders, completion }: PeerInputs): Peer {
+  return {
+    deviceId: device.deviceID,
+    name: device.name,
+    connected: connection?.connected ?? false,
+    paused: device.paused ?? false,
+    connectionType: connection?.connected ? connection.type : null,
+    address: connection?.connected ? connection.address : null,
+    version: connection?.clientVersion || null,
+    inRate: rate.inRate,
+    outRate: rate.outRate,
+    lastSeen: usableTime(lastSeen),
+    completion: completion.completion,
+    needBytes: completion.needBytes,
+    remoteState: remoteStateOf(device, sharedFolders, completion),
+    folders: sharedFolders,
+  };
+}
+
+function sharedWithOf(folder: SyncthingFolderConfig, ownId: string, names: Map<string, string>): FolderPeer[] {
+  return folder.devices.filter((entry) => entry.deviceID !== ownId).map((entry) => ({ deviceId: entry.deviceID, name: names.get(entry.deviceID) ?? entry.deviceID.slice(0, 7) }));
+}
+
+async function optionalFolderStats(client: SyncthingClient): Promise<Record<string, FolderStats>> {
+  try {
+    return await client.request<Record<string, FolderStats>>("GET", "/stats/folder");
+  } catch {
+    return {};
   }
 }
 
@@ -203,42 +324,38 @@ async function peerCompletion(client: SyncthingClient, deviceId: string): Promis
 export async function instanceView(key: string, endpoint: SyncthingEndpoint): Promise<InstanceView | null> {
   const client = new SyncthingClient(endpoint);
   try {
-    const [status, version, connections, folderConfigs, deviceConfigs, deviceStats] = await Promise.all([
-      client.request<{ myID: string; connectionServiceStatus?: Record<string, { lanAddresses?: string[]; wanAddresses?: string[] }> }>("GET", "/system/status"),
+    const [status, version, connections, folderConfigs, deviceConfigs, deviceStats, folderStats] = await Promise.all([
+      client.request<SystemStatus>("GET", "/system/status"),
       client.request<{ version: string }>("GET", "/system/version"),
       client.request<Connections>("GET", "/system/connections"),
       client.folders(),
       client.devices(),
       client.request<Record<string, { lastSeen: string }>>("GET", "/stats/device"),
+      optionalFolderStats(client),
     ]);
+    const names = new Map(deviceConfigs.map((device) => [device.deviceID, device.name]));
     const folderRates = rates(key, connections);
-    const folders = await Promise.all(folderConfigs.map((folder) => folderView(client, folder)));
+    const folders = await Promise.all(folderConfigs.map((folder) => folderView(client, folder, sharedWithOf(folder, status.myID, names), folderStats[folder.id])));
     const total = folderRates.get("total") ?? { inRate: 0, outRate: 0 };
     const peers = await Promise.all(
       deviceConfigs
         .filter((device) => device.deviceID !== status.myID)
-        .map(async (device): Promise<PeerView> => {
-          const connection = connections.connections[device.deviceID];
-          const rate = folderRates.get(device.deviceID) ?? { inRate: 0, outRate: 0 };
-          const lastSeen = deviceStats[device.deviceID]?.lastSeen ?? null;
-          return {
-            deviceId: device.deviceID,
-            name: device.name,
-            connected: connection?.connected ?? false,
-            connectionType: connection?.connected ? connection.type : null,
-            address: connection?.connected ? connection.address : null,
-            version: connection?.clientVersion || null,
-            inRate: rate.inRate,
-            outRate: rate.outRate,
-            lastSeen: lastSeen && !lastSeen.startsWith("1970") ? lastSeen : null,
+        .map(async (device) =>
+          peerOf({
+            device,
+            connection: connections.connections[device.deviceID],
+            rate: folderRates.get(device.deviceID) ?? { inRate: 0, outRate: 0 },
+            lastSeen: deviceStats[device.deviceID]?.lastSeen,
+            sharedFolders: folderConfigs.filter((folder) => folder.devices.some((entry) => entry.deviceID === device.deviceID)).map((folder) => folder.id),
             completion: await peerCompletion(client, device.deviceID),
-          };
-        }),
+          }),
+        ),
     );
     return {
       device: { deviceId: status.myID, addresses: addressesOf(status), connectionType: null, inRate: total.inRate, outRate: total.outRate, version: version.version },
+      instance: instanceOf(status, connections),
       folders,
-      sync: overallSync(folders),
+      sync: overallSync(folders, peers),
       peers,
     };
   } catch {

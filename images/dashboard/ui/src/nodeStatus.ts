@@ -24,12 +24,30 @@ export function transferSymbol(node: StorageNode): string {
   return "⇅";
 }
 
-export function shortSyncState(node: StorageNode): ShortState {
+export function failedItems(node: StorageNode): number {
+  return node.folders.reduce((sum, folder) => sum + (folder.errors ?? 0), 0);
+}
+
+export function waitingForNames(response: NodesResponse, node: StorageNode): string[] {
+  const names = (node.sync.waitingFor ?? []).map((deviceId) => {
+    const known = response.nodes.find((candidate) => candidate.syncthing?.deviceId === deviceId);
+    return known?.name ?? node.peers.find((peer) => peer.deviceId === deviceId)?.name ?? deviceId.slice(0, 7);
+  });
+  return [...new Set(names)];
+}
+
+export function shortSyncState(node: StorageNode, response?: NodesResponse): ShortState {
   if (isOffline(node)) return { symbol: "", label: formatAge(node.sync.lastSeen), tone: "muted" };
   if (node.sync.state === "error") return { symbol: "!", label: "error", tone: "bad" };
   if (node.sync.state === "syncing") {
     return { symbol: transferSymbol(node), label: formatPercent(normaliseCompletion(node.sync.completion)), tone: "accent" };
   }
+  if (node.sync.state === "waiting") {
+    const names = response ? waitingForNames(response, node) : [];
+    return { symbol: "…", label: names.length ? `waiting for ${names.join(", ")}` : "waiting for a peer", tone: "warn" };
+  }
+  const failed = failedItems(node);
+  if (failed > 0) return { symbol: "!", label: `${failed} failed ${failed === 1 ? "item" : "items"}`, tone: "bad" };
   return { symbol: "✓", label: "in sync", tone: "ok" };
 }
 

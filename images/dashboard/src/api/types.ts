@@ -5,7 +5,7 @@
 
 export type NodeKind = "array" | "drive" | "folder";
 
-export type SyncState = "idle" | "syncing" | "error" | "offline";
+export type SyncState = "idle" | "syncing" | "waiting" | "error" | "offline";
 
 /** "frozen" is the C-24 freeze: more drives lost than parity covers, or data1 gone or read-only. */
 export type ArrayState = "healthy" | "degraded" | "frozen";
@@ -21,10 +21,13 @@ export interface Space {
   used: number;
 }
 
+/** "waiting" is a node whose own folders are done while a connected peer has not got them all yet. */
 export interface NodeSync {
   state: SyncState;
   completion: number;
   lastSeen: string | null;
+  /** Device IDs of the peers a "waiting" node waits for. */
+  waitingFor?: string[];
 }
 
 /** "warn" is a count that rose but was accepted before; "fail" a drive the mounter holds as failing. */
@@ -101,12 +104,74 @@ export interface SyncthingDevice {
   version: string | null;
 }
 
+export type FolderType = "sendreceive" | "sendonly" | "receiveonly" | "receiveencrypted";
+
+export interface FolderFile {
+  at: string;
+  filename: string;
+  deleted: boolean;
+}
+
+export interface FolderPeer {
+  deviceId: string;
+  name: string;
+}
+
 export interface NodeFolder {
   id: string;
+  label: string;
   path: string;
-  type: string;
+  type: FolderType;
   state: string;
   completion: number;
+  /** Items that failed to sync; Syncthing's `pullErrors`. */
+  errors: number;
+  needItems: number;
+  needBytes: number;
+  globalBytes: number;
+  globalFiles: number;
+  lastScan: string | null;
+  lastFile: FolderFile | null;
+  /** Items changed here that a receive-only folder will not send on. */
+  localChanged: number;
+  sharedWith: FolderPeer[];
+}
+
+export interface SyncthingListener {
+  address: string;
+  error: string | null;
+}
+
+/** What a node's own Syncthing says about itself. */
+export interface SyncthingInstance {
+  uptime: number;
+  cpuPercent: number;
+  memoryBytes: number;
+  listeners: SyncthingListener[];
+  discoveryErrors: string[];
+  inTotal: number;
+  outTotal: number;
+}
+
+/** "unknown" is a peer that has not accepted the folders; "notSharing" shares none with this node. */
+export type RemoteState = "valid" | "unknown" | "notSharing" | "paused";
+
+export interface Peer {
+  deviceId: string;
+  name: string;
+  connected: boolean;
+  paused: boolean;
+  connectionType: string | null;
+  address: string | null;
+  version: string | null;
+  inRate: number;
+  outRate: number;
+  lastSeen: string | null;
+  completion: number;
+  needBytes: number;
+  remoteState: RemoteState;
+  /** IDs of the folders shared with this peer. */
+  folders: string[];
 }
 
 export interface StorageNode {
@@ -124,6 +189,8 @@ export interface StorageNode {
   sync: NodeSync;
   array?: NodeArray;
   syncthing: SyncthingDevice | null;
+  instance: SyncthingInstance | null;
+  peers: Peer[];
   folders: NodeFolder[];
   /** The other host's dashboard this node was read from; null for this host's nodes and for a device no dashboard reported. */
   dashboardUrl: string | null;

@@ -56,6 +56,8 @@ async function arrayNode(status: ArrayStatus, devices: BlockDevice[], sources: M
       reasons: status.reasons,
     },
     syncthing: view?.device ?? null,
+    instance: view?.instance ?? null,
+    peers: view?.peers ?? [],
     folders: view?.folders ?? [],
     dashboardUrl: null,
   };
@@ -75,6 +77,8 @@ function registryNode(entry: NodeRegistryEntry, view: InstanceView | null): Stor
     space: hasSpace ? { size: entry.space.size!, used: entry.space.used! } : null,
     sync: entry.present ? (view?.sync ?? offlineSync()) : offlineSync(entry.updated),
     syncthing: view?.device ?? null,
+    instance: view?.instance ?? null,
+    peers: view?.peers ?? [],
     folders: view?.folders ?? [],
     dashboardUrl: null,
   };
@@ -168,6 +172,8 @@ async function syncthingOnlyNodes(known: StorageNode[], views: InstanceView[], r
         space: null,
         sync: peer.connected ? { state: peer.completion < 100 ? "syncing" : "idle", completion: peer.completion, lastSeen: new Date().toISOString() } : offlineSync(peer.lastSeen),
         syncthing: { deviceId: peer.deviceId, addresses: peer.address ? [peer.address] : [], connectionType: peer.connectionType, inRate: peer.inRate, outRate: peer.outRate, version: peer.version },
+        instance: null,
+        peers: [],
         folders: [],
         dashboardUrl: null,
       });

@@ -1,10 +1,11 @@
-import type { NodesResponse, StorageNode, SyncthingDevice } from "./api.js";
+import type { NodesResponse, StorageNode, SyncthingDevice, SyncthingInstance } from "./api.js";
 import { arraySections } from "./arraySection.js";
 import { button, element, keyValueList, progressBar, section } from "./dom.js";
-import { formatAge, formatBytes, formatPercent, formatRate, normaliseCompletion, usedFraction } from "./format.js";
+import { formatAge, formatBytes, formatDate, formatDuration, formatPercent, formatRate, normaliseCompletion, usedFraction } from "./format.js";
 import { icon } from "./icons.js";
 import { warningBanner } from "./nodesPage.js";
 import { countRoles, isOffline, nodeTone, shortSyncState, spaceTone, warningsFor } from "./nodeStatus.js";
+import { peersSection } from "./peersSection.js";
 import { requestRender } from "./renderRequest.js";
 import { appState, locationFor } from "./state.js";
 
@@ -18,9 +19,9 @@ function thresholdText(threshold: number): string {
   return threshold === 0 ? "0 (keeps everything)" : `${threshold} (keeps priority ${threshold} and above)`;
 }
 
-function statusLine(node: StorageNode): string {
+function statusLine(response: NodesResponse, node: StorageNode): string {
   if (isOffline(node)) return `offline, last seen ${formatAge(node.sync.lastSeen)}`;
-  const state = shortSyncState(node);
+  const state = shortSyncState(node, response);
   const arrayState = node.array ? `, ${node.array.state}` : "";
   return `online${arrayState}, ${state.label}`;
 }
@@ -58,15 +59,49 @@ function copyButton(value: string): HTMLButtonElement {
   return copy;
 }
 
-function syncthingSection(device: SyncthingDevice | null): HTMLElement {
+function listenerList(instance: SyncthingInstance): HTMLElement | string {
+  if (!instance.listeners.length) return "none";
+  return element(
+    "span",
+    { className: "address-list" },
+    ...instance.listeners.map((listener) =>
+      element("code", { className: listener.error ? "tone-text-bad" : "", title: listener.error ?? "" }, listener.error ? `${listener.address} (${listener.error})` : listener.address),
+    ),
+  );
+}
+
+function listeningText(instance: SyncthingInstance): string {
+  const working = instance.listeners.filter((listener) => !listener.error).length;
+  return `this node, listening on ${working} of ${instance.listeners.length} addresses`;
+}
+
+function ownInstanceRows(device: SyncthingDevice, instance: SyncthingInstance): [string, HTMLElement | string][] {
+  return [
+    ["Connection", listeningText(instance)],
+    ["Listeners", listenerList(instance)],
+    ["Discovery", instance.discoveryErrors.length ? element("span", { className: "tone-text-bad" }, instance.discoveryErrors.join("; ")) : "working"],
+    ["Uptime", `${formatDuration(instance.uptime * 1000)}, ${instance.cpuPercent.toFixed(1)}% CPU, ${formatBytes(instance.memoryBytes)} memory`],
+    ["Traffic", `↓ ${formatRate(device.inRate)}  ↑ ${formatRate(device.outRate)}, total ↓ ${formatBytes(instance.inTotal)}  ↑ ${formatBytes(instance.outTotal)}`],
+  ];
+}
+
+function remoteDeviceRows(device: SyncthingDevice): [string, HTMLElement | string][] {
+  return [
+    ["Connection", device.connectionType ?? "not connected"],
+    ["Traffic", `↓ ${formatRate(device.inRate)}  ↑ ${formatRate(device.outRate)}`],
+  ];
+}
+
+function syncthingSection(node: StorageNode): HTMLElement {
+  const device = node.syncthing;
   if (!device) return section("Connection (Syncthing)", element("p", { className: "muted" }, "No Syncthing device for this node yet."));
+  const rows = node.instance ? ownInstanceRows(device, node.instance) : remoteDeviceRows(device);
   return section(
     "Connection (Syncthing)",
     keyValueList([
       ["Device ID", [element("code", { className: "device-id", title: device.deviceId }, device.deviceId), copyButton(device.deviceId)]],
       ["Addresses", device.addresses.length ? element("span", { className: "address-list" }, ...device.addresses.map((address) => element("code", {}, address))) : "none known"],
-      ["Connection", device.connectionType ?? "not connected"],
-      ["Traffic", `↓ ${formatRate(device.inRate)}  ↑ ${formatRate(device.outRate)}`],
+      ...rows,
       ["Version", device.version ?? "unknown"],
     ]),
   );
@@ -83,12 +118,13 @@ function folderRow(folder: StorageNode["folders"][number]): HTMLElement {
   const completion = normaliseCompletion(folder.completion);
   const tone = folderStateTone(folder.state);
   const stateText = folder.state === "idle" && completion >= 1 ? "up to date" : completion < 1 ? `${folder.state}, ${formatPercent(completion)}` : folder.state;
+  const failed = folder.errors ? `${folder.errors} failed ${folder.errors === 1 ? "item" : "items"}` : null;
   return element(
     "div",
     { className: "folder-row", title: `${folder.path} (${folder.type})` },
-    element("span", { className: "folder-name" }, element("strong", {}, folder.id), element("small", {}, folder.path)),
+    element("span", { className: "folder-name" }, element("strong", {}, folder.label || folder.id), element("small", {}, folder.path), folder.lastScan ? element("small", {}, `scanned ${formatDate(folder.lastScan)}`) : null),
     element("span", { className: "chip" }, folder.type),
-    element("span", { className: `tone-text-${tone}` }, stateText),
+    element("span", { className: "folder-state" }, element("span", { className: `tone-text-${tone}` }, stateText), failed ? element("small", { className: "tone-text-bad" }, failed) : null),
   );
 }
 
@@ -129,7 +165,7 @@ function detailHeader(response: NodesResponse, node: StorageNode): HTMLElement {
     { className: "detail-header" },
     element("a", { className: "icon-button close-detail", title: "Close", attributes: { href: locationFor("nodes"), "aria-label": "Close detail" } }, icon("close")),
     element("h2", {}, node.name),
-    element("p", { className: "detail-status" }, element("span", { className: `dot tone-${tone}` }), statusLine(node)),
+    element("p", { className: "detail-status" }, element("span", { className: `dot tone-${tone}` }), statusLine(response, node)),
   );
 }
 
@@ -144,7 +180,8 @@ export function renderNodeDetail(response: NodesResponse, node: StorageNode): HT
     warnings.length ? element("div", { className: "warnings" }, ...warnings.map(warningBanner)) : null,
     nodeSection(node),
     ...(node.array ? arraySections(node, node.array) : []),
-    syncthingSection(node.syncthing),
+    syncthingSection(node),
+    peersSection(response, node),
     foldersSection(node),
   );
 }
