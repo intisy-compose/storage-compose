@@ -8,11 +8,13 @@ $microsoftReservedType = "{e3c9e316-0b5c-4db8-817d-f92df00215ae}"
 function New-FakeDisk {
     param(
         [int]$Number, [string]$BusType = "USB", [string]$PartitionStyle = "GPT", [bool]$IsOffline = $false,
-        [bool]$IsSystem = $false, [string]$Guid = "", [uint64]$Size = 8001563222016, [string]$UniqueId = ""
+        [bool]$IsSystem = $false, [string]$Guid = "", [uint64]$Size = 8001563222016, [string]$UniqueId = "",
+        [string]$SerialNumber = ""
     )
     if (-not $UniqueId) { $UniqueId = "USBSTOR\DISK&VEN_TEST&PROD_DISK$Number" }
+    if (-not $SerialNumber) { $SerialNumber = "SERIAL$Number" }
     return [pscustomobject]@{
-        Number = $Number; FriendlyName = "Test Disk $Number"; SerialNumber = "SERIAL$Number"; BusType = $BusType
+        Number = $Number; FriendlyName = "Test Disk $Number"; SerialNumber = $SerialNumber; BusType = $BusType
         PartitionStyle = $PartitionStyle; IsOffline = $IsOffline; IsBoot = $IsSystem; IsSystem = $IsSystem
         Guid = $Guid; Size = $Size; UniqueId = $UniqueId
     }

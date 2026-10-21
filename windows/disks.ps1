@@ -56,8 +56,7 @@ function ConvertTo-PartitionTableId([string]$Guid) {
 <#
 .NOTES
 Disk numbers move when a drive is plugged in again, so a request names the disk the human partner
-confirmed, not only its number. The GPT id is not part of the identity: a blank drive gets one when the
-dashboard formats it inside the VM, and that must not read as a different disk.
+confirmed, not only its number.
 #>
 function Get-DiskIdentity($Disk) {
     return [pscustomobject]@{
@@ -68,9 +67,29 @@ function Get-DiskIdentity($Disk) {
     }
 }
 
+<#
+.NOTES
+The D8's bridges give two drives one serial and one unique id, so the unique id decides only while a
+side has no GPT id. A GPT id that changed is still the same disk under its number: a drive gets a new
+one when the dashboard formats it inside the VM.
+#>
 function Test-IsSameDisk($Disk, $Identity) {
     $current = Get-DiskIdentity $Disk
-    return $current.Number -eq [int]$Identity.Number -and $current.UniqueId -eq "$($Identity.UniqueId)" -and $current.Size -eq [uint64]$Identity.Size
+    if ($current.Number -ne [int]$Identity.Number -or $current.Size -ne [uint64]$Identity.Size) { return $false }
+    $recordedGuid = ConvertTo-PartitionTableId "$($Identity.Guid)"
+    if ($current.Guid -and $current.Guid -eq $recordedGuid) { return $true }
+    return $current.UniqueId -eq "$($Identity.UniqueId)"
+}
+
+<#
+.NOTES
+A key that follows one physical drive across a new disk number, which the serial and the unique id
+cannot (see Test-IsSameDisk). A blank drive has no GPT id yet and is keyed by its number.
+#>
+function Get-DiskKey($Disk) {
+    $identity = Get-DiskIdentity $Disk
+    if ($identity.Guid) { return "gpt $($identity.Guid) $($identity.Size)" }
+    return "disk $($identity.Number) $($identity.UniqueId) $($identity.Size)"
 }
 
 function Format-Size([uint64]$Bytes) {
