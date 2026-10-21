@@ -5,7 +5,7 @@ import { type ArrayStatus, arrayStatus } from "./arrayStatus.js";
 import { isReplacementCandidate, listBlockDevices } from "./blockDevices.js";
 import { registryEntries, syncthingEndpoint } from "./instances.js";
 import { type JoinDependencies, type JoinInstance, JoinError, fileJoinRecords, handleJoin } from "./join.js";
-import { createJoinListener } from "./joinListener.js";
+import { createJoinListener, dockerDnsResolver } from "./joinListener.js";
 import { nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
 import type { ProxySource } from "./proxyProtocol.js";
@@ -13,6 +13,7 @@ import {
   arrayStatusDirectory,
   clusterArrayId,
   joinAllowedUsers,
+  joinGatewayHost,
   joinPort,
   joinTag,
   joinsFile,
@@ -215,6 +216,8 @@ createServer((request, response) => {
   });
 }).listen(port, () => console.log(`dashboard listening on ${port}`));
 
-createJoinListener(handleJoinRequest).listen(joinPort, () => console.log(`join API listening on ${joinPort}, behind tailscale's PROXY protocol`));
+createJoinListener(handleJoinRequest, dockerDnsResolver(joinGatewayHost)).listen(joinPort, () =>
+  console.log(`join API listening on ${joinPort}, behind tailscale's PROXY protocol, for ${joinGatewayHost} only`),
+);
 
 void listBlockDevices().catch(() => undefined);

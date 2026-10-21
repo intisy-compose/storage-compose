@@ -66,8 +66,9 @@ function exchange(server: Server, ...writes: Buffer[]): Promise<string> {
     const socket = connect((server.address() as AddressInfo).port, "127.0.0.1");
     const chunks: Buffer[] = [];
     socket.on("data", (chunk: Buffer) => chunks.push(chunk));
-    socket.on("close", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    socket.on("error", reject);
+    const answer = () => Buffer.concat(chunks).toString("utf8");
+    socket.on("close", () => resolve(answer()));
+    socket.on("error", (error: NodeJS.ErrnoException) => (error.code === "ECONNRESET" ? resolve(answer()) : reject(error)));
     socket.on("connect", async () => {
       for (const data of writes) {
         socket.write(data);
@@ -89,7 +90,7 @@ describe("the join listener", () => {
     seen.push(`${caller.address} ${Buffer.concat(chunks).toString("utf8")}`);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ caller: caller.address }));
-  });
+  }, async () => ["127.0.0.1"]);
 
   before(() => new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)));
   after(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -125,5 +126,66 @@ describe("the join listener", () => {
     const forged = ipv4Header();
     forged[0] = 0x0e;
     assert.equal(await exchange(server, Buffer.concat([forged, httpRequest("POST", "/api/join", "{}")])), "");
+  });
+});
+
+describe("the join listener's source check", () => {
+  let gatewayAddresses = ["127.0.0.1"];
+  let resolutions = 0;
+  let joins = 0;
+  const server = createJoinListener(
+    async (_request, response) => {
+      joins++;
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end("{}");
+    },
+    async () => {
+      resolutions++;
+      return gatewayAddresses;
+    },
+  );
+  const validJoin = () => Buffer.concat([ipv4Header(), httpRequest("POST", "/api/join", "{}")]);
+
+  before(() => new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)));
+  after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+  it("serves a connection from the gateway's address", async () => {
+    gatewayAddresses = ["172.30.0.9", "127.0.0.1"];
+    assert.match(await exchange(server, validJoin()), /^HTTP\/1.1 200/);
+  });
+
+  it("closes a connection from any other source unanswered, header or not", async () => {
+    gatewayAddresses = ["172.30.0.9"];
+    const count = joins;
+    assert.equal(await exchange(server, validJoin()), "");
+    assert.equal(joins, count);
+  });
+
+  it("closes every connection while the gateway does not resolve", async () => {
+    const failing = createJoinListener(async () => assert.fail("must not be called"), async () => {
+      throw new Error("getaddrinfo ENOTFOUND gateway");
+    });
+    await new Promise<void>((resolve) => failing.listen(0, "127.0.0.1", resolve));
+    try {
+      assert.equal(await exchange(failing, validJoin()), "");
+    } finally {
+      await new Promise<void>((resolve) => failing.close(() => resolve()));
+    }
+  });
+
+  it("resolves the gateway again for each connection, so a recreated gateway is followed", async () => {
+    gatewayAddresses = ["172.30.0.9"];
+    assert.equal(await exchange(server, validJoin()), "");
+    const before = resolutions;
+    gatewayAddresses = ["127.0.0.1"];
+    assert.match(await exchange(server, validJoin()), /^HTTP\/1.1 200/);
+    assert.equal(resolutions, before + 1);
+    gatewayAddresses = ["172.30.0.10"];
+    assert.equal(await exchange(server, validJoin()), "");
+  });
+
+  it("matches an IPv4-mapped source to the gateway's IPv4 address", async () => {
+    gatewayAddresses = ["::ffff:127.0.0.1"];
+    assert.match(await exchange(server, validJoin()), /^HTTP\/1.1 200/);
   });
 });
