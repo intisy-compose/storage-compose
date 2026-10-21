@@ -2,6 +2,7 @@
   "TCP": {
     "443": { "TCPForward": "127.0.0.1:443" },
     "445": { "TCPForward": "127.0.0.1:445" },
+    "8447": { "TCPForward": "dashboard:8447", "TerminateTLS": "${TS_CERT_DOMAIN}", "ProxyProtocol": 2 },
     "22000": { "TCPForward": "127.0.0.1:22000" },
     "51515": { "TCPForward": "127.0.0.1:51515" },
     "22001": { "TCPForward": "127.0.0.1:22001" },

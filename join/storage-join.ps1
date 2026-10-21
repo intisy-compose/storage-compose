@@ -33,6 +33,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $repository = Split-Path $PSScriptRoot
+# The dashboard's tailnet-only join port, where tailscale names the caller (PORTS.md).
+$joinPort = 8447
 . (Join-Path $repository "windows\agent-files.ps1")
 . (Join-Path $repository "windows\passthrough.ps1")
 . (Join-Path $repository "windows\nodes.ps1")
@@ -350,7 +352,7 @@ function Get-DashboardUrl {
     if ($Dashboard) { return $Dashboard.TrimEnd('/') }
     $status = Get-TailnetStatus
     if (-not ($status -and $status.PSObject.Properties["MagicDNSSuffix"] -and $status.MagicDNSSuffix)) { throw "cannot tell the tailnet's name; pass -Dashboard" }
-    return "https://storage.$($status.MagicDNSSuffix)"
+    return "https://storage.$($status.MagicDNSSuffix):$joinPort"
 }
 
 function New-JoinRequest($Node, [string]$DeviceId) {

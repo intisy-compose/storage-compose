@@ -5,12 +5,15 @@ import { type ArrayStatus, arrayStatus } from "./arrayStatus.js";
 import { isReplacementCandidate, listBlockDevices } from "./blockDevices.js";
 import { registryEntries, syncthingEndpoint } from "./instances.js";
 import { type JoinDependencies, type JoinInstance, JoinError, fileJoinRecords, handleJoin } from "./join.js";
+import { createJoinListener } from "./joinListener.js";
 import { nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
+import type { ProxySource } from "./proxyProtocol.js";
 import {
   arrayStatusDirectory,
   clusterArrayId,
   joinAllowedUsers,
+  joinPort,
   joinTag,
   joinsFile,
   port,
@@ -109,18 +112,6 @@ async function handleArrayAction(arrayId: string, action: ArrayAction, request: 
   sendJson(response, 202, { started: job });
 }
 
-/**
- * @implNote X-Tailnet-Peer is Caddy's {remote}; the local site strips it. whois names it only when it is
- * the caller's tailnet address, as with a PROXY protocol header on tailscale's forward: the loopback
- * port of a plain TCP forward is never registered with tailscale (ipnlocal/serve.go, v1.102.4).
- */
-function callerAddresses(request: IncomingMessage): string[] {
-  const peer = String(request.headers["x-tailnet-peer"] ?? "").trim();
-  const forwarded = String(request.headers["x-forwarded-for"] ?? "").split(",").pop()?.trim().replace(/^::ffff:/, "") ?? "";
-  const isLoopback = (address: string) => address === "" || address.startsWith("127.") || address === "::1";
-  return [...(peer ? [peer] : []), ...(isLoopback(forwarded) ? [] : [forwarded])];
-}
-
 async function syncPortOf(nodeId: string): Promise<number | null> {
   try {
     return (JSON.parse(await readFile(`${registryDirectory}/${nodeId}.syncthing.json`, "utf8")) as { syncPort?: number }).syncPort ?? null;
@@ -167,15 +158,21 @@ const joinDependencies: JoinDependencies = {
   now: () => new Date(),
 };
 
-async function handleJoinRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handleJoinRequest(request: IncomingMessage, response: ServerResponse, caller: ProxySource): Promise<void> {
   try {
-    const { response: answer, setup } = await handleJoin(joinDependencies, callerAddresses(request), await readBody(request));
+    const { response: answer, setup } = await handleJoin(joinDependencies, [caller.address], await readBody(request));
     if (setup) console.log(`join: ${setup.message}`);
     sendJson(response, 200, answer);
   } catch (error) {
-    if (error instanceof JoinError) throw new RequestError(error.status, error.message);
+    if (error instanceof JoinError || error instanceof RequestError) return sendJson(response, error.status, { error: error.message });
     throw error;
   }
+}
+
+/** On 443 and the local site Caddy hands on only a loopback address, so the caller cannot be told. */
+function joinElsewhere(): never {
+  const joinUrl = `https://${tailnetHost || "storage.<tailnet>.ts.net"}:${joinPort}/api/join`;
+  throw new RequestError(421, `a device joins at ${joinUrl}, where tailscale names the caller`);
 }
 
 async function serveIndex(response: ServerResponse): Promise<void> {
@@ -206,7 +203,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
   }
   const legacyAction = path.match(/^\/api\/(sync|scrub|rebuild|remove)$/)?.[1];
   if (request.method === "POST" && legacyAction) return handleArrayAction(clusterArrayId, legacyAction as ArrayAction, request, response);
-  if (request.method === "POST" && path === "/api/join") return handleJoinRequest(request, response);
+  if (path === "/api/join") joinElsewhere();
   throw new RequestError(404, "not found");
 }
 
@@ -217,5 +214,7 @@ createServer((request, response) => {
     sendJson(response, status, { error: error instanceof Error ? error.message : String(error) });
   });
 }).listen(port, () => console.log(`dashboard listening on ${port}`));
+
+createJoinListener(handleJoinRequest).listen(joinPort, () => console.log(`join API listening on ${joinPort}, behind tailscale's PROXY protocol`));
 
 void listBlockDevices().catch(() => undefined);

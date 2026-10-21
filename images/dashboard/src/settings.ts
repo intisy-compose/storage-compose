@@ -17,6 +17,8 @@ export const registryDirectory = `${statusDirectory}/nodes`;
 export const joinsFile = `${statusDirectory}/joins.json`;
 export const publicDirectory = new URL("../public/", import.meta.url).pathname;
 export const port = Number(process.env.PORT ?? 8080);
+/** The tailnet-only join port: tailscale forwards it here with a PROXY protocol header (PORTS.md, 8447). */
+export const joinPort = Number(process.env.JOIN_PORT ?? 8447);
 export const candidateTransports = list(process.env.CANDIDATE_TRANSPORTS ?? "usb");
 export const anyArrayLabelPattern = new RegExp(`^([0-9a-f]{4}|${clusterArrayId})-((data|parity)\\d+)$`);
 /** Other hosts' dashboards, read for their nodes, e.g. https://storage-p53.tailnet.ts.net. */
