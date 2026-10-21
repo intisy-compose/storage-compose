@@ -365,8 +365,16 @@ function Get-HttpErrorStatus($ErrorRecord) {
     return 0
 }
 
+<#
+.NOTES
+Windows PowerShell leaves ErrorDetails empty for a chunked answer, which Caddy sends, so the body is
+read from the response itself.
+#>
 function Get-DashboardErrorText($ErrorRecord) {
     $text = if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) { $ErrorRecord.ErrorDetails.Message } else { "" }
+    if (-not $text -and $ErrorRecord.Exception.PSObject.Properties["Response"] -and $ErrorRecord.Exception.Response) {
+        try { $text = (New-Object System.IO.StreamReader($ErrorRecord.Exception.Response.GetResponseStream())).ReadToEnd() } catch { }
+    }
     try { $parsed = $text | ConvertFrom-Json; if ($parsed.PSObject.Properties["error"]) { return $parsed.error } } catch { }
     return $text
 }

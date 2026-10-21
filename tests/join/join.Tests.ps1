@@ -242,6 +242,12 @@ try {
             $Name = "stranger"
             Invoke-JoinCapturingFailure | Should Be "the dashboard refused this device (403): not in this tailnet"
         }
+        It "reads the reason from a chunked answer, which leaves ErrorDetails empty" {
+            $response = [pscustomobject]@{ StatusCode = 403 }
+            $response | Add-Member ScriptMethod GetResponseStream { New-Object System.IO.MemoryStream (,[System.Text.Encoding]::UTF8.GetBytes('{"error":"127.0.0.1:42684 is not a device of this tailnet"}')) }
+            $record = [pscustomobject]@{ ErrorDetails = $null; Exception = [pscustomobject]@{ Response = $response } }
+            Get-DashboardErrorText $record | Should Be "127.0.0.1:42684 is not a device of this tailnet"
+        }
     }
 
     Describe "the host agent" {
