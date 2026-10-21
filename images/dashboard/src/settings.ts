@@ -17,7 +17,7 @@ export const registryDirectory = `${statusDirectory}/nodes`;
 export const joinsFile = `${statusDirectory}/joins.json`;
 export const publicDirectory = new URL("../public/", import.meta.url).pathname;
 export const port = Number(process.env.PORT ?? 8080);
-/** The tailnet-only join port: tailscale forwards it here with a PROXY protocol header (PORTS.md, 8447). */
+/** The join port inside the stack: the gateway forwards /api/join on 443 here with a PROXY protocol header. */
 export const joinPort = Number(process.env.JOIN_PORT ?? 8447);
 /** The only source the join port reads from: tailscale's serve forwards from the gateway's namespace. */
 export const joinGatewayHost = process.env.JOIN_GATEWAY_HOST ?? "gateway";

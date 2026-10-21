@@ -7,7 +7,7 @@
 #
 # Settings, all optional:
 #   STORAGE_JOIN_KEY        Tailscale auth key; else $IMPRINT_PERSONAL/tailscale.key
-#   STORAGE_DASHBOARD       the dashboard's join API, default https://storage.<tailnet>:8447
+#   STORAGE_DASHBOARD       the dashboard's join API, default https://storage.<tailnet>
 #   STORAGE_JOIN_ROOT       the data root that becomes this device's node, default /data
 #   STORAGE_JOIN_NAME       the node and device name, default the name of the device list's entry
 #                           with this device's Syncthing ID, else the host name
@@ -26,8 +26,6 @@ readonly HOME_LINKS="Documents:Documents Pictures:Pictures Music:Music Videos:Vi
 readonly UNIT_NAME="storage-syncthing.service"
 
 readonly ESSENTIAL_THRESHOLD=80 WORKING_THRESHOLD=50
-# The dashboard's tailnet-only join port, where tailscale names the caller (PORTS.md).
-readonly JOIN_PORT=8447
 
 join_kind="${STORAGE_JOIN_KIND:-drive}"
 join_threshold="${STORAGE_JOIN_THRESHOLD:-50}"
@@ -254,7 +252,7 @@ dashboard_url() {
     local suffix
     suffix="$(tailscale status --json | jq -r '.MagicDNSSuffix // empty')"
     [[ -n "$suffix" ]] || fail "cannot tell the tailnet's name; set STORAGE_DASHBOARD"
-    printf 'https://storage.%s:%s' "$suffix" "$JOIN_PORT"
+    printf 'https://storage.%s' "$suffix"
 }
 
 join_request() {
