@@ -26,8 +26,8 @@ export const tailnetProxy = process.env.TAILNET_PROXY ?? "";
 /** e.g. https://inventree.tailnet.ts.net/web/stock/item/?search={asset} */
 export const inventoryAssetUrl = process.env.INVENTORY_ASSET_URL ?? "";
 export const tailscaleSocket = process.env.TAILSCALE_SOCKET ?? "/var/run/tailscale/tailscaled.sock";
-/** The tailnet login allowed to join devices besides `tag:storage`; empty takes this node's owner. */
-export const joinOwner = process.env.JOIN_OWNER ?? "";
+/** Tailnet logins whose devices may join besides this node's owner's and `tag:storage`. */
+export const joinAllowedUsers = list(process.env.JOIN_ALLOWED_USERS);
 export const joinTag = "tag:storage";
 /** The setup repo inside the container: SETUP_REPO_DIR, by default the stack's own data repo. */
 export const setupRepoDirectory = process.env.SETUP_REPO_DIR ? "/setup" : "";

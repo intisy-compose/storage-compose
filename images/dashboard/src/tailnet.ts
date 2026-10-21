@@ -35,35 +35,44 @@ function localApi<T>(path: string, timeoutMs = 5000): Promise<{ status: number; 
   });
 }
 
-interface WhoIsResponse {
+export interface WhoIsResponse {
   Node?: { Name?: string; Tags?: string[]; Addresses?: string[] };
   UserProfile?: { LoginName?: string };
+}
+
+/** A tagged node's UserProfile is the shared "tagged-devices" login, which owns nothing. */
+export function parseWhoIs(body: WhoIsResponse | null): WhoIs | null {
+  if (!body?.Node) return null;
+  const tags = body.Node.Tags ?? [];
+  return {
+    loginName: tags.length > 0 ? null : (body.UserProfile?.LoginName ?? null),
+    tags,
+    nodeName: (body.Node.Name ?? "").replace(/\.$/, ""),
+    addresses: body.Node.Addresses ?? [],
+  };
 }
 
 /** Null when the address is not a node of this tailnet. */
 export async function whois(address: string): Promise<WhoIs | null> {
   const response = await localApi<WhoIsResponse>(`/localapi/v0/whois?addr=${encodeURIComponent(address)}`);
-  if (response.status !== 200 || !response.body?.Node) return null;
-  const tags = response.body.Node.Tags ?? [];
-  return {
-    loginName: tags.length > 0 ? null : (response.body.UserProfile?.LoginName ?? null),
-    tags,
-    nodeName: (response.body.Node.Name ?? "").replace(/\.$/, ""),
-    addresses: response.body.Node.Addresses ?? [],
-  };
+  if (response.status !== 200) return null;
+  return parseWhoIs(response.body);
 }
 
-interface StatusResponse {
-  Self?: { UserID?: number; Tags?: string[] };
+export interface StatusResponse {
+  Self?: { UserID?: number; Tags?: string[] | null };
   User?: Record<string, { LoginName?: string }>;
 }
 
-/** The login that owns this dashboard's node, or null for a tagged node. */
-export async function ownLogin(): Promise<string | null> {
-  const response = await localApi<StatusResponse>("/localapi/v0/status");
-  const self = response.body?.Self;
+/** The login that owns this node, or null for a tagged node, which an auth key with tags creates. */
+export function parseOwnLogin(body: StatusResponse | null): string | null {
+  const self = body?.Self;
   if (!self || (self.Tags ?? []).length > 0 || self.UserID === undefined) return null;
-  return response.body?.User?.[String(self.UserID)]?.LoginName ?? null;
+  return body?.User?.[String(self.UserID)]?.LoginName ?? null;
+}
+
+export async function ownLogin(): Promise<string | null> {
+  return parseOwnLogin((await localApi<StatusResponse>("/localapi/v0/status")).body);
 }
 
 /**
