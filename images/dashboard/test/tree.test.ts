@@ -193,7 +193,7 @@ describe("tree listing of one node", () => {
     inFlight = 0;
     mostInFlight = 0;
     nodeCount += 1;
-    node = { nodeId: `fb${nodeCount}`, name: "pc", host: "finn", root: "F:\\", os: "windows", threshold: 50, client: new SyncthingClient({ url, apiKey: "key" }) };
+    node = { nodeId: `fb${nodeCount}`, name: "pc", host: "finn", root: "F:\\", os: "windows", threshold: 50, present: true, client: new SyncthingClient({ url, apiKey: "key" }) };
   });
 
   it("the top directory lists folder roots with priorities and 0 at the top", async () => {
@@ -356,6 +356,7 @@ interface PeerInstance {
   folders: PeerFolder[];
   pending: string[];
   delayMs: number;
+  browseDelayMs: number;
 }
 
 const laptopId = "LAPAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
@@ -378,6 +379,7 @@ describe("tree listing of all nodes", () => {
   let browseRequests: string[];
   let dashboardRequests: URL[];
   let dashboardAnswer: (requestUrl: URL) => unknown;
+  let dashboardDelayMs = 0;
   let round = 0;
   const layout = parseLayout(['[folders.Documents]', 'category = "synced"', '[folders."Documents/GitHub"]', 'category = "synced"'].join("\n"));
 
@@ -387,12 +389,12 @@ describe("tree listing of all nodes", () => {
 
   function addInstance(name: string, folders: PeerFolder[], pending: string[] = []): string {
     const prefix = `${name}-${round}`;
-    instances.set(prefix, { deviceId: deviceIdOf(name), name, folders, pending, delayMs: 0 });
+    instances.set(prefix, { deviceId: deviceIdOf(name), name, folders, pending, delayMs: 0, browseDelayMs: 0 });
     return prefix;
   }
 
   function treeNode(prefix: string, nodeId: string, root: string, os: TreeNode["os"]): TreeNode {
-    return { nodeId: `${nodeId}-${round}`, name: instances.get(prefix)!.name, host: "finn", root, os, threshold: 0, client: new SyncthingClient({ url: `${url}/${prefix}`, apiKey: "key" }) };
+    return { nodeId: `${nodeId}-${round}`, name: instances.get(prefix)!.name, host: "finn", root, os, threshold: 0, present: true, client: new SyncthingClient({ url: `${url}/${prefix}`, apiKey: "key" }) };
   }
 
   function allSources(nodes: TreeNode[], overrides: Partial<AllNodesSources> = {}): AllNodesSources {
@@ -401,10 +403,11 @@ describe("tree listing of all nodes", () => {
       needLimit: 20_000,
       firstListsWaitMs: 10_000,
       nodeWaitMs: 10_000,
+      listingBudgetMs: 10_000,
       localNodes: async () => nodes,
       otherHosts: [],
       readHost: (host, path) => readDashboard(host.dashboardUrl, host.host, path),
-      hostNodes: async () => [],
+      hostNodes: () => [],
       ...overrides,
     };
   }
@@ -429,7 +432,7 @@ describe("tree listing of all nodes", () => {
         return reply(response, { ...statusFixture, errors: folder.errors?.length ?? 0, pullErrors: folder.errors?.length ?? 0 });
       case "/rest/db/browse":
         browseRequests.push(`${instance.name}:${folder?.id}:${requestUrl.searchParams.get("prefix") ?? ""}`);
-        return reply(response, folder?.browse[requestUrl.searchParams.get("prefix") ?? ""] ?? []);
+        return void delayed(instance.browseDelayMs, () => reply(response, folder?.browse[requestUrl.searchParams.get("prefix") ?? ""] ?? []));
       case "/rest/db/file":
         return reply(response, {
           availability: [{ id: laptopId, fromTemporary: false }, ...[...instances.values()].filter((other) => other !== instance).map((other) => ({ id: other.deviceId, fromTemporary: false }))],
@@ -453,7 +456,7 @@ describe("tree listing of all nodes", () => {
       const [, prefix, ...rest] = requestUrl.pathname.split("/");
       if (prefix === "p53") {
         dashboardRequests.push(requestUrl);
-        return reply(response, dashboardAnswer(requestUrl) as object);
+        return void delayed(dashboardDelayMs, () => reply(response, dashboardAnswer(requestUrl) as object));
       }
       const instance = instances.get(prefix);
       if (!instance) return reply(response, "no such instance", 404);
@@ -471,7 +474,32 @@ describe("tree listing of all nodes", () => {
     browseRequests = [];
     dashboardRequests = [];
     dashboardAnswer = () => ({ error: "nothing" });
+    dashboardDelayMs = 0;
   });
+
+  function p53Listing(requestUrl: URL, nextPage: number | null): TreeListing {
+    return {
+      path: requestUrl.searchParams.get("path") ?? "",
+      view: "all",
+      priority: { effective: 80, setHere: 80, inherited: 0, inheritedFrom: null, source: "setup-repo", overridesParent: true },
+      overridesBelow: [],
+      entries: [
+        {
+          name: "Taxes",
+          path: "Documents/Taxes",
+          kind: "directory",
+          size: null,
+          modified: null,
+          folder: null,
+          priority: { effective: 80, setHere: null, inherited: 80, inheritedFrom: "Documents", source: "inherited", overridesParent: false },
+          nodes: [{ nodeId: "a1b2", nodeName: "p53-data", host: "p53", status: "syncing", detail: "2 items outstanding below" }],
+          availability: [],
+        },
+      ],
+      nextPage,
+      notes: [],
+    };
+  }
 
   function threeNodes(): TreeNode[] {
     const pc = addInstance("pc", [documentsFolder("F:\\Documents")]);
@@ -515,27 +543,7 @@ describe("tree listing of all nodes", () => {
 
   it("another host's nodes come from its dashboard with scope local", async () => {
     const nodes = threeNodes();
-    dashboardAnswer = (requestUrl): TreeListing => ({
-      path: requestUrl.searchParams.get("path") ?? "",
-      view: "all",
-      priority: { effective: 80, setHere: 80, inherited: 0, inheritedFrom: null, source: "setup-repo", overridesParent: true },
-      overridesBelow: [],
-      entries: [
-        {
-          name: "Taxes",
-          path: "Documents/Taxes",
-          kind: "directory",
-          size: null,
-          modified: null,
-          folder: null,
-          priority: { effective: 80, setHere: null, inherited: 80, inheritedFrom: "Documents", source: "inherited", overridesParent: false },
-          nodes: [{ nodeId: "a1b2", nodeName: "p53-data", host: "p53", status: "syncing", detail: "2 items outstanding below" }],
-          availability: [],
-        },
-      ],
-      nextPage: null,
-      notes: [],
-    });
+    dashboardAnswer = (requestUrl) => p53Listing(requestUrl, null);
     const p53: OtherHost = { host: "p53", dashboardUrl: `${url}/p53` };
     const listing = await allNodesListing("Documents", 1, "all", allSources(nodes, { otherHosts: [p53] }));
     assert.equal(dashboardRequests.length, 1);
@@ -554,7 +562,7 @@ describe("tree listing of all nodes", () => {
   it("an unreachable host leaves its nodes unknown and says so", async () => {
     const nodes = threeNodes();
     const gone: OtherHost = { host: "gone", dashboardUrl: "http://127.0.0.1:9" };
-    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes, { otherHosts: [gone], hostNodes: async () => [{ nodeId: "c3d4", name: "gone-data" }] }));
+    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes, { otherHosts: [gone], hostNodes: () => [{ nodeId: "c3d4", name: "gone-data" }] }));
     assert.equal(listing.entries.length, 3);
     for (const entry of listing.entries) {
       assert.deepEqual(stateOn(entry, "c3d4"), { status: "unknown", detail: "gone's dashboard could not be reached" });
@@ -580,9 +588,60 @@ describe("tree listing of all nodes", () => {
     assert.ok(Date.now() - started < 500, `${Date.now() - started} ms`);
     const taxes = listing.entries.find((entry) => entry.name === "Taxes");
     assert.equal(stateOn(taxes, nodes[0].nodeId)?.status, "failed");
-    assert.equal(stateOn(taxes, nodes[1].nodeId)?.status, "unknown");
-    assert.ok(listing.notes.some((note) => note.includes("private-array")), listing.notes.join("; "));
+    assert.deepEqual(stateOn(taxes, nodes[1].nodeId), { status: "unknown", detail: "still being read" });
+    assert.ok(listing.notes.includes("private-array is still being read"), listing.notes.join("; "));
+    assert.ok(!listing.notes.some((note) => note.includes("not answering")), listing.notes.join("; "));
     await wait(700);
+  });
+
+  it("a slow supplying read is cut at the listing budget", async () => {
+    const nodes = threeNodes();
+    instances.get(`pc-${round}`)!.browseDelayMs = 600;
+    const started = Date.now();
+    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes, { listingBudgetMs: 200 }));
+    assert.ok(Date.now() - started < 500, `${Date.now() - started} ms`);
+    assert.ok(listing.notes.includes("pc is still reading Documents"), listing.notes.join("; "));
+    await wait(700);
+    const later = await allNodesListing("Documents", 1, "all", allSources(nodes, { listingBudgetMs: 200 }));
+    assert.deepEqual(names(later.entries), ["Recipes", "Taxes", "notes.txt"]);
+  });
+
+  it("a slow other host is not reported as unreachable", async () => {
+    const nodes = threeNodes();
+    dashboardDelayMs = 400;
+    dashboardAnswer = (requestUrl) => p53Listing(requestUrl, null);
+    const p53: OtherHost = { host: "p53", dashboardUrl: `${url}/p53` };
+    const listing = await allNodesListing(
+      "Documents",
+      1,
+      "all",
+      allSources(nodes, { otherHosts: [p53], readHost: (host, path) => readDashboard(host.dashboardUrl, host.host, path, 100), hostNodes: () => [{ nodeId: "a1b2", name: "p53-data" }] }),
+    );
+    assert.ok(listing.notes.some((note) => note.startsWith("p53's dashboard is slow, still being read")), listing.notes.join("; "));
+    assert.ok(!listing.notes.some((note) => note.includes("could not be reached")), listing.notes.join("; "));
+    assert.deepEqual(stateOn(listing.entries.find((entry) => entry.name === "Taxes"), "a1b2"), { status: "unknown", detail: "p53's dashboard is slow, still being read" });
+    await wait(400);
+  });
+
+  it("above one page a remote node missing from a row is unknown", async () => {
+    const nodes = threeNodes();
+    dashboardAnswer = (requestUrl) => p53Listing(requestUrl, 2);
+    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes, { otherHosts: [{ host: "p53", dashboardUrl: `${url}/p53` }] }));
+    assert.equal(stateOn(listing.entries.find((entry) => entry.name === "Taxes"), "a1b2")?.status, "syncing");
+    assert.deepEqual(stateOn(listing.entries.find((entry) => entry.name === "Recipes"), "a1b2"), { status: "unknown", detail: "not on this page of p53's listing" });
+  });
+
+  it("a node that is not attached says so once and shows where it took part", async () => {
+    const nodes = threeNodes();
+    const detached = nodes.map((node, index) => (index === 1 ? { ...node, present: false } : node));
+    const unseen = await allNodesListing("Documents", 1, "all", allSources(detached));
+    assert.deepEqual(unseen.notes.filter((note) => note.includes("private-array")), ["private-array is not connected"]);
+    assert.ok(unseen.entries.every((entry) => stateOn(entry, nodes[1].nodeId) === undefined));
+
+    await allNodesListing("Documents", 1, "all", allSources(nodes));
+    const seen = await allNodesListing("Documents", 1, "all", allSources(detached));
+    assert.deepEqual(stateOn(seen.entries.find((entry) => entry.name === "Taxes"), nodes[1].nodeId), { status: "unknown", detail: "not connected" });
+    assert.equal(stateOn(seen.entries.find((entry) => entry.name === "Taxes"), nodes[2].nodeId), undefined);
   });
 
   it("another host's node viewed alone is forwarded", async () => {

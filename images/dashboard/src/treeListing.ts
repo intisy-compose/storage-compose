@@ -18,6 +18,8 @@ export interface TreeNode {
   root: string | null;
   os: NodeOs;
   threshold: number;
+  /** False while the node's drive or array is not attached to this host. */
+  present: boolean;
   client: SyncthingClient | null;
 }
 
@@ -29,6 +31,9 @@ export interface TreeSources {
   /** How long a listing waits for a folder's first lists before it shows the folder's counts instead. */
   firstListsWaitMs: number;
 }
+
+/** What a node's tree is read with; the node itself is handed in separately. */
+export type ListingSources = Omit<TreeSources, "node">;
 
 /** A folder's lists, or only its counts while the first read of them has not finished (`stillReading`). */
 type ListsView = FolderLists & { stillReading: boolean };
@@ -47,7 +52,7 @@ export interface NodeTree {
   deviceNames: Map<string, string>;
   statuses: Map<string, Promise<FolderStatus | null>>;
   lists: Map<string, Promise<ListsView | null>>;
-  sources: TreeSources;
+  sources: ListingSources;
 }
 
 export type RowBase = { name: string; path: string; kind: TreeEntry["kind"]; size: number | null; modified: string | null };
@@ -94,7 +99,7 @@ function offeredOnly(configs: SyncthingFolderConfig[], pending: Record<string, {
     .map(([folderId, entry]) => ({ id: folderId, label: Object.values(entry.offeredBy)[0]?.label || folderId, path: "" }));
 }
 
-export async function readNodeTree(node: TreeNode, layout: SetupLayout | null, sources: TreeSources): Promise<NodeTree> {
+export async function readNodeTree(node: TreeNode, layout: SetupLayout | null, sources: ListingSources): Promise<NodeTree> {
   const tree: NodeTree = { node, answering: false, ownId: "", folders: [], deviceNames: new Map(), statuses: new Map(), lists: new Map(), sources };
   if (!node.client) return tree;
   try {

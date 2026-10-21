@@ -1,13 +1,15 @@
 import type { NodeEntryState, TreeEntry, TreeListing } from "./api/types.js";
+import { RequestError } from "./http.js";
 import { overridesBelow, priorityAt } from "./priorityTree.js";
 import type { SetupLayout } from "./setupRepo.js";
 import { directoriesAbove, folderAt } from "./treePaths.js";
 import {
+  type ListingSources,
   type NodeRowState,
   type NodeTree,
+  type Row,
   type RowBase,
   type TreeNode,
-  type TreeSources,
   byDirectoryThenName,
   directoryRows,
   entriesPerPage,
@@ -29,19 +31,27 @@ export interface OtherHost {
   dashboardUrl: string;
 }
 
-export interface AllNodesSources extends Omit<TreeSources, "node"> {
+export interface AllNodesSources extends ListingSources {
   /** This host's nodes, the cluster first. */
   localNodes: () => Promise<TreeNode[]>;
   otherHosts: OtherHost[];
-  /** A GET of the host's dashboard with `scope=local`. */
+  /** A GET of the host's dashboard with `scope=local`; a 504 means it is slow, anything else that it cannot be reached. */
   readHost: (host: OtherHost, path: string) => Promise<unknown>;
-  /** The nodes last reported for a host, so one that cannot be reached still shows them. */
-  hostNodes: (host: OtherHost) => Promise<{ nodeId: string; name: string }[]>;
-  /** How long one node's states may take before its rows show it as unknown. */
+  /** The nodes last reported for a host, from what is cached; never reads anything. */
+  hostNodes: (host: OtherHost) => { nodeId: string; name: string }[];
+  /** How long one node's states may take before its rows show it as still being read. */
   nodeWaitMs: number;
+  /** How long this host's whole part of a listing may take, the supplying node's directory read included. */
+  listingBudgetMs: number;
 }
 
-type HostAnswer = { host: OtherHost; listing: TreeListing } | { host: OtherHost; error: string };
+type HostAnswer = { host: OtherHost; listing: TreeListing } | { host: OtherHost; slow: true } | { host: OtherHost; error: string };
+
+const stillBeingRead = "still being read";
+const notConnected = "not connected";
+
+/** The folders each node held the last time its Syncthing answered, so a node that is not attached still shows where it takes part. */
+const lastFolders = new Map<string, NodeTree["folders"]>();
 
 function isTreeListing(answer: unknown): answer is TreeListing {
   return Array.isArray((answer as TreeListing | null)?.entries);
@@ -53,6 +63,7 @@ async function askHost(host: OtherHost, path: string, page: number, sources: All
     const answer = await sources.readHost(host, `/api/tree?${query.toString()}`);
     return isTreeListing(answer) ? { host, listing: answer } : { host, error: "it did not answer with a listing" };
   } catch (error) {
+    if (error instanceof RequestError && error.status === 504) return { host, slow: true };
     return { host, error: (error as Error).message };
   }
 }
@@ -66,8 +77,23 @@ function withinDeadline<Value>(work: Promise<Value>, waitMs: number, late: () =>
   return Promise.race([work, waited]).finally(() => clearTimeout(timer));
 }
 
-function unansweredTree(node: TreeNode, sources: TreeSources): NodeTree {
-  return { node, answering: false, ownId: "", folders: [], deviceNames: new Map(), statuses: new Map(), lists: new Map(), sources };
+/** A node as this listing sees it: read in time, still being read, or not attached. */
+interface NodeView {
+  tree: NodeTree;
+  condition: "read" | "late" | "absent";
+}
+
+function treeWithout(node: TreeNode, sources: ListingSources, folders: NodeTree["folders"] = []): NodeTree {
+  return { node, answering: false, ownId: "", folders, deviceNames: new Map(), statuses: new Map(), lists: new Map(), sources };
+}
+
+async function viewOf(node: TreeNode, layout: SetupLayout | null, sources: ListingSources, waitMs: number): Promise<NodeView> {
+  if (!node.present) return { tree: { ...treeWithout(node, sources, lastFolders.get(node.nodeId)), answering: true }, condition: "absent" };
+  const read = readNodeTree(node, layout, sources).then((tree): NodeView => {
+    if (tree.answering) lastFolders.set(node.nodeId, tree.folders);
+    return { tree, condition: "read" };
+  });
+  return withinDeadline(read, waitMs, (): NodeView => ({ tree: treeWithout(node, sources), condition: "late" }));
 }
 
 function holdsIndexAt(tree: NodeTree, path: string): boolean {
@@ -92,13 +118,19 @@ function rowOf(entry: TreeEntry): RowBase {
   return { name: entry.name, path: entry.path, kind: entry.kind, size: entry.size, modified: entry.modified };
 }
 
-function folderRootsBelow(tree: NodeTree, path: string): RowBase[] {
-  const names = directoriesAbove(
-    tree.folders.map((folder) => folder.placement),
-    null,
-    path,
-  );
+function directoryRowsNamed(path: string, names: string[]): RowBase[] {
   return names.map((name) => ({ name, path: path ? `${path}/${name}` : name, kind: "directory", size: null, modified: null }));
+}
+
+function folderRootsBelow(tree: NodeTree, path: string): RowBase[] {
+  return directoryRowsNamed(
+    path,
+    directoriesAbove(
+      tree.folders.map((folder) => folder.placement),
+      null,
+      path,
+    ),
+  );
 }
 
 interface ShownRows {
@@ -107,52 +139,83 @@ interface ShownRows {
   notes: string[];
 }
 
+/** Milliseconds left of the listing's budget. */
+type Remaining = () => number;
+
 /**
- * The rows of the page: from the first node of this host whose index holds the path (the cluster
- * first), otherwise from the other hosts' answers, with every node's folder roots and layout paths added.
- * @implNote Without a local index the other hosts' answers are already one page, so this host's
- * own directories are added to the first page only.
+ * The rows of the page from the first node whose index holds the path (the cluster first), with the
+ * other nodes' folder roots and the other hosts' rows added.
+ * @implNote The supplying node's directory read is bounded by the listing's budget: past it the page
+ * shows the other nodes' rows and says the directory is still being read, while the read goes on and
+ * is served from the cache next time.
  */
-async function shownRows(trees: NodeTree[], layout: SetupLayout | null, path: string, page: number, answers: HostAnswer[]): Promise<ShownRows> {
-  const remoteRows = answers.flatMap((answer) => ("listing" in answer ? answer.listing.entries.map(rowOf) : []));
-  const source = trees.find((tree) => tree.answering && holdsIndexAt(tree, path));
-  if (source) {
-    const own = await directoryRows(source, layout, path);
-    const others = trees.filter((tree) => tree !== source).flatMap((tree) => folderRootsBelow(tree, path));
-    const sorted = addMissing(addMissing(own.rows, others), remoteRows).sort(byDirectoryThenName);
-    warmFolderRoots(source, own.rows);
-    return { rows: sorted.slice((page - 1) * entriesPerPage, page * entriesPerPage), nextPage: page * entriesPerPage < sorted.length ? page + 1 : null, notes: [...own.notes, ...(await folderNotes(source, own.rows))] };
-  }
-  const local = await Promise.all(trees.map((tree) => directoryRows(tree, layout, path)));
-  const remoteNextPage = answers.find((answer) => "listing" in answer && answer.listing.nextPage !== null);
-  const rows = addMissing(addMissing([], page === 1 ? local.flatMap((listing) => listing.rows) : []), remoteRows).sort(byDirectoryThenName);
-  return { rows, nextPage: remoteNextPage && "listing" in remoteNextPage ? remoteNextPage.listing.nextPage : null, notes: local.flatMap((listing, index) => (trees[index].answering ? listing.notes : [])) };
+async function sourcedRows(source: NodeTree, others: NodeTree[], layout: SetupLayout | null, path: string, page: number, remoteRows: RowBase[], remaining: Remaining): Promise<ShownRows> {
+  const late = { rows: [] as Row[], notes: [`${source.node.name} is still reading ${path || "the top directory"}`] };
+  const own = await withinDeadline(directoryRows(source, layout, path), remaining(), () => late);
+  const sorted = addMissing(
+    addMissing(
+      own.rows,
+      others.flatMap((tree) => folderRootsBelow(tree, path)),
+    ),
+    remoteRows,
+  ).sort(byDirectoryThenName);
+  const rows = sorted.slice((page - 1) * entriesPerPage, page * entriesPerPage);
+  const shownPaths = new Set(rows.map((row) => pathKey(row.path)));
+  const ownShown = own.rows.filter((row) => shownPaths.has(pathKey(row.path)));
+  warmFolderRoots(source, ownShown);
+  const notes = await withinDeadline(folderNotes(source, ownShown), remaining(), () => []);
+  return { rows, nextPage: page * entriesPerPage < sorted.length ? page + 1 : null, notes: [...own.notes, ...notes] };
 }
 
-function stillUnread(tree: NodeTree, rows: RowBase[]): (NodeRowState | null)[] {
-  return rows.map((row) => (rowOn(tree, row) ? { state: { nodeId: tree.node.nodeId, nodeName: tree.node.name, host: tree.node.host, status: "unknown", detail: "still being read" }, availability: [] } : null));
+/**
+ * The rows of the page when no node of this host holds an index at the path.
+ * @implNote The other hosts' answers are already one page, so this host's own directories are added
+ * to the first page only.
+ */
+async function unsourcedRows(views: NodeView[], layout: SetupLayout | null, path: string, page: number, answers: HostAnswer[], remoteRows: RowBase[]): Promise<ShownRows> {
+  const read = views.filter((view) => view.condition === "read").map((view) => view.tree);
+  const local = await Promise.all(read.map((tree) => directoryRows(tree, layout, path)));
+  const absentRows = views.filter((view) => view.condition === "absent").flatMap((view) => folderRootsBelow(view.tree, path));
+  const layoutRows = directoryRowsNamed(path, directoriesAbove([], layout, path));
+  const firstPage = page === 1 ? [...local.flatMap((listing) => listing.rows), ...absentRows, ...layoutRows] : [];
+  const remoteNext = answers.flatMap((answer) => ("listing" in answer && answer.listing.nextPage !== null ? [answer.listing.nextPage] : []));
+  return {
+    rows: addMissing(addMissing([], firstPage), remoteRows).sort(byDirectoryThenName),
+    nextPage: remoteNext[0] ?? null,
+    notes: local.flatMap((listing, index) => (read[index].answering ? listing.notes : [])),
+  };
 }
 
-/** One node's state per row, null where the node has nothing to do with it; a node past the wait shows unknown. */
-function statesOf(tree: NodeTree, layout: SetupLayout | null, rows: RowBase[], waitMs: number): Promise<(NodeRowState | null)[]> {
+function stateOf(tree: NodeTree, status: NodeEntryState["status"], detail: string): NodeRowState {
+  return { state: { nodeId: tree.node.nodeId, nodeName: tree.node.name, host: tree.node.host, status, detail }, availability: [] };
+}
+
+/** One node's state per row, null where the node has nothing to do with it. */
+function statesOf(view: NodeView, layout: SetupLayout | null, rows: RowBase[], waitMs: number): Promise<(NodeRowState | null)[]> {
+  const { tree } = view;
+  if (view.condition === "late") return Promise.resolve(rows.map(() => stateOf(tree, "unknown", stillBeingRead)));
+  if (view.condition === "absent") return Promise.resolve(rows.map((row) => (rowOn(tree, row) ? stateOf(tree, "unknown", notConnected) : null)));
   const read = mapAtMost(rows, fileReadsAtOnce, async (row) => {
     const located = rowOn(tree, row);
     return located && nodeRowState(tree, layout, located);
   });
-  return withinDeadline(read, waitMs, () => stillUnread(tree, rows));
+  return withinDeadline(read, waitMs, () => rows.map((row) => (rowOn(tree, row) ? stateOf(tree, "unknown", stillBeingRead) : null)));
 }
 
-/** The folder whose root the row is, named as a node that holds it names it; an offer's label is the offering device's. */
-function folderChip(trees: NodeTree[], path: string): TreeEntry["folder"] {
-  const tree = trees.find((candidate) => rootFolderAt(candidate, path)?.config) ?? trees.find((candidate) => rootFolderAt(candidate, path));
-  return tree ? folderChipAt(tree, path) : null;
+/** The states of one host's nodes on a row its answer did not cover. */
+function hostStatesOff(answer: HostAnswer, row: RowBase, page: number, hostNodes: (host: OtherHost) => { nodeId: string; name: string }[]): NodeEntryState[] {
+  const host = answer.host.host;
+  const unknown = (nodes: { nodeId: string; name: string }[], detail: string): NodeEntryState[] => nodes.map((node) => ({ nodeId: node.nodeId, nodeName: node.name, host, status: "unknown", detail }));
+  if ("slow" in answer) return unknown(hostNodes(answer.host), `${host}'s dashboard is slow, ${stillBeingRead}`);
+  if ("error" in answer) return unknown(hostNodes(answer.host), `${host}'s dashboard could not be reached`);
+  const listing = answer.listing;
+  if (listing.entries.some((entry) => pathKey(entry.path) === pathKey(row.path))) return [];
+  if (page === 1 && listing.nextPage === null) return [];
+  const seen = new Map(listing.entries.flatMap((entry) => entry.nodes).map((state) => [state.nodeId, { nodeId: state.nodeId, name: state.nodeName }]));
+  return unknown([...seen.values()], `not on this page of ${host}'s listing`);
 }
 
-function unreachableStates(answer: Extract<HostAnswer, { error: string }>, nodes: { nodeId: string; name: string }[]): NodeEntryState[] {
-  return nodes.map((node) => ({ nodeId: node.nodeId, nodeName: node.name, host: answer.host.host, status: "unknown", detail: `${answer.host.host}'s dashboard could not be reached` }));
-}
-
-function remoteEntry(answers: HostAnswer[], path: string): TreeEntry[] {
+function remoteEntries(answers: HostAnswer[], path: string): TreeEntry[] {
   return answers.flatMap((answer) => ("listing" in answer ? answer.listing.entries.filter((entry) => pathKey(entry.path) === pathKey(path)) : []));
 }
 
@@ -162,10 +225,26 @@ function uniqueDevices(lists: TreeEntry["availability"][]): TreeEntry["availabil
   return [...devices.values()];
 }
 
+/** The folder whose root the row is, named as a node that holds it names it; an offer's label is the offering device's. */
+function folderChip(trees: NodeTree[], path: string): TreeEntry["folder"] {
+  const tree = trees.find((candidate) => rootFolderAt(candidate, path)?.config) ?? trees.find((candidate) => rootFolderAt(candidate, path));
+  return tree ? folderChipAt(tree, path) : null;
+}
+
+function nodeNotes(views: NodeView[]): string[] {
+  return views.flatMap(({ tree, condition }) => {
+    if (condition === "late") return [`${tree.node.name} is ${stillBeingRead}`];
+    if (condition === "absent") return [`${tree.node.name} is ${notConnected}`];
+    return tree.answering ? [] : [`${tree.node.name}'s Syncthing is not answering`];
+  });
+}
+
 function hostNotes(answers: HostAnswer[]): string[] {
-  return answers.flatMap((answer) =>
-    "listing" in answer ? answer.listing.notes.map((note) => `${answer.host.host}: ${note}`) : [`${answer.host.host}'s dashboard could not be reached (${answer.error}); its nodes show as unknown`],
-  );
+  return answers.flatMap((answer) => {
+    if ("listing" in answer) return answer.listing.notes.map((note) => `${answer.host.host}: ${note}`);
+    if ("slow" in answer) return [`${answer.host.host}'s dashboard is slow, ${stillBeingRead}; its nodes show as unknown`];
+    return [`${answer.host.host}'s dashboard could not be reached (${answer.error}); its nodes show as unknown`];
+  });
 }
 
 /**
@@ -174,27 +253,37 @@ function hostNotes(answers: HostAnswer[]): string[] {
  */
 export async function allNodesListing(rawPath: string, page: number, scope: "all" | "local", sources: AllNodesSources): Promise<TreeListing> {
   const path = treePath(rawPath);
+  const deadline = Date.now() + sources.listingBudgetMs;
+  const remaining: Remaining = () => Math.max(0, deadline - Date.now());
   const asked = Promise.all((scope === "all" ? sources.otherHosts : []).map((host) => askHost(host, path, page, sources)));
   const [nodes, layout] = await Promise.all([sources.localNodes(), sources.layout()]);
-  const treeSources: TreeSources = { ...sources, node: async () => nodes[0] };
-  const trees = await Promise.all(nodes.map((node) => withinDeadline(readNodeTree(node, layout, treeSources), sources.nodeWaitMs, () => unansweredTree(node, treeSources))));
+  const views = await Promise.all(nodes.map((node) => viewOf(node, layout, sources, Math.min(sources.nodeWaitMs, remaining()))));
+  const trees = views.map((view) => view.tree);
   const answers = await asked;
-  const shown = await shownRows(trees, layout, path, page, answers);
-  const [states, unreachable] = await Promise.all([
-    Promise.all(trees.map((tree) => statesOf(tree, layout, shown.rows, sources.nodeWaitMs))),
-    Promise.all(answers.map(async (answer) => ("error" in answer ? unreachableStates(answer, await sources.hostNodes(answer.host).catch(() => [])) : []))),
-  ]);
+  const remoteRows = answers.flatMap((answer) => ("listing" in answer ? answer.listing.entries.map(rowOf) : []));
+  const source = views.find((view) => view.condition === "read" && view.tree.answering && holdsIndexAt(view.tree, path))?.tree;
+  const shown = source
+    ? await sourcedRows(
+        source,
+        trees.filter((tree) => tree !== source),
+        layout,
+        path,
+        page,
+        remoteRows,
+        remaining,
+      )
+    : await unsourcedRows(views, layout, path, page, answers, remoteRows);
+  const states = await Promise.all(views.map((view) => statesOf(view, layout, shown.rows, Math.min(sources.nodeWaitMs, remaining()))));
   const entries = shown.rows.map((row, index): TreeEntry => {
     const local = states.map((perRow) => perRow[index]).filter((state): state is NodeRowState => state !== null);
-    const remote = remoteEntry(answers, row.path);
+    const remote = remoteEntries(answers, row.path);
     return {
       ...row,
       folder: folderChip(trees, row.path) ?? remote.find((entry) => entry.folder)?.folder ?? null,
       priority: priorityAt(layout, row.path),
-      nodes: [...local.map((state) => state.state), ...remote.flatMap((entry) => entry.nodes), ...unreachable.flat()],
+      nodes: [...local.map((state) => state.state), ...remote.flatMap((entry) => entry.nodes), ...answers.flatMap((answer) => hostStatesOff(answer, row, page, sources.hostNodes))],
       availability: uniqueDevices([...local.map((state) => state.availability), ...remote.map((entry) => entry.availability)]),
     };
   });
-  const silent = trees.filter((tree) => !tree.answering).map((tree) => `${tree.node.name}'s Syncthing is not answering`);
-  return { path, view: "all", priority: priorityAt(layout, path), overridesBelow: overridesBelow(layout, path), entries, nextPage: shown.nextPage, notes: [...silent, ...shown.notes, ...hostNotes(answers)] };
+  return { path, view: "all", priority: priorityAt(layout, path), overridesBelow: overridesBelow(layout, path), entries, nextPage: shown.nextPage, notes: [...nodeNotes(views), ...shown.notes, ...hostNotes(answers)] };
 }

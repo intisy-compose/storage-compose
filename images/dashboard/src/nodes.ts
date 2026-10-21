@@ -214,6 +214,11 @@ export async function nodesResponse(scope: "all" | "local", records: JoinRecords
   return { host: { name: hostName }, nodes, warnings: unique };
 }
 
+/** The other hosts' nodes as the last full `/api/nodes` built them, however old; never builds them. */
+export function cachedOtherHostNodes(): StorageNode[] {
+  return lastOtherHostNodes?.nodes ?? [];
+}
+
 /**
  * The nodes of other hosts and those only Syncthing knows, as the last full `/api/nodes` built them.
  * @implNote The page polls `/api/nodes` every 5 s, so the list is nearly always fresh; only a stale or

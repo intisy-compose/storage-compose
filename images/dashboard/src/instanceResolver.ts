@@ -95,11 +95,12 @@ export interface LocalNodeInfo {
   root: string | null;
   os: LocalInstance["os"];
   threshold: number;
+  present: boolean;
   instance: LocalInstance | null;
 }
 
 async function toInfo(local: LocalNode): Promise<LocalNodeInfo> {
-  return { nodeId: local.nodeId, name: local.name, root: local.root, os: local.os, threshold: local.threshold, instance: await toInstance(local) };
+  return { nodeId: local.nodeId, name: local.name, root: local.root, os: local.os, threshold: local.threshold, present: local.present, instance: await toInstance(local) };
 }
 
 /** Every node of this host, the cluster first: each array, the cluster, registry entries and host agent nodes. */
@@ -161,15 +162,17 @@ function peerError(body: unknown): string | null {
 
 /**
  * A GET from another host's dashboard with `scope=local` added to the path's own query. A refusal
- * keeps the dashboard's status and `error`; only a dashboard that cannot be reached is a 502.
+ * keeps the dashboard's status and `error`; a dashboard that cannot be reached is a 502, one that
+ * does not answer within `timeoutMs` a 504.
  */
-export async function readDashboard(dashboardUrl: string, host: string, path: string): Promise<unknown> {
+export async function readDashboard(dashboardUrl: string, host: string, path: string, timeoutMs = 5000): Promise<unknown> {
   const url = new URL(`${dashboardUrl}${path}`);
   url.searchParams.set("scope", "local");
   let answer;
   try {
-    answer = await fetchTailnet(url.toString());
+    answer = await fetchTailnet(url.toString(), timeoutMs);
   } catch (error) {
+    if ((error as Error).name === "TimeoutError") throw new RequestError(504, `${host}'s dashboard did not answer within ${timeoutMs / 1000} s`);
     throw new RequestError(502, `${host}'s dashboard: ${(error as Error).message}`);
   }
   if (answer.status >= 200 && answer.status < 300) return answer.body;

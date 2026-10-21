@@ -112,7 +112,7 @@ export function fetchTailnet(url: string, timeoutMs = 5000): Promise<TailnetAnsw
       if (error) reject(error);
       else resolve(value as TailnetAnswer);
     };
-    const timer = setTimeout(() => finish(new Error(`${url}: no answer within ${timeoutMs} ms`)), timeoutMs);
+    const timer = setTimeout(() => finish(Object.assign(new Error(`${url}: no answer within ${timeoutMs} ms`), { name: "TimeoutError" })), timeoutMs);
     const connectRequest = httpRequest({ host: proxy.hostname, port: Number(proxy.port || 80), method: "CONNECT", path: `${target.hostname}:${port}`, agent: false });
     sockets.push(connectRequest);
     connectRequest.on("error", (error) => finish(error));
