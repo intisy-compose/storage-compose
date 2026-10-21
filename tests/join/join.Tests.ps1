@@ -1,7 +1,9 @@
 # Pester 3.4: the Windows join script against the fake dashboard (tests/join/fake-dashboard.py), which
 # admits the device into a real Syncthing peer, with the device's own real Syncthing. Tailscale and the
 # scheduled task are faked (the task starts the process directly); the node is a subst drive over a
-# temporary folder, so neither F:\ nor the tailnet is touched. Needs python on the PATH.
+# temporary folder, so neither F:\ nor the tailnet is touched. Syncthing runs from a copy in the
+# scratch folder, so the firewall guard, the process sweep and the rule sweep never reach the stack's
+# own binary, which the host agent may be running for a real node. Needs python on the PATH.
 
 param([string]$Python = "python")
 
@@ -33,6 +35,13 @@ function Invoke-NativeCommand([string]$FilePath, [string[]]$Arguments, [string]$
     }
 }
 function Get-TailnetAddress { return "127.0.0.1" }
+$global:layoutPath = Join-Path $scratch "drive-sync.toml"
+function Get-LayoutPath { return $global:layoutPath }
+$global:agentPresent = $false
+$global:heartbeats = New-Object System.Collections.Queue
+function Test-HostAgentIsPresent { return $global:agentPresent }
+function Get-AgentHeartbeat([string]$StackFolder) { if ($global:heartbeats.Count -gt 1) { return $global:heartbeats.Dequeue() }; if ($global:heartbeats.Count -eq 1) { return $global:heartbeats.Peek() }; return $null }
+function Test-AgentHeartbeatIsFresh([string]$StackFolder, [int]$Seconds = 30) { return [bool](Get-AgentHeartbeat $StackFolder) }
 function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName);  if ($TaskName) { return $global:tasks[$TaskName] }; return @($global:tasks.Values) }
 function Disable-ScheduledTask { [CmdletBinding()] param([string]$TaskName, [string]$TaskPath); $global:taskCalls += "disable $TaskName" }
 function Unregister-ScheduledTask { [CmdletBinding()] param([string]$TaskName, [string]$TaskPath, [switch]$Confirm); $global:taskCalls += "unregister $TaskName"; $global:tasks.Remove($TaskName) }
@@ -101,13 +110,12 @@ function Start-Dashboard {
 
 function Stop-Everything {
     if ($script:substLetter) { & subst.exe "$($script:substLetter):" /D | Out-Null }
-    foreach ($process in @(Get-SyncthingProcesses)) { Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue }
     if ($script:dashboardProcess) { Stop-Process -Id $script:dashboardProcess.Id -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 1
     Get-CimInstance Win32_Process -Filter "Name='syncthing.exe'" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($scratch) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     if ($script:adoptLetter) { & subst.exe "$($script:adoptLetter):" /D | Out-Null }
     if ($script:folderLetter) { & subst.exe "$($script:folderLetter):" /D | Out-Null }
-    Remove-ProgramFirewallRules (Join-Path $repository "host-agent\bin")
+    if ($script:listedLetter) { & subst.exe "$($script:listedLetter):" /D | Out-Null }
     Remove-ProgramFirewallRules $scratch
     $env:LOCALAPPDATA = $realLocalAppData
     for ($attempt = 0; $attempt -lt 10 -and (Test-Path $scratch); $attempt++) {
@@ -124,7 +132,11 @@ function Get-RequestLines { return @(Get-Content (Join-Path $scratch "dashboard\
 
 New-Item -ItemType Directory -Force -Path (Split-Path $tailscaleCli), (Join-Path $scratch "volume") | Out-Null
 Set-Content -Path $tailscaleCli -Value "fake"
-$script:syncthingPath = Get-SyncthingBinary $repository
+$testSyncthing = Join-Path $scratch "bin\syncthing.exe"
+New-Item -ItemType Directory -Force -Path (Split-Path $testSyncthing) | Out-Null
+Copy-Item (Get-SyncthingBinary $repository) $testSyncthing
+function Get-SyncthingBinary([string]$StackFolder) { return $testSyncthing }
+$script:syncthingPath = $testSyncthing
 Add-TestFirewallGuard $script:syncthingPath
 $script:substLetter = Get-FreeDriveLetter
 & subst.exe "$($script:substLetter):" (Join-Path $scratch "volume") | Out-Null
@@ -226,33 +238,125 @@ try {
             $Name = "taken"
             Invoke-JoinCapturingFailure | Should Match "409.*re-admit"
         }
-        It "reports 403 for a caller outside the tailnet" {
+        It "reports 403 with the dashboard's reason" {
             $Name = "stranger"
-            Invoke-JoinCapturingFailure | Should Match "403"
+            Invoke-JoinCapturingFailure | Should Be "the dashboard refused this device (403): not in this tailnet"
         }
     }
 
     Describe "the host agent" {
-        It "uses the host agent's Syncthing when the agent runs the node" {
-            $node = Read-NodeFile $script:nodeRoot
-            $status = Get-AgentStatusFolder $repository
-            $heartbeatFile = Join-Path $status $agentHeartbeatName
-            $saved = $null
-            if (Test-Path $heartbeatFile) { $saved = [System.IO.File]::ReadAllText($heartbeatFile) }
-            New-Item -ItemType Directory -Force -Path $status | Out-Null
-            Write-JsonFile $heartbeatFile ([pscustomobject]@{
-                state = "running"; heartbeatEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-                nodes = @([pscustomobject]@{ id = $node.id; syncthing = [pscustomobject]@{ state = "running"; guiPort = 8450; apiKey = "agent-key" } })
-            })
-            try {
-                $instance = Get-NodeSyncthing $node
-                $instance.owner | Should Be "agent"
-                $instance.ports.gui | Should Be 8450
-                $instance.apiKey | Should Be "agent-key"
-            } finally {
-                if ($saved) { [System.IO.File]::WriteAllText($heartbeatFile, $saved) } else { Remove-Item -Force $heartbeatFile }
-            }
+        $node = Read-NodeFile $script:nodeRoot
+        $agentNodeWaitSeconds = 20
+        $nodeHome = "$($script:nodeRoot).storage\syncthing"
+        $notYet = [pscustomobject]@{ state = "running"; nodes = @(); foundNodes = @() }
+        $running = [pscustomobject]@{
+            state = "running"
+            nodes = @([pscustomobject]@{ id = $node.id; syncthing = [pscustomobject]@{ state = "running"; guiPort = 8450; apiKey = "agent-key" } })
+            foundNodes = @([pscustomobject]@{ id = $node.id; name = $node.name; kind = "drive"; root = $script:nodeRoot })
         }
+        function Set-Heartbeats([object[]]$Sequence) {
+            $global:heartbeats = New-Object System.Collections.Queue
+            foreach ($heartbeat in $Sequence) { $global:heartbeats.Enqueue($heartbeat) }
+        }
+        function Add-Task([string]$TaskName, [string]$SyncthingHome) {
+            $global:tasks[$TaskName] = [pscustomobject]@{ TaskName = $TaskName; TaskPath = "\"; Actions = @([pscustomobject]@{ Execute = $script:syncthingPath; Arguments = (Get-NodeSyncthingTaskArguments $SyncthingHome) }) }
+        }
+
+        It "waits for the agent to start a node it has not found yet, and registers no task" {
+            $global:agentPresent = $true
+            $global:tasks.Remove("storage-compose syncthing pc-test")
+            Set-Heartbeats @($notYet, $notYet, $running)
+            $registrationsBefore = $global:registrations
+            try { $instance = Get-NodeSyncthing $node } finally { $global:agentPresent = $false }
+            $instance.owner | Should Be "agent"
+            $instance.ports.gui | Should Be 8450
+            $instance.apiKey | Should Be "agent-key"
+            $global:registrations | Should Be $registrationsBefore
+            $global:tasks.ContainsKey("storage-compose syncthing pc-test") | Should Be $false
+        }
+        It "removes the node's own logon task once the agent runs it, and no other task" {
+            $global:agentPresent = $true
+            Add-Task "storage-compose syncthing pc-test" $nodeHome
+            Add-Task "storage-compose syncthing elsewhere" "Q:\.storage\syncthing"
+            $global:tasks["Syncthing"] = [pscustomobject]@{ TaskName = "Syncthing"; TaskPath = "\"; Actions = @([pscustomobject]@{ Execute = "C:\other\syncthing.exe"; Arguments = "serve --home=`"$nodeHome`"" }) }
+            Set-Heartbeats @($running)
+            try { Get-NodeSyncthing $node | Out-Null } finally { $global:agentPresent = $false }
+            $global:tasks.ContainsKey("storage-compose syncthing pc-test") | Should Be $false
+            $global:tasks.ContainsKey("storage-compose syncthing elsewhere") | Should Be $true
+            $global:tasks.ContainsKey("Syncthing") | Should Be $true
+            $global:tasks.Remove("storage-compose syncthing elsewhere")
+            $global:tasks.Remove("Syncthing")
+        }
+        It "removes it for up too, by the homes the agent's heartbeat lists" {
+            Add-Task "storage-compose syncthing pc-test" "$($nodeHome)\"
+            Set-Heartbeats @($running)
+            @(Remove-AgentNodeSyncthingTasks $repository) | Should Be @("storage-compose syncthing pc-test")
+            @(Remove-AgentNodeSyncthingTasks $repository).Count | Should Be 0
+        }
+        It "removes nothing while the agent lists no node" {
+            Add-Task "storage-compose syncthing pc-test" $nodeHome
+            Set-Heartbeats @($notYet)
+            @(Remove-AgentNodeSyncthingTasks $repository).Count | Should Be 0
+            $global:tasks.Remove("storage-compose syncthing pc-test")
+        }
+        It "fails, and starts nothing, when the agent never runs the node" {
+            $global:agentPresent = $true
+            $agentNodeWaitSeconds = 1
+            Set-Heartbeats @($notYet)
+            $registrationsBefore = $global:registrations
+            try { { Get-NodeSyncthing $node } | Should Throw "has not started" } finally { $global:agentPresent = $false }
+            $global:registrations | Should Be $registrationsBefore
+        }
+        $global:heartbeats = New-Object System.Collections.Queue
+    }
+
+    Describe "the device's name" {
+        $savedName = $Name
+        $Name = $null
+        [System.IO.File]::WriteAllText($global:layoutPath, "# devices`n[devices.pc]`nid         = `"PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6`"`nroot       = 'F:\'`njoined     = true`nnot_synced = [`"`$RECYCLE.BIN`", `"Saved Games`"]`n`n[devices.pc.paths]`nDesktop = 'C:\Users\finn\Desktop'`n`n[devices.p53]`nid     = `"P53-ID-AFTER-INSTALL`"`n`n[folders.Documents]`nignore = [`n    `"/GitHub`",`n]`nid = `"NOT-A-DEVICE`"`n")
+
+        It "is the device list's entry with this device's Syncthing ID" { Get-DeviceName "PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6" | Should Be "pc" }
+        It "is the computer's name for an ID the list does not hold" { Get-DeviceName "ZZZZZZZ-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6" | Should Be (ConvertTo-DeviceName ([System.Net.Dns]::GetHostName())) }
+        It "never reads an id outside a device's own table" { Get-DeviceName "NOT-A-DEVICE" | Should Be (ConvertTo-DeviceName ([System.Net.Dns]::GetHostName())) }
+        It "is never the user's name" {
+            $savedUser = $env:USERNAME
+            $env:USERNAME = "someone-else"
+            try { Get-DeviceName "" | Should Be (ConvertTo-DeviceName ([System.Net.Dns]::GetHostName())) } finally { $env:USERNAME = $savedUser }
+        }
+        It "is the computer's name without a device list" {
+            $savedLayout = $global:layoutPath
+            $global:layoutPath = Join-Path $scratch "missing.toml"
+            try { Get-DeviceName "PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6" | Should Be (ConvertTo-DeviceName ([System.Net.Dns]::GetHostName())) } finally { $global:layoutPath = $savedLayout }
+        }
+        It "is -Name when one is passed" {
+            $Name = "Given Name"
+            Get-DeviceName "PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6" | Should Be "given-name"
+        }
+        $Name = $savedName
+    }
+
+    Describe "a device the device list knows, joined end to end" {
+        $userSyncthingGuiPort = 18496
+        $userSyncthingListenPort = 32196
+        $savedName = $Name
+        $Name = $null
+        $script:listedLetter = Get-FreeDriveLetter
+        New-Item -ItemType Directory -Force -Path (Join-Path $scratch "volume4") | Out-Null
+        & subst.exe "$($script:listedLetter):" (Join-Path $scratch "volume4") | Out-Null
+        $Root = "$($script:listedLetter):\"
+        $listedHome = "$($Root).storage\syncthing"
+        & $script:syncthingPath generate "--home=$listedHome" --no-port-probing 2>&1 | Out-Null
+        $listedId = Get-SyncthingDeviceId ([pscustomobject]@{ root = $Root })
+        [System.IO.File]::WriteAllText($global:layoutPath, "[devices.laptop]`nid     = `"$listedId`"`njoined = false`n")
+        $requestsBefore = @(Get-RequestLines).Count
+        $outcome = Invoke-JoinCapturingFailure
+
+        It "succeeds" { $outcome | Should Be "ok" }
+        It "names the node after the entry" { (Read-NodeFile $Root).name | Should Be "laptop" }
+        It "asks the dashboard under that name" { (@(Get-RequestLines)[$requestsBefore] | ConvertFrom-Json).name | Should Be "laptop" }
+        It "keeps the keys it found" { (Invoke-RestMethod -Uri "http://127.0.0.1:18496/rest/system/status" -Headers @{ "X-API-Key" = (Get-ApiKey $listedHome) } -UseBasicParsing).myID | Should Be $listedId }
+        $Name = $savedName
+        $Root = $script:nodeRoot
     }
     Describe "adopting a Syncthing the device already runs" {
         $userSyncthingGuiPort = 18492
