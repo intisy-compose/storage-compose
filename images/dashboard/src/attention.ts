@@ -1,0 +1,157 @@
+import type { StorageNode, Warning, WarningKind, WarningLevel } from "./api/types.js";
+import type { AttentionThresholds } from "./settings.js";
+import type { PendingDevices, PendingFolders, SystemError } from "./syncthing.js";
+
+const firstSeen = new Map<string, string>();
+const hourMilliseconds = 3_600_000;
+
+interface WarningFields {
+  id: string;
+  level: WarningLevel;
+  kind: WarningKind;
+  text: string;
+  nodeId: string | null;
+  folderId?: string | null;
+  /** When the condition began, if its source says; otherwise when this dashboard first saw it. */
+  at?: string;
+}
+
+export function warning({ id, level, kind, text, nodeId, folderId = null, at }: WarningFields): Warning {
+  if (!firstSeen.has(id)) firstSeen.set(id, new Date().toISOString());
+  return { id, at: at ?? firstSeen.get(id)!, level, kind, text, nodeId, folderId };
+}
+
+function plural(count: number, singular: string): string {
+  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+}
+
+function shortId(deviceId: string): string {
+  return deviceId.slice(0, 7);
+}
+
+export function folderErrorWarnings(node: StorageNode): Warning[] {
+  return node.folders
+    .filter((folder) => folder.errors > 0)
+    .map((folder) =>
+      warning({
+        id: `folder-errors:${node.id}:${folder.id}`,
+        level: "warning",
+        kind: "folder-errors",
+        text: `${folder.label || folder.id} on ${node.name}: ${plural(folder.errors, "failed item")}`,
+        nodeId: node.id,
+        folderId: folder.id,
+      }),
+    );
+}
+
+export function systemErrorWarnings(node: StorageNode, errors: SystemError[]): Warning[] {
+  return errors.map((error) =>
+    warning({
+      id: `system-error:${node.id}:${error.when}:${error.message}`,
+      level: "warning",
+      kind: "system-error",
+      text: `${node.name}'s Syncthing: ${error.message}`,
+      nodeId: node.id,
+      at: error.when,
+    }),
+  );
+}
+
+/** Each device asking to connect and each folder offered to the node, as info entries for Requests. */
+export function pendingWarnings(node: StorageNode, devices: PendingDevices, folders: PendingFolders): Warning[] {
+  const nameOf = (deviceId: string) => node.peers.find((peer) => peer.deviceId === deviceId)?.name || shortId(deviceId);
+  const deviceEntries = Object.entries(devices).map(([deviceId, device]) =>
+    warning({
+      id: `pending-device:${node.id}:${deviceId}`,
+      level: "info",
+      kind: "pending-device",
+      text: `${device.name || shortId(deviceId)} (${shortId(deviceId)}) asks to connect to ${node.name}`,
+      nodeId: node.id,
+      at: device.time,
+    }),
+  );
+  const folderEntries = Object.entries(folders).flatMap(([folderId, entry]) =>
+    Object.entries(entry.offeredBy).map(([offeredBy, offer]) =>
+      warning({
+        id: `pending-folder:${node.id}:${folderId}:${offeredBy}`,
+        level: "info",
+        kind: "pending-folder",
+        text: `${nameOf(offeredBy)} offers the folder "${offer.label || folderId}" to ${node.name}`,
+        nodeId: node.id,
+        at: offer.time,
+      }),
+    ),
+  );
+  return [...deviceEntries, ...folderEntries];
+}
+
+function percentUsed(size: number | null | undefined, used: number | null | undefined): number | null {
+  if (!size || size <= 0 || used === null || used === undefined) return null;
+  return Math.floor((100 * used) / size);
+}
+
+export function fullWarnings(node: StorageNode, thresholds: AttentionThresholds): Warning[] {
+  const warnings: Warning[] = [];
+  const nodePercent = percentUsed(node.space?.size, node.space?.used);
+  if (nodePercent !== null && nodePercent > thresholds.fullPercent) {
+    warnings.push(warning({ id: `full:${node.id}`, level: "warning", kind: "full", text: `${node.name} is ${nodePercent}% full`, nodeId: node.id }));
+  }
+  for (const member of node.array?.members ?? []) {
+    const memberPercent = member.present ? percentUsed(member.size, member.used) : null;
+    if (memberPercent === null || memberPercent <= thresholds.fullPercent) continue;
+    warnings.push(warning({ id: `full:${node.id}:${member.label}`, level: "warning", kind: "full", text: `${member.label} in ${node.name} is ${memberPercent}% full`, nodeId: node.id }));
+  }
+  return warnings;
+}
+
+function offlineDuration(milliseconds: number): string {
+  const hours = Math.floor(milliseconds / hourMilliseconds);
+  return hours >= 48 ? `${Math.floor(hours / 24)} days` : plural(hours, "hour");
+}
+
+function offlineSince(lastSeen: string | null, thresholds: AttentionThresholds, now: number): number | null {
+  const elapsed = lastSeen ? now - Date.parse(lastSeen) : Number.NaN;
+  return Number.isFinite(elapsed) && elapsed > thresholds.offlineHours * hourMilliseconds ? elapsed : null;
+}
+
+function isOffline(node: StorageNode): boolean {
+  return !node.online || node.sync.state === "offline";
+}
+
+/**
+ * This host's nodes, and the devices their Syncthing instances know, that have been away longer than
+ * the threshold.
+ * @implNote A device that belongs to a node some dashboard reports is left to that node's own entry;
+ * one seen by several instances is listed once. A device never seen, or paused on purpose, is not offline.
+ */
+export function offlineWarnings(nodes: StorageNode[], thresholds: AttentionThresholds, now = Date.now()): Warning[] {
+  const local = nodes.filter((node) => node.local);
+  const warnings: Warning[] = [];
+  for (const node of local) {
+    const elapsed = isOffline(node) ? offlineSince(node.sync.lastSeen, thresholds, now) : null;
+    if (elapsed === null) continue;
+    warnings.push(warning({ id: `offline:node:${node.id}`, level: "warning", kind: "offline", text: `${node.name} has been offline for ${offlineDuration(elapsed)}`, nodeId: node.id, at: node.sync.lastSeen! }));
+  }
+  const reported = new Set(nodes.filter((node) => node.local || node.dashboardUrl).map((node) => node.syncthing?.deviceId));
+  const listed = new Set<string>();
+  for (const node of local) {
+    for (const peer of node.peers) {
+      if (peer.connected || peer.paused || reported.has(peer.deviceId) || listed.has(peer.deviceId)) continue;
+      const elapsed = offlineSince(peer.lastSeen, thresholds, now);
+      if (elapsed === null) continue;
+      listed.add(peer.deviceId);
+      const ownNode = nodes.find((candidate) => candidate.syncthing?.deviceId === peer.deviceId);
+      warnings.push(
+        warning({
+          id: `offline:device:${peer.deviceId}`,
+          level: "warning",
+          kind: "offline",
+          text: `${peer.name || shortId(peer.deviceId)} (seen by ${node.name}) has been offline for ${offlineDuration(elapsed)}`,
+          nodeId: ownNode?.id ?? node.id,
+          at: peer.lastSeen!,
+        }),
+      );
+    }
+  }
+  return warnings;
+}

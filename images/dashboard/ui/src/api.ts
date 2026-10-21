@@ -31,6 +31,7 @@ export type {
   SyncthingListener,
   Versioning,
   Warning,
+  WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
 import type { ArrayAction, ArrayActionBody, FolderDetailResponse, FoldersResponse, NodesResponse } from "../../src/api/types.js";

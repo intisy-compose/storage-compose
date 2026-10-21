@@ -12,6 +12,7 @@ interface Answers {
   completion: Record<string, { completion: number; needBytes: number; remoteState?: string }>;
   pausedDevices: string[];
   folderStatus: Record<string, Record<string, unknown>>;
+  failingCompletion: string[];
 }
 
 const documentsStatus = { state: "idle", globalBytes: 1000, globalFiles: 10, needBytes: 0, needFiles: 0, errors: 1, pullErrors: 1, receiveOnlyTotalItems: 0 };
@@ -21,6 +22,7 @@ function answersFor(overrides: Partial<Answers> = {}): Answers {
     completion: { [arrayId]: { completion: 0, needBytes: 1000, remoteState: "unknown" }, [strangerId]: { completion: 100, needBytes: 0, remoteState: "valid" } },
     pausedDevices: [],
     folderStatus: { documents: documentsStatus },
+    failingCompletion: [],
     ...overrides,
   };
 }
@@ -75,6 +77,10 @@ function fakeSyncthing(answers: Answers, calls: string[]): Server {
       case "/rest/db/status":
         return reply(response, answers.folderStatus[url.searchParams.get("folder") ?? ""] ?? { state: "idle", globalBytes: 0, needBytes: 0 });
       case "/rest/db/completion":
+        if (answers.failingCompletion.includes(url.searchParams.get("device") ?? "")) {
+          response.statusCode = 500;
+          return response.end("database is busy");
+        }
         return reply(response, answers.completion[url.searchParams.get("device") ?? ""] ?? { completion: 0, needBytes: 0 });
       default:
         response.statusCode = 404;
@@ -181,6 +187,19 @@ describe("instance view", () => {
     try {
       const settled = (await instanceView("view-settled", { url: `http://127.0.0.1:${(other.address() as AddressInfo).port}`, apiKey: "key" }))!;
       assert.equal(settled.sync.state, "idle");
+    } finally {
+      await new Promise<void>((resolve) => other.close(() => resolve()));
+    }
+  });
+
+  it("a completion that cannot be read is unavailable and does not make the node wait", async () => {
+    answers = answersFor({ failingCompletion: [arrayId] });
+    const other = fakeSyncthing(answers, []);
+    await new Promise<void>((resolve) => other.listen(0, "127.0.0.1", () => resolve()));
+    try {
+      const unreadable = (await instanceView("view-unreadable", { url: `http://127.0.0.1:${(other.address() as AddressInfo).port}`, apiKey: "key" }))!;
+      assert.equal(unreadable.peers.find((peer) => peer.deviceId === arrayId)!.remoteState, "unavailable");
+      assert.equal(unreadable.sync.state, "idle");
     } finally {
       await new Promise<void>((resolve) => other.close(() => resolve()));
     }

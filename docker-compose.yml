@@ -101,6 +101,8 @@ services:
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: /setup
       HOST_AGENT_EXPECTED: ${HOST_AGENT_EXPECTED:-}
+      ATTENTION_OFFLINE_HOURS: ${ATTENTION_OFFLINE_HOURS:-24}
+      ATTENTION_FULL_PERCENT: ${ATTENTION_FULL_PERCENT:-90}
       GIT_CONFIG_GLOBAL: /setup-home/.gitconfig
       GIT_SSH_COMMAND: ssh -o IdentityFile=/setup-home/.ssh/id_ed25519 -o IdentityFile=/setup-home/.ssh/id_rsa -o UserKnownHostsFile=/setup-home/.ssh/known_hosts
     volumes:

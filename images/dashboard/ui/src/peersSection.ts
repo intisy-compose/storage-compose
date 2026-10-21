@@ -7,6 +7,7 @@ const remoteStateText: Record<RemoteState, string | null> = {
   unknown: "has not accepted the folders",
   notSharing: "shares no folder with this node",
   paused: "paused",
+  unavailable: "completion unavailable: its Syncthing did not answer",
 };
 
 function peerTone(peer: Peer): string {
@@ -20,7 +21,7 @@ function connectionText(peer: Peer): string {
 }
 
 function completionText(peer: Peer): string {
-  if (peer.remoteState === "notSharing") return "";
+  if (peer.remoteState === "notSharing" || peer.remoteState === "unavailable") return "";
   return formatPercent(normaliseCompletion(peer.completion));
 }
 

@@ -177,11 +177,12 @@ export function nodesFixture(startedAt) {
       simpleNode("d3e8", "phone", "folder", { host: "phone", threshold: 90, space: { size: 0.5 * terabyte, used: 0.31 * terabyte }, syncthing: syncthing("d3e8", { version: "v1.29.2" }) }),
     ],
     warnings: [
-      { level: "error", text: "cold-backup is degraded: data2 (SAM-0072) is missing", nodeId: "b71c" },
-      { level: "error", text: "office-pc: 3 files failed to sync (permission denied)", nodeId: "44c2" },
-      { level: "warning", text: "private-array: data1 is 92% full and has 8 reallocated sectors", nodeId: "a3f9" },
-      { level: "warning", text: "attic-nas is 94% full", nodeId: "6d07" },
-      { level: "warning", text: "old-laptop has been offline for 9 days", nodeId: "0c5b" },
+      { id: "array:b71c:data2", at: ago(3 * hour), level: "error", kind: "array", text: "cold-backup: data2 (SAM-0072) is missing", nodeId: "b71c", folderId: null },
+      { id: "folder-errors:44c2:documents", at: ago(20 * 60_000), level: "warning", kind: "folder-errors", text: "documents on office-pc: 3 failed items", nodeId: "44c2", folderId: "documents" },
+      { id: "full:a3f9:a3f9-data1", at: ago(2 * day), level: "warning", kind: "full", text: "a3f9-data1 in private-array is 92% full", nodeId: "a3f9", folderId: null },
+      { id: "full:6d07", at: ago(day), level: "warning", kind: "full", text: "attic-nas is 94% full", nodeId: "6d07", folderId: null },
+      { id: "offline:node:0c5b", at: ago(9 * day), level: "warning", kind: "offline", text: "old-laptop has been offline for 9 days", nodeId: "0c5b", folderId: null },
+      { id: "pending-folder:a3f9:music:44c2", at: ago(5 * hour), level: "info", kind: "pending-folder", text: 'office-pc offers the folder "music" to private-array', nodeId: "a3f9", folderId: null },
     ],
   });
 }

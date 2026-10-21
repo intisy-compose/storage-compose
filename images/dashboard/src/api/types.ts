@@ -152,8 +152,11 @@ export interface SyncthingInstance {
   outTotal: number;
 }
 
-/** "unknown" is a peer that has not accepted the folders; "notSharing" shares none with this node. */
-export type RemoteState = "valid" | "unknown" | "notSharing" | "paused";
+/**
+ * "unknown" is a peer that has not accepted the folders; "notSharing" shares none with this node;
+ * "unavailable" is a peer whose completion this node's Syncthing did not answer for.
+ */
+export type RemoteState = "valid" | "unknown" | "notSharing" | "paused" | "unavailable";
 
 export interface Peer {
   deviceId: string;
@@ -195,13 +198,30 @@ export interface StorageNode {
   dashboardUrl: string | null;
 }
 
+export type WarningKind =
+  | "array"
+  | "smart"
+  | "agent"
+  | "registry"
+  | "peer"
+  | "folder-errors"
+  | "system-error"
+  | "pending-device"
+  | "pending-folder"
+  | "offline"
+  | "full"
+  | "conflicts";
+
 export interface Warning {
   /** Stable while the condition lasts, so the page can keep its place. */
   id: string;
   at: string;
   level: WarningLevel;
+  kind: WarningKind;
   text: string;
   nodeId: string | null;
+  /** Set when the warning is about one folder, which the entry then opens. */
+  folderId: string | null;
 }
 
 /** `GET /api/nodes`; `GET /api/nodes?scope=local` leaves the other hosts out, which is what hosts ask each other. */

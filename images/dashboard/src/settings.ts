@@ -53,3 +53,23 @@ export function poolPath(arrayId: string): string {
 export const hostAgentExpected = process.env.HOST_AGENT_EXPECTED === "yes";
 export const hostAgentHeartbeatFile = "/host-agent/heartbeat.json";
 export const hostAgentSyncthingHost = process.env.HOST_AGENT_SYNCTHING_HOST ?? "host.docker.internal";
+
+export interface AttentionThresholds {
+  offlineHours: number;
+  fullPercent: number;
+}
+
+function positiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return value && Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** ATTENTION_OFFLINE_HOURS and ATTENTION_FULL_PERCENT from config.env; a missing or unusable value takes the default. */
+export function attentionThresholds(environment: Record<string, string | undefined>): AttentionThresholds {
+  return {
+    offlineHours: positiveNumber(environment.ATTENTION_OFFLINE_HOURS, 24),
+    fullPercent: positiveNumber(environment.ATTENTION_FULL_PERCENT, 90),
+  };
+}
+
+export const attentionSettings = attentionThresholds(process.env);

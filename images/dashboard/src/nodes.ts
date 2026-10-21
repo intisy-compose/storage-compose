@@ -1,22 +1,16 @@
-import type { NodeArray, NodeRegistryEntry, NodesResponse, StorageNode, Warning, WarningLevel } from "./api/types.js";
+import type { NodeArray, NodeRegistryEntry, NodesResponse, StorageNode, Warning } from "./api/types.js";
 import { type ArrayStatus, arrayIds, arrayStatus } from "./arrayStatus.js";
+import { folderErrorWarnings, fullWarnings, offlineWarnings, pendingWarnings, systemErrorWarnings, warning } from "./attention.js";
 import { type BlockDevice, listBlockDevices, replacementCandidates } from "./blockDevices.js";
 import { agentProblem, readHeartbeat } from "./hostAgent.js";
 import { registryEntries, registryWarnings, syncthingEndpoint } from "./instances.js";
 import { type JoinRecords } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { parityState } from "./parity.js";
-import { hostName, peerDashboards, poolPath } from "./settings.js";
+import { attentionSettings, hostName, peerDashboards, poolPath } from "./settings.js";
 import { type InstanceView, instanceView } from "./syncthing.js";
 import { fetchTailnetJson } from "./tailnet.js";
 import { statfs } from "node:fs/promises";
-
-const firstSeen = new Map<string, string>();
-
-function warning(id: string, level: WarningLevel, text: string, nodeId: string | null): Warning {
-  if (!firstSeen.has(id)) firstSeen.set(id, new Date().toISOString());
-  return { id, at: firstSeen.get(id)!, level, text, nodeId };
-}
 
 async function space(path: string): Promise<{ size: number; used: number } | null> {
   try {
@@ -86,19 +80,32 @@ function registryNode(entry: NodeRegistryEntry, view: InstanceView | null): Stor
 
 function arrayWarnings(status: ArrayStatus, node: StorageNode): Warning[] {
   const warnings: Warning[] = [];
+  const nodeId = status.id;
   if (status.state !== "healthy" || !status.complete) {
-    for (const reason of status.reasons) warnings.push(warning(`array:${status.id}:${reason.split(" is ")[0]}`, status.state === "stopped" ? "error" : "warning", `${status.name}: ${reason}`, status.id));
+    const level = status.state === "stopped" ? "error" : "warning";
+    for (const reason of status.reasons) warnings.push(warning({ id: `array:${status.id}:${reason.split(" is ")[0]}`, level, kind: "array", text: `${status.name}: ${reason}`, nodeId }));
   }
-  if (status.state === "stopped") warnings.push(warning(`array:${status.id}:frozen`, "error", `${status.name} is frozen: the share is read-only and Syncthing paused`, status.id));
-  for (const folder of status.splitFolders) warnings.push(warning(`split:${status.id}:${folder.id}`, "warning", `Syncthing folder ${folder.id} lies on ${folder.drives.join(", ")}; move it onto one drive`, status.id));
+  if (status.state === "stopped") warnings.push(warning({ id: `array:${status.id}:frozen`, level: "error", kind: "array", text: `${status.name} is frozen: the share is read-only and Syncthing paused`, nodeId }));
+  for (const folder of status.splitFolders) {
+    const text = `Syncthing folder ${folder.id} lies on ${folder.drives.join(", ")}; move it onto one drive`;
+    warnings.push(warning({ id: `split:${status.id}:${folder.id}`, level: "warning", kind: "array", text, nodeId, folderId: folder.id }));
+  }
   for (const member of node.array?.members ?? []) {
-    if (member.smart?.state === "fail") warnings.push(warning(`smart:${member.label}`, "error", `${member.label}: ${member.smart.detail}`, status.id));
+    if (member.smart?.state === "fail") warnings.push(warning({ id: `smart:${member.label}`, level: "error", kind: "smart", text: `${member.label}: ${member.smart.detail}`, nodeId }));
     const recorded = status.description?.array?.members.find((entry) => entry.label === member.label)?.serial;
     if (member.present && isSerialMismatch(recorded, member.serial)) {
-      warnings.push(warning(`serial:${member.label}`, "warning", `${member.label} has serial ${member.serial}, the array's description says ${recorded}`, status.id));
+      const text = `${member.label} has serial ${member.serial}, the array's description says ${recorded}`;
+      warnings.push(warning({ id: `serial:${member.label}`, level: "warning", kind: "array", text, nodeId }));
     }
   }
-  if (node.array?.parity.refused) warnings.push(warning(`refused:${status.id}`, "warning", `${status.name}: sync refused, ${node.array.parity.refused}`, status.id));
+  if (node.array?.parity.refused) warnings.push(warning({ id: `refused:${status.id}`, level: "warning", kind: "array", text: `${status.name}: sync refused, ${node.array.parity.refused}`, nodeId }));
+  return warnings;
+}
+
+/** What a node's own Syncthing and its space say needs a person. */
+function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
+  const warnings = [...folderErrorWarnings(node), ...fullWarnings(node, attentionSettings)];
+  if (view) warnings.push(...systemErrorWarnings(node, view.systemErrors), ...pendingWarnings(node, view.pendingDevices, view.pendingFolders));
   return warnings;
 }
 
@@ -113,21 +120,32 @@ async function localNodes(warnings: Warning[], views: InstanceView[]): Promise<S
     if (view) views.push(view);
     const node = await arrayNode(status, devices, sources, view);
     nodes.push(node);
-    warnings.push(...arrayWarnings(status, node));
+    warnings.push(...arrayWarnings(status, node), ...nodeWarnings(node, view));
   }
   for (const entry of entries) {
     const endpoint = entry.present ? await syncthingEndpoint(entry.id, entry) : null;
     const view = endpoint ? await instanceView(entry.id, endpoint) : null;
     if (view) views.push(view);
-    nodes.push(registryNode(entry, view));
-    if (!entry.present) warnings.push(warning(`absent:${entry.id}`, "info", `${entry.name} is not attached to this host`, entry.id));
+    const node = registryNode(entry, view);
+    nodes.push(node);
+    warnings.push(...nodeWarnings(node, view));
+    if (!entry.present) warnings.push(warning({ id: `absent:${entry.id}`, level: "info", kind: "offline", text: `${entry.name} is not attached to this host`, nodeId: entry.id }));
   }
-  for (const text of await registryWarnings()) warnings.push(warning(`registry:${text}`, "warning", text, null));
+  for (const text of await registryWarnings()) warnings.push(warning({ id: `registry:${text}`, level: "warning", kind: "registry", text, nodeId: null }));
   const heartbeat = await readHeartbeat();
   const problem = agentProblem(heartbeat);
-  if (problem) warnings.push(warning("host-agent", "error", problem, null));
-  for (const text of heartbeat?.problems ?? []) warnings.push(warning(`host-agent:${text}`, "warning", `host agent: ${text}`, null));
+  if (problem) warnings.push(warning({ id: "host-agent", level: "error", kind: "agent", text: problem, nodeId: null }));
+  for (const text of heartbeat?.problems ?? []) warnings.push(warning({ id: `host-agent:${text}`, level: "warning", kind: "agent", text: `host agent: ${text}`, nodeId: null }));
   return nodes;
+}
+
+/** @implNote A host on an older dashboard sends warnings without a kind or folder. */
+function fromOtherHost(entry: Warning): Warning {
+  return { ...entry, kind: entry.kind ?? "peer", folderId: entry.folderId ?? null };
+}
+
+function withoutDuplicates(warnings: Warning[]): Warning[] {
+  return [...new Map(warnings.map((entry) => [entry.id, entry])).values()];
 }
 
 async function remoteNodes(warnings: Warning[]): Promise<StorageNode[]> {
@@ -136,9 +154,11 @@ async function remoteNodes(warnings: Warning[]): Promise<StorageNode[]> {
       try {
         const dashboardUrl = peer.replace(/\/$/, "");
         const answer = await fetchTailnetJson<NodesResponse>(`${dashboardUrl}/api/nodes?scope=local`);
+        warnings.push(...answer.warnings.map(fromOtherHost));
         return answer.nodes.map((node) => ({ ...node, local: false, host: node.host || answer.host.name, dashboardUrl }));
       } catch (error) {
-        warnings.push(warning(`peer:${peer}`, "warning", `${peer} could not be reached (${(error as Error).message}); its nodes show Syncthing's view`, null));
+        const text = `${peer} could not be reached (${(error as Error).message}); its nodes show Syncthing's view`;
+        warnings.push(warning({ id: `peer:${peer}`, level: "warning", kind: "peer", text, nodeId: null }));
         return [];
       }
     }),
@@ -194,7 +214,8 @@ export async function nodesResponse(scope: "all" | "local", records: JoinRecords
     nodes.push(...(await syncthingOnlyNodes(nodes, views, records)));
     lastOtherHostNodes = { at: Date.now(), nodes: nodes.filter((node) => !node.local) };
   }
-  return { host: { name: hostName }, nodes, warnings };
+  warnings.push(...offlineWarnings(nodes, attentionSettings));
+  return { host: { name: hostName }, nodes, warnings: withoutDuplicates(warnings) };
 }
 
 /**

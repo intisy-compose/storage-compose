@@ -1,4 +1,5 @@
 import type { NodesResponse, StorageNode, Warning } from "./api.js";
+import { warningHref } from "./attentionPage.js";
 import { element, progressBar } from "./dom.js";
 import { formatBytes, usedFraction } from "./format.js";
 import { icon } from "./icons.js";
@@ -112,12 +113,9 @@ function nodeGroup(response: NodesResponse, title: string, nodes: StorageNode[],
 }
 
 export function warningBanner(warning: Warning): HTMLElement {
-  const banner = element(
-    warning.nodeId ? "a" : "div",
-    { className: `warning level-${warning.level}` },
-    element("span", { className: "warning-text" }, warning.text),
-  );
-  if (warning.nodeId) banner.setAttribute("href", locationFor("nodes", warning.nodeId));
+  const href = warningHref(warning);
+  const banner = element(href ? "a" : "div", { className: `warning level-${warning.level}` }, element("span", { className: "warning-text" }, warning.text));
+  if (href) banner.setAttribute("href", href);
   return banner;
 }
 

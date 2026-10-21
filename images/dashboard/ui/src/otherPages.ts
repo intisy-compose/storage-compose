@@ -1,6 +1,4 @@
-import type { NodesResponse } from "./api.js";
 import { element } from "./dom.js";
-import { warningBanner } from "./nodesPage.js";
 import { applyTheme } from "./preferences.js";
 import { requestRender } from "./renderRequest.js";
 import { type PageId, appState } from "./state.js";
@@ -32,19 +30,6 @@ function comingState(): HTMLElement {
 export function renderUpcomingPage(page: keyof typeof upcoming): HTMLElement {
   const { title, summary } = upcoming[page];
   return element("div", { className: "page" }, pageHeader(title, summary), comingState());
-}
-
-export function renderAttentionPage(response: NodesResponse): HTMLElement {
-  const warnings = response.warnings;
-  return element(
-    "div",
-    { className: "page" },
-    pageHeader("Attention", "Everything that needs a person, newest first. Each entry opens its node."),
-    warnings.length
-      ? element("div", { className: "warnings attention-list" }, ...warnings.map(warningBanner))
-      : element("div", { className: "coming" }, element("strong", {}, "Nothing needs attention"), element("p", {}, "Every node is healthy.")),
-    element("p", { className: "muted small" }, "Sync failures, conflicts and hand-offs join this list with the layered sync."),
-  );
 }
 
 function themeSetting(): HTMLElement {

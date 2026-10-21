@@ -390,7 +390,10 @@ a.warning:hover { filter: brightness(0.98); text-decoration: underline; text-und
   background: var(--surface); border: 1px dashed var(--line-strong);
 }
 .coming p { margin: 6px 0 0; color: var(--text-muted); }
-.attention-list { max-width: 760px; }
+.attention-group { margin-bottom: 22px; }
+.attention-list { max-width: 760px; margin-bottom: 0; }
+.attention-entry { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.attention-meta { flex: none; color: var(--text-muted); font-size: 12px; }
 .settings-card {
   display: flex; flex-direction: column; gap: 18px;
   max-width: 560px; padding: 20px 22px; margin-bottom: 18px; border-radius: var(--radius);

@@ -32,6 +32,15 @@ export interface SyncthingFolderSettings extends SyncthingFolderConfig {
 /** `/rest/cluster/pending/folders`: folder ID, then the offering device's ID. */
 export type PendingFolders = Record<string, { offeredBy: Record<string, { time: string; label: string; receiveEncrypted: boolean }> }>;
 
+/** `/rest/cluster/pending/devices`: devices that asked to connect, by device ID. */
+export type PendingDevices = Record<string, { time: string; name: string; address: string }>;
+
+/** One entry of `/rest/system/error`. */
+export interface SystemError {
+  when: string;
+  message: string;
+}
+
 export interface SyncthingDeviceConfig {
   deviceID: string;
   name: string;
@@ -78,6 +87,8 @@ interface Completion {
   remoteState?: string;
 }
 
+const completionUnavailable = "unavailable";
+
 interface SystemStatus {
   myID: string;
   uptime?: number;
@@ -94,6 +105,9 @@ export interface InstanceView {
   folders: NodeFolder[];
   sync: NodeSync;
   peers: Peer[];
+  pendingDevices: PendingDevices;
+  pendingFolders: PendingFolders;
+  systemErrors: SystemError[];
 }
 
 export class SyncthingError extends Error {}
@@ -148,6 +162,14 @@ export class SyncthingClient {
 
   pendingFolders(): Promise<PendingFolders> {
     return this.request<PendingFolders | null>("GET", "/cluster/pending/folders").then((pending) => pending ?? {});
+  }
+
+  pendingDevices(): Promise<PendingDevices> {
+    return this.request<PendingDevices | null>("GET", "/cluster/pending/devices").then((pending) => pending ?? {});
+  }
+
+  systemErrors(): Promise<SystemError[]> {
+    return this.request<{ errors: SystemError[] | null } | null>("GET", "/system/error").then((answer) => answer?.errors ?? []);
   }
 
   /** Adds the device, or leaves one with the same ID as it is. */
@@ -206,7 +228,7 @@ export function folderCompletion(status: FolderStatus): number {
 }
 
 function isWaitedFor(peer: Peer): boolean {
-  if (!peer.connected || peer.remoteState === "paused" || peer.remoteState === "notSharing") return false;
+  if (!peer.connected || peer.remoteState === "paused" || peer.remoteState === "notSharing" || peer.remoteState === "unavailable") return false;
   return peer.remoteState === "unknown" || peer.completion < 100;
 }
 
@@ -298,13 +320,14 @@ async function peerCompletion(client: SyncthingClient, deviceId: string): Promis
   try {
     return await client.request<Completion>("GET", `/db/completion?device=${encodeURIComponent(deviceId)}`);
   } catch {
-    return { completion: 0, needBytes: 0, remoteState: "unknown" };
+    return { completion: 0, needBytes: 0, remoteState: completionUnavailable };
   }
 }
 
 function remoteStateOf(device: SyncthingDeviceConfig, sharedFolders: string[], completion: Completion): RemoteState {
   if (device.paused) return "paused";
   if (!sharedFolders.length) return "notSharing";
+  if (completion.remoteState === completionUnavailable) return "unavailable";
   return completion.remoteState === "unknown" ? "unknown" : "valid";
 }
 
@@ -340,12 +363,17 @@ function sharedWithOf(folder: SyncthingFolderConfig, ownId: string, names: Map<s
   return folder.devices.filter((entry) => entry.deviceID !== ownId).map((entry) => ({ deviceId: entry.deviceID, name: names.get(entry.deviceID) ?? entry.deviceID.slice(0, 7) }));
 }
 
-async function optionalFolderStats(client: SyncthingClient): Promise<Record<string, FolderStats>> {
+/** @implNote Optional, so an instance that refuses one of them still shows its folders and peers. */
+async function optional<Value>(read: Promise<Value>, fallback: Value): Promise<Value> {
   try {
-    return await client.request<Record<string, FolderStats>>("GET", "/stats/folder");
+    return await read;
   } catch {
-    return {};
+    return fallback;
   }
+}
+
+function optionalFolderStats(client: SyncthingClient): Promise<Record<string, FolderStats>> {
+  return optional(client.request<Record<string, FolderStats>>("GET", "/stats/folder"), {});
 }
 
 function folderViews(client: SyncthingClient, ownId: string, folderConfigs: SyncthingFolderConfig[], deviceConfigs: SyncthingDeviceConfig[], folderStats: Record<string, FolderStats>): Promise<NodeFolder[]> {
@@ -364,7 +392,7 @@ export async function instanceFolders(client: SyncthingClient): Promise<{ folder
 export async function instanceView(key: string, endpoint: SyncthingEndpoint): Promise<InstanceView | null> {
   const client = new SyncthingClient(endpoint);
   try {
-    const [status, version, connections, folderConfigs, deviceConfigs, deviceStats, folderStats] = await Promise.all([
+    const [status, version, connections, folderConfigs, deviceConfigs, deviceStats, folderStats, pendingDevices, pendingFolders, systemErrors] = await Promise.all([
       client.request<SystemStatus>("GET", "/system/status"),
       client.request<{ version: string }>("GET", "/system/version"),
       client.request<Connections>("GET", "/system/connections"),
@@ -372,6 +400,9 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint): Pr
       client.devices(),
       client.request<Record<string, { lastSeen: string }>>("GET", "/stats/device"),
       optionalFolderStats(client),
+      optional(client.pendingDevices(), {}),
+      optional(client.pendingFolders(), {}),
+      optional(client.systemErrors(), []),
     ]);
     const folderRates = rates(key, connections);
     const folders = await folderViews(client, status.myID, folderConfigs, deviceConfigs, folderStats);
@@ -396,6 +427,9 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint): Pr
       folders,
       sync: overallSync(folders, peers),
       peers,
+      pendingDevices,
+      pendingFolders,
+      systemErrors,
     };
   } catch {
     return null;

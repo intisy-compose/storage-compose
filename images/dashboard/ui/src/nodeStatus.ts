@@ -101,7 +101,8 @@ export function warningsFor(response: NodesResponse, node: StorageNode): Warning
 
 export function needsAttention(response: NodesResponse, node: StorageNode): boolean {
   if (warningsFor(response, node).some((warning) => warning.level !== "info")) return true;
-  if (node.sync.state === "error") return true;
+  if (node.sync.state === "error" || node.sync.state === "waiting") return true;
+  if (failedItems(node) > 0) return true;
   if (node.array && node.array.state !== "healthy") return true;
   if (node.array?.members.some(isSmartWarning)) return true;
   const tone = spaceTone(node);

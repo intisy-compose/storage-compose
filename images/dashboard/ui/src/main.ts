@@ -1,11 +1,12 @@
 import { fetchFolderDetail, fetchFolders, fetchNodes } from "./api.js";
+import { renderAttentionPage } from "./attentionPage.js";
 import { element } from "./dom.js";
 import { renderEmptyFolderDetail, renderFolderDetail, renderFolderNotFound } from "./folderDetail.js";
 import { renderFoldersPage } from "./foldersPage.js";
 import { isFormOpen } from "./forms.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
 import { renderNodesPage } from "./nodesPage.js";
-import { renderAttentionPage, renderSettingsPage, renderUpcomingPage } from "./otherPages.js";
+import { renderSettingsPage, renderUpcomingPage } from "./otherPages.js";
 import { applyTheme } from "./preferences.js";
 import { onRenderRequested } from "./renderRequest.js";
 import { renderMenu } from "./shell.js";
