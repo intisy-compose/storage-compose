@@ -1,6 +1,6 @@
 import { readFile, rename, writeFile } from "node:fs/promises";
 import type { JoinDevice, JoinFolder, JoinNodeRequest, JoinRequest, JoinResponse } from "./api/types.js";
-import type { SetupLayout, SetupRecordResult } from "./setupRepo.js";
+import { type SetupLayout, type SetupRecordResult, topDirectoryPath } from "./setupRepo.js";
 import type { SyncthingDeviceConfig } from "./syncthing.js";
 import type { WhoIs } from "./tailnet.js";
 
@@ -117,7 +117,7 @@ export function admittedFolders(layout: SetupLayout | null, request: JoinRequest
   const nodes = [...request.nodes].sort((left, right) => left.threshold - right.threshold);
   const folders: JoinFolder[] = [];
   for (const folder of layout.folders) {
-    if (folder.priority <= 0) continue;
+    if (folder.priority <= 0 || folder.relativePath === topDirectoryPath) continue;
     const node = nodes.find((candidate) => folder.priority >= candidate.threshold);
     if (!node) continue;
     const path = node === request.nodes[0] ? folder.relativePath : joinPath(node.path, folder.relativePath, request.os);

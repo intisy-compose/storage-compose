@@ -25,6 +25,7 @@ export type {
   Parity,
   ParityJob,
   PendingFolderOffer,
+  PriorityInfo,
   Peer,
   RemoteState,
   Space,

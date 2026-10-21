@@ -339,6 +339,20 @@ export interface PendingFolderOffer {
   receiveEncrypted: boolean;
 }
 
+/**
+ * One directory's priority in the tree, where the top directory is 0 unless the layout sets `.`.
+ * `inheritedFrom` is the layout path of the ancestor that set `inherited` (`.` for the top
+ * directory's entry), null when it is the top directory's default.
+ */
+export interface PriorityInfo {
+  effective: number;
+  setHere: number | null;
+  inherited: number;
+  inheritedFrom: string | null;
+  source: "setup-repo" | "inherited" | "default";
+  overridesParent: boolean;
+}
+
 /** Every copy of one Syncthing folder ID across the nodes, and the offers of it nobody accepted yet. */
 export interface FolderSummary {
   id: string;
