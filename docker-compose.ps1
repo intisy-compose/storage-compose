@@ -441,11 +441,13 @@ function Invoke-LabelMigration {
     try {
         $output = @(docker compose @composeArgs run --rm --no-deps -T --entrypoint /usr/local/bin/migrate-labels.sh snapraid --from $from @forwarded 2>&1 |
             ForEach-Object { $line = "$_"; Write-Host $line; $line })
+        $migrationExitCode = $LASTEXITCODE
     } finally {
         Disconnect-Drives
         docker compose @composeArgs rm -f -s mounter 2>$null | Out-Null
         Remove-Agent
     }
+    if ($migrationExitCode -ne 0) { Write-Err "migrate-labels stopped with exit code $migrationExitCode; see its output above."; exit 1 }
     $migrated = $output | Where-Object { $_ -match '^migrated ([0-9a-f]{4})$' } | Select-Object -Last 1
     if (-not $migrated) { return }
     $id = $migrated.Substring("migrated ".Length)
