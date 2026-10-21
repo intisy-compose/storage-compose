@@ -226,6 +226,32 @@ export interface Warning {
   folderId: string | null;
 }
 
+export type ActivitySource = "syncthing" | "parity" | "dashboard";
+
+export type ActivityLevel = "info" | "warning" | "error";
+
+/** One line of the Activity timeline: a Syncthing event, a parity job's start or end, or a write made here. */
+export interface ActivityEntry {
+  id: string;
+  at: string;
+  source: ActivitySource;
+  nodeId: string | null;
+  folderId: string | null;
+  /** A kebab-case name such as `state-changed`, `item-failed`, `local-change`, `parity-start` or `dashboard-write`. */
+  type: string;
+  level: ActivityLevel;
+  text: string;
+}
+
+/**
+ * `GET /api/activity?after=<id>&node=&folder=&type=&source=&limit=`, newest first; `type` takes a
+ * comma-separated list, `limit` defaults to 200. `cursor` is the newest entry's ID, for the next `after`.
+ */
+export interface ActivityResponse {
+  entries: ActivityEntry[];
+  cursor: string;
+}
+
 /** `GET /api/nodes`; `GET /api/nodes?scope=local` leaves the other hosts out, which is what hosts ask each other. */
 export interface NodesResponse {
   host: HostInfo;

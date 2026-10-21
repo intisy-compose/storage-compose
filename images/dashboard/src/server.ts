@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile } from "node:fs/promises";
 import { arrayStatus } from "./arrayStatus.js";
 import { listBlockDevices } from "./blockDevices.js";
+import { startEventFeeds } from "./eventFeed.js";
 import { RequestError, readBody, sendJson } from "./http.js";
 import { registryEntries, syncthingEndpoint } from "./instances.js";
 import { type JoinDependencies, type JoinInstance, JoinError, handleJoin } from "./join.js";
@@ -77,3 +78,4 @@ createJoinListener(handleJoinRequest, dockerDnsResolver(joinGatewayHost)).listen
 );
 
 void listBlockDevices().catch(() => undefined);
+startEventFeeds();

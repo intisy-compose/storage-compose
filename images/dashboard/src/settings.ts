@@ -73,3 +73,10 @@ export function attentionThresholds(environment: Record<string, string | undefin
 }
 
 export const attentionSettings = attentionThresholds(process.env);
+
+/** ACTIVITY_BUFFER from config.env: how many Activity entries each Syncthing instance, array and the dashboard keep. */
+export function activityBufferSize(environment: Record<string, string | undefined>): number {
+  return Math.max(1, Math.floor(positiveNumber(environment.ACTIVITY_BUFFER, 2000)));
+}
+
+export const activitySettings = { bufferSize: activityBufferSize(process.env) };

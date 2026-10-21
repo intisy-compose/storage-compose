@@ -1,4 +1,8 @@
 export type {
+  ActivityEntry,
+  ActivityLevel,
+  ActivityResponse,
+  ActivitySource,
   ArrayAction,
   ArrayActionBody,
   ArrayMember,
@@ -34,7 +38,7 @@ export type {
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
-import type { ArrayAction, ArrayActionBody, FolderDetailResponse, FoldersResponse, NodesResponse } from "../../src/api/types.js";
+import type { ActivityResponse, ArrayAction, ArrayActionBody, FolderDetailResponse, FoldersResponse, NodesResponse } from "../../src/api/types.js";
 
 export interface ActionResult {
   ok: boolean;
@@ -60,6 +64,18 @@ export function fetchFolders(): Promise<FoldersResponse> {
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {
   return getJson(`api/folders/${encodeURIComponent(folderId)}`);
+}
+
+export interface ActivityFilters {
+  node: string;
+  folder: string;
+  source: string;
+}
+
+export function fetchActivity(filters: ActivityFilters, limit: number): Promise<ActivityResponse> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  for (const [name, value] of Object.entries(filters)) if (value) query.set(name, value);
+  return getJson(`api/activity?${query.toString()}`);
 }
 
 async function postJson(path: string, body: ArrayActionBody): Promise<{ status: number; error: string | null }> {

@@ -1,4 +1,4 @@
-import type { FolderDetailResponse, FoldersResponse, NodeKind, NodesResponse } from "./api.js";
+import type { ActivityFilters, ActivityResponse, FolderDetailResponse, FoldersResponse, NodeKind, NodesResponse } from "./api.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
 export type PageId = "nodes" | "folders" | "attention" | "activity" | "requests" | "settings";
@@ -39,7 +39,14 @@ export interface AppState {
   folderSearch: string;
   /** `<folder id>/<node id>` of the settings a person folded away. */
   foldedSettings: Set<string>;
+  activity: ActivityResponse | null;
+  activityError: string | null;
+  activityFilters: ActivityFilters;
+  /** How many entries the page asks for; "Show older entries" raises it by `activityPageSize`. */
+  activityLimit: number;
 }
+
+export const activityPageSize = 300;
 
 export const appState: AppState = {
   page: "nodes",
@@ -61,6 +68,10 @@ export const appState: AppState = {
   folderDetailError: null,
   folderSearch: "",
   foldedSettings: new Set(),
+  activity: null,
+  activityError: null,
+  activityFilters: { node: "", folder: "", source: "" },
+  activityLimit: activityPageSize,
 };
 
 const pages: PageId[] = ["nodes", "folders", "attention", "activity", "requests", "settings"];

@@ -35,6 +35,14 @@ export type PendingFolders = Record<string, { offeredBy: Record<string, { time: 
 /** `/rest/cluster/pending/devices`: devices that asked to connect, by device ID. */
 export type PendingDevices = Record<string, { time: string; name: string; address: string }>;
 
+/** One entry of `/rest/events`; `id` counts up within the subscription and starts again when the instance restarts. */
+export interface SyncthingEvent {
+  id: number;
+  type: string;
+  time: string;
+  data: unknown;
+}
+
 /** One entry of `/rest/system/error`. */
 export interface SystemError {
   when: string;
@@ -170,6 +178,20 @@ export class SyncthingClient {
 
   systemErrors(): Promise<SystemError[]> {
     return this.request<{ errors: SystemError[] | null } | null>("GET", "/system/error").then((answer) => answer?.errors ?? []);
+  }
+
+  /** When the instance last started; a new value means its event IDs started again from 1. */
+  startTime(): Promise<string> {
+    return this.request<{ startTime?: string }>("GET", "/system/status").then((status) => status.startTime ?? "");
+  }
+
+  /**
+   * A long poll of `/rest/events` for the events after `since`, answered when one arrives or after `waitSeconds` with none.
+   * @param timeoutMs must exceed `waitSeconds`, or every quiet poll is cut off as if the instance had gone.
+   */
+  events(since: number, types: readonly string[], waitSeconds: number, timeoutMs: number): Promise<SyncthingEvent[]> {
+    const query = new URLSearchParams({ since: String(since), timeout: String(waitSeconds), events: types.join(",") });
+    return this.request<SyncthingEvent[] | null>("GET", `/events?${query.toString()}`, undefined, timeoutMs).then((events) => events ?? []);
   }
 
   /** Adds the device, or leaves one with the same ID as it is. */

@@ -3,10 +3,12 @@ import { readFile, writeFile } from "node:fs/promises";
 import type { ArrayAction, ArrayActionBody } from "./api/types.js";
 import { type ArrayStatus, arrayStatus } from "./arrayStatus.js";
 import { isReplacementCandidate, listBlockDevices } from "./blockDevices.js";
+import { recordDashboardActivity, refreshEventFeeds } from "./eventFeed.js";
 import { RequestError, readBody, sendJson } from "./http.js";
 import { fileJoinRecords } from "./join.js";
 import { nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
+import { activityRoutes } from "./routes/activity.js";
 import { folderRoutes } from "./routes/folders.js";
 import { arrayStatusDirectory, clusterArrayId, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
 import { SyncthingError, SyncthingUnavailable } from "./syncthing.js";
@@ -106,7 +108,10 @@ const routes: Route[] = [
   {
     method: "GET",
     pattern: /^\/api\/nodes$/,
-    handle: async ({ response, url }) => sendJson(response, 200, await nodesResponse(url.searchParams.get("scope") === "local" ? "local" : "all", joinRecords)),
+    handle: async ({ response, url }) => {
+      sendJson(response, 200, await nodesResponse(url.searchParams.get("scope") === "local" ? "local" : "all", joinRecords));
+      void refreshEventFeeds();
+    },
   },
   { method: "GET", pattern: /^\/api\/state$/, handle: async ({ response }) => sendJson(response, 200, await legacyState()) },
   {
@@ -128,15 +133,37 @@ const routes: Route[] = [
     handle: ({ request, response, params: [action] }) => handleArrayAction(clusterArrayId, action as ArrayAction, request, response),
   },
   ...folderRoutes,
+  ...activityRoutes,
   { pattern: /^\/api\/join$/, handle: async () => joinElsewhere() },
 ];
+
+const writeVerbs: Record<string, string> = { POST: "added", PUT: "set", PATCH: "changed", DELETE: "removed" };
+
+function decoded(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/** Enters a successful write to a node in Activity, e.g. `pc: changed devices/ABCDEFG`. */
+function recordNodeWrite(method: string, path: string, response: ServerResponse): void {
+  const match = path.match(/^\/api\/nodes\/([^/]+)\/(.+)$/);
+  if (!match || method === "GET" || response.statusCode >= 400) return;
+  const [, nodeId, rest] = match;
+  const folderId = rest.match(/^folders\/([^/]+)/)?.[1];
+  recordDashboardActivity(decoded(nodeId), folderId ? decoded(folderId) : null, `${decoded(nodeId)}: ${writeVerbs[method] ?? method} ${decoded(rest)}`);
+}
 
 async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? "/", "http://dashboard");
   for (const candidate of routes) {
     if (candidate.method && candidate.method !== request.method) continue;
     const match = url.pathname.match(candidate.pattern);
-    if (match) return candidate.handle({ request, response, url, params: match.slice(1) });
+    if (!match) continue;
+    await candidate.handle({ request, response, url, params: match.slice(1) });
+    return recordNodeWrite(request.method ?? "GET", url.pathname, response);
   }
   throw new RequestError(404, "not found");
 }

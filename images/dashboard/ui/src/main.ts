@@ -1,4 +1,5 @@
-import { fetchFolderDetail, fetchFolders, fetchNodes } from "./api.js";
+import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
+import { fetchActivity, fetchFolderDetail, fetchFolders, fetchNodes } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { element } from "./dom.js";
 import { renderEmptyFolderDetail, renderFolderDetail, renderFolderNotFound } from "./folderDetail.js";
@@ -10,7 +11,7 @@ import { renderSettingsPage, renderUpcomingPage } from "./otherPages.js";
 import { applyTheme } from "./preferences.js";
 import { onRenderRequested } from "./renderRequest.js";
 import { renderMenu } from "./shell.js";
-import { appState, locationFor, readLocation, selectedItemId } from "./state.js";
+import { activityPageSize, appState, locationFor, readLocation, selectedItemId } from "./state.js";
 
 const pollMilliseconds = 5000;
 
@@ -44,6 +45,7 @@ function renderPage(): HTMLElement {
   const data = appState.data;
   if (appState.page === "settings") return renderSettingsPage();
   if (appState.page === "folders") return renderFoldersPage();
+  if (appState.page === "activity") return renderActivityPage(activityActions);
   if (!data) return element("div", { className: "page loading" }, appState.loadError ? "" : "Loading nodes…");
   if (appState.page === "nodes") return renderNodesPage(data);
   if (appState.page === "attention") return renderAttentionPage(data);
@@ -71,7 +73,9 @@ function render(): void {
   const focus = rememberFocus();
   const root = document.getElementById("app") as HTMLElement;
   const detailScroll = document.querySelector(".detail")?.scrollTop ?? 0;
-  const mainScroll = document.querySelector(".main")?.scrollTop ?? 0;
+  const oldMain = document.querySelector<HTMLElement>(".main");
+  const mainScroll = oldMain?.scrollTop ?? 0;
+  const activityAnchor = oldMain && appState.page === "activity" ? activityScrollAnchor(oldMain) : null;
   const detail = renderDetail();
   const hasDetail = appState.page === "nodes" || appState.page === "folders";
   const hasSelection = hasDetail && selectedItemId() !== null && detail !== null;
@@ -81,7 +85,9 @@ function render(): void {
   root.replaceChildren(...regions);
   const newDetail = document.querySelector(".detail");
   if (newDetail) newDetail.scrollTop = detailScroll;
-  (document.querySelector(".main") as HTMLElement).scrollTop = mainScroll;
+  const main = document.querySelector(".main") as HTMLElement;
+  main.scrollTop = mainScroll;
+  restoreActivityScroll(main, activityAnchor);
   restoreFocus(focus);
 }
 
@@ -119,9 +125,23 @@ async function loadFolders(): Promise<void> {
   appState.folderDetailError = detail.status === "rejected" ? messageOf(detail.reason) : null;
 }
 
+async function loadActivity(): Promise<void> {
+  const filters = appState.activityFilters;
+  const limit = appState.activityLimit;
+  try {
+    const activity = await fetchActivity(filters, limit);
+    if (filters !== appState.activityFilters || limit !== appState.activityLimit) return;
+    appState.activity = activity;
+    appState.activityError = null;
+  } catch (error) {
+    appState.activityError = messageOf(error);
+  }
+}
+
 /** The current page's own data besides the nodes every page shows in its menu. */
 async function loadPageData(): Promise<void> {
   if (appState.page === "folders") await loadFolders();
+  if (appState.page === "activity") await loadActivity();
 }
 
 async function poll(): Promise<void> {
@@ -133,6 +153,18 @@ async function refreshPage(): Promise<void> {
   await loadPageData();
   if (!isInUse()) render();
 }
+
+const activityActions = {
+  onFiltersChanged: () => {
+    appState.activityLimit = activityPageSize;
+    render();
+    void refreshPage();
+  },
+  onMore: () => {
+    appState.activityLimit += activityPageSize;
+    void refreshPage();
+  },
+};
 
 function onLocationChange(): void {
   const previousItem = selectedItemId();

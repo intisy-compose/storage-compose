@@ -3,11 +3,7 @@ import { applyTheme } from "./preferences.js";
 import { requestRender } from "./renderRequest.js";
 import { type PageId, appState } from "./state.js";
 
-const upcoming: Record<Exclude<PageId, "nodes" | "folders" | "attention" | "settings">, { title: string; summary: string }> = {
-  activity: {
-    title: "Activity",
-    summary: "One timeline of parity jobs, Syncthing events, hand-offs and notifications, filtered by node or folder.",
-  },
+const upcoming: Record<Exclude<PageId, "nodes" | "folders" | "attention" | "activity" | "settings">, { title: string; summary: string }> = {
   requests: {
     title: "Requests",
     summary: "Devices and folders asking to join, accepted or refused here.",

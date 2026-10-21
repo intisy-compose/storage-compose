@@ -492,3 +492,29 @@ a.warning:hover { filter: brightness(0.98); text-decoration: underline; text-und
   .member-asset { display: none; }
   .segmented { overflow-x: auto; max-width: 100%; }
 }
+
+/* Activity */
+.activity-filters select {
+  height: 34px; padding: 0 10px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  max-width: 240px;
+}
+.activity-filters select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.activity-day { margin-bottom: 22px; }
+.activity-list { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.activity-entry {
+  display: grid; grid-template-columns: 76px 12px minmax(0, 1fr) auto; align-items: baseline; gap: 10px;
+  padding: 7px 14px; border-top: 1px solid var(--line); color: var(--text); text-decoration: none;
+}
+.activity-entry:first-child { border-top: 0; }
+a.activity-entry:hover { background: var(--selection); }
+.activity-entry .dot { align-self: center; }
+.activity-time { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.activity-text { overflow-wrap: anywhere; }
+.activity-entry.level-error .activity-text { color: var(--bad); }
+.activity-source { font-size: 11px; }
+.activity-more { margin-top: 4px; }
+@media (max-width: 640px) {
+  .activity-entry { grid-template-columns: 60px 12px minmax(0, 1fr); }
+  .activity-source { display: none; }
+}
