@@ -5,11 +5,13 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
-import type { StorageNode, TreeEntry } from "../src/api/types.js";
+import type { StorageNode, TreeEntry, TreeListing } from "../src/api/types.js";
 import { RequestError } from "../src/http.js";
 import { parseLayout } from "../src/setupRepo.js";
 import { SyncthingClient } from "../src/syncthing.js";
-import { liveTreeNode } from "../src/routes/tree.js";
+import { readDashboard } from "../src/instanceResolver.js";
+import { treeResponse } from "../src/routes/tree.js";
+import { type AllNodesSources, type OtherHost, allNodesListing } from "../src/treeAllNodes.js";
 import { type TreeNode, type TreeSources, treeListing } from "../src/treeListing.js";
 
 const fixtures = new URL("../../test/fixtures/syncthing-tree/", import.meta.url);
@@ -338,8 +340,252 @@ describe("tree listing of one node", () => {
     assert.match(recipes.detail ?? "", /could not be read/);
     assert.equal(stateOf(listing.entries.find((entry) => entry.name === "Garden Plans")).status, "in-sync");
   });
+});
 
-  it("a remote node is 409 until Task 1b.4", async () => {
+interface PeerFolder {
+  id: string;
+  label: string;
+  path: string;
+  browse: Record<string, BrowseItem[]>;
+  errors?: string[];
+}
+
+interface PeerInstance {
+  deviceId: string;
+  name: string;
+  folders: PeerFolder[];
+  pending: string[];
+  delayMs: number;
+}
+
+const laptopId = "LAPAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+
+function deviceIdOf(name: string): string {
+  return `${name.slice(0, 3).toUpperCase().padEnd(7, "A")}-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH`;
+}
+
+function stateOn(entry: TreeEntry | undefined, nodeId: string) {
+  assert.ok(entry, "entry exists");
+  const state = entry.nodes.find((candidate) => candidate.nodeId === nodeId);
+  return state && { status: state.status, detail: state.detail };
+}
+
+describe("tree listing of all nodes", () => {
+  let server: Server;
+  let url: string;
+  let instances: Map<string, PeerInstance>;
+  let statusFixture: Record<string, unknown>;
+  let browseRequests: string[];
+  let dashboardRequests: URL[];
+  let dashboardAnswer: (requestUrl: URL) => unknown;
+  let round = 0;
+  const layout = parseLayout(['[folders.Documents]', 'category = "synced"', '[folders."Documents/GitHub"]', 'category = "synced"'].join("\n"));
+
+  function documentsFolder(path: string): PeerFolder {
+    return { id: "documents", label: "Documents", path, browse: { "": [directory("Taxes"), directory("Recipes"), file("notes.txt")] }, errors: ["Taxes\\2025\\locked.xlsx"] };
+  }
+
+  function addInstance(name: string, folders: PeerFolder[], pending: string[] = []): string {
+    const prefix = `${name}-${round}`;
+    instances.set(prefix, { deviceId: deviceIdOf(name), name, folders, pending, delayMs: 0 });
+    return prefix;
+  }
+
+  function treeNode(prefix: string, nodeId: string, root: string, os: TreeNode["os"]): TreeNode {
+    return { nodeId: `${nodeId}-${round}`, name: instances.get(prefix)!.name, host: "finn", root, os, threshold: 0, client: new SyncthingClient({ url: `${url}/${prefix}`, apiKey: "key" }) };
+  }
+
+  function allSources(nodes: TreeNode[], overrides: Partial<AllNodesSources> = {}): AllNodesSources {
+    return {
+      layout: async () => layout,
+      needLimit: 20_000,
+      firstListsWaitMs: 10_000,
+      nodeWaitMs: 10_000,
+      localNodes: async () => nodes,
+      otherHosts: [],
+      readHost: (host, path) => readDashboard(host.dashboardUrl, host.host, path),
+      hostNodes: async () => [],
+      ...overrides,
+    };
+  }
+
+  function serveInstance(instance: PeerInstance, rest: string, requestUrl: URL, response: ServerResponse): void {
+    const folder = instance.folders.find((candidate) => candidate.id === requestUrl.searchParams.get("folder"));
+    const everyDevice = [...instances.values()].map((other) => ({ deviceID: other.deviceId, name: other.name }));
+    switch (rest) {
+      case "/rest/system/status":
+        return reply(response, { myID: instance.deviceId });
+      case "/rest/config/folders":
+        return reply(
+          response,
+          instance.folders.map((entry) => ({ id: entry.id, label: entry.label, path: entry.path, type: "sendreceive", paused: false, devices: [{ deviceID: instance.deviceId }, { deviceID: laptopId }] })),
+        );
+      case "/rest/config/devices":
+        return reply(response, [...everyDevice, { deviceID: laptopId, name: "laptop" }]);
+      case "/rest/cluster/pending/folders":
+        return reply(response, Object.fromEntries(instance.pending.map((id) => [id, { offeredBy: { [laptopId]: { time: "2026-10-21T10:00:00Z", label: `${id} as offered`, receiveEncrypted: false } } }])));
+      case "/rest/db/status":
+        if (!folder) return reply(response, "no such folder", 404);
+        return reply(response, { ...statusFixture, errors: folder.errors?.length ?? 0, pullErrors: folder.errors?.length ?? 0 });
+      case "/rest/db/browse":
+        browseRequests.push(`${instance.name}:${folder?.id}:${requestUrl.searchParams.get("prefix") ?? ""}`);
+        return reply(response, folder?.browse[requestUrl.searchParams.get("prefix") ?? ""] ?? []);
+      case "/rest/db/file":
+        return reply(response, {
+          availability: [{ id: laptopId, fromTemporary: false }, ...[...instances.values()].filter((other) => other !== instance).map((other) => ({ id: other.deviceId, fromTemporary: false }))],
+          local: { deleted: false, ignored: false },
+        });
+      case "/rest/folder/errors":
+        return reply(response, { errors: (folder?.errors ?? []).map((path) => ({ path, error: "denied" })), page: 1, perpage: 100 });
+      case "/rest/db/need":
+        return reply(response, { progress: [], queued: [], rest: [] });
+      case "/rest/db/localchanged":
+        return reply(response, { files: [] });
+      default:
+        return reply(response, "not found", 404);
+    }
+  }
+
+  before(async () => {
+    statusFixture = await fixture("status-documents.json");
+    server = createServer((request, response) => {
+      const requestUrl = new URL(request.url ?? "/", "http://fake");
+      const [, prefix, ...rest] = requestUrl.pathname.split("/");
+      if (prefix === "p53") {
+        dashboardRequests.push(requestUrl);
+        return reply(response, dashboardAnswer(requestUrl) as object);
+      }
+      const instance = instances.get(prefix);
+      if (!instance) return reply(response, "no such instance", 404);
+      void delayed(instance.delayMs, () => serveInstance(instance, `/${rest.join("/")}`, requestUrl, response));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+  beforeEach(() => {
+    round += 1;
+    instances = new Map();
+    browseRequests = [];
+    dashboardRequests = [];
+    dashboardAnswer = () => ({ error: "nothing" });
+  });
+
+  function threeNodes(): TreeNode[] {
+    const pc = addInstance("pc", [documentsFolder("F:\\Documents")]);
+    const array = addInstance("private-array", [], ["documents"]);
+    const peer = addInstance("peer", [{ id: "dashboard-test-x", label: "test", path: "/peer/dashboard-test-x", browse: { "": [] } }]);
+    return [treeNode(pc, "fb98", "F:\\", "windows"), treeNode(array, "5784", "/pool-5784", "linux"), treeNode(peer, "d7e5", "/peer", "linux")];
+  }
+
+  it("all merges each node's state per entry", async () => {
+    const nodes = threeNodes();
+    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes));
+    assert.equal(listing.view, "all");
+    assert.deepEqual(names(listing.entries), ["Recipes", "Taxes", "notes.txt"]);
+    const taxes = listing.entries.find((entry) => entry.name === "Taxes");
+    assert.deepEqual(stateOn(taxes, nodes[0].nodeId), { status: "failed", detail: "1 item failed below" });
+    assert.deepEqual(stateOn(taxes, nodes[1].nodeId), { status: "missing", detail: "offered, not accepted" });
+    assert.equal(stateOn(taxes, nodes[2].nodeId), undefined);
+    assert.ok(listing.entries.every((entry) => entry.nodes.length === 2));
+
+    const top = await allNodesListing("", 1, "all", allSources([nodes[1], nodes[0], nodes[2]]));
+    assert.deepEqual(names(top.entries), ["dashboard-test-x", "Documents"]);
+    const documents = top.entries.find((entry) => entry.name === "Documents");
+    assert.deepEqual(documents?.folder, { id: "documents", label: "Documents" });
+    assert.deepEqual(stateOn(documents, nodes[1].nodeId), { status: "missing", detail: "offered, not accepted" });
+    assert.equal(stateOn(documents, nodes[2].nodeId), undefined);
+    assert.ok(stateOn(top.entries.find((entry) => entry.name === "dashboard-test-x"), nodes[2].nodeId));
+  });
+
+  it("the cluster is asked for the listing first", async () => {
+    const cluster = addInstance("storage", [documentsFolder("/pool/Documents")]);
+    const pc = addInstance("pc", [documentsFolder("F:\\Documents")]);
+    const nodes = [treeNode(cluster, "storage", "/pool", "linux"), treeNode(pc, "fb98", "F:\\", "windows")];
+    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes));
+    assert.ok(browseRequests.includes("storage:documents:"), browseRequests.join(", "));
+    assert.ok(!browseRequests.some((request) => request.startsWith("pc:documents:")), browseRequests.join(", "));
+    assert.deepEqual(
+      listing.entries.find((entry) => entry.name === "Taxes")?.nodes.map((state) => state.nodeId),
+      nodes.map((node) => node.nodeId),
+    );
+  });
+
+  it("another host's nodes come from its dashboard with scope local", async () => {
+    const nodes = threeNodes();
+    dashboardAnswer = (requestUrl): TreeListing => ({
+      path: requestUrl.searchParams.get("path") ?? "",
+      view: "all",
+      priority: { effective: 80, setHere: 80, inherited: 0, inheritedFrom: null, source: "setup-repo", overridesParent: true },
+      overridesBelow: [],
+      entries: [
+        {
+          name: "Taxes",
+          path: "Documents/Taxes",
+          kind: "directory",
+          size: null,
+          modified: null,
+          folder: null,
+          priority: { effective: 80, setHere: null, inherited: 80, inheritedFrom: "Documents", source: "inherited", overridesParent: false },
+          nodes: [{ nodeId: "a1b2", nodeName: "p53-data", host: "p53", status: "syncing", detail: "2 items outstanding below" }],
+          availability: [],
+        },
+      ],
+      nextPage: null,
+      notes: [],
+    });
+    const p53: OtherHost = { host: "p53", dashboardUrl: `${url}/p53` };
+    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes, { otherHosts: [p53] }));
+    assert.equal(dashboardRequests.length, 1);
+    const asked = dashboardRequests[0];
+    assert.equal(asked.pathname, "/p53/api/tree");
+    assert.deepEqual([asked.searchParams.get("node"), asked.searchParams.get("path"), asked.searchParams.get("page"), asked.searchParams.get("scope")], ["all", "Documents", "1", "local"]);
+    const taxes = listing.entries.find((entry) => entry.name === "Taxes");
+    assert.deepEqual(stateOn(taxes, "a1b2"), { status: "syncing", detail: "2 items outstanding below" });
+    assert.equal(stateOn(taxes, nodes[0].nodeId)?.status, "failed");
+    assert.equal(stateOn(listing.entries.find((entry) => entry.name === "Recipes"), "a1b2"), undefined);
+
+    await allNodesListing("Documents", 1, "local", allSources(nodes, { otherHosts: [p53] }));
+    assert.equal(dashboardRequests.length, 1, "scope=local asks no other host");
+  });
+
+  it("an unreachable host leaves its nodes unknown and says so", async () => {
+    const nodes = threeNodes();
+    const gone: OtherHost = { host: "gone", dashboardUrl: "http://127.0.0.1:9" };
+    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes, { otherHosts: [gone], hostNodes: async () => [{ nodeId: "c3d4", name: "gone-data" }] }));
+    assert.equal(listing.entries.length, 3);
+    for (const entry of listing.entries) {
+      assert.deepEqual(stateOn(entry, "c3d4"), { status: "unknown", detail: "gone's dashboard could not be reached" });
+      assert.notEqual(stateOn(entry, nodes[0].nodeId)?.status, "unknown");
+    }
+    assert.ok(listing.notes.some((note) => note.startsWith("gone's dashboard could not be reached")), listing.notes.join("; "));
+  });
+
+  it("a device without a dashboard shows in availability only", async () => {
+    const nodes = threeNodes();
+    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes));
+    const recipes = listing.entries.find((entry) => entry.name === "Recipes");
+    assert.ok(recipes?.availability.some((device) => device.deviceId === laptopId && device.name === "laptop"));
+    assert.equal(new Set(recipes?.availability.map((device) => device.deviceId)).size, recipes?.availability.length);
+    assert.ok(!recipes?.nodes.some((state) => state.nodeName === "laptop"));
+  });
+
+  it("a slow node shows unknown without holding up the others", async () => {
+    const nodes = threeNodes();
+    instances.get(`private-array-${round}`)!.delayMs = 600;
+    const started = Date.now();
+    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes, { nodeWaitMs: 150 }));
+    assert.ok(Date.now() - started < 500, `${Date.now() - started} ms`);
+    const taxes = listing.entries.find((entry) => entry.name === "Taxes");
+    assert.equal(stateOn(taxes, nodes[0].nodeId)?.status, "failed");
+    assert.equal(stateOn(taxes, nodes[1].nodeId)?.status, "unknown");
+    assert.ok(listing.notes.some((note) => note.includes("private-array")), listing.notes.join("; "));
+    await wait(700);
+  });
+
+  it("another host's node viewed alone is forwarded", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tree-"));
     try {
       const remote: StorageNode = {
@@ -357,13 +603,17 @@ describe("tree listing of one node", () => {
         instance: null,
         peers: [],
         folders: [],
-        dashboardUrl: "https://p53.example",
+        dashboardUrl: `${url}/p53`,
       };
+      dashboardAnswer = () => ({ path: "Documents", view: "a1b2", entries: [], forwarded: true });
       const resolver = { registryDirectory: directory, heartbeatPath: join(directory, "none.json"), otherHostNodes: async () => [remote] };
-      await assert.rejects(
-        treeListing("a1b2", "", 1, sources({ node: (nodeId) => liveTreeNode(nodeId, resolver) })),
-        (error: unknown) => error instanceof RequestError && error.status === 409 && error.message === "act on p53's dashboard",
-      );
+      const routeSources = { resolver, listing: allSources([]), allNodes: allSources([]) };
+      const answer = await treeResponse({ node: "a1b2", path: "Documents", page: 2, scope: "all" }, routeSources);
+      assert.deepEqual(answer, { path: "Documents", view: "a1b2", entries: [], forwarded: true });
+      assert.equal(dashboardRequests.length, 1);
+      const asked = dashboardRequests[0];
+      assert.deepEqual([asked.searchParams.get("node"), asked.searchParams.get("path"), asked.searchParams.get("page"), asked.searchParams.get("scope")], ["a1b2", "Documents", "2", "local"]);
+      await assert.rejects(treeResponse({ node: "a1b2", path: "", page: 1, scope: "local" }, routeSources), (error: unknown) => error instanceof RequestError && error.status === 404);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

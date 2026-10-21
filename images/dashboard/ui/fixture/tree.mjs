@@ -43,9 +43,21 @@ const documents = (nodeId) => [
   entry("Documents", "notes.txt", "file", { nodeId, priority: priority(80, null, 80, "Documents"), status: "in-sync", size: 2048 }),
 ];
 
+function secondNodeState(first) {
+  if (first.status === "in-sync" || first.status === "below-threshold") return state("e5d0", "in-sync");
+  return state("e5d0", "missing", "offered, not accepted");
+}
+
+/** Every node's state per entry, as `node=all` answers: a3f9 as listed, e5d0 holding only what a3f9 has in sync, and a laptop no dashboard reports. */
+function allNodes(entries) {
+  return entries.map((row) => ({ ...row, nodes: [...row.nodes, secondNodeState(row.nodes[0])], availability: [{ deviceId: "LAPAAAA-BBBBBBB", name: "laptop" }] }));
+}
+
 /** A made-up `GET /api/tree` answer for the top directory and `Documents`; any other path is empty. */
 export function treeFixture(nodeId, path) {
-  const entries = path === "" ? topDirectory(nodeId) : path === "Documents" ? documents(nodeId) : [];
+  const listed = nodeId === "all" ? "a3f9" : nodeId;
+  const rows = path === "" ? topDirectory(listed) : path === "Documents" ? documents(listed) : [];
+  const entries = nodeId === "all" ? allNodes(rows) : rows;
   return {
     path,
     view: nodeId,

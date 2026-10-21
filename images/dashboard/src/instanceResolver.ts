@@ -44,6 +44,8 @@ interface LocalNode {
   os: LocalInstance["os"];
   threshold: number;
   present: boolean;
+  /** False for the cluster while this host has no description of it, so it counts only once its Syncthing answers. */
+  described: boolean;
   endpoint: () => Promise<SyncthingEndpoint | null>;
 }
 
@@ -57,6 +59,7 @@ async function arrayNode(nodeId: string, sources: ResolverSources): Promise<Loca
     os: "linux",
     threshold: status?.description?.node.threshold ?? 0,
     present: status?.present ?? true,
+    described: status !== null,
     endpoint: () => syncthingEndpoint(nodeId, undefined, sources.registryDirectory),
   };
 }
@@ -71,6 +74,7 @@ async function registryNodes(sources: ResolverSources): Promise<LocalNode[]> {
     os,
     threshold: entry.threshold,
     present: entry.present,
+    described: true,
     endpoint: () => syncthingEndpoint(entry.id, entry, sources.registryDirectory),
   }));
 }
@@ -84,13 +88,6 @@ async function toInstance(node: LocalNode): Promise<LocalInstance | null> {
   return endpoint ? { kind: "local", nodeId: node.nodeId, name: node.name, client: new SyncthingClient(endpoint), root: node.root, os: node.os, threshold: node.threshold } : null;
 }
 
-/** Every node of this host whose Syncthing can be addressed: each array, the cluster, registry entries and host agent nodes. */
-export async function localInstances(sources: ResolverSources = defaultResolverSources): Promise<LocalInstance[]> {
-  const arrays = (await Promise.all((await arrayIds()).map((nodeId) => arrayNode(nodeId, sources)))).filter((node): node is LocalNode => node !== null);
-  const instances = await Promise.all([...arrays, ...(await registryNodes(sources))].map(toInstance));
-  return instances.filter((instance): instance is LocalInstance => instance !== null);
-}
-
 /** A node of this host whether or not its Syncthing can be addressed; `instance` is null while it cannot. */
 export interface LocalNodeInfo {
   nodeId: string;
@@ -101,10 +98,26 @@ export interface LocalNodeInfo {
   instance: LocalInstance | null;
 }
 
+async function toInfo(local: LocalNode): Promise<LocalNodeInfo> {
+  return { nodeId: local.nodeId, name: local.name, root: local.root, os: local.os, threshold: local.threshold, instance: await toInstance(local) };
+}
+
+/** Every node of this host, the cluster first: each array, the cluster, registry entries and host agent nodes. */
+export async function localNodeInfos(sources: ResolverSources = defaultResolverSources): Promise<LocalNodeInfo[]> {
+  const arrays = (await Promise.all((await arrayIds()).map((nodeId) => arrayNode(nodeId, sources)))).filter((node): node is LocalNode => node !== null);
+  const nodes = [...arrays, ...(await registryNodes(sources))];
+  const infos = await Promise.all(nodes.map(toInfo));
+  return infos.filter((info, index) => nodes[index].described || info.instance !== null);
+}
+
+/** Every node of this host whose Syncthing can be addressed. */
+export async function localInstances(sources: ResolverSources = defaultResolverSources): Promise<LocalInstance[]> {
+  return (await localNodeInfos(sources)).flatMap((info) => (info.instance ? [info.instance] : []));
+}
+
 export async function findLocalNode(nodeId: string, sources: ResolverSources = defaultResolverSources): Promise<LocalNodeInfo | null> {
   const local = (await arrayNode(nodeId, sources)) ?? (await registryNode(nodeId, sources));
-  if (!local) return null;
-  return { nodeId: local.nodeId, name: local.name, root: local.root, os: local.os, threshold: local.threshold, instance: await toInstance(local) };
+  return local && toInfo(local);
 }
 
 function notAnswering(name: string): RequestError {

@@ -8,7 +8,7 @@ import { type BrowseEntry, type FolderStatus, type SyncthingClient, type Syncthi
 import { type FolderPlacement, type FolderToPlace, type NodeOs, directoriesAbove, folderAt, placeFolders } from "./treePaths.js";
 
 export const entriesPerPage = 200;
-const fileReadsAtOnce = 8;
+export const fileReadsAtOnce = 8;
 
 /** One node of this host as the explorer reads it; `client` is null while its Syncthing cannot be addressed. */
 export interface TreeNode {
@@ -39,7 +39,7 @@ interface PlacedFolder {
   config: SyncthingFolderConfig | null;
 }
 
-interface NodeTree {
+export interface NodeTree {
   node: TreeNode;
   answering: boolean;
   ownId: string;
@@ -50,10 +50,16 @@ interface NodeTree {
   sources: TreeSources;
 }
 
-type Row = { name: string; path: string; kind: TreeEntry["kind"]; size: number | null; modified: string | null } & (
-  | { source: "index"; folder: PlacedFolder; inside: string }
-  | { source: "tree" }
-);
+export type RowBase = { name: string; path: string; kind: TreeEntry["kind"]; size: number | null; modified: string | null };
+
+/** A row as one node sees it: in its index, outside any index, or inside a folder it is only offered or has paused. */
+export type Row = RowBase &
+  (
+    | { source: "index"; folder: PlacedFolder; inside: string }
+    | { source: "tree" }
+    | { source: "offered" }
+    | { source: "paused"; folder: PlacedFolder }
+  );
 
 type Count = number | "too-many";
 
@@ -62,7 +68,7 @@ function segmentsOf(relativePath: string): string[] {
 }
 
 /** The requested path with `/` separators and no outer slashes; "" is the top directory. */
-function treePath(raw: string): string {
+export function treePath(raw: string): string {
   const segments = raw.split(/[\\/]+/).filter((segment) => segment !== "" && segment !== ".");
   if (segments.includes("..")) throw new RequestError(400, `${raw} climbs out of the tree`);
   return segments.join("/");
@@ -88,7 +94,7 @@ function offeredOnly(configs: SyncthingFolderConfig[], pending: Record<string, {
     .map(([folderId, entry]) => ({ id: folderId, label: Object.values(entry.offeredBy)[0]?.label || folderId, path: "" }));
 }
 
-async function readNodeTree(node: TreeNode, layout: SetupLayout | null, sources: TreeSources): Promise<NodeTree> {
+export async function readNodeTree(node: TreeNode, layout: SetupLayout | null, sources: TreeSources): Promise<NodeTree> {
   const tree: NodeTree = { node, answering: false, ownId: "", folders: [], deviceNames: new Map(), statuses: new Map(), lists: new Map(), sources };
   if (!node.client) return tree;
   try {
@@ -131,7 +137,7 @@ async function browse(tree: NodeTree, folder: PlacedFolder, prefix: string): Pro
 }
 
 /** Starts reading the root of every held folder whose row is shown, so opening one does not wait for Syncthing's walk. */
-function warmFolderRoots(tree: NodeTree, rows: Row[]): void {
+export function warmFolderRoots(tree: NodeTree, rows: Row[]): void {
   for (const row of rows) {
     const root = row.source === "tree" ? rootFolderAt(tree, row.path) : null;
     if (root?.config && !root.config.paused) void browse(tree, root, "").catch(() => undefined);
@@ -176,12 +182,12 @@ function heldFolders(tree: NodeTree): PlacedFolder[] {
   return tree.folders.filter((folder) => folder.config !== null);
 }
 
-function rootFolderAt(tree: NodeTree, path: string): PlacedFolder | null {
+export function rootFolderAt(tree: NodeTree, path: string): PlacedFolder | null {
   const atPath = tree.folders.filter((folder) => samePath(folder.placement.relativePath, path));
   return atPath.find((folder) => folder.config !== null) ?? atPath[0] ?? null;
 }
 
-function byDirectoryThenName(left: Row, right: Row): number {
+export function byDirectoryThenName(left: RowBase, right: RowBase): number {
   if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
   return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
 }
@@ -223,7 +229,7 @@ async function indexRows(tree: NodeTree, path: string): Promise<DirectoryRows & 
 }
 
 /** Index entries of the folder holding the path, with the folder roots and layout paths that lead further down. */
-async function directoryRows(tree: NodeTree, layout: SetupLayout | null, path: string): Promise<DirectoryRows> {
+export async function directoryRows(tree: NodeTree, layout: SetupLayout | null, path: string): Promise<DirectoryRows> {
   if (!tree.answering) return { rows: directoriesAbove([], layout, path).map((name) => treeRow(path, name)), notes: [`${tree.node.name}'s Syncthing is not answering`] };
   const fromIndex = await indexRows(tree, path);
   const leadingNames = directoriesAbove(
@@ -302,6 +308,38 @@ function countUnder(list: PathSet | "too-many" | undefined, inside: string): Cou
   return list === "too-many" ? "too-many" : list.countUnder(inside);
 }
 
+/** The row as this node sees its path, or null where the node neither holds nor is offered a folder at, above or below it. */
+export function rowOn(tree: NodeTree, row: RowBase): Row | null {
+  const base: RowBase = { name: row.name, path: row.path, kind: row.kind, size: row.size, modified: row.modified };
+  if (!tree.answering || rootFolderAt(tree, row.path)) return { ...base, source: "tree" };
+  const location = folderAt(
+    tree.folders.map((folder) => folder.placement),
+    row.path,
+  );
+  const folder = location && tree.folders.find((candidate) => candidate.placement === location.placement);
+  if (location && folder) {
+    if (!folder.config) return { ...base, source: "offered" };
+    if (folder.config.paused) return { ...base, source: "paused", folder };
+    return { ...base, source: "index", folder, inside: location.inside };
+  }
+  return tree.folders.some((candidate) => isAtOrBelow(candidate.placement.relativePath, row.path)) ? { ...base, source: "tree" } : null;
+}
+
+function outsideFolderInput(tree: NodeTree, layout: SetupLayout | null, path: string, folder: PlacedFolder | null): StatusInput {
+  return {
+    ...baseInput(tree, layout, path),
+    hasFolder: folder !== null,
+    offered: folder === null,
+    folderPaused: folder !== null,
+    folderState: "",
+    local: folder && { deleted: false, ignored: false },
+    outstandingBelow: 0,
+    failedBelow: 0,
+    locallyChanged: false,
+    sharedWithOthers: folder?.config ? sharesWithOthers(tree, folder.config) : false,
+  };
+}
+
 async function indexRowInput(tree: NodeTree, layout: SetupLayout | null, row: Extract<Row, { source: "index" }>, local: StatusInput["local"]): Promise<StatusInput> {
   const config = row.folder.config!;
   const [status, lists, nested] = await Promise.all([folderStatus(tree, row.folder), folderLists(tree, row.folder), rootCounts(tree, row.path, row.folder, true)]);
@@ -323,35 +361,51 @@ function nodeState(tree: NodeTree, state: Pick<NodeEntryState, "status" | "detai
   return { nodeId: tree.node.nodeId, nodeName: tree.node.name, host: tree.node.host, ...state };
 }
 
+/** One node's state of a row and the devices its index says hold the entry. */
+export interface NodeRowState {
+  state: NodeEntryState;
+  availability: TreeEntry["availability"];
+}
+
+export async function nodeRowState(tree: NodeTree, layout: SetupLayout | null, row: Row): Promise<NodeRowState> {
+  const judged = (input: StatusInput) => ({ state: nodeState(tree, entryStatus(input)), availability: [] });
+  if (row.source === "tree") return judged(await treeRowInput(tree, layout, row));
+  if (row.source === "offered") return judged(outsideFolderInput(tree, layout, row.path, null));
+  if (row.source === "paused") return judged(outsideFolderInput(tree, layout, row.path, row.folder));
+  let file;
+  try {
+    file = await tree.node.client!.file(row.folder.config!.id, row.inside);
+  } catch (error) {
+    return { state: nodeState(tree, { status: "unknown", detail: `its index entry could not be read: ${(error as Error).message}` }), availability: [] };
+  }
+  const local = file?.local ? { deleted: file.local.deleted, ignored: file.local.ignored } : null;
+  return {
+    state: nodeState(tree, entryStatus(await indexRowInput(tree, layout, row, local))),
+    availability: (file?.availability ?? []).map((device) => ({ deviceId: device.id, name: tree.deviceNames.get(device.id) ?? device.id.slice(0, 7) })),
+  };
+}
+
+export function folderChipAt(tree: NodeTree, path: string): TreeEntry["folder"] {
+  const root = rootFolderAt(tree, path);
+  return root && { id: root.placement.folderId, label: root.placement.label };
+}
+
 async function entryOf(tree: NodeTree, layout: SetupLayout | null, row: Row): Promise<TreeEntry> {
-  const root = rootFolderAt(tree, row.path);
-  const entry: TreeEntry = {
+  const { state, availability } = await nodeRowState(tree, layout, row);
+  return {
     name: row.name,
     path: row.path,
     kind: row.kind,
     size: row.size,
     modified: row.modified,
-    folder: root && { id: root.placement.folderId, label: root.placement.label },
+    folder: folderChipAt(tree, row.path),
     priority: priorityAt(layout, row.path),
-    nodes: [],
-    availability: [],
-  };
-  if (row.source === "tree") return { ...entry, nodes: [nodeState(tree, entryStatus(await treeRowInput(tree, layout, row)))] };
-  let file;
-  try {
-    file = await tree.node.client!.file(row.folder.config!.id, row.inside);
-  } catch (error) {
-    return { ...entry, nodes: [nodeState(tree, { status: "unknown", detail: `its index entry could not be read: ${(error as Error).message}` })] };
-  }
-  const local = file?.local ? { deleted: file.local.deleted, ignored: file.local.ignored } : null;
-  return {
-    ...entry,
-    nodes: [nodeState(tree, entryStatus(await indexRowInput(tree, layout, row, local)))],
-    availability: (file?.availability ?? []).map((device) => ({ deviceId: device.id, name: tree.deviceNames.get(device.id) ?? device.id.slice(0, 7) })),
+    nodes: [state],
+    availability,
   };
 }
 
-async function mapAtMost<Item, Result>(items: Item[], atOnce: number, map: (item: Item) => Promise<Result>): Promise<Result[]> {
+export async function mapAtMost<Item, Result>(items: Item[], atOnce: number, map: (item: Item) => Promise<Result>): Promise<Result[]> {
   const results: Result[] = new Array(items.length);
   let next = 0;
   const worker = async () => {
@@ -371,7 +425,7 @@ function listNotes(label: string, status: FolderStatus | null, lists: ListsView 
   return [];
 }
 
-async function folderNotes(tree: NodeTree, rows: Row[]): Promise<string[]> {
+export async function folderNotes(tree: NodeTree, rows: Row[]): Promise<string[]> {
   const folders = [...new Set(rows.flatMap((row) => (row.source === "index" ? [row.folder] : [])))];
   const notes = await Promise.all(
     folders.map(async (folder) => {
