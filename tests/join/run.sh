@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The Linux join script's tests: builds the bench image and runs join.test.sh in a fresh container,
-# so nothing on the host is touched. Needs Docker.
+# so nothing on the host is touched; /vol and /vol2 are volumes of their own, for folder nodes. Needs
+# Docker.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repository="$(cd "$here/../.." && pwd)"
@@ -10,5 +11,5 @@ host_path() { if command -v cygpath > /dev/null 2>&1; then cygpath -w "$1"; else
 
 docker build --quiet -t "$image" "$(host_path "$here")" > /dev/null
 MSYS_NO_PATHCONV=1 docker run --rm \
-    -v "$(host_path "$here"):/tests:ro" -v "$(host_path "$repository/join"):/join:ro" \
+    -v "$(host_path "$here"):/tests:ro" -v "$(host_path "$repository/join"):/join:ro" --tmpfs /vol --tmpfs /vol2 \
     "$image" bash /tests/join.test.sh
