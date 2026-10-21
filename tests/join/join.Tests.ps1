@@ -48,6 +48,29 @@ function Start-ScheduledTask { [CmdletBinding()] param([string]$TaskName);
     Start-Process -FilePath $action.Execute -ArgumentList $action.Arguments -WindowStyle Hidden
 }
 
+$global:answers = New-Object System.Collections.Queue
+$global:questions = @()
+$global:logLines = @()
+$global:terminal = $false
+function Write-JoinLog([string]$Message) { $global:logLines += $Message }
+function Test-InputIsTerminal { return $global:terminal }
+function Read-JoinAnswer([string]$Question, [string]$Default) {
+    $global:questions += $(if ($Default) { "$Question [$Default]" } else { $Question })
+    if ($global:answers.Count -eq 0) { throw "no answer to: $Question" }
+    $answer = $global:answers.Dequeue()
+    if ($answer -eq "") { return $Default }
+    return $answer
+}
+
+function Invoke-Choices([string[]]$Answers) {
+    $global:answers = New-Object System.Collections.Queue
+    foreach ($answer in $Answers) { $global:answers.Enqueue($answer) }
+    $global:questions = @()
+    $global:logLines = @()
+    $script:keepAllConfirmed = $false
+    try { return "$(Read-JoinChoices)" } catch { return "failed: $_" }
+}
+
 function Get-ApiKey([string]$SyncthingHome) { return ([xml][System.IO.File]::ReadAllText((Join-Path $SyncthingHome "config.xml"))).configuration.gui.apikey }
 
 function Invoke-Peer([string]$Method, [string]$Path, $Body) {
@@ -83,6 +106,7 @@ function Stop-Everything {
     Start-Sleep -Seconds 1
     Get-CimInstance Win32_Process -Filter "Name='syncthing.exe'" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($scratch) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     if ($script:adoptLetter) { & subst.exe "$($script:adoptLetter):" /D | Out-Null }
+    if ($script:folderLetter) { & subst.exe "$($script:folderLetter):" /D | Out-Null }
     Remove-ProgramFirewallRules (Join-Path $repository "host-agent\bin")
     Remove-ProgramFirewallRules $scratch
     $env:LOCALAPPDATA = $realLocalAppData
@@ -208,15 +232,7 @@ try {
         }
     }
 
-    Describe "a folder node and the host agent" {
-        It "lists a folder node in its volume's index" {
-            $Root = "$($script:nodeRoot)files"
-            New-Item -ItemType Directory -Force -Path $Root | Out-Null
-            Register-FolderNode
-            (Read-TomlFile "$($script:nodeRoot).storage\nodes.toml")[""]["paths"] | Should Be @("files")
-            Register-FolderNode
-            @((Read-TomlFile "$($script:nodeRoot).storage\nodes.toml")[""]["paths"]).Count | Should Be 1
-        }
+    Describe "the host agent" {
         It "uses the host agent's Syncthing when the agent runs the node" {
             $node = Read-NodeFile $script:nodeRoot
             $status = Get-AgentStatusFolder $repository
@@ -334,6 +350,174 @@ try {
             Remove-Item -Recurse -Force (Join-Path $fresh ".storage")
             $Threshold | Should Be 50
             { Assert-JoinThreshold } | Should Not Throw
+        }
+    }
+
+    $script:folderLetter = Get-FreeDriveLetter
+    New-Item -ItemType Directory -Force -Path (Join-Path $scratch "volume3") | Out-Null
+    & subst.exe "$($script:folderLetter):" (Join-Path $scratch "volume3") | Out-Null
+    $volume = "$($script:folderLetter):\"
+    New-Item -ItemType Directory -Force -Path "$($volume)files", "$($volume)more", "$($volume)outer\in", "$($volume)node2", "$($script:nodeRoot)sub" | Out-Null
+
+    Describe "when it asks" {
+        It "asks on a console with no parameters and no STORAGE_JOIN_* set" {
+            $global:terminal = $true
+            Test-IsInteractiveJoin 0 | Should Be $true
+        }
+        It "does not with a parameter passed" {
+            $global:terminal = $true
+            Test-IsInteractiveJoin 1 | Should Be $false
+        }
+        It "does not with a STORAGE_JOIN_* set" {
+            $global:terminal = $true
+            $env:STORAGE_JOIN_THRESHOLD = "50"
+            try { Test-IsInteractiveJoin 0 | Should Be $false } finally { Remove-Item Env:\STORAGE_JOIN_THRESHOLD }
+        }
+        It "does not with input redirected" {
+            $global:terminal = $false
+            Test-IsInteractiveJoin 0 | Should Be $false
+        }
+    }
+
+    Describe "the three questions, answered from scripted input" {
+        $savedRoot = $script:Root
+        $savedThreshold = $script:Threshold
+        $global:tailnetState = "Running"
+
+        It "takes a drive root at 70 and joins" {
+            $script:Root = $volume
+            Invoke-Choices @("1", "", "70", "y") | Should Be "True"
+            $script:Root | Should Be $volume
+            $script:Threshold | Should Be 70
+            $global:questions -contains "choose 1, 2 or 3 [1]" | Should Be $true
+            $global:questions -contains "threshold, 0 to 100 (essential 80+, working 50+, archive 1+, 0 keeps everything) [50]" | Should Be $true
+            $global:questions -contains "join the storage network now? [Y/n]" | Should Be $true
+            $global:logLines -contains "  3) none: this device does not join the storage network" | Should Be $true
+            $global:logLines -contains "threshold 70, keeps essential and working" | Should Be $true
+        }
+        It "keeps everything only when confirmed, on the second try" {
+            $script:Threshold = 50
+            Invoke-Choices @("2", "$($volume)files", "0", "n", "0", "y", "") | Should Be "True"
+            $script:Root | Should Be "$($volume)files"
+            $script:Threshold | Should Be 0
+            $global:questions -contains "threshold 0 keeps EVERYTHING the storage network holds, backups and archives included. Keep everything? [y/N]" | Should Be $true
+            $global:logLines -contains "the threshold was not changed" | Should Be $true
+            $global:logLines -contains "threshold 0, keeps EVERYTHING, backups included" | Should Be $true
+            { Assert-JoinThreshold } | Should Not Throw
+        }
+        It "answers none" {
+            $script:Root = $volume
+            Invoke-Choices @("3") | Should Be "False"
+            $global:logLines -contains "no storage node chosen; this device does not join the storage network" | Should Be $true
+        }
+        It "offers none when the root is no drive root" {
+            $script:Root = "$($volume)files"
+            Invoke-Choices @("") | Should Be "False"
+            $global:questions -contains "choose 1, 2 or 3 [3]" | Should Be $true
+        }
+        It "asks again for a drive root that is not one" {
+            $script:Threshold = 50
+            Invoke-Choices @("1", "$($volume)files", $volume.TrimEnd('\'), "", "") | Should Be "True"
+            $script:Root | Should Be $volume
+            ($global:logLines -join "|") | Should Match "is not a drive root.*choose it as a folder"
+        }
+        It "asks again for a folder that is relative, missing or a drive root" {
+            Invoke-Choices @("2", "files", "$($volume)nothing", $volume, "$($volume)files\", "", "") | Should Be "True"
+            $script:Root | Should Be "$($volume)files"
+            ($global:logLines -join "|") | Should Match "a full path with its drive letter.*nothing does not exist.*is a drive root"
+        }
+        It "asks again for a threshold outside 0 to 100" {
+            $script:Root = $volume
+            Invoke-Choices @("1", "", "101", "high", "80", "") | Should Be "True"
+            $script:Threshold | Should Be 80
+            ($global:logLines -join "|") | Should Match "from 0 to 100, not '101'.*not 'high'"
+        }
+        It "stops when the join is answered no" {
+            Invoke-Choices @("1", "", "", "n") | Should Be "False"
+            $global:logLines -contains "not joining; run this again to join" | Should Be $true
+        }
+        It "offers no join without a key or the tailnet" {
+            $global:tailnetState = "NeedsLogin"
+            $AuthKey = $null
+            Invoke-Choices @("1", "", "", "") | Should Be "False"
+            $global:questions -contains "join the storage network now? [y/N]" | Should Be $true
+            ($global:logLines -join "|") | Should Match "no Tailscale key"
+            $global:tailnetState = "Running"
+        }
+        It "leaves an existing node's threshold, unasked" {
+            Invoke-Choices @("1", $script:nodeRoot, "") | Should Be "True"
+            $global:logLines -contains "$($script:nodeRoot).storage\node.toml keeps its threshold, 50" | Should Be $true
+            @($global:questions | Where-Object { $_ -like "threshold*" }).Count | Should Be 0
+        }
+        It "fails when the input ends" {
+            Invoke-Choices @("2") | Should Be "failed: no answer to: the folder that becomes the storage node (a full path)"
+        }
+
+        $script:Root = $savedRoot
+        $script:Threshold = $savedThreshold
+        $script:keepAllConfirmed = $false
+    }
+
+    Describe "a folder node is listed in its drive's index" {
+        It "lists it" {
+            $Root = "$($volume)files"
+            Register-FolderNode
+            @(Get-IndexPaths $volume) | Should Be @("files")
+        }
+        It "lists it once" {
+            $Root = "$($volume)files"
+            $script:joinChanges = 0
+            Register-FolderNode
+            $script:joinChanges | Should Be 0
+            @(Get-IndexPaths $volume).Count | Should Be 1
+        }
+        It "adds a second one" {
+            $Root = "$($volume)more"
+            Register-FolderNode
+            $Root = "$($volume)outer\in"
+            Register-FolderNode
+            [System.IO.File]::ReadAllText("$($volume).storage\nodes.toml") | Should Be "paths = [`"files`", `"more`", `"outer/in`"]`n"
+        }
+    }
+
+    Describe "nested nodes are refused, and nothing is written" {
+        It "refuses a folder inside a listed folder node" {
+            $Root = "$($volume)files\inner"
+            New-Item -ItemType Directory -Force -Path $Root | Out-Null
+            Invoke-JoinCapturingFailure | Should Match ([regex]::Escape("$($volume)files\inner and $($volume)files are nested; a folder node cannot hold another"))
+            Test-Path "$Root\.storage" | Should Be $false
+        }
+        It "refuses a folder holding a listed folder node" {
+            $Root = "$($volume)outer"
+            Invoke-JoinCapturingFailure | Should Match ([regex]::Escape("$($volume)outer and $($volume)outer\in are nested"))
+        }
+        It "refuses a folder on a drive node's drive" {
+            $Root = "$($script:nodeRoot)sub"
+            Invoke-JoinCapturingFailure | Should Match ([regex]::Escape("the drive $($script:nodeRoot) is a drive node"))
+        }
+        It "refuses a drive node over listed folder nodes" {
+            $Root = $volume
+            Invoke-JoinCapturingFailure | Should Match "lists folder nodes.*cannot be a drive node"
+            Test-Path "$($volume).storage\node.toml" | Should Be $false
+        }
+    }
+
+    Describe "joining a folder node end to end" {
+        $userSyncthingGuiPort = 18494
+        $userSyncthingListenPort = 32194
+        $Name = "pc-files"
+        $Root = "$($volume)node2"
+        $script:joinChanges = 0
+        $outcome = Invoke-JoinCapturingFailure
+
+        It "succeeds" { $outcome | Should Be "ok" }
+        It "writes a folder node file" { (Read-NodeFile $Root).kind | Should Be "folder" }
+        It "lists it in the drive's index" { @(Get-IndexPaths $volume) | Should Be @("files", "more", "outer/in", "node2") }
+        It "changes nothing when run again" {
+            $script:joinChanges = 0
+            Invoke-JoinCapturingFailure | Should Be "ok"
+            $script:joinChanges | Should Be 0
+            @(Get-IndexPaths $volume).Count | Should Be 4
         }
     }
 } finally {

@@ -15,20 +15,31 @@
 #   STORAGE_JOIN_ALLOW_KEEP_ALL  1 lets a device node keep everything (threshold 0)
 #   STORAGE_JOIN_USER       whose home gets the folder links, default the data root's owner
 #   STORAGE_JOIN_OFFLINE_REPO  a pacman repository directory (the stick's `offline`) tried first
+#
+# Run from a terminal with none of these set, it asks for the node, the threshold and whether to join,
+# as imprint's review screen does. A folder node is also listed in its volume's .storage/nodes.toml.
 set -euo pipefail
 
 readonly HOME_LINKS="Documents:Documents Pictures:Pictures Music:Music Videos:Videos Downloads:Downloads Desktop:Desktop Templates:Templates Public:Public Documents/GitHub:code"
 readonly UNIT_NAME="storage-syncthing.service"
 
-join_root="${STORAGE_JOIN_ROOT:-/data}"
+readonly ESSENTIAL_THRESHOLD=80 WORKING_THRESHOLD=50
+
 join_kind="${STORAGE_JOIN_KIND:-drive}"
 join_threshold="${STORAGE_JOIN_THRESHOLD:-50}"
+allow_keep_all="${STORAGE_JOIN_ALLOW_KEEP_ALL:-}"
 unit_dir="${STORAGE_JOIN_UNIT_DIR:-/etc/systemd/system}"
 gui_port="${STORAGE_JOIN_GUI_PORT:-8384}"
 listen_port="${STORAGE_JOIN_LISTEN_PORT:-22000}"
-syncthing_home="$join_root/.storage/syncthing"
-node_file="$join_root/.storage/node.toml"
 changes=0
+answer=""
+
+use_root() {
+    join_root="$1"
+    syncthing_home="$join_root/.storage/syncthing"
+    node_file="$join_root/.storage/node.toml"
+}
+use_root "${STORAGE_JOIN_ROOT:-/data}"
 
 log() { printf 'storage-join: %s\n' "$*"; }
 changed() { changes=$((changes + 1)); log "$*"; }
@@ -347,16 +358,202 @@ check_threshold() {
     local threshold="$join_threshold"
     [[ -f "$node_file" ]] && threshold="$(node_file_threshold)"
     [[ "$threshold" =~ ^[0-9]+$ ]] || fail "the threshold must be a whole number, not '$threshold'"
-    [[ "$threshold" -ne 0 || "$join_kind" == array || "${STORAGE_JOIN_ALLOW_KEEP_ALL:-}" == 1 ]] && return 0
+    [[ "$threshold" -ne 0 || "$join_kind" == array || "$allow_keep_all" == 1 ]] && return 0
     fail "threshold 0 keeps everything the network holds, backups and archives included, which only the cluster should; use 50 (working and essential), or set STORAGE_JOIN_ALLOW_KEEP_ALL=1"
 }
 
+
+volume_root_of() {
+    local path
+    path="$(realpath -m "$1")"
+    if command -v findmnt > /dev/null 2>&1; then findmnt -n -o TARGET -T "$path"; else df --output=target "$path" | tail -n 1; fi
+}
+
+is_volume_root() { [[ "$(volume_root_of "$1")" == "$(realpath -m "$1")" ]]; }
+
+relative_to_volume() {
+    local root volume
+    root="$(realpath -m "$1")"
+    volume="$(volume_root_of "$root")"
+    printf '%s' "${root#"${volume%/}"/}"
+}
+
+index_file_of() { printf '%s/.storage/nodes.toml' "${1%/}"; }
+
+index_paths() {
+    local index
+    index="$(index_file_of "$1")"
+    [[ -f "$index" ]] || return 0
+    tr '\n' ' ' < "$index" | sed -n 's/.*paths *= *\[\([^]]*\)\].*/\1/p' | grep -o '"[^"]*"' | tr -d '"' || true
+}
+
+is_nested() { [[ "$1" == "$2"/* || "$2" == "$1"/* ]]; }
+
+# The host agent's rule: a node is never nested in another, or its files would be synced twice.
+node_placement_problem() {
+    local kind="$1" root volume relative listed
+    root="$(realpath -m "$2")"
+    [[ -d "$root" ]] || return 0
+    volume="$(volume_root_of "$root")"
+    if [[ "$kind" != folder ]]; then
+        [[ -z "$(index_paths "$root")" ]] || echo "$(index_file_of "$root") lists folder nodes, and a node is never nested in another, so $root cannot be a drive node"
+        return 0
+    fi
+    if [[ "$root" == "$volume" ]]; then echo "$root is a drive root; a folder node is a folder below one"; return 0; fi
+    if [[ -f "${volume%/}/.storage/node.toml" ]]; then echo "the volume at $volume is a drive node, and a node is never nested in another"; return 0; fi
+    relative="$(relative_to_volume "$root")"
+    while IFS= read -r listed; do
+        [[ -n "$listed" && "$listed" != "$relative" ]] || continue
+        if is_nested "$relative" "$listed"; then echo "$root and ${volume%/}/$listed are nested; a folder node cannot hold another"; return 0; fi
+    done < <(index_paths "$volume")
+}
+
+check_node_placement() {
+    local problem
+    problem="$(node_placement_problem "$join_kind" "$join_root")"
+    [[ -z "$problem" ]] || fail "$problem"
+}
+
+# A folder node is found only through its volume's index, never by searching, so it is listed there.
+register_folder_node() {
+    [[ "$join_kind" == folder ]] || return 0
+    local volume relative index listed paths=()
+    volume="$(volume_root_of "$join_root")"
+    relative="$(relative_to_volume "$join_root")"
+    index="$(index_file_of "$volume")"
+    mapfile -t paths < <(index_paths "$volume")
+    for listed in "${paths[@]}"; do [[ "$listed" == "$relative" ]] && return 0; done
+    paths+=("$relative")
+    mkdir -p "$(dirname "$index")"
+    printf 'paths = [%s]\n' "$(printf '"%s", ' "${paths[@]}" | sed 's/, $//')" > "$index.partial"
+    mv "$index.partial" "$index"
+    changed "listed $relative in $index"
+}
+
+
+ask() {
+    local question="$1" default="$2"
+    if [[ -n "$default" ]]; then printf '%s [%s]: ' "$question" "$default" >&2; else printf '%s: ' "$question" >&2; fi
+    IFS= read -r answer || fail "no answer to: $question"
+    answer="${answer:-$default}"
+}
+
+confirm() {
+    local question="$1" default="$2" hint="y/N"
+    [[ "$default" == yes ]] && hint="Y/n"
+    while true; do
+        printf '%s [%s]: ' "$question" "$hint" >&2
+        IFS= read -r answer || fail "no answer to: $question"
+        case "${answer:-$default}" in
+            y | Y | yes | Yes | YES) return 0 ;;
+            n | N | no | No | NO) return 1 ;;
+            *) log "yes or no, please" ;;
+        esac
+    done
+}
+
+threshold_bands() {
+    if [[ "$1" -le 0 ]]; then echo "keeps EVERYTHING, backups included"
+    elif [[ "$1" -ge "$ESSENTIAL_THRESHOLD" ]]; then echo "keeps essential"
+    elif [[ "$1" -ge "$WORKING_THRESHOLD" ]]; then echo "keeps essential and working"
+    else echo "keeps essential, working and archive"; fi
+}
+
+root_choice_problem() {
+    local kind="$1" path="$2"
+    if [[ "$path" != /?* ]]; then echo "an absolute path below /, please"
+    elif [[ "$path" == *'"'* ]]; then echo "the path '$path' holds a quote"
+    elif [[ ! -d "$path" ]]; then echo "$path does not exist"
+    elif [[ "$kind" == drive ]] && ! is_volume_root "$path"; then echo "$path is not a drive root (its volume is at $(volume_root_of "$path")); choose it as a folder"
+    else node_placement_problem "$kind" "$path"; fi
+}
+
+choose_root() {
+    local kind="$1" question="$2" default="$3" problem
+    while true; do
+        ask "$question" "$default"
+        [[ "$answer" == / ]] || answer="${answer%/}"
+        problem="$(root_choice_problem "$kind" "$answer")"
+        if [[ -z "$problem" ]]; then join_kind="$kind"; use_root "$answer"; return 0; fi
+        log "$problem"
+    done
+}
+
+choose_node() {
+    local default=3
+    [[ -d "$join_root" ]] && is_volume_root "$join_root" && default=1
+    log "the drive or folder this device keeps in the storage network:"
+    printf '  1) a drive root\n  2) a folder\n  3) none: this device does not join the storage network\n' >&2
+    while true; do
+        ask "choose 1, 2 or 3" "$default"
+        case "$answer" in
+            1) choose_root drive "the drive root that becomes the storage node (a mount point)" "$([[ "$default" == 1 ]] && echo "$join_root")"; return 0 ;;
+            2) choose_root folder "the folder that becomes the storage node (an absolute path)" ""; return 0 ;;
+            3) join_kind=none; return 0 ;;
+            *) log "1, 2 or 3, please" ;;
+        esac
+    done
+}
+
+choose_threshold() {
+    local threshold
+    if [[ -f "$node_file" ]]; then log "$node_file keeps its threshold, $(node_file_threshold)"; return 0; fi
+    while true; do
+        ask "threshold, 0 to 100 (essential 80+, working 50+, archive 1+, 0 keeps everything)" "$join_threshold"
+        threshold="$answer"
+        if [[ ! "$threshold" =~ ^[0-9]{1,3}$ ]] || (( 10#$threshold > 100 )); then
+            log "the threshold is a whole number from 0 to 100, not '$threshold'"
+            continue
+        fi
+        threshold=$((10#$threshold))
+        if [[ "$threshold" -eq 0 ]]; then
+            if ! confirm "threshold 0 keeps EVERYTHING the storage network holds, backups and archives included. Keep everything?" no; then
+                log "the threshold was not changed"
+                continue
+            fi
+            allow_keep_all=1
+        fi
+        join_threshold="$threshold"
+        log "threshold $join_threshold, $(threshold_bands "$join_threshold")"
+        return 0
+    done
+}
+
+has_auth_key() { [[ -n "${STORAGE_JOIN_KEY:-}" || ( -n "${IMPRINT_PERSONAL:-}" && -s "$IMPRINT_PERSONAL/tailscale.key" ) ]]; }
+
+choose_join() {
+    local default=yes
+    if ! has_auth_key && [[ "$(tailnet_state)" != Running ]]; then
+        default=no
+        log "no Tailscale key (STORAGE_JOIN_KEY or personal/tailscale.key) and not on the tailnet yet: a join now stops at the tailnet"
+    fi
+    confirm "join the storage network now?" "$default"
+}
+
+# Returns 1 when the answers mean there is nothing to do.
+ask_choices() {
+    choose_node
+    if [[ "$join_kind" == none ]]; then log "no storage node chosen; this device does not join the storage network"; return 1; fi
+    choose_threshold
+    if ! choose_join; then log "not joining; run this again to join"; return 1; fi
+    log "joining with the $join_kind node at $join_root"
+}
+
+stdin_is_terminal() { [[ -t 0 ]]; }
+
+has_join_settings() { [[ -n "$(compgen -v STORAGE_JOIN_)" ]]; }
+
+is_interactive() { stdin_is_terminal && ! has_join_settings; }
+
 main() {
     [[ "$(id -u)" -eq 0 ]] || fail "run as root"
+    if is_interactive && ! ask_choices; then return 0; fi
     check_threshold
+    check_node_placement
     install_packages
     join_tailnet
     write_node_file
+    register_folder_node
     start_syncthing
     wait_for_syncthing
     configure_options
