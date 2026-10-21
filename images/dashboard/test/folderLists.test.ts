@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import { type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
-import { PathSet, browseFor, listsFor } from "../src/folderLists.js";
-import { SyncthingClient } from "../src/syncthing.js";
+import { PathSet, browseFor, listsFor, listsWithStatus } from "../src/folderLists.js";
+import { type FolderStatus, SyncthingClient } from "../src/syncthing.js";
 
 const fixtures = new URL("../../test/fixtures/syncthing-tree/", import.meta.url);
 
@@ -33,6 +33,7 @@ describe("folder lists", () => {
   let errors: { path: string; error: string }[];
   let changed: string[];
   let browsed: { name: string; modTime: string; size: number; type: string }[];
+  let delayMs = 0;
   const hits: Record<string, number> = {};
   const perPages: number[] = [];
   let instanceCount = 0;
@@ -40,9 +41,10 @@ describe("folder lists", () => {
   before(async () => {
     baseStatus = await fixture("status-documents.json");
     baseErrors = await fixture("errors-documents.json");
-    server = createServer((request, response) => {
+    server = createServer(async (request, response) => {
       const url = new URL(request.url ?? "/", "http://fake");
       hits[url.pathname] = (hits[url.pathname] ?? 0) + 1;
+      if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
       if (url.searchParams.has("perpage")) perPages.push(Number(url.searchParams.get("perpage")));
       switch (url.pathname) {
         case "/rest/db/status":
@@ -74,6 +76,7 @@ describe("folder lists", () => {
     errors = (baseErrors.errors as { path: string; error: string }[]).slice();
     changed = [];
     browsed = [];
+    delayMs = 0;
     for (const key of Object.keys(hits)) delete hits[key];
     perPages.length = 0;
     instanceCount += 1;
@@ -105,8 +108,11 @@ describe("folder lists", () => {
     assert.equal(first.errors.countUnder("Recipes/cake"), 1);
 
     status = { ...status, sequence: 6 };
-    const third = await listsFor(key, client, "documents");
-    assert.notEqual(third, first);
+    assert.equal(await listsFor(key, client, "documents"), first);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const fourth = await listsFor(key, client, "documents");
+    assert.notEqual(fourth, first);
+    assert.equal(fourth.sequence, 6);
     assert.equal(hits["/rest/db/need"], 2);
     assert.equal(hits["/rest/folder/errors"], 2);
   });
@@ -130,27 +136,64 @@ describe("folder lists", () => {
     assert.ok(perPages.every((perPage) => perPage <= 100));
     assert.ok(lists.need !== "too-many");
     assert.equal(lists.need.countUnder("Recipes"), 250);
+    assert.ok(lists.localChanged !== "too-many");
     assert.equal(lists.localChanged.countUnder("Garden Plans"), 1);
   });
 
   it("a directory is browsed once per sequence and the last answer is served while the folder changes", async () => {
     const key = `pc-${instanceCount}`;
     browsed = [{ name: "Recipes", modTime: "2026-10-21T10:00:00Z", size: 0, type: "FILE_INFO_TYPE_DIRECTORY" }];
-    const first = await browseFor(key, client, "documents", "", 5);
-    assert.deepEqual(await browseFor(key, client, "documents", "", 5), first);
+    const first = await browseFor(key, client, "documents", "", "5");
+    assert.deepEqual(await browseFor(key, client, "documents", "", "5"), first);
     assert.equal(hits["/rest/db/browse"], 1);
     browsed = [...browsed, { name: "Taxes", modTime: "2026-10-21T10:00:00Z", size: 0, type: "FILE_INFO_TYPE_DIRECTORY" }];
-    assert.deepEqual(await browseFor(key, client, "documents", "", 6), first);
+    assert.deepEqual(await browseFor(key, client, "documents", "", "6"), first);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.deepEqual((await browseFor(key, client, "documents", "", 6)).map((entry) => entry.name), ["Recipes", "Taxes"]);
+    assert.deepEqual((await browseFor(key, client, "documents", "", "6")).map((entry) => entry.name), ["Recipes", "Taxes"]);
     assert.equal(hits["/rest/db/browse"], 2);
   });
 
+  it("keeps one browse in flight while a folder changes and reads the newest change after it", async () => {
+    const key = `pc-${instanceCount}`;
+    browsed = [{ name: "Recipes", modTime: "2026-10-21T10:00:00Z", size: 0, type: "FILE_INFO_TYPE_DIRECTORY" }];
+    const first = await browseFor(key, client, "documents", "", "a");
+    delayMs = 150;
+    browsed = [{ name: "Taxes", modTime: "2026-10-21T10:00:00Z", size: 0, type: "FILE_INFO_TYPE_DIRECTORY" }];
+    const answers = await Promise.all(["b", "c", "d"].map((fingerprint) => browseFor(key, client, "documents", "", fingerprint)));
+    assert.ok(answers.every((answer) => answer === first));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(hits["/rest/db/browse"], 2);
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    assert.equal(hits["/rest/db/browse"], 3);
+    delayMs = 0;
+    assert.deepEqual((await browseFor(key, client, "documents", "", "d")).map((entry) => entry.name), ["Taxes"]);
+    assert.equal(hits["/rest/db/browse"], 3);
+  });
+
+  it("keeps one list read in flight while a folder changes", async () => {
+    const key = `pc-${instanceCount}`;
+    need = ["Recipes/a.txt"];
+    status = { ...status, needFiles: 1, needTotalItems: 1, sequence: 10 };
+    const first = await listsFor(key, client, "documents");
+    delayMs = 150;
+    for (const sequence of [11, 12, 13]) {
+      status = { ...status, sequence };
+      assert.equal(await listsWithStatus(key, client, "documents", status as unknown as FolderStatus), first);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    delayMs = 0;
+    const newest = await listsFor(key, client, "documents");
+    assert.equal(newest.sequence, 13);
+    assert.equal(hits["/rest/db/need"], 3);
+  });
+
   it("above the limit the folder is too many to place", async () => {
-    status = { ...status, needFiles: 25, needTotalItems: 25, errors: 30, pullErrors: 30 };
+    status = { ...status, needFiles: 25, needTotalItems: 25, errors: 30, pullErrors: 30, receiveOnlyTotalItems: 21 };
     const lists = await listsFor(`pc-${instanceCount}`, client, "documents", 20);
     assert.equal(lists.need, "too-many");
     assert.equal(lists.errors, "too-many");
+    assert.equal(lists.localChanged, "too-many");
+    assert.equal(hits["/rest/db/localchanged"], undefined);
     assert.equal(hits["/rest/db/need"], undefined);
     assert.equal(hits["/rest/folder/errors"], undefined);
   });

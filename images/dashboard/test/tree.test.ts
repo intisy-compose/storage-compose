@@ -9,7 +9,8 @@ import type { StorageNode, TreeEntry } from "../src/api/types.js";
 import { RequestError } from "../src/http.js";
 import { parseLayout } from "../src/setupRepo.js";
 import { SyncthingClient } from "../src/syncthing.js";
-import { type TreeNode, type TreeSources, liveTreeNode, treeListing } from "../src/routes/tree.js";
+import { liveTreeNode } from "../src/routes/tree.js";
+import { type TreeNode, type TreeSources, treeListing } from "../src/treeListing.js";
 
 const fixtures = new URL("../../test/fixtures/syncthing-tree/", import.meta.url);
 const ownId = "OWNAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
@@ -44,6 +45,9 @@ interface FakeInstance {
   folders: FakeFolder[];
   pending: Record<string, { offeredBy: Record<string, { time: string; label: string; receiveEncrypted: boolean }> }>;
   fileDelayMs: number;
+  errorsDelayMs: number;
+  browseDelayMs: number;
+  failingFile: string | null;
 }
 
 function reply(response: ServerResponse, body: unknown, status = 200): void {
@@ -57,6 +61,15 @@ function directory(name: string): BrowseItem {
 
 function file(name: string, size = 10): BrowseItem {
   return { name, modTime: "2026-10-16T06:55:40+02:00", size, type: "FILE_INFO_TYPE_FILE" };
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function delayed(milliseconds: number, answer: () => void): Promise<void> {
+  if (milliseconds) await wait(milliseconds);
+  answer();
 }
 
 function names(entries: TreeEntry[]): string[] {
@@ -86,7 +99,7 @@ describe("tree listing of one node", () => {
   );
 
   function sources(overrides: Partial<TreeSources> = {}): TreeSources {
-    return { node: async () => node, layout: async () => layout, needLimit: 20_000, ...overrides };
+    return { node: async () => node, layout: async () => layout, needLimit: 20_000, firstListsWaitMs: 10_000, ...overrides };
   }
 
   function folderOf(requestUrl: URL): FakeFolder | undefined {
@@ -101,6 +114,7 @@ describe("tree listing of one node", () => {
     mostInFlight = Math.max(mostInFlight, inFlight);
     await new Promise((resolve) => setTimeout(resolve, instance.fileDelayMs));
     inFlight -= 1;
+    if (path === instance.failingFile) return reply(response, "database is locked", 500);
     const local = folder?.local?.[path];
     if (local === undefined) return reply(response, { ...fileFixture, availability: [{ id: otherId, fromTemporary: false }] });
     if (local === null) return reply(response, { availability: [{ id: otherId }], global: fileFixture.global });
@@ -140,11 +154,11 @@ describe("tree listing of one node", () => {
           return reply(response, { ...statusFixture, errors: folder.errors?.length ?? 0, pullErrors: folder.errors?.length ?? 0, needFiles: folder.need?.length ?? 0, needTotalItems: folder.need?.length ?? 0, ...folder.status });
         case "/rest/db/browse":
           browseRequests.push(`${folder?.id}:${requestUrl.searchParams.get("prefix") ?? ""}:${requestUrl.searchParams.get("levels")}`);
-          return reply(response, folder?.browse[requestUrl.searchParams.get("prefix") ?? ""] ?? []);
+          return void delayed(instance.browseDelayMs, () => reply(response, folder?.browse[requestUrl.searchParams.get("prefix") ?? ""] ?? []));
         case "/rest/db/file":
           return void serveFile(requestUrl, response);
         case "/rest/folder/errors":
-          return reply(response, { errors: (folder?.errors ?? []).map((path) => ({ path, error: "denied" })), page: 1, perpage: 100 });
+          return void delayed(instance.errorsDelayMs, () => reply(response, { errors: (folder?.errors ?? []).map((path) => ({ path, error: "denied" })), page: 1, perpage: 100 }));
         case "/rest/db/need":
           return reply(response, { progress: [], queued: [], rest: (folder?.need ?? []).map((name) => ({ name })) });
         case "/rest/db/localchanged":
@@ -168,6 +182,9 @@ describe("tree listing of one node", () => {
       ],
       pending: {},
       fileDelayMs: 0,
+      errorsDelayMs: 0,
+      browseDelayMs: 0,
+      failingFile: null,
     };
     fileRequests = [];
     browseRequests = [];
@@ -278,6 +295,48 @@ describe("tree listing of one node", () => {
 
   it("refuses a path that climbs out of the tree", async () => {
     await assert.rejects(treeListing(node.nodeId, "Documents/../..", 1, sources()), (error: unknown) => error instanceof RequestError && error.status === 400);
+  });
+
+  it("a listing during a slow refresh answers from the previous lists", async () => {
+    await treeListing(node.nodeId, "Documents", 1, sources());
+    instance.folders[0].errors = ["Recipes\\cake\\session.lock"];
+    instance.folders[0].status = { sequence: 999_001 };
+    instance.errorsDelayMs = 400;
+    const started = Date.now();
+    const during = await treeListing(node.nodeId, "Documents", 1, sources());
+    assert.ok(Date.now() - started < 300, `${Date.now() - started} ms`);
+    assert.equal(stateOf(during.entries.find((entry) => entry.name === "Taxes")).status, "failed");
+    assert.equal(stateOf(during.entries.find((entry) => entry.name === "Recipes")).status, "in-sync");
+    await wait(600);
+    const after = await treeListing(node.nodeId, "Documents", 1, sources());
+    assert.equal(stateOf(after.entries.find((entry) => entry.name === "Taxes")).status, "in-sync");
+    assert.equal(stateOf(after.entries.find((entry) => entry.name === "Recipes")).status, "failed");
+  });
+
+  it("a first read of the lists that takes too long shows the folder's counts with a note", async () => {
+    instance.errorsDelayMs = 400;
+    const listing = await treeListing(node.nodeId, "Documents", 1, sources({ firstListsWaitMs: 50 }));
+    assert.deepEqual(stateOf(listing.entries.find((entry) => entry.name === "Recipes")), { status: "failed", detail: "too many failed items to place" });
+    assert.ok(listing.notes.some((note) => note.includes("still being read")), listing.notes.join("; "));
+    await wait(500);
+  });
+
+  it("a global change with the same local sequence re-reads the directory", async () => {
+    await treeListing(node.nodeId, "Documents", 1, sources());
+    const before = browseRequests.filter((request) => request === "documents::0").length;
+    instance.folders[0].status = { globalTotalItems: 920_299 };
+    await treeListing(node.nodeId, "Documents", 1, sources());
+    await wait(50);
+    assert.equal(browseRequests.filter((request) => request === "documents::0").length, before + 1);
+  });
+
+  it("an entry whose index entry cannot be read is unknown and the page still answers", async () => {
+    instance.failingFile = "Recipes";
+    const listing = await treeListing(node.nodeId, "Documents", 1, sources());
+    const recipes = stateOf(listing.entries.find((entry) => entry.name === "Recipes"));
+    assert.equal(recipes.status, "unknown");
+    assert.match(recipes.detail ?? "", /could not be read/);
+    assert.equal(stateOf(listing.entries.find((entry) => entry.name === "Garden Plans")).status, "in-sync");
   });
 
   it("a remote node is 409 until Task 1b.4", async () => {

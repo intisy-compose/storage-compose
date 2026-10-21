@@ -32,15 +32,56 @@ export interface FolderLists {
   sequence: number;
   need: PathSet | "too-many";
   errors: PathSet | "too-many";
-  localChanged: PathSet;
+  localChanged: PathSet | "too-many";
 }
 
-interface CachedLists {
-  fingerprint: string;
-  lists: Promise<FolderLists>;
+interface Slot<Value> {
+  done: { fingerprint: string; value: Value } | null;
+  inFlight: Promise<Value> | null;
+  wanted: { fingerprint: string; read: () => Promise<Value> } | null;
 }
 
-const cache = new Map<string, CachedLists>();
+/**
+ * Per key, the last answer read in full and at most one read in flight. A caller gets the last
+ * answer at once, even while a newer one is read; only the very first read of a key is waited for.
+ * A fingerprint asked for while a read runs is read after it, once, with the newest request's reader.
+ */
+class RefreshingCache<Value> {
+  private readonly slots = new Map<string, Slot<Value>>();
+
+  constructor(private readonly maxKeys = Infinity) {}
+
+  get(key: string, fingerprint: string, read: () => Promise<Value>): Promise<Value> {
+    const slot = this.slots.get(key) ?? { done: null, inFlight: null, wanted: null };
+    this.slots.delete(key);
+    this.slots.set(key, slot);
+    if (this.slots.size > this.maxKeys) this.slots.delete(this.slots.keys().next().value!);
+    if (slot.done?.fingerprint === fingerprint) return Promise.resolve(slot.done.value);
+    if (slot.inFlight) slot.wanted = { fingerprint, read };
+    else this.start(slot, fingerprint, read);
+    return slot.done ? Promise.resolve(slot.done.value) : slot.inFlight!;
+  }
+
+  private start(slot: Slot<Value>, fingerprint: string, read: () => Promise<Value>): void {
+    const reading = read();
+    slot.inFlight = reading;
+    slot.wanted = null;
+    const finish = () => {
+      slot.inFlight = null;
+      const wanted = slot.wanted;
+      if (wanted && wanted.fingerprint !== slot.done?.fingerprint) this.start(slot, wanted.fingerprint, wanted.read);
+    };
+    reading.then(
+      (value) => {
+        slot.done = { fingerprint, value };
+        finish();
+      },
+      finish,
+    );
+  }
+}
+
+const listsCache = new RefreshingCache<FolderLists>();
 
 async function readAllPages(readPage: (page: number) => Promise<string[]>, total: number): Promise<string[]> {
   const items: string[] = [];
@@ -60,72 +101,51 @@ async function placedList(total: number, limit: number, readPage: (page: number)
 }
 
 async function readLists(client: SyncthingClient, folderId: string, status: FolderStatus, limit: number): Promise<FolderLists> {
-  const needTotal = status.needTotalItems ?? status.needFiles ?? 0;
-  const errorTotal = status.errors ?? status.pullErrors ?? 0;
-  const changedTotal = Math.min(status.receiveOnlyTotalItems ?? 0, limit);
   const [need, errors, localChanged] = await Promise.all([
-    placedList(needTotal, limit, async (page) => {
+    placedList(needTotalOf(status), limit, async (page) => {
       const answer = await client.needPage(folderId, page, perPage);
       return [...(answer.progress ?? []), ...(answer.queued ?? []), ...(answer.rest ?? [])].map((item) => item.name);
     }),
-    placedList(errorTotal, limit, async (page) => ((await client.errorsPage(folderId, page, perPage)).errors ?? []).map((item) => item.path)),
-    placedList(changedTotal, limit, async (page) => ((await client.localChangedPage(folderId, page, perPage)).files ?? []).map((item) => item.name)),
+    placedList(errorTotalOf(status), limit, async (page) => ((await client.errorsPage(folderId, page, perPage)).errors ?? []).map((item) => item.path)),
+    placedList(status.receiveOnlyTotalItems ?? 0, limit, async (page) => ((await client.localChangedPage(folderId, page, perPage)).files ?? []).map((item) => item.name)),
   ]);
-  return { sequence: status.sequence ?? 0, need, errors, localChanged: localChanged === "too-many" ? new PathSet([]) : localChanged };
+  return { sequence: status.sequence ?? 0, need, errors, localChanged };
+}
+
+export function needTotalOf(status: FolderStatus): number {
+  return status.needTotalItems ?? status.needFiles ?? 0;
+}
+
+export function errorTotalOf(status: FolderStatus): number {
+  return status.errors ?? status.pullErrors ?? 0;
 }
 
 /**
- * @implNote Kept until the sequence or one of the three counts changes: a pull error or a remote
- * device's change moves the counts without touching this instance's own sequence.
+ * Moves with any change of the folder's global tree, not only this instance's own index: another
+ * device's change leaves `sequence` alone and moves the global counts and `remoteSequence`.
  */
-function fingerprintOf(status: FolderStatus): string {
-  return [status.sequence ?? 0, status.needTotalItems ?? status.needFiles ?? 0, status.errors ?? status.pullErrors ?? 0, status.receiveOnlyTotalItems ?? 0].join(":");
+export function treeFingerprint(status: FolderStatus): string {
+  return [status.sequence ?? 0, status.globalTotalItems ?? 0, status.globalBytes ?? 0, status.globalDeleted ?? 0, JSON.stringify(status.remoteSequence ?? {})].join(":");
 }
 
-interface CachedBrowse {
-  sequence: number;
-  entries: Promise<BrowseEntry[]>;
+/** @implNote A pull error moves the counts without touching any sequence, so they are part of it. */
+function listsFingerprint(status: FolderStatus): string {
+  return [treeFingerprint(status), needTotalOf(status), errorTotalOf(status), status.receiveOnlyTotalItems ?? 0].join(":");
 }
 
-/** Answers read in full; `browsesInFlight` holds the reads not finished yet. */
-const browseCache = new Map<string, CachedBrowse>();
-const browsesInFlight = new Map<string, CachedBrowse>();
-const browseCacheSize = 200;
-
-function rememberBrowse(key: string, value: CachedBrowse): void {
-  browseCache.delete(key);
-  browseCache.set(key, value);
-  if (browseCache.size > browseCacheSize) browseCache.delete(browseCache.keys().next().value!);
-}
-
-function startBrowse(key: string, client: SyncthingClient, folderId: string, prefix: string, sequence: number): CachedBrowse {
-  const read = { sequence, entries: client.browse(folderId, prefix, 0) };
-  browsesInFlight.set(key, read);
-  read.entries
-    .then(() => rememberBrowse(key, read))
-    .catch(() => undefined)
-    .finally(() => {
-      if (browsesInFlight.get(key) === read) browsesInFlight.delete(key);
-    });
-  return read;
-}
+const browseCache = new RefreshingCache<BrowseEntry[]>(200);
 
 /**
- * One level of the folder's tree below `prefix`, kept per folder sequence.
+ * One level of the folder's tree below `prefix`, kept per tree fingerprint.
  * @implNote Syncthing walks every item below the prefix to answer, about 6 s at the root of a folder
- * with 900,000 items, so after the folder changed the previous answer is served while a new one is
- * read, and the explorer warms the roots it shows.
+ * with 900,000 items, so a changed folder is re-read once at a time behind the last answer, and the
+ * explorer warms the roots it shows.
  */
-export async function browseFor(instanceKey: string, client: SyncthingClient, folderId: string, prefix: string, sequence: number): Promise<BrowseEntry[]> {
-  const key = `${instanceKey}\u0000${folderId}\u0000${prefix}`;
-  const cached = browseCache.get(key);
-  if (cached?.sequence === sequence) return cached.entries;
-  const inFlight = browsesInFlight.get(key);
-  const read = inFlight?.sequence === sequence ? inFlight : startBrowse(key, client, folderId, prefix, sequence);
-  return cached ? cached.entries : read.entries;
+export function browseFor(instanceKey: string, client: SyncthingClient, folderId: string, prefix: string, fingerprint: string): Promise<BrowseEntry[]> {
+  return browseCache.get(`${instanceKey}\u0000${folderId}\u0000${prefix}`, fingerprint, () => client.browse(folderId, prefix, 0));
 }
 
-/** The folder's outstanding, failed and locally changed items, read once per change of the folder. */
+/** The folder's outstanding, failed and locally changed items, re-read behind the last answer when the folder changes. */
 export async function listsFor(instanceKey: string, client: SyncthingClient, folderId: string, needLimit = explorerSettings.needLimit): Promise<FolderLists> {
   const status = await client.folderStatus(folderId);
   return listsWithStatus(instanceKey, client, folderId, status, needLimit);
@@ -133,14 +153,5 @@ export async function listsFor(instanceKey: string, client: SyncthingClient, fol
 
 /** As `listsFor`, for a caller that already holds the folder's status. */
 export function listsWithStatus(instanceKey: string, client: SyncthingClient, folderId: string, status: FolderStatus, needLimit = explorerSettings.needLimit): Promise<FolderLists> {
-  const key = `${instanceKey}\u0000${folderId}`;
-  const fingerprint = fingerprintOf(status);
-  const cached = cache.get(key);
-  if (cached?.fingerprint === fingerprint) return cached.lists;
-  const lists = readLists(client, folderId, status, needLimit);
-  cache.set(key, { fingerprint, lists });
-  lists.catch(() => {
-    if (cache.get(key)?.lists === lists) cache.delete(key);
-  });
-  return lists;
+  return listsCache.get(`${instanceKey}\u0000${folderId}`, listsFingerprint(status), () => readLists(client, folderId, status, needLimit));
 }

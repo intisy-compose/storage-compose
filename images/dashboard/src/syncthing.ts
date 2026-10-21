@@ -86,6 +86,10 @@ export interface FolderStatus {
   pullErrors?: number;
   receiveOnlyTotalItems?: number;
   sequence?: number;
+  globalTotalItems?: number;
+  globalDeleted?: number;
+  /** The newest sequence seen from each other device. */
+  remoteSequence?: Record<string, number>;
 }
 
 /** One entry of `/rest/db/browse`; `type` is e.g. `FILE_INFO_TYPE_DIRECTORY`. */
