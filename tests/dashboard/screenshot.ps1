@@ -30,6 +30,7 @@ if (-not (Test-Path $Browser)) { throw "browser not found: $Browser" }
 
 $outPath = [System.IO.Path]::GetFullPath($Out)
 New-Item -ItemType Directory -Force (Split-Path $outPath) | Out-Null
+Remove-Item -Force -ErrorAction SilentlyContinue $outPath
 $profile = Join-Path ([System.IO.Path]::GetTempPath()) ("dashboard-shot-" + [guid]::NewGuid().ToString('N'))
 
 try {
@@ -41,10 +42,11 @@ try {
         "--screenshot=`"$outPath`"",
         "$($Url.TrimEnd('/'))/#/$($Route.TrimStart('/#'))"
     )
-    Start-Process -FilePath $Browser -ArgumentList $browserArguments -Wait -NoNewWindow | Out-Null
+    $browserProcess = Start-Process -FilePath $Browser -ArgumentList $browserArguments -Wait -NoNewWindow -PassThru
 } finally {
     Remove-Profile $profile
 }
 
+if ($browserProcess.ExitCode -ne 0) { throw "browser exited with code $($browserProcess.ExitCode)" }
 if (-not (Test-Path $outPath)) { throw "no screenshot written to $outPath" }
 Write-Output $outPath

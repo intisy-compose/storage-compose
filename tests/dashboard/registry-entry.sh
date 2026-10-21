@@ -1,20 +1,19 @@
 #!/bin/sh
-# Entry point of the dashboard test peer: a Syncthing with its own identity that is announced to the
-# dashboard through the node registry exactly like a folder node, and re-announced every 60 s so the
-# entry never goes stale (the dashboard shows an entry older than 5 minutes as offline).
-#
-# The peer shares the gateway's namespace, which already holds the cluster's Syncthing on 22000 and
-# 8385, so it takes sync port 22199 and GUI port 8389 and turns discovery, relays and NAT off.
 set -eu
 
 node_id=d7e5
 node_name=dashboard-test-peer
 node_root=/var/syncthing/data
+# The gateway namespace already holds the cluster's Syncthing on 22000 and 8385.
 sync_port=22199
 gui_port=8389
 registry=/status/nodes
 home=${STHOMEDIR:-/var/syncthing/config}
 service_user=${PUID:-1000}:${PGID:-1000}
+
+remove_default_folder() {
+    sed -i '\#<folder #,\#</folder>#d' "$home/config.xml"
+}
 
 prepare_home() {
     mkdir -p "$home" "$node_root"
@@ -25,14 +24,16 @@ prepare_home() {
             -e "s#<listenAddress>[^<]*</listenAddress>#<listenAddress>tcp://:$sync_port</listenAddress>#" \
             -e 's#<(globalAnnounceEnabled|localAnnounceEnabled|relaysEnabled|natEnabled)>true<#<\1>false<#' \
             -e 's#<autoUpgradeIntervalH>[0-9]+<#<autoUpgradeIntervalH>0<#' "$home/config.xml"
-        sed -i '/<folder /,/<\/folder>/d' "$home/config.xml"
+        remove_default_folder
     fi
     chown -R "$service_user" "$home"
 }
 
-write_atomically() {   # <file> <content>
-    printf '%s\n' "$2" > "$1.tmp"
-    mv "$1.tmp" "$1"
+write_atomically() {
+    target_file=$1
+    file_content=$2
+    printf '%s\n' "$file_content" > "$target_file.tmp"
+    mv "$target_file.tmp" "$target_file"
 }
 
 announce() {
