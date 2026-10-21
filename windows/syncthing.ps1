@@ -383,6 +383,7 @@ drive pulled mid-round must not fail the heartbeat).
 function Get-NodeSpace([string]$Root) {
     try {
         $drive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($Root))
+        if (-not $drive.IsReady) { return $null }
         return [ordered]@{ size = [int64]$drive.TotalSize; free = [int64]$drive.AvailableFreeSpace }
     } catch {
         return $null
