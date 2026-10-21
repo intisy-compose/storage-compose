@@ -126,6 +126,7 @@ services:
       - "127.0.0.1:8443:8443"
     environment:
       TAILNET_HOST: ${STORAGE_HOST:-storage.invalid}
+      TAILNET_PROXY_PROTOCOL: require
     depends_on:
       dashboard:
         condition: service_started

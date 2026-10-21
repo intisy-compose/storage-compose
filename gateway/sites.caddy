@@ -6,12 +6,21 @@
 	}
 }
 
-# The join API is not here: it is on tailnet port 8447, straight from tailscale with the caller's
-# address in a PROXY protocol header, because this path hands the dashboard only a loopback address.
+# tailscale names each caller in a PROXY protocol header (TAILNET_PROXY_PROTOCOL), and the join API
+# is handed it in one of its own, the only way the dashboard learns which tailnet device joins.
 {$TAILNET_HOST}:443 {
 	import tailnet
 	encode gzip
-	reverse_proxy dashboard:8080
+	handle /api/join {
+		reverse_proxy dashboard:8447 {
+			transport http {
+				proxy_protocol v2
+			}
+		}
+	}
+	handle {
+		reverse_proxy dashboard:8080
+	}
 }
 
 # Kopia's clients speak gRPC, which needs HTTP/2 through to the server, and Kopia offers HTTP/2

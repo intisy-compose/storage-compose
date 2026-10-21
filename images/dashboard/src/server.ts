@@ -170,9 +170,9 @@ async function handleJoinRequest(request: IncomingMessage, response: ServerRespo
   }
 }
 
-/** On 443 and the local site Caddy hands on only a loopback address, so the caller cannot be told. */
+/** The local site hands on only a loopback address, so the caller cannot be told. */
 function joinElsewhere(): never {
-  const joinUrl = `https://${tailnetHost || "storage.<tailnet>.ts.net"}:${joinPort}/api/join`;
+  const joinUrl = `https://${tailnetHost || "storage.<tailnet>.ts.net"}/api/join`;
   throw new RequestError(421, `a device joins at ${joinUrl}, where tailscale names the caller`);
 }
 

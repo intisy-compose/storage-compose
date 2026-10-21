@@ -38,14 +38,14 @@ function isJoinRequest(request: IncomingMessage): boolean {
 }
 
 /**
- * The tailnet-only join port: tailscale terminates TLS and opens each connection with a PROXY protocol
- * v2 header naming the caller, which is the only way to learn its tailnet address (a plain TCP forward
- * hands on a loopback port that whois does not know). A connection without a valid header is closed
- * unanswered, and only POST /api/join is served.
+ * The join port inside the stack: the gateway hands on /api/join from 443 opening each connection with
+ * a PROXY protocol v2 header naming the caller, which is the only way to learn its tailnet address (a
+ * plain proxied request carries a loopback address that whois does not know). A connection without a
+ * valid header is closed unanswered, and only POST /api/join is served.
  *
  * @implNote The header is only as trustworthy as its sender, and every container on the stack network
- * can reach this port, so a connection is read only when it comes from the gateway, whose namespace
- * tailscale shares. The address is resolved per connection because the gateway gets a new one
+ * can reach this port, so a connection is read only when it comes from the gateway, which takes the
+ * address from tailscale's own header. The address is resolved per connection because the gateway gets a new one
  * whenever it is recreated.
  */
 export function createJoinListener(handleJoin: CallerHandler, gatewayAddresses: GatewayResolver): Server {
