@@ -9,7 +9,9 @@
 #   STORAGE_JOIN_KEY        Tailscale auth key; else $IMPRINT_PERSONAL/tailscale.key
 #   STORAGE_DASHBOARD       the dashboard, default https://storage.<tailnet>
 #   STORAGE_JOIN_ROOT       the data root that becomes this device's node, default /data
-#   STORAGE_JOIN_NAME       the node and device name, default the host name
+#   STORAGE_JOIN_NAME       the node and device name, default the name of the device list's entry
+#                           with this device's Syncthing ID, else the host name
+#   STORAGE_JOIN_LAYOUT     that device list, default data/drive-sync.toml beside join/
 #   STORAGE_JOIN_KIND       drive or folder, default drive
 #   STORAGE_JOIN_THRESHOLD  the layered sync threshold written into a new node file, default 50
 #   STORAGE_JOIN_ALLOW_KEEP_ALL  1 lets a device node keep everything (threshold 0)
@@ -45,8 +47,24 @@ log() { printf 'storage-join: %s\n' "$*"; }
 changed() { changes=$((changes + 1)); log "$*"; }
 fail() { printf 'storage-join: %s\n' "$*" >&2; exit 1; }
 
+layout_path() { printf '%s' "${STORAGE_JOIN_LAYOUT:-$(dirname "${BASH_SOURCE[0]}")/../data/drive-sync.toml}"; }
+
+# The [devices.<name>] table whose id is the given Syncthing ID; only those tables' id lines count.
+layout_device_name() {
+    local layout
+    layout="$(layout_path)"
+    [[ -n "$1" && -f "$layout" ]] || return 0
+    awk -v wanted="$1" '
+        /^[[:space:]]*\[/ { section = ""; if (match($0, /^[[:space:]]*\[devices\.[A-Za-z0-9_-]+\][[:space:]]*$/)) { section = $0; sub(/^[[:space:]]*\[devices\./, "", section); sub(/\].*$/, "", section) }; next }
+        section != "" && $0 ~ /^[[:space:]]*id[[:space:]]*=/ { value = $0; sub(/^[^"]*"/, "", value); sub(/".*$/, "", value); if (value == wanted) { print section; exit } }
+    ' "$layout"
+}
+
+# The computer's name, never the user's: a device list entry names the machine.
 device_name() {
-    local name="${STORAGE_JOIN_NAME:-$(hostname)}"
+    local name="${STORAGE_JOIN_NAME:-}"
+    [[ -n "$name" ]] || name="$(layout_device_name "${1:-}")"
+    [[ -n "$name" ]] || name="$(hostname)"
     name="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | sed 's/^-*//; s/-*$//')"
     [[ -n "$name" ]] || fail "no usable device name; set STORAGE_JOIN_NAME"
     printf '%s' "$name"
@@ -117,12 +135,22 @@ join_tailnet() {
 
 new_node_id() { od -An -N2 -tx1 /dev/urandom | tr -d ' \n'; }
 
+local_device_id() { as_owner syncthing device-id --home="$syncthing_home" 2> /dev/null | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$' | head -n 1; }
+
+# The keys exist before the node file, so the file is named after the device list's entry for this ID.
+generate_keys() {
+    [[ -f "$syncthing_home/config.xml" ]] && return 0
+    [[ -d "$join_root" ]] || fail "the data root $join_root does not exist"
+    as_owner syncthing generate --home="$syncthing_home" --no-port-probing > /dev/null
+    changed "generated Syncthing's keys in $syncthing_home"
+}
+
 write_node_file() {
     [[ -f "$node_file" ]] && return 0
     [[ -d "$join_root" ]] || fail "the data root $join_root does not exist"
     as_owner mkdir -p "$(dirname "$node_file")"
     printf '[node]\nid        = "%s"\nname      = "%s"\nkind      = "%s"\nthreshold = %s\nassigned  = []\n' \
-        "$(new_node_id)" "$(device_name)" "$join_kind" "$join_threshold" > "$node_file.partial"
+        "$(new_node_id)" "$(device_name "$(local_device_id)")" "$join_kind" "$join_threshold" > "$node_file.partial"
     chown "$(node_owner):" "$node_file.partial"
     mv "$node_file.partial" "$node_file"
     changed "wrote $node_file"
@@ -172,10 +200,7 @@ install_unit() {
 }
 
 start_syncthing() {
-    if [[ ! -f "$syncthing_home/config.xml" ]]; then
-        as_owner syncthing generate --home="$syncthing_home" --no-port-probing > /dev/null
-        changed "generated Syncthing's keys in $syncthing_home"
-    fi
+    generate_keys
     install_unit
 }
 
@@ -231,7 +256,7 @@ dashboard_url() {
 }
 
 join_request() {
-    jq -n --arg name "$(device_name)" --arg id "$1" --arg kind "$join_kind" --arg path "$join_root" \
+    jq -n --arg name "$(device_name "$1")" --arg id "$1" --arg kind "$join_kind" --arg path "$join_root" \
         --argjson threshold "$(node_file_threshold)" \
         '{name: $name, os: "linux", syncthingDeviceId: $id, nodes: [{kind: $kind, path: $path, threshold: $threshold}]}'
 }
@@ -244,8 +269,8 @@ call_dashboard() {
         || fail "the dashboard at $(dashboard_url) did not answer"
     case "$status" in
         200) cat "$answer"; rm -f "$answer" ;;
-        403) rm -f "$answer"; fail "the dashboard refused this device (403): it is not on the tailnet's owner's account and not tagged tag:storage" ;;
-        409) rm -f "$answer"; fail "the dashboard knows $(device_name) with another Syncthing ID (409): re-admit the reinstalled device from the dashboard" ;;
+        403) local reason; reason="$(jq -r '.error // empty' "$answer" 2> /dev/null || head -c 300 "$answer")"; rm -f "$answer"; fail "the dashboard refused this device (403): $reason" ;;
+        409) rm -f "$answer"; fail "the dashboard knows $(device_name "$1") with another Syncthing ID (409): re-admit the reinstalled device from the dashboard" ;;
         *) local detail; detail="$(head -c 300 "$answer")"; rm -f "$answer"; fail "the dashboard answered $status: $detail" ;;
     esac
 }
@@ -552,6 +577,7 @@ main() {
     check_node_placement
     install_packages
     join_tailnet
+    generate_keys
     write_node_file
     register_folder_node
     start_syncthing

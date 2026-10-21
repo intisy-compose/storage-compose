@@ -12,7 +12,9 @@ the node file and starts it); otherwise this script runs it at logon through a s
 current user. Home folder links are left out on Windows, as tools/drive-sync does.
 
 Settings (parameters, or the same environment variables as the Linux script): STORAGE_JOIN_KEY,
-IMPRINT_PERSONAL, STORAGE_DASHBOARD, STORAGE_JOIN_ROOT (default F:\), STORAGE_JOIN_NAME,
+IMPRINT_PERSONAL, STORAGE_DASHBOARD, STORAGE_JOIN_ROOT (default F:\), STORAGE_JOIN_NAME (default the
+name of the device list's entry with this device's Syncthing ID, from STORAGE_JOIN_LAYOUT, by default
+data\drive-sync.toml, else the computer's name),
 STORAGE_JOIN_THRESHOLD (default 50; 0 only with STORAGE_JOIN_ALLOW_KEEP_ALL=1), STORAGE_JOIN_OFFLINE_DIR (a folder with a Tailscale MSI), and, for a Syncthing
 this script runs itself, STORAGE_JOIN_GUI_PORT and STORAGE_JOIN_LISTEN_PORT (default 8384 and 22000).
 
@@ -39,7 +41,7 @@ $repository = Split-Path $PSScriptRoot
 
 $userSyncthingGuiPort = $(if ($env:STORAGE_JOIN_GUI_PORT) { [int]$env:STORAGE_JOIN_GUI_PORT } else { 8384 })
 $userSyncthingListenPort = $(if ($env:STORAGE_JOIN_LISTEN_PORT) { [int]$env:STORAGE_JOIN_LISTEN_PORT } else { 22000 })
-$userSyncthingTaskPrefix = "storage-compose syncthing"
+$agentNodeWaitSeconds = 120
 $essentialThreshold = 80
 $workingThreshold = 50
 $joinChanges = 0
@@ -49,9 +51,38 @@ function Write-JoinLog([string]$Message) { Write-Host "storage-join: $Message" }
 
 function Write-JoinChange([string]$Message) { $script:joinChanges++; Write-JoinLog $Message }
 
-function Get-DeviceName {
-    $raw = if ($Name) { $Name } else { $env:COMPUTERNAME }
-    $clean = ($raw.ToLower() -replace '[^a-z0-9-]', '-').Trim('-')
+function Get-LayoutPath {
+    if ($env:STORAGE_JOIN_LAYOUT) { return $env:STORAGE_JOIN_LAYOUT }
+    return Join-Path $repository "data\drive-sync.toml"
+}
+
+<#
+.NOTES
+A line scan rather than the TOML reader: only the [devices.*] headers and their id lines are needed,
+and the folder tables hold multi-line arrays and quoted keys.
+#>
+function Get-LayoutDeviceName([string]$DeviceId) {
+    $path = Get-LayoutPath
+    if (-not ($DeviceId -and (Test-Path -LiteralPath $path))) { return $null }
+    $section = $null
+    foreach ($line in [System.IO.File]::ReadAllLines($path)) {
+        if ($line -match '^\s*\[devices\.("?)([A-Za-z0-9_-]+)\1\]\s*$') { $section = $Matches[2]; continue }
+        if ($line -match '^\s*\[') { $section = $null; continue }
+        if ($section -and $line -match '^\s*id\s*=\s*"([^"]*)"' -and $Matches[1] -eq $DeviceId) { return $section }
+    }
+    return $null
+}
+
+function ConvertTo-DeviceName([string]$Raw) { return ($Raw.ToLower() -replace '[^a-z0-9-]', '-').Trim('-') }
+
+<#
+.NOTES
+The computer's name, never the user's: a device list entry names the machine.
+#>
+function Get-DeviceName([string]$DeviceId) {
+    $raw = if ($Name) { $Name } else { Get-LayoutDeviceName $DeviceId }
+    if (-not $raw) { $raw = [System.Net.Dns]::GetHostName() }
+    $clean = ConvertTo-DeviceName $raw
     if (-not $clean) { throw "no usable device name; pass -Name" }
     return $clean
 }
@@ -109,11 +140,29 @@ function Write-TextFile([string]$Path, [string]$Text) {
     Move-Item -Force -LiteralPath "$Path.partial" -Destination $Path
 }
 
+function Get-RootSyncthing { return [pscustomobject]@{ root = [System.IO.Path]::GetFullPath($Root) } }
+
+<#
+.NOTES
+The keys exist before the node file, so the file is named after the device list's entry for this
+device's ID; the host agent then finds a home that already has them.
+#>
+function Initialize-SyncthingKeys {
+    if (Test-Path -LiteralPath (Get-NodeFilePath $Root)) { return }
+    $rootSyncthing = Get-RootSyncthing
+    if (Test-Path -LiteralPath (Get-SyncthingConfigPath $rootSyncthing)) { return }
+    if (-not (Test-Path -LiteralPath $Root)) { throw "the data root $Root does not exist" }
+    New-Item -ItemType Directory -Force -Path (Get-SyncthingHome $rootSyncthing) | Out-Null
+    New-SyncthingConfig $rootSyncthing
+    Write-JoinChange "generated Syncthing's keys in $(Get-SyncthingHome $rootSyncthing)"
+}
+
 function Write-NodeFile {
     $path = Get-NodeFilePath $Root
     if (Test-Path -LiteralPath $path) { return }
     if (-not (Test-Path -LiteralPath $Root)) { throw "the data root $Root does not exist" }
-    Write-TextFile $path ("[node]`nid        = `"$(New-NodeId)`"`nname      = `"$(Get-DeviceName)`"`nkind      = `"$(Get-NodeKind)`"`nthreshold = $Threshold`nassigned  = []`n")
+    $nodeName = Get-DeviceName (Get-SyncthingDeviceId (Get-RootSyncthing))
+    Write-TextFile $path ("[node]`nid        = `"$(New-NodeId)`"`nname      = `"$nodeName`"`nkind      = `"$(Get-NodeKind)`"`nthreshold = $Threshold`nassigned  = []`n")
     Write-JoinChange "wrote $path"
 }
 
@@ -185,12 +234,9 @@ function Get-AgentInstance($Node) {
     return [pscustomobject]@{ ports = [pscustomobject]@{ gui = $published.syncthing.guiPort }; apiKey = $published.syncthing.apiKey; owner = "agent" }
 }
 
-function Get-UserTaskName($Node) { return "$userSyncthingTaskPrefix $($Node.name)" }
+function Get-UserTaskName($Node) { return "$nodeSyncthingTaskPrefix $($Node.name)" }
 
-function Get-UserSyncthingArguments($Node) {
-    $syncthingHome = Get-SyncthingHome $Node
-    return "serve --home=`"$syncthingHome`" --no-browser --no-restart --no-upgrade --log-file=`"$([System.IO.Path]::Combine($syncthingHome, 'syncthing.log'))`" --log-max-size=$syncthingLogMaxBytes --log-max-old-files=2"
-}
+function Get-UserSyncthingArguments($Node) { return Get-NodeSyncthingTaskArguments (Get-SyncthingHome $Node) }
 
 function Test-UserTaskIsCurrent($Node) {
     $task = Get-ScheduledTask -TaskName (Get-UserTaskName $Node) -ErrorAction SilentlyContinue
@@ -255,10 +301,29 @@ function Get-RunningSyncthingIdentity($Node) {
     return [pscustomobject]@{ apiKey = $document.configuration.gui.apikey }
 }
 
+function Test-HostAgentIsPresent { return [bool](Get-AgentService) -or (Test-AgentHeartbeatIsFresh $repository) }
+
+<#
+.NOTES
+The agent finds a new node file on its next scan, up to a minute later; until then its heartbeat does
+not list the node, which is no reason to start a second Syncthing for the same home.
+#>
+function Wait-ForAgentInstance($Node) {
+    $deadline = (Get-Date).AddSeconds($agentNodeWaitSeconds)
+    while ($true) {
+        $instance = Get-AgentInstance $Node
+        if ($instance) { return $instance }
+        if ((Get-Date) -ge $deadline) { throw "the host agent runs this host's nodes but has not started $($Node.root) within $agentNodeWaitSeconds s; is the stack up? See $agentFolderName\$agentLogName" }
+        Start-Sleep -Seconds 2
+    }
+}
+
 function Get-NodeSyncthing($Node) {
-    $agent = Get-AgentInstance $Node
-    if ($agent) { Write-JoinLog "the host agent runs this node's Syncthing"; return $agent }
-    return Start-UserSyncthing $Node
+    if (-not (Test-HostAgentIsPresent)) { return Start-UserSyncthing $Node }
+    $agent = Wait-ForAgentInstance $Node
+    Write-JoinLog "the host agent runs this node's Syncthing"
+    foreach ($removed in @(Remove-AgentNodeSyncthingTasks $repository)) { Write-JoinChange "removed the logon task '$removed'; the host agent runs its node's Syncthing" }
+    return $agent
 }
 
 function Invoke-JoinApi($Instance, [string]$Method, [string]$Path, $Body) {
@@ -290,7 +355,7 @@ function Get-DashboardUrl {
 
 function New-JoinRequest($Node, [string]$DeviceId) {
     return [ordered]@{
-        name = Get-DeviceName; os = "windows"; syncthingDeviceId = $DeviceId
+        name = Get-DeviceName $DeviceId; os = "windows"; syncthingDeviceId = $DeviceId
         nodes = @([ordered]@{ kind = $Node.kind; path = $Node.root; threshold = $Node.threshold })
     }
 }
@@ -300,14 +365,21 @@ function Get-HttpErrorStatus($ErrorRecord) {
     return 0
 }
 
+function Get-DashboardErrorText($ErrorRecord) {
+    $text = if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) { $ErrorRecord.ErrorDetails.Message } else { "" }
+    try { $parsed = $text | ConvertFrom-Json; if ($parsed.PSObject.Properties["error"]) { return $parsed.error } } catch { }
+    return $text
+}
+
 function Invoke-Dashboard($Node, [string]$DeviceId) {
     $body = ConvertTo-Json -InputObject (New-JoinRequest $Node $DeviceId) -Depth 10 -Compress
     try { return Invoke-RestMethod -Method Post -Uri "$(Get-DashboardUrl)/api/join" -Body $body -ContentType "application/json" -TimeoutSec 30 -UseBasicParsing }
     catch {
-        switch (Get-HttpErrorStatus $_) {
-            403 { throw "the dashboard refused this device (403): it is not on the tailnet's owner's account and not tagged tag:storage" }
-            409 { throw "the dashboard knows $(Get-DeviceName) with another Syncthing ID (409): re-admit the reinstalled device from the dashboard" }
-            default { throw "the dashboard at $(Get-DashboardUrl) did not accept the join: $_" }
+        $failure = $_
+        switch (Get-HttpErrorStatus $failure) {
+            403 { throw "the dashboard refused this device (403): $(Get-DashboardErrorText $failure)" }
+            409 { throw "the dashboard knows $(Get-DeviceName $DeviceId) with another Syncthing ID (409): re-admit the reinstalled device from the dashboard" }
+            default { throw "the dashboard at $(Get-DashboardUrl) did not accept the join: $failure" }
         }
     }
 }
@@ -597,6 +669,7 @@ function Invoke-Join {
     Join-Tailnet
     $script:syncthingPath = Get-SyncthingBinary $repository
     Move-ExistingSyncthing
+    Initialize-SyncthingKeys
     Write-NodeFile
     Register-FolderNode
     $node = Read-JoinNode

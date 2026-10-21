@@ -10,7 +10,7 @@ import { type Job, isJobRunning, parityState, recentLog, startJob } from "./pari
 import {
   arrayStatusDirectory,
   clusterArrayId,
-  joinOwner,
+  joinAllowedUsers,
   joinTag,
   joinsFile,
   port,
@@ -110,9 +110,9 @@ async function handleArrayAction(arrayId: string, action: ArrayAction, request: 
 }
 
 /**
- * @implNote Tailscale forwards a tailnet connection to Caddy from a local port it remembers, so whois on
- * that port names the caller; Caddy passes it as X-Tailnet-Peer. A forwarded address that is not
- * loopback is tried too.
+ * @implNote X-Tailnet-Peer is Caddy's {remote}; the local site strips it. whois names it only when it is
+ * the caller's tailnet address, as with a PROXY protocol header on tailscale's forward: the loopback
+ * port of a plain TCP forward is never registered with tailscale (ipnlocal/serve.go, v1.102.4).
  */
 function callerAddresses(request: IncomingMessage): string[] {
   const peer = String(request.headers["x-tailnet-peer"] ?? "").trim();
@@ -155,7 +155,10 @@ async function joinInstances(): Promise<JoinInstance[]> {
 
 const joinDependencies: JoinDependencies = {
   whois,
-  owner: async () => joinOwner || (await ownLogin()),
+  allowedUsers: async () => {
+    const owner = await ownLogin().catch(() => null);
+    return owner ? [owner, ...joinAllowedUsers] : joinAllowedUsers;
+  },
   requiredTag: joinTag,
   instances: joinInstances,
   layout: readLayout,

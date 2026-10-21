@@ -320,6 +320,8 @@ function Install-Agent {
         $result = Install-HostAgent $PSScriptRoot $composeProject (Get-AgentPassThrough)
     } catch { Write-Err "$_"; exit 1 }
     if ($result -eq "installed") { Write-OK "The host agent service is installed and running" } else { Write-OK "The host agent is running" }
+    try { foreach ($task in @(Remove-AgentNodeSyncthingTasks $PSScriptRoot)) { Write-OK "Removed the logon task '$task'; the host agent runs its node's Syncthing" } }
+    catch { Write-Err "a node's own Syncthing logon task could not be removed, and would start a second Syncthing at logon: $_" }
     if ((Get-AgentPassThrough) -eq "wsl" -and -not (Get-Command smartctl.exe -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $env:ProgramFiles "smartmontools\bin\smartctl.exe"))) {
         Write-Err "smartctl is missing, so the dashboard shows no SMART for passed-through drives: $smartctlPackage"
     }

@@ -4,6 +4,7 @@
 $agentHeartbeatWaitSeconds = 120
 $agentStopWaitSeconds = 60
 $legacyAttachInstallFolder = Join-Path $env:ProgramFiles "storage-compose"
+$nodeSyncthingTaskPrefix = "storage-compose syncthing"
 
 function Test-IsElevated {
     $identity = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
@@ -224,4 +225,39 @@ function Remove-LegacyAttachTask {
     Unregister-ScheduledTask -TaskName $legacyAttachTaskName -Confirm:$false
     Remove-Item -Recurse -Force -LiteralPath $legacyAttachInstallFolder -ErrorAction SilentlyContinue
     return $true
+}
+
+function Get-NodeSyncthingTaskArguments([string]$SyncthingHome) {
+    return "serve --home=`"$SyncthingHome`" --no-browser --no-restart --no-upgrade --log-file=`"$([System.IO.Path]::Combine($SyncthingHome, 'syncthing.log'))`" --log-max-size=$syncthingLogMaxBytes --log-max-old-files=2"
+}
+
+function Get-TaskSyncthingHome($Task) {
+    $action = @($Task.Actions | Where-Object { $_ -and $_.PSObject.Properties["Arguments"] })[0]
+    if ($action -and "$($action.Arguments)" -match '--home="([^"]+)"') { return $Matches[1] }
+    return $null
+}
+
+function Get-AgentNodeHomes([string]$StackFolder) {
+    $heartbeat = Get-AgentHeartbeat $StackFolder
+    if (-not ($heartbeat -and $heartbeat.PSObject.Properties["foundNodes"])) { return @() }
+    return @($heartbeat.foundNodes | Where-Object { $_ -and $_.root } | ForEach-Object { [System.IO.Path]::Combine($_.root, ".storage\syncthing").TrimEnd('\') })
+}
+
+<#
+.NOTES
+The join registers such a task on a device without the agent. Once the agent runs the node, the task
+would start a second Syncthing on the same home at the next logon, so it goes; only a task of the
+join's name prefix whose home is a node the agent found is touched.
+#>
+function Remove-AgentNodeSyncthingTasks([string]$StackFolder) {
+    $homes = @(Get-AgentNodeHomes $StackFolder)
+    if ($homes.Count -eq 0) { return @() }
+    $removed = @()
+    foreach ($task in @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_ -and $_.TaskName -like "$nodeSyncthingTaskPrefix *" })) {
+        $taskHome = Get-TaskSyncthingHome $task
+        if (-not ($taskHome -and @($homes | Where-Object { $_ -ieq $taskHome.TrimEnd('\') }).Count -gt 0)) { continue }
+        Unregister-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath -Confirm:$false
+        $removed += $task.TaskName
+    }
+    return $removed
 }

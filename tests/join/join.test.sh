@@ -119,7 +119,40 @@ echo Running > /run/fake-tailscale/state
 check "a name known with another ID: exit code" 1 "$(STORAGE_JOIN_NAME=taken run_join)"
 check_match "says 409 and how to re-admit" "409.*re-admit" "$(cat /tmp/join.out)"
 check "a caller outside the tailnet: exit code" 1 "$(STORAGE_JOIN_NAME=stranger run_join)"
-check_match "says 403" "403" "$(cat /tmp/join.out)"
+check_match "says 403 with the dashboard's reason" "\(403\): not in this tailnet$" "$(cat /tmp/join.out)"
+
+echo "The device's name:"
+cat > /tmp/layout.toml << 'LAYOUT'
+[devices.pc]
+id         = "PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6"
+root       = 'F:\'
+not_synced = ["$RECYCLE.BIN", "Saved Games"]
+
+[devices.pc.paths]
+Desktop = 'C:\Users\finn\Desktop'
+
+[folders.Documents]
+ignore = [
+    "/GitHub",
+]
+id = "NOT-A-DEVICE"
+LAYOUT
+name_of() { env -u STORAGE_JOIN_NAME STORAGE_JOIN_LAYOUT="${2:-/tmp/layout.toml}" bash -c "source $join; device_name '$1'"; }
+expected_host="$(hostname | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | sed 's/^-*//; s/-*$//')"
+check "the device list's entry for the ID" pc "$(name_of PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6)"
+check "the host name for an ID the list does not hold" "$expected_host" "$(name_of ZZZZZZZ-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6)"
+check "never an id outside a device's table" "$expected_host" "$(name_of NOT-A-DEVICE)"
+check "the host name without a device list" "$expected_host" "$(name_of PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6 /nowhere.toml)"
+check "never the user's name" "$expected_host" "$(USER=someone-else LOGNAME=someone-else name_of '')"
+check "STORAGE_JOIN_NAME first" given "$(STORAGE_JOIN_NAME=given STORAGE_JOIN_LAYOUT=/tmp/layout.toml bash -c "source $join; device_name PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6")"
+mkdir -p /data4 && chown finn:finn /data4
+runuser -u finn -- syncthing generate --home=/data4/.storage/syncthing --no-port-probing > /dev/null
+listed_id="$(syncthing device-id --home=/data4/.storage/syncthing | head -n 1)"
+printf '[devices.laptop]\nid = "%s"\n' "$listed_id" > /tmp/listed.toml
+check "a listed device: exit code" 0 "$(unset STORAGE_JOIN_NAME; STORAGE_JOIN_LAYOUT=/tmp/listed.toml STORAGE_JOIN_ROOT=/data4 run_join)"
+check_match "its node is named after the entry" 'name *= "laptop"' "$(cat /data4/.storage/node.toml)"
+check "the dashboard is asked under that name" laptop "$(tail -n 1 /tmp/dashboard/requests.jsonl | jq -r .name)"
+check "it keeps the keys it found" "$listed_id" "$(syncthing device-id --home=/data4/.storage/syncthing | head -n 1)"
 
 echo "Keeping everything is for the cluster only:"
 mkdir -p /data2 && chown finn:finn /data2

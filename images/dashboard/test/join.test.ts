@@ -73,7 +73,7 @@ function setup(overrides: Partial<JoinDependencies> & { callers?: Record<string,
   };
   const dependencies: JoinDependencies = {
     whois: async (address) => callers[address] ?? null,
-    owner: async () => owner,
+    allowedUsers: async () => [owner],
     requiredTag: "tag:storage",
     instances: async () => [instance],
     layout: async () => parseLayout(layoutText),
@@ -144,8 +144,18 @@ describe("join admission", () => {
     assert.equal(await refusal(handleJoin(setup().dependencies, ["100.64.0.8"], p53Request)), 403);
   });
 
-  it("refuses an untagged device when the owner is unknown", async () => {
-    assert.equal(await refusal(handleJoin(setup({ owner: async () => null }).dependencies, ["100.64.0.5"], p53Request)), 403);
+  it("refuses an untagged device when no user is allowed, as when this node is tagged", async () => {
+    assert.equal(await refusal(handleJoin(setup({ allowedUsers: async () => [] }).dependencies, ["100.64.0.5"], p53Request)), 403);
+  });
+
+  it("admits a device of a user listed besides the owner", async () => {
+    const { dependencies } = setup({ allowedUsers: async () => [owner, "guest@example.com"] });
+    const { response } = await handleJoin(dependencies, ["100.64.0.7"], { ...p53Request, name: "guest" });
+    assert.ok(response.devices.length > 0);
+  });
+
+  it("names the caller's login and the allowed users when it refuses", async () => {
+    await assert.rejects(handleJoin(setup().dependencies, ["100.64.0.7"], p53Request), /guest\.example\.ts\.net \(guest@example\.com\) is neither owned by finn@example\.com/);
   });
 
   it("answers 200 again for the same name and ID without a second commit", async () => {

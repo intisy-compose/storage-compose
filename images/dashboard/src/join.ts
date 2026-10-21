@@ -39,7 +39,8 @@ export interface JoinRecords {
 
 export interface JoinDependencies {
   whois(address: string): Promise<WhoIs | null>;
-  owner(): Promise<string | null>;
+  /** The logins whose untagged devices may join: this node's owner's and JOIN_ALLOWED_USERS. */
+  allowedUsers(): Promise<string[]>;
   requiredTag: string;
   instances(): Promise<JoinInstance[]>;
   layout(): Promise<SetupLayout | null>;
@@ -58,7 +59,7 @@ export function isDeviceId(value: string): boolean {
 }
 
 /**
- * A caller not on our tailnet, or neither owned by the owner nor tagged for storage, is refused. The
+ * A caller not on our tailnet, or neither owned by an allowed user nor tagged for storage, is refused. The
  * caller may be known by several addresses (the proxied connection's local port, a forwarded tailnet
  * address); the first that tailscale knows names it.
  */
@@ -71,9 +72,10 @@ export async function admitCaller(dependencies: JoinDependencies, addresses: str
   }
   if (!caller) throw new JoinError(403, `${addresses.join(", ")} is not a device of this tailnet`);
   if (caller.tags.includes(dependencies.requiredTag)) return caller;
-  const owner = await dependencies.owner().catch(() => null);
-  if (owner && caller.loginName === owner) return caller;
-  throw new JoinError(403, `${caller.nodeName || addresses[0]} is neither owned by ${owner ?? "the tailnet's owner"} nor tagged ${dependencies.requiredTag}`);
+  const allowed = await dependencies.allowedUsers().catch((): string[] => []);
+  if (caller.loginName && allowed.includes(caller.loginName)) return caller;
+  const owners = allowed.length > 0 ? allowed.join(" or ") : "no known user (this node is tagged; set JOIN_ALLOWED_USERS)";
+  throw new JoinError(403, `${caller.nodeName || addresses[0]} (${caller.loginName ?? "tagged " + caller.tags.join(", ")}) is neither owned by ${owners} nor tagged ${dependencies.requiredTag}`);
 }
 
 export function validateJoinRequest(body: unknown): JoinRequest {
