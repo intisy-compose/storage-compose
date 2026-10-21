@@ -153,13 +153,14 @@ hosts'; a device only Syncthing knows shows Syncthing's view of it.
 ## Joining devices
 
 A device on the tailnet joins with one call, which the join scripts in `join/` make on a device's
-first boot, on the dashboard's join port `https://storage.<tailnet>.ts.net:8447`:
+first boot, at `https://storage.<tailnet>.ts.net`:
 
 `POST /api/join` with `{"name": "p53", "os": "linux", "syncthingDeviceId": "...", "nodes": [{"kind": "drive", "path": "/data", "threshold": 80}]}`
 
-Tailscale terminates TLS on that port and hands the dashboard the caller's tailnet address in a
-PROXY protocol header, the one path on which it learns it; the port serves nothing else, and
-`/api/join` on 443 or `localhost:8442` answers 421 naming it. The dashboard asks tailscaled who the
+Tailscale forwards 443 to the gateway with the caller's tailnet address in a PROXY protocol header
+(`TAILNET_PROXY_PROTOCOL: require`), and the gateway hands `/api/join` to the dashboard's internal
+join port with the address in a header of its own, the one path on which the dashboard learns it;
+`/api/join` on `localhost:8442` answers 421 naming the tailnet address. The dashboard asks tailscaled who the
 caller is: a device tagged `tag:storage`, owned by the user
 who owns this host's tailnet node, or owned by a login in `JOIN_ALLOWED_USERS` is admitted; anyone
 else gets 403.
@@ -190,8 +191,7 @@ login. Its tests read `tests/fixtures/drive-sync.toml`, never a real list:
 
 ## Sharing, syncing and backups
 
-Tailscale serve forwards the tailnet ports straight into the stack: 443 (dashboard), 8447 (the
-join API), 445 (Samba),
+Tailscale serve forwards the tailnet ports straight into the stack: 443 (dashboard and join API), 445 (Samba),
 22000 (Syncthing sync), 22001 to 22008 (the node Syncthings) and 51515 (Kopia). The host itself
 reaches the dashboard at `http://localhost:8442` and the Syncthing GUI at `http://localhost:8443`,
 both published on 127.0.0.1; the GUI is not on the tailnet. The logins are generated once and kept on the cluster's `data1`, so every host that
@@ -284,7 +284,7 @@ first) and joins the tailnet with the auth key in `STORAGE_JOIN_KEY` or the stic
 `personal/tailscale.key`; writes the node file for the device's data root (`/data`, or `F:\` on
 Windows; `STORAGE_JOIN_ROOT`) and starts Syncthing with its home on the node, listening on the
 tailnet only; registers with the storage dashboard (`STORAGE_DASHBOARD`, default
-`https://storage.<tailnet>:8447`), adds the devices and folders it answers with, and on Linux links the
+`https://storage.<tailnet>`), adds the devices and folders it answers with, and on Linux links the
 home folders (`~/Documents`, `~/code`, ...) into the node, moving what they held. On Windows the
 node's Syncthing is the host agent's when this stack runs there, otherwise a logon task of the user
 runs it. A new device node keeps the working and essential bands (threshold 50,
