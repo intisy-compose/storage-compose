@@ -20,6 +20,7 @@ export interface HostAgentNode {
   threshold: number;
   assigned: string[];
   root: string;
+  space?: { size: number; free: number } | null;
   syncthing: { state: string; deviceId: string | null; guiPort: number | null; listenPort: number | null; apiKey: string | null; problem: string | null } | null;
 }
 
@@ -61,7 +62,7 @@ export function agentEntries(heartbeat: HostAgentHeartbeat | null, now = Date.no
       assigned: node.assigned ?? [],
       root: node.root,
       present: alive,
-      space: { size: null, used: null },
+      space: node.space ? { size: node.space.size, used: node.space.size - node.space.free } : { size: null, used: null },
       syncthing: reachable ? { url: `http://${hostAgentSyncthingHost}:${syncthing.guiPort}`, apiKey: syncthing.apiKey! } : null,
       updated: heartbeat.heartbeat,
     };
