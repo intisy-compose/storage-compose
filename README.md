@@ -157,8 +157,9 @@ first boot:
 
 `POST /api/join` with `{"name": "p53", "os": "linux", "syncthingDeviceId": "...", "nodes": [{"kind": "drive", "path": "/data", "threshold": 80}]}`
 
-The dashboard asks tailscaled who the caller is: a device tagged `tag:storage`, or owned by
-`JOIN_OWNER` (by default the owner of this host's tailnet node), is admitted; anyone else gets 403.
+The dashboard asks tailscaled who the caller is: a device tagged `tag:storage`, owned by the user
+who owns this host's tailnet node, or owned by a login in `JOIN_ALLOWED_USERS` is admitted; anyone
+else gets 403.
 It adds the device to every Syncthing on this host, shares the folders the device's thresholds
 admit (from the setup repo's folder list, priority 80 for `synced`, 30 for `archive`, 0 never
 leaves its node), and records the device in the setup repo (`SETUP_REPO_DIR`, by default the stack's
