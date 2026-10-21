@@ -6,7 +6,7 @@ import { registryEntries, registryWarnings, syncthingEndpoint } from "./instance
 import { type JoinRecords } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { parityState } from "./parity.js";
-import { hostName, inventoryAssetUrl, peerDashboards, poolPath } from "./settings.js";
+import { hostName, peerDashboards, poolPath } from "./settings.js";
 import { type InstanceView, instanceView } from "./syncthing.js";
 import { fetchTailnetJson } from "./tailnet.js";
 import { statfs } from "node:fs/promises";
@@ -194,7 +194,7 @@ export async function nodesResponse(scope: "all" | "local", records: JoinRecords
     nodes.push(...(await syncthingOnlyNodes(nodes, views, records)));
     lastOtherHostNodes = { at: Date.now(), nodes: nodes.filter((node) => !node.local) };
   }
-  return { host: { name: hostName }, nodes, warnings, settings: { inventoryItemUrl: inventoryAssetUrl || null } };
+  return { host: { name: hostName }, nodes, warnings };
 }
 
 /**

@@ -1,7 +1,7 @@
 import type { NodesResponse } from "./api.js";
-import { button, element } from "./dom.js";
+import { element } from "./dom.js";
 import { warningBanner } from "./nodesPage.js";
-import { applyTheme, storeInventoryItemUrl } from "./preferences.js";
+import { applyTheme } from "./preferences.js";
 import { requestRender } from "./renderRequest.js";
 import { type PageId, appState } from "./state.js";
 
@@ -67,40 +67,13 @@ function themeSetting(): HTMLElement {
   return element("label", { className: "setting" }, element("span", {}, "Theme"), chooser);
 }
 
-function inventorySetting(): HTMLElement {
-  const input = element("input", {
-    attributes: { id: "setting-inventory", type: "url", placeholder: "https://inventree.example/web/stock?search={asset}" },
-  });
-  input.value = appState.inventoryItemUrl;
-  const save = button("Save", () => {
-    appState.inventoryItemUrl = input.value.trim();
-    storeInventoryItemUrl(appState.inventoryItemUrl);
-    appState.notice = { text: "Saved for this browser.", tone: "ok" };
-    requestRender();
-  });
-  const serverValue = appState.data?.settings?.inventoryItemUrl;
-  return element(
-    "div",
-    { className: "setting" },
-    element("span", {}, "Inventory link (optional)"),
-    element("div", { className: "setting-input" }, input, save),
-    element(
-      "small",
-      { className: "muted" },
-      serverValue
-        ? `The host links assets to ${serverValue}; a value here overrides it in this browser.`
-        : "Drive assets link to your inventory when set. {asset} is replaced by the asset code.",
-    ),
-  );
-}
-
 export function renderSettingsPage(): HTMLElement {
   const notice = appState.page === "settings" && appState.notice ? element("p", { className: `notice tone-text-${appState.notice.tone}` }, appState.notice.text) : null;
   return element(
     "div",
     { className: "page" },
     pageHeader("Settings", "Preferences for this browser. Host settings come with the layered sync."),
-    element("div", { className: "settings-card" }, themeSetting(), inventorySetting(), notice),
+    element("div", { className: "settings-card" }, themeSetting(), notice),
     comingState(),
   );
 }

@@ -3,17 +3,14 @@ import { arrayActionArea } from "./arrayActions.js";
 import { element, keyValueList, progressBar, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, normaliseCompletion } from "./format.js";
 import { arrayStateMeaning, memberSpaceTone, smartVerdict } from "./nodeStatus.js";
-import { inventoryLink } from "./preferences.js";
 import { requestRender } from "./renderRequest.js";
-import { appState, effectiveInventoryItemUrl } from "./state.js";
+import { appState } from "./state.js";
 
 const stateTone: Record<string, string> = { healthy: "ok", degraded: "warn", frozen: "bad" };
 
 function assetElement(member: ArrayMember): HTMLElement | null {
   if (!member.asset) return null;
-  const url = member.assetUrl ?? inventoryLink(effectiveInventoryItemUrl(), member.asset);
-  if (!url) return element("span", { className: "chip" }, member.asset);
-  return element("a", { className: "chip chip-link", attributes: { href: url, target: "_blank", rel: "noopener" } }, member.asset);
+  return element("small", { className: "muted" }, `note: ${member.asset}`);
 }
 
 function memberSpace(member: ArrayMember): HTMLElement {

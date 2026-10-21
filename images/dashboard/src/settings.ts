@@ -27,8 +27,6 @@ export const anyArrayLabelPattern = new RegExp(`^([0-9a-f]{4}|${clusterArrayId})
 export const peerDashboards = list(process.env.STORAGE_PEERS);
 /** An HTTP proxy into the tailnet: tailscale runs in userspace, so only it reaches tailnet addresses. */
 export const tailnetProxy = process.env.TAILNET_PROXY ?? "";
-/** e.g. https://inventree.tailnet.ts.net/web/stock/item/?search={asset} */
-export const inventoryAssetUrl = process.env.INVENTORY_ASSET_URL ?? "";
 export const tailscaleSocket = process.env.TAILSCALE_SOCKET ?? "/var/run/tailscale/tailscaled.sock";
 /** Tailnet logins whose devices may join besides this node's owner's and `tag:storage`. */
 export const joinAllowedUsers = list(process.env.JOIN_ALLOWED_USERS);

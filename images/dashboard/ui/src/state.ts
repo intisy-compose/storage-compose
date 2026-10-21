@@ -1,5 +1,5 @@
 import type { NodeKind, NodesResponse } from "./api.js";
-import { type ThemeChoice, storedInventoryItemUrl, storedTheme } from "./preferences.js";
+import { type ThemeChoice, storedTheme } from "./preferences.js";
 
 export type PageId = "nodes" | "folders" | "attention" | "activity" | "requests" | "settings";
 export type ReachFilter = "all" | "online" | "offline" | "attention";
@@ -31,7 +31,6 @@ export interface AppState {
   notice: Notice | null;
   showCandidates: boolean;
   theme: ThemeChoice;
-  inventoryItemUrl: string;
 }
 
 export const appState: AppState = {
@@ -47,7 +46,6 @@ export const appState: AppState = {
   notice: null,
   showCandidates: false,
   theme: storedTheme(),
-  inventoryItemUrl: storedInventoryItemUrl(),
 };
 
 const pages: PageId[] = ["nodes", "folders", "attention", "activity", "requests", "settings"];
@@ -60,8 +58,4 @@ export function readLocation(): void {
 
 export function locationFor(page: PageId, nodeId: string | null = null): string {
   return nodeId ? `#/${page}/${encodeURIComponent(nodeId)}` : `#/${page}`;
-}
-
-export function effectiveInventoryItemUrl(): string {
-  return appState.inventoryItemUrl || appState.data?.settings?.inventoryItemUrl || "";
 }

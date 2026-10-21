@@ -39,7 +39,7 @@ role   = "data1"            # dataN | parityN
 label  = "a3f9-data1"       # ext4 label, at most 16 characters
 serial = "ZA2..."
 size   = 4000787030016
-asset  = "SAM-0056"         # optional inventory link
+asset  = "SAM-0056"         # optional note
 '@
         $document = ConvertFrom-SimpleToml $text
         $document["node"]["id"] | Should Be "a3f9"

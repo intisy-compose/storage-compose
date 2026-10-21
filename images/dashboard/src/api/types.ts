@@ -46,8 +46,6 @@ export interface ArrayMember {
   size: number | null;
   used: number | null;
   asset: string | null;
-  /** INVENTORY_ASSET_URL with the asset filled in, when both are set. */
-  assetUrl: string | null;
   present: boolean;
   smart: MemberSmart | null;
   temperature: number | null;
@@ -210,7 +208,6 @@ export interface NodesResponse {
   host: HostInfo;
   nodes: StorageNode[];
   warnings: Warning[];
-  settings?: { inventoryItemUrl?: string | null };
 }
 
 /**

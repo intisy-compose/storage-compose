@@ -50,7 +50,6 @@ fill() {
     printf 'documents\tstorage-data2\nmusic\tstorage-data2 storage-data3\n' > "$root/storage-data1/.storage/syncthing-folder-drives"
     echo '{"serial":"none"}' > "$root/storage-data1/.storage/smart/storage-data4.json"
     {
-        echo 'inventory_item_url = "https://inventree.example.ts.net/web/stock/item/"'
         for role in "${roles[@]}"; do printf '\n[%s]\nasset = "SAM-%04d"\nitem = %d\nserial = "SERIAL-%s"\n' "$role" "${#role}${role: -1}" "${role: -1}" "$role"; done
     } > "$root/storage-data1/.storage/array.toml"
     cp -a "$root/storage-data1/.storage/." "$root/storage-data2/.storage/"
