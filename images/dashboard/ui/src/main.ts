@@ -15,7 +15,7 @@ import { renderNodesPage } from "./nodesPage.js";
 import { applyTheme } from "./preferences.js";
 import { onRenderRequested } from "./renderRequest.js";
 import { renderRequestsPage } from "./requestsPage.js";
-import { localNodes, renderSettingsPage } from "./settingsPage.js";
+import { readableLocalNodes, renderSettingsPage } from "./settingsPage.js";
 import { renderMenu } from "./shell.js";
 import { activityPageSize, appState, explorerLocation, locationFor, readLocation, selectedItemId } from "./state.js";
 
@@ -205,7 +205,7 @@ async function loadNodeOptions(nodeId: string): Promise<void> {
 
 /** @implNote Waits for the nodes, as they say which nodes are this host's. */
 async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
-  await Promise.all([loadHostSettings(), nodesLoaded.then(() => Promise.all(localNodes().map((node) => loadNodeOptions(node.id))))]);
+  await Promise.all([loadHostSettings(), nodesLoaded.then(() => Promise.all(readableLocalNodes().map((node) => loadNodeOptions(node.id))))]);
 }
 
 /** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */

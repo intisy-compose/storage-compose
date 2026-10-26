@@ -65,12 +65,15 @@ function group<Entry>(heading: string, entries: Entry[], render: (entry: Entry) 
 }
 
 function unreadableNotes(requests: RequestsResponse): HTMLElement | null {
-  if (!requests.unreadable.length) return null;
-  return element(
-    "div",
-    { className: "warnings" },
-    ...requests.unreadable.map((entry) => element("div", { className: "warning" }, `${entry.name}: ${entry.reason}, so its requests are not listed.`)),
-  );
+  const faults = requests.unreadable.filter((entry) => !entry.notConnected);
+  if (!faults.length) return null;
+  return element("div", { className: "warnings" }, ...faults.map((entry) => element("div", { className: "warning" }, `${entry.name}: ${entry.reason}, so its requests are not listed.`)));
+}
+
+function notConnectedNote(requests: RequestsResponse): HTMLElement | null {
+  const names = requests.unreadable.filter((entry) => entry.notConnected).map((entry) => entry.name);
+  if (!names.length) return null;
+  return element("p", { className: "muted" }, `Not connected, so their requests are not listed: ${names.join(", ")}.`);
 }
 
 function body(): (HTMLElement | null)[] {
@@ -78,6 +81,7 @@ function body(): (HTMLElement | null)[] {
   if (!requests) return [element("p", { className: appState.requestsError ? "warning level-error" : "muted" }, appState.requestsError ?? "Loading requests…")];
   return [
     unreadableNotes(requests),
+    notConnectedNote(requests),
     group("Devices asking to connect", requests.devices, deviceEntry, "No device is asking to connect to a node."),
     group("Folders offered", requests.folders, folderEntry, "No folder is waiting to be accepted on a node."),
     group("Joined", requests.joins, joinEntry, "No device has joined through the join API yet."),

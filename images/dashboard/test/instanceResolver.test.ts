@@ -153,8 +153,8 @@ describe("instance resolver", () => {
     await assert.rejects(resolver.resolveInstance("beef", sources), { status: 404, message: "no node beef" });
   });
 
-  it("a local node that is not attached is 503", async () => {
-    await assert.rejects(resolver.resolveInstance("0ff1", sources), { status: 503, message: "pulled-drive's Syncthing is not answering" });
+  it("a local node that is not attached is 409 not connected, not a Syncthing that does not answer", async () => {
+    await assert.rejects(resolver.resolveInstance("0ff1", sources), { status: 409, message: "pulled-drive is not connected" });
   });
 
   it("a remote node's write is 409 naming its host", async () => {

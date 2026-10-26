@@ -30,12 +30,17 @@ function unreadable(name: string, reason: string): RequestsResponse {
   return { ...emptyRequests(), unreadable: [{ name, reason }] };
 }
 
+function notConnected(name: string): RequestsResponse {
+  return { ...emptyRequests(), unreadable: [{ name, reason: "not connected", notConnected: true }] };
+}
+
 function devicesOf(node: RequestNode, pending: PendingDevices): PendingDevice[] {
   return Object.entries(pending).map(([deviceId, device]) => ({ nodeId: node.nodeId, nodeName: node.name, deviceId, name: device.name, address: device.address, time: device.time }));
 }
 
 async function readNode(node: RequestNode): Promise<RequestsResponse> {
-  if (!node.client) return unreadable(node.name, node.present ? "its Syncthing is not answering" : "not connected");
+  if (!node.present) return notConnected(node.name);
+  if (!node.client) return unreadable(node.name, "its Syncthing is not answering");
   try {
     const [devices, folders, configured] = await Promise.all([node.client.pendingDevices(), node.client.pendingFolders(), node.client.devices()]);
     return { ...emptyRequests(), devices: devicesOf(node, devices), folders: offersOf({ nodeId: node.nodeId, nodeName: node.name }, configured, folders) };

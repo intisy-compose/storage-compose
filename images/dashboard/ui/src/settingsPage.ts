@@ -1,6 +1,7 @@
 import type { HostSettings, InstanceGui, InstanceOptions, NodeOptionsResponse, PriorityBand, StorageNode } from "./api.js";
 import { element, keyValueList } from "./dom.js";
 import { priorityUnsetText } from "./folderCondition.js";
+import { isNotConnected } from "./nodeStatus.js";
 import { applyTheme } from "./preferences.js";
 import { requestRender } from "./renderRequest.js";
 import { appState, locationFor } from "./state.js";
@@ -83,7 +84,8 @@ function guiList(gui: InstanceGui): HTMLElement {
   ]);
 }
 
-function nodeBody(answer: NodeOptionsResponse | { error: string } | undefined): HTMLElement[] {
+function nodeBody(node: StorageNode, answer: NodeOptionsResponse | { error: string } | undefined): HTMLElement[] {
+  if (isNotConnected(node)) return [element("p", { className: "muted" }, "Not connected, so its options cannot be read.")];
   if (!answer) return [element("p", { className: "muted" }, "Reading its options…")];
   if ("error" in answer) return [element("p", { className: "warning" }, answer.error)];
   return [optionsList(answer.options), guiList(answer.gui)];
@@ -95,7 +97,7 @@ function nodeCard(node: StorageNode): HTMLElement {
     "section",
     { className: "settings-card" },
     element("h2", { className: "settings-heading" }, title, element("small", {}, `Syncthing options of node ${node.id}`)),
-    ...nodeBody(appState.nodeOptions.get(node.id)),
+    ...nodeBody(node, appState.nodeOptions.get(node.id)),
   );
 }
 
@@ -116,8 +118,13 @@ function themeSetting(): HTMLElement {
 }
 
 /** The nodes of this host, whose options this page shows. */
-export function localNodes(): StorageNode[] {
+function localNodes(): StorageNode[] {
   return appState.data?.nodes.filter((node) => node.local) ?? [];
+}
+
+/** The nodes of this host whose options can be read: one that is not connected has none to read. */
+export function readableLocalNodes(): StorageNode[] {
+  return localNodes().filter((node) => !isNotConnected(node));
 }
 
 function hostSection(): HTMLElement {

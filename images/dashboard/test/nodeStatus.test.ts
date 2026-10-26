@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { NodeFolder, StorageNode } from "../src/api/types.js";
 import { normaliseCompletion } from "../ui/src/format.js";
-import { shortSyncState } from "../ui/src/nodeStatus.js";
+import { isNotConnected, shortSyncState } from "../ui/src/nodeStatus.js";
 
 function folder(errors: number): NodeFolder {
   return { id: "documents", label: "documents", path: "F:\\Documents", type: "sendreceive", state: "syncing", completion: 50, errors } as NodeFolder;
@@ -32,5 +32,16 @@ describe("node row state", () => {
     assert.equal(normaliseCompletion(100), 1);
     assert.equal(normaliseCompletion(0), 0);
     assert.equal(normaliseCompletion(150), 1);
+  });
+});
+
+describe("a node that is not connected", () => {
+  it("is a node of this host that is not attached, the way the Nodes page reads it", () => {
+    assert.equal(isNotConnected(node({ online: false })), true);
+    assert.equal(isNotConnected(node({ online: true })), false);
+  });
+
+  it("is never another host's node, whose reachability is that host's to judge", () => {
+    assert.equal(isNotConnected(node({ local: false, online: false })), false);
   });
 });

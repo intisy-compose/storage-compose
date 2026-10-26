@@ -102,7 +102,7 @@ describe("requests", () => {
       ],
     );
     assert.deepEqual(response.joins, [{ name: "pc", joinedAt: "2026-10-21T01:38:06.691Z", setup: "pc is already in the setup repo" }]);
-    assert.deepEqual(response.unreadable, [{ name: "stick", reason: "not connected" }]);
+    assert.deepEqual(response.unreadable, [{ name: "stick", reason: "not connected", notConnected: true }]);
     assert.doesNotMatch(JSON.stringify(response), new RegExp(apiKey));
   });
 

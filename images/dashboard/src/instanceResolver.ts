@@ -125,6 +125,11 @@ function notAnswering(name: string): RequestError {
   return new RequestError(503, `${name}'s Syncthing is not answering`);
 }
 
+/** A node whose drive or array is not attached: its Syncthing is not expected to answer, so this is no fault. */
+function notConnected(name: string): RequestError {
+  return new RequestError(409, `${name} is not connected`);
+}
+
 /**
  * The Syncthing behind a node ID: this host's own instance for an array, a registry entry or a host
  * agent node, otherwise the other host whose dashboard reported the node.
@@ -132,6 +137,7 @@ function notAnswering(name: string): RequestError {
 export async function resolveInstance(nodeId: string, sources: ResolverSources = defaultResolverSources): Promise<ResolvedInstance> {
   const local = await findLocalNode(nodeId, sources);
   if (local) {
+    if (!local.present) throw notConnected(local.name);
     if (!local.instance) throw notAnswering(local.name);
     return local.instance;
   }

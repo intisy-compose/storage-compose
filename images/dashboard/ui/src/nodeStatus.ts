@@ -20,6 +20,11 @@ export function isArrayAbsent(node: StorageNode): boolean {
   return node.array?.state === "absent";
 }
 
+/** A node of this host whose drive or array is not attached, so its Syncthing is not expected to answer. */
+export function isNotConnected(node: StorageNode): boolean {
+  return node.local && !node.online;
+}
+
 export function transferSymbol(node: StorageNode): string {
   const device = node.syncthing;
   if (!device) return "⇅";

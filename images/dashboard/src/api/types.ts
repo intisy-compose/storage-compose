@@ -445,12 +445,15 @@ export interface JoinEntry {
   setup: string;
 }
 
-/** `GET /api/requests`; `?scope=local` leaves the other hosts out. `unreadable` names a node or host whose requests could not be read. */
+/**
+ * `GET /api/requests`; `?scope=local` leaves the other hosts out. `unreadable` names a node or host whose
+ * requests could not be read; `notConnected` marks a node that is merely not attached, which is no fault.
+ */
 export interface RequestsResponse {
   devices: PendingDevice[];
   folders: PendingFolderOffer[];
   joins: JoinEntry[];
-  unreadable: { name: string; reason: string }[];
+  unreadable: { name: string; reason: string; notConnected?: boolean }[];
 }
 
 /** A node's Syncthing options in our names; `deviceName` is the node's own device entry, not an option. Rates are KiB/s, 0 unlimited. */
