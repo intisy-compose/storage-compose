@@ -70,6 +70,8 @@ export interface DriveAttachment {
   host: string;
   since: string;
   lastAt: string;
+  /** When a build found the drive gone from that host, its last sighting there; null while it is attached. */
+  endedAt: string | null;
   /** What the drive was there, for example `data1 of private-array` or `drive node pc`. */
   as: string;
 }

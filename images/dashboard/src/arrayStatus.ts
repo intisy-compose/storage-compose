@@ -17,7 +17,7 @@ export interface DriveStatus {
   used: number | null;
   serial: string | null;
   /** Set only on an array that is not connected, for a drive the mounter's last round had present. */
-  lastPresent?: PresenceWindow | null;
+  lastPresent?: PresenceWindow;
 }
 
 /** The mounter's verdict on one array, written every 10 s to /status/arrays/<id>/status.json. */
@@ -65,7 +65,7 @@ function lastPresentWindow(status: ArrayStatus): PresenceWindow {
 function notConnected(status: ArrayStatus): ArrayStatus {
   const detail = `not connected since ${status.updated}`;
   const window = lastPresentWindow(status);
-  const drives = status.drives.map((drive): DriveStatus => ({ ...drive, condition: "missing", mounted: false, detail, lastPresent: wasPresent(drive) ? window : null }));
+  const drives = status.drives.map((drive): DriveStatus => ({ ...drive, condition: "missing", mounted: false, detail, ...(wasPresent(drive) ? { lastPresent: window } : {}) }));
   return { ...status, present: false, complete: false, drives };
 }
 

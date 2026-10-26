@@ -90,7 +90,7 @@ describe("drive history", () => {
         size: 1000,
         arrayId: "5784",
         nodeId: null,
-        attachments: [{ host: "finn", since: start.toISOString(), lastAt: start.toISOString(), as: "data1 of private-array" }],
+        attachments: [{ host: "finn", since: start.toISOString(), lastAt: start.toISOString(), as: "data1 of private-array", endedAt: null }],
       },
     ]);
     assert.deepEqual(JSON.parse(await readFile(store.path, "utf8")), records, "the record is written to the store's file");
@@ -113,7 +113,7 @@ describe("drive history", () => {
     const nodes = [arrayNode([member("data1", { serial: "WKD082MD" })])];
     await recordPresentDrives(nodes, "finn", start, store);
     const records = await recordPresentDrives(nodes, "finn", at(5), store);
-    assert.deepEqual(records[0].attachments, [{ host: "finn", since: start.toISOString(), lastAt: at(5).toISOString(), as: "data1 of private-array" }]);
+    assert.deepEqual(records[0].attachments, [{ host: "finn", since: start.toISOString(), lastAt: at(5).toISOString(), as: "data1 of private-array", endedAt: null }]);
   });
 
   it("a move to another host starts a new attachment", async () => {
@@ -121,8 +121,8 @@ describe("drive history", () => {
     await recordPresentDrives([arrayNode([member("data1", { serial: "WKD082MD" })])], "finn", start, store);
     const records = await recordPresentDrives([arrayNode([member("data1", { serial: "WKD082MD" })])], "p53", at(30), store);
     assert.deepEqual(records[0].attachments, [
-      { host: "p53", since: at(30).toISOString(), lastAt: at(30).toISOString(), as: "data1 of private-array" },
-      { host: "finn", since: start.toISOString(), lastAt: start.toISOString(), as: "data1 of private-array" },
+      { host: "p53", since: at(30).toISOString(), lastAt: at(30).toISOString(), as: "data1 of private-array", endedAt: null },
+      { host: "finn", since: start.toISOString(), lastAt: start.toISOString(), as: "data1 of private-array", endedAt: null },
     ]);
   });
 
@@ -137,9 +137,9 @@ describe("drive history", () => {
   });
 
   it("records of two hosts merge newest first", () => {
-    const finnStay = { host: "finn", since: start.toISOString(), lastAt: at(10).toISOString(), as: "data1 of private-array" };
+    const finnStay = { host: "finn", since: start.toISOString(), lastAt: at(10).toISOString(), as: "data1 of private-array", endedAt: null };
     const finnStayOlderView = { ...finnStay, lastAt: at(5).toISOString() };
-    const p53Stay = { host: "p53", since: at(20).toISOString(), lastAt: at(40).toISOString(), as: "data3 of private-array" };
+    const p53Stay = { host: "p53", since: at(20).toISOString(), lastAt: at(40).toISOString(), as: "data3 of private-array", endedAt: null };
     const own = [record("serial:WKD082MD", [finnStay], { label: "5784-data1" }), record("node:fb98", [], { kind: "drive-node", nodeId: "fb98", arrayId: null, serial: null })];
     const fromP53 = [record("serial:WKD082MD", [p53Stay, finnStayOlderView], { label: "5784-data3", size: 2000 })];
     const merged = mergeDriveRecords(own, [fromP53]);
@@ -157,7 +157,7 @@ describe("drive history", () => {
     const after = await recordPresentDrives([arrayNode([member("data1", { serial: "WKD082MD" })])], "finn", at(5), store);
     assert.deepEqual(after.map((entry) => entry.key), ["serial:WKD082MD"]);
     assert.equal(after[0].serial, "WKD082MD");
-    assert.deepEqual(after[0].attachments, [{ host: "finn", since: start.toISOString(), lastAt: at(5).toISOString(), as: "data1 of private-array" }]);
+    assert.deepEqual(after[0].attachments, [{ host: "finn", since: start.toISOString(), lastAt: at(5).toISOString(), as: "data1 of private-array", endedAt: null }]);
   });
 
   it("a member of an array that is not connected is recorded when the mounter last saw it, once", async () => {
@@ -166,7 +166,7 @@ describe("drive history", () => {
     const detached = [arrayNode([member("data1", { serial: "WKD082MD", present: false, condition: "missing", lastPresent })], { online: false })];
     await recordPresentDrives(detached, "finn", at(4000), store);
     const records = await recordPresentDrives(detached, "finn", at(5000), store);
-    assert.deepEqual(records[0].attachments, [{ host: "finn", since: "2026-10-21T00:43:49.000Z", lastAt: "2026-10-21T12:35:32.000Z", as: "data1 of private-array" }]);
+    assert.deepEqual(records[0].attachments, [{ host: "finn", since: "2026-10-21T00:43:49.000Z", lastAt: "2026-10-21T12:35:32.000Z", as: "data1 of private-array", endedAt: "2026-10-21T12:35:32.000Z" }]);
   });
 
   it("an older stay found later goes below the newer one, and only once", async () => {
@@ -184,9 +184,50 @@ describe("drive history", () => {
     );
   });
 
+  it("a drive back on the same host after it was seen absent starts a new attachment", async () => {
+    const store = freshStore();
+    const attached = [node({})];
+    await recordPresentDrives(attached, "finn", start, store);
+    const gone = await recordPresentDrives([node({ online: false })], "finn", at(10), store);
+    assert.deepEqual(gone[0].attachments, [{ host: "finn", since: start.toISOString(), lastAt: start.toISOString(), as: "drive node pc", endedAt: start.toISOString() }]);
+    await recordPresentDrives([], "finn", at(20), store);
+    const back = await recordPresentDrives(attached, "finn", at(30), store);
+    assert.deepEqual(back[0].attachments, [
+      { host: "finn", since: at(30).toISOString(), lastAt: at(30).toISOString(), as: "drive node pc", endedAt: null },
+      { host: "finn", since: start.toISOString(), lastAt: start.toISOString(), as: "drive node pc", endedAt: start.toISOString() },
+    ]);
+  });
+
+  it("a member found missing in a connected array closes its stay", async () => {
+    const store = freshStore();
+    await recordPresentDrives([arrayNode([member("data1", { serial: "WKD082MD" })])], "finn", start, store);
+    const records = await recordPresentDrives([arrayNode([member("data1", { serial: "WKD082MD", present: false, condition: "missing" })])], "finn", at(5), store);
+    assert.equal(records[0].attachments[0].endedAt, start.toISOString());
+  });
+
+  it("a detached array's members reattached on the same host start a new attachment", async () => {
+    const store = freshStore();
+    const present = (minutes: number) => recordPresentDrives([arrayNode([member("data1", { serial: "WKD082MD" })])], "finn", at(minutes), store);
+    await present(0);
+    await present(10);
+    const lastPresent = { since: start.toISOString(), at: at(9).toISOString() };
+    const detached = [arrayNode([member("data1", { serial: "WKD082MD", present: false, condition: "missing", lastPresent })], { online: false })];
+    await recordPresentDrives(detached, "finn", at(20), store);
+    const still = await recordPresentDrives(detached, "finn", at(30), store);
+    assert.deepEqual(still[0].attachments, [{ host: "finn", since: start.toISOString(), lastAt: at(10).toISOString(), as: "data1 of private-array", endedAt: at(10).toISOString() }], "the window inside the stay closes it once");
+    const back = await present(40);
+    assert.deepEqual(
+      back[0].attachments.map((stay) => [stay.since, stay.endedAt]),
+      [
+        [at(40).toISOString(), null],
+        [start.toISOString(), at(10).toISOString()],
+      ],
+    );
+  });
+
   it("the key prefers the serial, then the member, then the node", () => {
-    assert.equal(driveKey({ serial: "WKD082MD", arrayId: "5784", role: "data1", nodeId: null }), "serial:WKD082MD");
-    assert.equal(driveKey({ serial: null, arrayId: "5784", role: "data1", nodeId: null }), "member:5784-data1");
-    assert.equal(driveKey({ serial: null, arrayId: null, role: null, nodeId: "fb98" }), "node:fb98");
+    assert.equal(driveKey({ serial: "WKD082MD", arrayId: "5784", role: "data1" }), "serial:WKD082MD");
+    assert.equal(driveKey({ serial: null, arrayId: "5784", role: "data1" }), "member:5784-data1");
+    assert.equal(driveKey({ serial: null, nodeId: "fb98" }), "node:fb98");
   });
 });

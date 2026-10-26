@@ -61,7 +61,7 @@ describe("array status", () => {
     const degraded = await read(status({ updated: "2026-10-21T12:35:32Z", state: "degraded", complete: false, drives }));
     assert.deepEqual(
       degraded.drives.map((entry) => entry.lastPresent),
-      [{ since: "2026-10-21T12:35:32Z", at: "2026-10-21T12:35:32Z" }, null],
+      [{ since: "2026-10-21T12:35:32Z", at: "2026-10-21T12:35:32Z" }, undefined],
       "a degraded state's start does not date each member's arrival",
     );
     const fresh = await read(status({}));
