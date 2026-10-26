@@ -69,11 +69,12 @@ export type {
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
+import { requestRefresh } from "./renderRequest.js";
 import type { ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, NearbyDevice, NewDevice, FolderDetailResponse, RemoveDeviceBody, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
-export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
+export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 
@@ -123,6 +124,11 @@ export type SaveResult<T> = { ok: true; value: T } | { ok: false; message: strin
 
 let savedWrites = 0;
 
+function noteSavedWrite(): void {
+  savedWrites += 1;
+  requestRefresh();
+}
+
 /** How many writes have been saved; a read that started before one was saved may not show it. */
 export function savedWriteCount(): number {
   return savedWrites;
@@ -133,7 +139,7 @@ async function sendWrite<T>(path: string, method: string, body?: unknown): Promi
   try {
     const response = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
     const payload = (await response.json().catch(() => ({}))) as T & { error?: string };
-    if (response.ok) savedWrites += 1;
+    if (response.ok) noteSavedWrite();
     return response.ok ? { ok: true, value: payload } : { ok: false, message: payload.error ?? `HTTP ${response.status}` };
   } catch {
     return { ok: false, message: "The dashboard is not answering." };
@@ -220,6 +226,7 @@ async function postJson(path: string, body: ArrayActionBody): Promise<{ status: 
     body: JSON.stringify(body),
   });
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
+  if (response.ok) noteSavedWrite();
   return { status: response.status, error: response.ok ? null : (payload.error ?? `HTTP ${response.status}`) };
 }
 

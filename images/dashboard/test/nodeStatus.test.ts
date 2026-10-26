@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { NodeFolder, StorageNode } from "../src/api/types.js";
+import type { NodeFolder, Peer, StorageNode } from "../src/api/types.js";
 import { normaliseCompletion } from "../ui/src/format.js";
 import { isNotConnected, shortSyncState } from "../ui/src/nodeStatus.js";
 
@@ -32,6 +32,26 @@ describe("node row state", () => {
     assert.equal(normaliseCompletion(100), 1);
     assert.equal(normaliseCompletion(0), 0);
     assert.equal(normaliseCompletion(150), 1);
+  });
+});
+
+function pausedPeer(paused: boolean): Peer {
+  return { deviceId: "D7E5AAA", name: "peer", paused, connected: false } as Peer;
+}
+
+describe("a paused node", () => {
+  it("reads paused on its row and status line when every device is paused", () => {
+    assert.deepEqual(shortSyncState(node({ peers: [pausedPeer(true), pausedPeer(true)], sync: { state: "waiting", completion: 0, lastSeen: null } })), { symbol: "‖", label: "paused", tone: "warn" });
+  });
+
+  it("is not paused while one device still syncs, without devices, or on another host", () => {
+    assert.equal(shortSyncState(node({ peers: [pausedPeer(true), pausedPeer(false)] })).label, "in sync");
+    assert.equal(shortSyncState(node({ peers: [] })).label, "in sync");
+    assert.equal(shortSyncState(node({ local: false, peers: [pausedPeer(true)] })).label, "in sync");
+  });
+
+  it("an offline node still reads offline", () => {
+    assert.notEqual(shortSyncState(node({ online: false, peers: [pausedPeer(true)], sync: { state: "offline", completion: 0, lastSeen: null } })).label, "paused");
   });
 });
 

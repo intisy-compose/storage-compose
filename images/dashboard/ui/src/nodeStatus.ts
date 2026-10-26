@@ -1,4 +1,4 @@
-import { type ArrayMember, type MemberSmart, type NodesResponse, type StorageNode, type Warning, deviceDisplayName, isReachable } from "./api.js";
+import { type ArrayMember, type MemberSmart, type NodesResponse, type StorageNode, type Warning, deviceDisplayName, isNodePaused, isReachable } from "./api.js";
 import { formatAge, formatPercent, normaliseCompletion, usedFraction } from "./format.js";
 
 export type Tone = "ok" | "warn" | "bad" | "muted" | "accent";
@@ -65,6 +65,7 @@ function onlineOrOfflineState(node: StorageNode, response?: NodesResponse): Shor
   if (isArrayAbsent(node)) return { symbol: "", label: node.sync.lastSeen ? `not connected, ${formatAge(node.sync.lastSeen)}` : "not connected", tone: "muted" };
   if (isOffline(node)) return { symbol: "", label: formatAge(node.sync.lastSeen), tone: "muted" };
   if (node.sync.state === "error") return { symbol: "!", label: "error", tone: "bad" };
+  if (isNodePaused(node)) return { symbol: "‖", label: "paused", tone: "warn" };
   if (node.sync.state === "unknown") return { symbol: "?", label: "completion unavailable", tone: "muted" };
   if (node.sync.state === "syncing") {
     return { symbol: transferSymbol(node), label: formatPercent(normaliseCompletion(node.sync.completion)), tone: "accent" };

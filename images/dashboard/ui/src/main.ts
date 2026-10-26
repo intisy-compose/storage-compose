@@ -16,7 +16,7 @@ import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
 import { renderNodesPage } from "./nodesPage.js";
 import { applyTheme } from "./preferences.js";
 import { skipWhileRunning } from "./pollGuard.js";
-import { onRenderRequested } from "./renderRequest.js";
+import { onRefreshRequested, onRenderRequested } from "./renderRequest.js";
 import { renderRequestsPage } from "./requestsPage.js";
 import { readableLocalNodes, renderSettingsPage } from "./settingsPage.js";
 import { renderMenu } from "./shell.js";
@@ -131,12 +131,15 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** @implNote An answer that started before a write was saved is dropped, so a row the write changed does not flick back until the next poll. */
+/** @implNote An answer that started before a write was saved is read again, so a row the write changed never flicks back to how it was. */
 async function loadNodes(): Promise<void> {
   try {
-    const writesBefore = savedWriteCount();
-    const data = await fetchNodes();
-    if (savedWriteCount() !== writesBefore) return;
+    let writesBefore: number;
+    let data: NodesResponse;
+    do {
+      writesBefore = savedWriteCount();
+      data = await fetchNodes();
+    } while (savedWriteCount() !== writesBefore);
     appState.data = data;
     appState.lastLoaded = Date.now();
     appState.loadError = null;
@@ -307,6 +310,7 @@ function onKey(event: KeyboardEvent): void {
 applyTheme(appState.theme);
 readLocation();
 onRenderRequested(render);
+onRefreshRequested(() => void poll());
 window.addEventListener("hashchange", onLocationChange);
 window.addEventListener("keydown", onKey);
 render();

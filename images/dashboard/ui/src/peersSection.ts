@@ -91,9 +91,11 @@ async function sendPause(node: StorageNode, deviceId: string | null, send: () =>
 function pauseButton(node: StorageNode, peer: Peer, displayName: string): HTMLButtonElement {
   const paused = !peer.paused;
   const done = `${paused ? "Paused" : "Resumed"} ${displayName} on ${node.name}.`;
-  const control = button(paused ? "Pause" : "Resume", () => void sendPause(node, peer.deviceId, () => pauseDevice(node.id, peer.deviceId, paused), done), "button ghost");
+  const label = paused ? `Stop syncing with ${displayName}` : `Sync with ${displayName} again`;
+  const control = button(paused ? "Stop syncing" : "Sync again", () => void sendPause(node, peer.deviceId, () => pauseDevice(node.id, peer.deviceId, paused), done), "button ghost");
   control.disabled = pausesSent.has(pauseKey(node, peer.deviceId));
-  control.title = `${paused ? "Pause" : "Resume"} syncing with ${displayName}`;
+  control.title = label;
+  control.setAttribute("aria-label", label);
   return control;
 }
 

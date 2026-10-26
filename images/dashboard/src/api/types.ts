@@ -300,6 +300,7 @@ export type WarningKind =
   | "pending-folder"
   | "offline"
   | "full"
+  | "paused"
   | "conflicts"
   | "other";
 

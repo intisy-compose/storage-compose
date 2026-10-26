@@ -5,7 +5,7 @@ import { element, keyValueList, progressBar, section } from "./dom.js";
 import { formatAge, formatBytes, formatDate, formatDuration, formatPercent, formatRate, normaliseCompletion, usedFraction } from "./format.js";
 import { icon } from "./icons.js";
 import { warningBanner } from "./nodesPage.js";
-import { arrayStateLabel, countRoles, isArrayAbsent, isOffline, shortSyncState, spaceTone, warningsFor } from "./nodeStatus.js";
+import { arrayStateLabel, countRoles, isArrayAbsent, isNotConnected, isOffline, shortSyncState, spaceTone, warningsFor } from "./nodeStatus.js";
 import { peersSection } from "./peersSection.js";
 import { requestRender } from "./renderRequest.js";
 import { appState, deviceFormLocation, locationFor } from "./state.js";
@@ -74,7 +74,7 @@ function addressList(device: SyncthingDevice): HTMLElement | string {
 
 /** Opens the device form on the node's own device, which shows only its name. */
 function renameLink(node: StorageNode, device: SyncthingDevice): HTMLElement | null {
-  if (!node.local) return null;
+  if (!node.local || isNotConnected(node)) return null;
   const link = element("a", { className: "button", title: "The name other devices are offered for this node", attributes: { href: deviceFormLocation(node.id, device.deviceId) } }, "Rename");
   return element("div", { className: "button-row" }, link);
 }

@@ -1,4 +1,4 @@
-import { deviceDisplayName, shortDeviceId } from "./api/deviceText.js";
+import { deviceDisplayName, isNodePaused, shortDeviceId } from "./api/deviceText.js";
 import type { StorageNode, Warning, WarningKind, WarningLevel } from "./api/types.js";
 import type { AttentionThresholds } from "./settings.js";
 import type { PendingDevices, PendingFolders, SystemError } from "./syncthing.js";
@@ -144,6 +144,12 @@ export function fullWarnings(node: StorageNode, thresholds: AttentionThresholds)
     warnings.push(warning({ id: `full:${node.id}:${member.label}`, level: "warning", kind: "full", text: `${member.label} in ${node.name} is ${shownPercent(memberPercent)}% full`, nodeId: node.id }));
   }
   return warnings;
+}
+
+/** A paused node stays on Attention until it is resumed, as nothing syncs with it meanwhile. */
+export function pausedWarnings(node: StorageNode): Warning[] {
+  if (!isNodePaused(node)) return [];
+  return [warning({ id: `paused:${node.id}`, level: "warning", kind: "paused", text: `${node.name}: every device paused`, nodeId: node.id })];
 }
 
 function offlineDuration(milliseconds: number): string {

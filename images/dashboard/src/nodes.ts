@@ -1,7 +1,7 @@
 import { deviceDisplayName } from "./api/deviceText.js";
 import type { NodeArray, NodeRegistryEntry, NodesResponse, StorageNode, Warning } from "./api/types.js";
 import { type ArrayStatus, arrayIds, arrayStatus, listedArrayIds } from "./arrayStatus.js";
-import { folderErrorWarnings, fromOtherHost, fullWarnings, hostWarnings, offlineWarnings, pendingWarnings, pruneFirstSeen, systemErrorWarnings, warning, withoutDuplicates } from "./attention.js";
+import { folderErrorWarnings, fromOtherHost, fullWarnings, hostWarnings, offlineWarnings, pausedWarnings, pendingWarnings, pruneFirstSeen, systemErrorWarnings, warning, withoutDuplicates } from "./attention.js";
 import { type BlockDevice, listBlockDevices, replacementCandidates } from "./blockDevices.js";
 import { type UnreadSources, recordPresentDrives } from "./driveHistory.js";
 import { agentProblem, readHeartbeat } from "./hostAgent.js";
@@ -114,7 +114,7 @@ function arrayWarnings(status: ArrayStatus, node: StorageNode): Warning[] {
 
 /** What a node's own Syncthing and its space say needs a person. */
 function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
-  const warnings = [...folderErrorWarnings(node), ...fullWarnings(node, attentionSettings)];
+  const warnings = [...folderErrorWarnings(node), ...fullWarnings(node, attentionSettings), ...pausedWarnings(node)];
   if (view) warnings.push(...systemErrorWarnings(node, view.systemErrors), ...pendingWarnings(node, view.pendingDevices, view.pendingFolders));
   return warnings;
 }

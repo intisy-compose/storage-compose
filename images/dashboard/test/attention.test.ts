@@ -9,6 +9,7 @@ import {
   fullWarnings,
   hostWarnings,
   offlineWarnings,
+  pausedWarnings,
   pendingWarnings,
   pruneFirstSeen,
   systemErrorWarnings,
@@ -227,6 +228,14 @@ describe("attention", () => {
       ],
     );
     assert.equal(fullWarnings(array, { ...defaults, fullPercent: 96 }).length, 0);
+  });
+
+  it("a node whose every device is paused is on Attention until it is resumed", () => {
+    const paused = node({ id: "d7e5", name: "dashboard-test-peer", peers: [peer({ paused: true }), peer({ deviceId: pcId, name: "pc", paused: true })] });
+    assert.deepEqual(pausedWarnings(paused).map((entry) => [entry.id, entry.level, entry.kind, entry.nodeId, entry.text]), [["paused:d7e5", "warning", "paused", "d7e5", "dashboard-test-peer: every device paused"]]);
+    assert.deepEqual(pausedWarnings(node({ peers: [peer({ paused: true }), peer({ deviceId: pcId, paused: false })] })), [], "one device still syncs");
+    assert.deepEqual(pausedWarnings(node({ peers: [] })), [], "no devices");
+    assert.deepEqual(pausedWarnings(node({ local: false, peers: [peer({ paused: true })] })), [], "another host's node is that host's to report");
   });
 
   it("a node just above the full percent warns", () => {

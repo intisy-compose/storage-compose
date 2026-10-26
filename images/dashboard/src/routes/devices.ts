@@ -282,6 +282,19 @@ async function otherDevices(instance: LocalInstance): Promise<SyncthingObject[]>
   return devices.filter((device) => device.deviceID !== ownId);
 }
 
+function isNotAnswering(error: Error): boolean {
+  return error instanceof RequestError && error.status === 503;
+}
+
+/**
+ * The devices as read before the pause, with it laid over them.
+ * @implNote The pause is already written, so any failure to read them back still reports it; one other than a node that stops answering is logged by name.
+ */
+function devicesAsPaused(instance: LocalInstance, before: SyncthingObject[], paused: boolean, error: Error): SyncthingObject[] {
+  if (!isNotAnswering(error)) console.error(`${instance.name}: devices not read back after the ${pauseVerb(paused)}: ${error.message}`);
+  return before.map((device) => ({ ...device, paused }));
+}
+
 /**
  * Pauses or resumes every device of the node at once, Syncthing's pause without a device.
  * @implNote The devices are read before the write so a node that stops answering after it still reports what it paused.
@@ -290,7 +303,7 @@ export async function pauseNode(instance: ResolvedInstance, paused: boolean): Pr
   const local = requireLocal(instance);
   const before = await otherDevices(local);
   await callSyncthing(local, (client) => client.request("POST", `/system/${pauseVerb(paused)}`));
-  const after = await otherDevices(local).catch(() => before.map((device) => ({ ...device, paused })));
+  const after = await otherDevices(local).catch((error: Error) => devicesAsPaused(local, before, paused, error));
   const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: `${local.name}: ${pausedWord(paused)} every device` };
   return { devices: after.map(deviceSettings), note };
 }

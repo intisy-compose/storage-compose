@@ -230,7 +230,7 @@ function removeForm(node: StorageNode, form: DeviceFormState, name: string): HTM
   removeButton.disabled = form.removing || form.removeConfirm !== name;
   confirmInput.addEventListener("input", () => {
     form.removeConfirm = confirmInput.value;
-    removeButton.disabled = form.removeConfirm !== name;
+    removeButton.disabled = form.removing || form.removeConfirm !== name;
   });
   return element(
     "div",

@@ -35,6 +35,11 @@ export function addressHost(address: string): string {
   return addressParts(address).host;
 }
 
+/** A node of this host that syncs with no device, every one of them paused, until it is resumed. */
+export function isNodePaused(node: StorageNode): boolean {
+  return node.local && node.peers.length > 0 && node.peers.every((peer) => peer.paused);
+}
+
 /** The device form's label of each setting; refusals and Activity entries name a setting the same way. */
 export const deviceSettingLabels: Record<keyof DeviceSettingsChange, string> = {
   name: "Name",

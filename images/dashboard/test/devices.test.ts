@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { after, before, beforeEach, describe, it } from "node:test";
+import { after, before, beforeEach, describe, it, mock } from "node:test";
 import { deviceDisplayName } from "../src/api/deviceText.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance } from "../src/instanceResolver.js";
@@ -95,14 +95,23 @@ describe("a node's devices", () => {
   let discovered: Record<string, unknown> = {};
   /** Drops the connection of the request this many requests from now, as a Syncthing that stops answering mid-edit; null keeps answering. */
   let dropAfter: number | null = null;
+  /** Answers the device list with HTTP 500 from this many device reads on; null keeps answering it. */
+  let failDeviceReadsAfter: number | null = null;
   let syncthingUrl = "";
   let deadUrl = "";
+  /** Requests the fake has not finished answering, so a test starts only once the last one's stragglers are done. */
+  let openRequests = 0;
   const syncthing = createServer(async (request, response) => {
+    openRequests += 1;
+    response.on("close", () => (openRequests -= 1));
     if (dropAfter !== null && dropAfter-- === 0) return request.socket.destroy();
     if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
     const path = new URL(request.url ?? "/", "http://fake").pathname;
     const query = new URL(request.url ?? "/", "http://fake").searchParams;
-    if (request.method === "GET" && path === "/rest/config/devices") return reply(response, configured);
+    if (request.method === "GET" && path === "/rest/config/devices") {
+      if (failDeviceReadsAfter !== null && failDeviceReadsAfter-- <= 0) return reply(response, { error: "config not loaded" }, 500);
+      return reply(response, configured);
+    }
     if (request.method === "GET" && path === "/rest/config/defaults/device") return reply(response, syncthingDefaults);
     if (request.method === "GET" && path === "/rest/svc/deviceid") return reply(response, syncthingDeviceIdAnswer(query.get("id") ?? ""));
     if (request.method === "GET" && path === "/rest/system/discovery") return reply(response, discovered);
@@ -159,9 +168,11 @@ describe("a node's devices", () => {
     await new Promise((resolve) => closed.close(resolve));
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    while (openRequests > 0) await new Promise((resolve) => setTimeout(resolve, 5));
     writes.length = 0;
     dropAfter = null;
+    failDeviceReadsAfter = null;
     configured = [{ deviceID: ownId, name: "pc", addresses: ["dynamic"] }, { ...syncthingPeer }];
     folders = [
       { id: "dashboard-test-a", label: "dashboard-test-a", path: "F:/dashboard-test-a", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }] },
@@ -497,6 +508,31 @@ describe("a node's devices", () => {
     assert.deepEqual(writes, [{ method: "POST", path: "/rest/system/pause", body: null }]);
     assert.deepEqual(pause.devices.map((device) => [device.deviceId, device.paused]), [[peerId, true]]);
     assert.equal(pause.note.text, "pc: paused every device");
+  });
+
+  it("a node that stops answering after a resume is expected and not logged", async () => {
+    const logged = mock.method(console, "error", () => {});
+    try {
+      dropAfter = 3;
+      const resume = await pauseNode(pc(), false);
+      assert.deepEqual(resume.devices.map((device) => device.paused), [false]);
+      assert.equal(logged.mock.callCount(), 0);
+    } finally {
+      logged.mock.restore();
+    }
+  });
+
+  it("a failed read-back after a node pause other than a node that stops answering still reports the pause and is logged by name", async () => {
+    const logged = mock.method(console, "error", () => {});
+    try {
+      failDeviceReadsAfter = 1;
+      const pause = await pauseNode(pc(), true);
+      assert.deepEqual(pause.devices.map((device) => [device.deviceId, device.paused]), [[peerId, true]]);
+      assert.equal(logged.mock.callCount(), 1);
+      assert.match(String(logged.mock.calls[0].arguments[0]), /^pc: devices not read back after the pause: .*HTTP 500/);
+    } finally {
+      logged.mock.restore();
+    }
   });
 
   it("pausing, resuming and removing on another host's node is 409 and sends nothing", async () => {
