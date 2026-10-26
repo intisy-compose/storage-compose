@@ -45,6 +45,19 @@ export function isDeviceOnly(node: StorageNode): boolean {
   return node.kind === "device";
 }
 
+function thresholdText(threshold: number): string {
+  return threshold === 0 ? "0 (keeps everything)" : `${threshold} (keeps priority ${threshold} and above)`;
+}
+
+/** What the setup layout gives a node; a Syncthing-only device has no layout, so it has none. */
+export function layoutRows(node: StorageNode): [string, string][] {
+  if (isDeviceOnly(node)) return [];
+  return [
+    ["Threshold", thresholdText(node.threshold)],
+    ["Assigned", node.assigned.length ? node.assigned.join(", ") : "none"],
+  ];
+}
+
 export function storageNodes(nodes: StorageNode[]): StorageNode[] {
   return nodes.filter((node) => !isDeviceOnly(node));
 }

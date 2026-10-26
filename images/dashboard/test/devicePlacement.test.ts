@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ArrayMember, ArrayState, DeviceSummary, DevicesResponse, DriveSummary, NodesResponse, StorageNode } from "../src/api/types.js";
-import { type DeviceRow, type NodeFilters, deviceDriveCount, deviceRows, isDeviceShown, placeOnDevices, visibleUnplacedNodes } from "../ui/src/devicePlacement.js";
+import { type DeviceRow, type NodeFilters, deviceDriveCount, deviceRows, isDeviceShown, layoutRows, placeOnDevices, visibleUnplacedNodes } from "../ui/src/devicePlacement.js";
 
 function member(role: string, serial: string, present: boolean): ArrayMember {
   return {
@@ -117,5 +117,22 @@ describe("nodes page by device", () => {
     const { devices, placements } = scene(detached, "absent");
     assert.equal(deviceDriveCount(placements.placements[0]), 3);
     assert.equal(placements.placements.reduce((sum, placement) => sum + deviceDriveCount(placement), 0), devices.drives.length);
+  });
+});
+
+describe("a node's layout rows", () => {
+  it("a storage node shows its threshold and assigned directories", () => {
+    assert.deepEqual(layoutRows(storageNode({ threshold: 0, assigned: [] })), [
+      ["Threshold", "0 (keeps everything)"],
+      ["Assigned", "none"],
+    ]);
+    assert.deepEqual(layoutRows(storageNode({ threshold: 50, assigned: ["Documents", "Music"] })), [
+      ["Threshold", "50 (keeps priority 50 and above)"],
+      ["Assigned", "Documents, Music"],
+    ]);
+  });
+
+  it("a Syncthing-only device has no layout, so it shows neither row", () => {
+    assert.deepEqual(layoutRows(storageNode({ kind: "device", threshold: 0, assigned: [] })), []);
   });
 });
