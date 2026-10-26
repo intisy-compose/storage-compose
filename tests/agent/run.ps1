@@ -21,9 +21,8 @@ $testBinFolder = Join-Path $testRunFolder "bin"
 <#
 .NOTES
 The agent finds its Syncthings by the binary's path and sweeps every firewall rule for a program in
-its bin folder, and so do the tests. Run from the checkout that is the stack folder, the binary in
-host-agent\bin is the one the installed agent runs, so the tests ended the live node's Syncthing and
-removed its firewall rules; a copy per run keeps them to their own processes and rules.
+its bin folder, and the tests do the same with the binary they are given. host-agent\bin of the stack
+folder holds the binary the installed agent runs, so the tests get a copy of their own per run.
 #>
 function Copy-TestSyncthing([string]$Binary) {
     $folder = Join-Path $testBinFolder (Split-Path -Leaf (Split-Path $Binary))
@@ -32,34 +31,45 @@ function Copy-TestSyncthing([string]$Binary) {
     return Join-Path $folder (Split-Path -Leaf $Binary)
 }
 
-$syncthing = Copy-TestSyncthing (Get-SyncthingBinary $repository)
-. (Join-Path $PSScriptRoot "firewall-guard.ps1")
-Add-TestFirewallGuard $syncthing
-Import-Module Pester -MinimumVersion 3.4.0
-
 <#
 .NOTES
 The tests run the binary as this user without the agent's rules (they fake the firewall), so
-Windows may add an "allow access" rule for it; every run ends by sweeping the copy's rules.
+Windows may add an "allow access" rule for it; every run, a failed or interrupted one too, ends by
+sweeping the copy's rules and the guard's.
 #>
-function Complete-Run([int]$Code) {
+function Remove-TestRun {
     Remove-ProgramFirewallRules $testBinFolder
+    Remove-NetFirewallRule -Group "storage-compose test guard" -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -LiteralPath $testRunFolder
-    exit $Code
+    if (Test-Path -LiteralPath $testRunFolder) { Write-Warning "$testRunFolder is still there (a syncthing.exe of the run still holds it); remove it by hand" }
 }
 
-$scripts = @(
-    (Join-Path $PSScriptRoot "nodes.Tests.ps1"),
-    (Join-Path $PSScriptRoot "firewall.Tests.ps1"),
-    (Join-Path $PSScriptRoot "agent.Tests.ps1"),
-    (Join-Path $PSScriptRoot "install.Tests.ps1"),
-    @{ Path = (Join-Path $PSScriptRoot "syncthing.Tests.ps1"); Parameters = @{ SyncthingPath = $syncthing } }
-)
-$result = Invoke-Pester -Script $scripts -PassThru
-if ($result.FailedCount -gt 0) { Complete-Run 1 }
-if ($UnitOnly) { Complete-Run 0 }
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "vhdx-nodes.ps1") -SyncthingPath $syncthing
-if ($LASTEXITCODE -ne 0) { Complete-Run 1 }
-if (-not $Service) { Complete-Run 0 }
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "service.ps1") -SyncthingPath $syncthing
-Complete-Run $LASTEXITCODE
+function Invoke-AgentTests([string]$Syncthing) {
+    $scripts = @(
+        (Join-Path $PSScriptRoot "nodes.Tests.ps1"),
+        (Join-Path $PSScriptRoot "firewall.Tests.ps1"),
+        (Join-Path $PSScriptRoot "agent.Tests.ps1"),
+        (Join-Path $PSScriptRoot "install.Tests.ps1"),
+        @{ Path = (Join-Path $PSScriptRoot "syncthing.Tests.ps1"); Parameters = @{ SyncthingPath = $Syncthing } }
+    )
+    $result = Invoke-Pester -Script $scripts -PassThru
+    if ($result.FailedCount -gt 0) { return 1 }
+    if ($UnitOnly) { return 0 }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "vhdx-nodes.ps1") -SyncthingPath $Syncthing | Out-Host
+    if ($LASTEXITCODE -ne 0) { return 1 }
+    if (-not $Service) { return 0 }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "service.ps1") -SyncthingPath $Syncthing | Out-Host
+    return $LASTEXITCODE
+}
+
+$exitCode = 1
+try {
+    $syncthing = Copy-TestSyncthing (Get-SyncthingBinary $repository)
+    . (Join-Path $PSScriptRoot "firewall-guard.ps1")
+    Add-TestFirewallGuard $syncthing
+    Import-Module Pester -MinimumVersion 3.4.0
+    $exitCode = Invoke-AgentTests $syncthing
+} finally {
+    Remove-TestRun
+}
+exit $exitCode
