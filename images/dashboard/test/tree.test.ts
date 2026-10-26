@@ -347,7 +347,7 @@ describe("tree listing of one node", () => {
     const before = browseRequests.filter((request) => request === "documents::0").length;
     instance.folders[0].status = { globalTotalItems: 920_299 };
     await treeListing(node.nodeId, "Documents", 1, sources());
-    await wait(50);
+    await until(() => browseRequests.filter((request) => request === "documents::0").length > before, "the re-read of Documents");
     assert.equal(browseRequests.filter((request) => request === "documents::0").length, before + 1);
   });
 

@@ -115,7 +115,7 @@ describe("folder lists", () => {
 
     status = { ...status, sequence: 6 };
     assert.equal(await listsFor(key, client, "documents"), first);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await until(async () => (await listsFor(key, client, "documents")).sequence === 6, "the lists of sequence 6");
     const fourth = await listsFor(key, client, "documents");
     assert.notEqual(fourth, first);
     assert.equal(fourth.sequence, 6);
