@@ -33,6 +33,8 @@ export type {
   FolderPeer,
   FolderSettings,
   FolderSettingsChange,
+  FolderShare,
+  FolderSharingChange,
   FolderSummary,
   FoldersResponse,
   FolderType,

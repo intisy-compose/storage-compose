@@ -1,11 +1,12 @@
-import { type FolderPathCheck, type FolderSettings, type FolderSettingsChange, type FolderType, type NewFolder, type NewFolderDefaults, folderSettingLabels, folderTypeTexts, pullOrderTexts } from "../api/types.js";
+import { deviceDisplayName, shortDeviceId } from "../api/deviceText.js";
+import { type FolderPathCheck, type FolderSettings, type FolderSettingsChange, type FolderShare, type FolderSharingChange, type FolderType, type NewFolder, type NewFolderDefaults, folderSettingLabels, folderTypeTexts, pullOrderTexts } from "../api/types.js";
 import { folderSettings } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, localNodeInfos, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import { type NodeRoot, folderPathProblem, isInsideOtherNode, isInsideRoot, isStrictlyBelow, pathUnderRoot } from "../pathGuard.js";
-import type { AnyRoute, WriteNote } from "../routes.js";
-import type { SyncthingFolderSettings } from "../syncthing.js";
-import { folderChangeProblem, isChangeInPlace } from "../syncthingConfig.js";
+import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
+import type { SyncthingDeviceConfig, SyncthingFolderSettings } from "../syncthing.js";
+import { effectiveSharing, folderChangeProblem, isChangeInPlace, sharedDevices } from "../syncthingConfig.js";
 import { otherFoldersGroup, relativeToRoot } from "../treePaths.js";
 import { decodedSegment } from "./devices.js";
 
@@ -144,9 +145,11 @@ function onOff(value: boolean): string {
   return value ? "on" : "off";
 }
 
-type ChangedSetting = keyof FolderSettingsChange;
+type SettingsChange = Omit<FolderSettingsChange, "devices">;
+type ChangedSetting = keyof SettingsChange;
+type Sharing = Required<FolderSharingChange>;
 
-function settingValueWords(key: ChangedSetting, change: Required<FolderSettingsChange>): string {
+function settingValueWords(key: ChangedSetting, change: Required<SettingsChange>): string {
   const value = change[key];
   if (typeof value === "boolean") return onOff(value);
   if (key === "type") return folderTypeTexts[change.type];
@@ -158,14 +161,24 @@ function settingValueWords(key: ChangedSetting, change: Required<FolderSettingsC
   return String(value) || "none";
 }
 
-function settingWords(key: ChangedSetting, change: FolderSettingsChange): string {
+function settingWords(key: ChangedSetting, change: SettingsChange): string {
   const label = folderSettingLabels[key];
-  return `${label.charAt(0).toLowerCase()}${label.slice(1)} ${settingValueWords(key, change as Required<FolderSettingsChange>)}`;
+  return `${label.charAt(0).toLowerCase()}${label.slice(1)} ${settingValueWords(key, change as Required<SettingsChange>)}`;
 }
 
-/** What a folder edit changed, in words: `pc: changed folder Documents; full rescan interval 60 s; pull order alphabetic`. */
-export function folderEditText(nodeName: string, folderName: string, change: FolderSettingsChange): string {
-  const details = (Object.keys(folderSettingLabels) as ChangedSetting[]).filter((key) => key in change).map((key) => settingWords(key, change));
+/** @implNote Names whether a share is encrypted, never its password. */
+function sharingWords(sharing: FolderSharingChange, deviceNames: ReadonlyMap<string, string>): string[] {
+  const named = (deviceId: string) => deviceDisplayName(deviceNames.get(deviceId), deviceId);
+  return [
+    ...(sharing.share ?? []).map((entry) => `shared with ${named(entry.deviceId)}${entry.encryptionPassword ? ", encrypted" : ""}`),
+    ...(sharing.unshare ?? []).map((deviceId) => `stopped sharing with ${named(deviceId)}`),
+  ];
+}
+
+/** What a folder edit changed, in words: `pc: changed folder Documents; full rescan interval 60 s; shared with laptop`. */
+export function folderEditText(nodeName: string, folderName: string, change: FolderSettingsChange, deviceNames: ReadonlyMap<string, string> = new Map()): string {
+  const settings = (Object.keys(folderSettingLabels) as (keyof FolderSettingsChange)[]).filter((key): key is ChangedSetting => key !== "devices" && key in change);
+  const details = [...settings.map((key) => settingWords(key, change)), ...(change.devices ? sharingWords(change.devices, deviceNames) : [])];
   return [`${nodeName}: changed folder ${folderName}`, ...details].join("; ");
 }
 
@@ -182,10 +195,45 @@ function otherFolderAtPath(instance: LocalInstance, folders: SyncthingFolderSett
   return samePathProblem(instance, folders.filter((folder) => folder.id !== folderId), path, node);
 }
 
+function isSharingInPlace(current: SyncthingFolderSettings, sharing: Sharing): boolean {
+  const shared = new Set(current.devices.map((entry) => entry.deviceID));
+  return sharing.share.every((entry) => shared.has(entry.deviceId)) && sharing.unshare.every((deviceId) => !shared.has(deviceId));
+}
+
 /** @implNote The path is compared as the guard reads paths, so Syncthing writing it with another case or a trailing separator still counts. */
-function isFolderChangeInPlace(instance: LocalInstance, current: SyncthingFolderSettings, sent: FolderSettingsChange): boolean {
-  const { path, ...rest } = sent;
-  return isChangeInPlace(current, rest) && (path === undefined || isSamePath(current.path, path, rooted(instance).node));
+function isFolderChangeInPlace(instance: LocalInstance, current: SyncthingFolderSettings, settings: SettingsChange, sharing: Sharing): boolean {
+  const { path, ...rest } = settings;
+  return isChangeInPlace(current, rest) && (path === undefined || isSamePath(current.path, path, rooted(instance).node)) && isSharingInPlace(current, sharing);
+}
+
+interface SharingPlan {
+  /** Only what changes the folder's devices. */
+  sharing: Sharing;
+  deviceNames: Map<string, string>;
+}
+
+const noSharing: SharingPlan = { sharing: { share: [], unshare: [] }, deviceNames: new Map() };
+
+function shareProblem(instance: LocalInstance, devices: SyncthingDeviceConfig[], entry: FolderShare): string | null {
+  const device = devices.find((candidate) => candidate.deviceID === entry.deviceId);
+  if (!device) return `${instance.name} has no device ${shortDeviceId(entry.deviceId)}`;
+  const isUnencrypted = !entry.encryptionPassword?.trim();
+  return device.untrusted && isUnencrypted ? `${deviceDisplayName(device.name, device.deviceID)} is untrusted, so it is shared a folder only with an encryption password` : null;
+}
+
+/** The sharing part of an edit, checked against the node's devices before anything is written. */
+async function planSharing(instance: LocalInstance, before: SyncthingFolderSettings, change: FolderSharingChange): Promise<SharingPlan> {
+  const [devices, ownId] = await Promise.all([callSyncthing(instance, (client) => client.devices()), callSyncthing(instance, (client) => client.myId())]);
+  const deviceNames = new Map(devices.map((device) => [device.deviceID, device.name]));
+  if (change.unshare?.includes(ownId)) throw new RequestError(400, `${deviceDisplayName(deviceNames.get(ownId), ownId)} is the node's own device; it keeps every folder of the node`);
+  const sharing = effectiveSharing(before.devices, change);
+  const problem = sharing.share.map((entry) => shareProblem(instance, devices, entry)).find((found) => found !== null);
+  if (problem) throw new RequestError(400, problem);
+  return { sharing, deviceNames };
+}
+
+function hasSharing(sharing: Sharing): boolean {
+  return sharing.share.length + sharing.unshare.length > 0;
 }
 
 function typeChangeProblem(before: SyncthingFolderSettings, change: FolderSettingsChange): string | null {
@@ -195,34 +243,39 @@ function typeChangeProblem(before: SyncthingFolderSettings, change: FolderSettin
 
 export interface FolderEdit {
   settings: FolderSettings;
-  note: WriteNote;
+  note: WriteNote | NothingWritten;
 }
 
 /**
  * Sends exactly the fields of `change` to the node's Syncthing, so a setting the person did not touch is never written
  * back over a change made elsewhere meanwhile; a new path is judged like an add's and sent as checked.
- * @implNote Syncthing does not move the files: the folder rescans at the new path.
+ * @implNote Syncthing does not move the files: the folder rescans at the new path. Syncthing takes a folder's devices
+ * only as the whole list, so sharing sends the list as just read with only the shared and unshared devices changed.
  */
 export async function editFolder(instance: ResolvedInstance, folderId: string, change: unknown, nodes: NodeRoot[], readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<FolderEdit> {
   const local = requireLocal(instance);
   const problem = folderChangeProblem(change);
   if (problem) throw new RequestError(400, problem);
-  const valid = change as FolderSettingsChange;
-  const sent: FolderSettingsChange = valid.path === undefined ? valid : { ...valid, path: guardedPath(local, valid.path, nodes) };
+  const { devices: sharingChange, ...valid } = change as FolderSettingsChange;
+  const settings: SettingsChange = valid.path === undefined ? valid : { ...valid, path: guardedPath(local, valid.path, nodes) };
   const folders = await configuredFolders(local);
   const before = folders.find((folder) => folder.id === folderId);
   if (!before) throw new RequestError(404, `${local.name} has no folder ${folderId}`);
-  const typeProblem = typeChangeProblem(before, sent);
+  const typeProblem = typeChangeProblem(before, settings);
   if (typeProblem) throw new RequestError(400, typeProblem);
-  const samePath = sent.path === undefined ? null : otherFolderAtPath(local, folders, folderId, sent.path);
+  const samePath = settings.path === undefined ? null : otherFolderAtPath(local, folders, folderId, settings.path);
   if (samePath) throw new RequestError(409, samePath);
+  const { sharing, deviceNames } = sharingChange ? await planSharing(local, before, sharingChange) : noSharing;
+  const sent = { ...settings, ...(hasSharing(sharing) ? { devices: sharedDevices(before.devices, sharing) } : {}) };
+  if (Object.keys(sent).length === 0) return { settings: folderSettings(before), note: { nothingWritten: true } };
   await writeConfirmed(
     local,
     (client) => client.request("PATCH", `/config/folders/${encodeURIComponent(folderId)}`, sent),
-    async () => isFolderChangeInPlace(local, await local.client.folderSettings(folderId), sent),
+    async () => isFolderChangeInPlace(local, await local.client.folderSettings(folderId), settings, sharing),
     readBackDelaysMs,
   );
-  const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId, text: folderEditText(local.name, folderName(before), sent) };
+  const done: FolderSettingsChange = { ...settings, ...(hasSharing(sharing) ? { devices: sharing } : {}) };
+  const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId, text: folderEditText(local.name, folderName(before), done, deviceNames) };
   return { settings: await settingsAfter(local, folderId, { ...before, ...sent }), note };
 }
 

@@ -19,6 +19,20 @@ export interface Notice {
 
 export const allNodesView = "all";
 
+/**
+ * Shares ticked and unticked in a form and not saved yet, keyed by device ID in a folder's form and by folder ID in a device's.
+ * `share` holds the encryption password typed for each, "" for none; `revealed` the passwords shown in clear.
+ */
+export interface SharingDraft {
+  share: Map<string, string>;
+  unshare: Set<string>;
+  revealed: Set<string>;
+}
+
+export function emptySharing(): SharingDraft {
+  return { share: new Map(), unshare: new Set(), revealed: new Set() };
+}
+
 /** The form of `#/nodes/<nodeId>/devices/<deviceId>`: one device as one node's Syncthing has it. */
 export interface DeviceFormState {
   nodeId: string;
@@ -36,6 +50,10 @@ export interface DeviceFormState {
   removeResult: Notice | null;
   /** Set once the node no longer has the device. */
   removed: boolean;
+  /** The node's folders ticked or unticked for the device. */
+  sharing: SharingDraft;
+  sharingSaving: boolean;
+  sharingResult: Notice | null;
 }
 
 /** The form of `#/nodes/<nodeId>/devices/new`: a device to add to one node's Syncthing. */
@@ -97,6 +115,8 @@ export interface EditFolderFormState {
   draft: FolderSettings | null;
   /** How the node would judge the typed path, for the path it was asked about. */
   pathCheck: { typed: string; check: FolderPathCheck } | null;
+  /** The node's devices ticked or unticked for the folder. */
+  sharing: SharingDraft;
   saving: boolean;
   result: Notice | null;
 }
@@ -225,7 +245,7 @@ function readAddFolderForm(adding: boolean, node: string, under: string): void {
 function readEditFolderForm(folderId: string | null, nodeId: string | null): void {
   const open = appState.editFolderForm;
   if (!folderId || !nodeId) appState.editFolderForm = null;
-  else if (open?.folderId !== folderId || open.nodeId !== nodeId) appState.editFolderForm = { folderId, nodeId, saved: null, draft: null, pathCheck: null, saving: false, result: null };
+  else if (open?.folderId !== folderId || open.nodeId !== nodeId) appState.editFolderForm = { folderId, nodeId, saved: null, draft: null, pathCheck: null, sharing: emptySharing(), saving: false, result: null };
 }
 
 function readExplorerLocation(query: URLSearchParams): void {
@@ -238,7 +258,7 @@ function readExplorerLocation(query: URLSearchParams): void {
 }
 
 function emptyDeviceForm(nodeId: string, deviceId: string): DeviceFormState {
-  return { nodeId, deviceId, saved: null, draft: null, loadError: null, saving: false, result: null, removeConfirm: "", removing: false, removeResult: null, removed: false };
+  return { nodeId, deviceId, saved: null, draft: null, loadError: null, saving: false, result: null, removeConfirm: "", removing: false, removeResult: null, removed: false, sharing: emptySharing(), sharingSaving: false, sharingResult: null };
 }
 
 /** The device segment of the add form's address; a device ID is upper case, so no device is called this. */

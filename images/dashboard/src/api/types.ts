@@ -257,6 +257,8 @@ export interface Peer {
   name: string;
   connected: boolean;
   paused: boolean;
+  /** Shared folders only encrypted, so a share with it needs an encryption password. */
+  untrusted: boolean;
   connectionType: string | null;
   /** Null while not connected. */
   connectionKind: ConnectionKind | null;
@@ -727,10 +729,25 @@ export const diskFreeUnits: readonly DiskFreeUnit[] = ["%", "kB", "MB", "GB", "T
 /** The folder types a folder can be given here; receive encrypted is only ever accepted from an offer. */
 export const editableFolderTypes: readonly FolderType[] = ["sendreceive", "sendonly", "receiveonly"];
 
+/** A device to share a folder with. `encryptionPassword` makes it receive the folder encrypted; an untrusted device needs one. */
+export interface FolderShare {
+  deviceId: string;
+  encryptionPassword?: string;
+}
+
+/**
+ * The `devices` field of a folder edit: the devices to start and to stop sharing the folder with. Every other device
+ * keeps its share as it is, and a device already shared (or already not shared) changes nothing, its password included.
+ */
+export interface FolderSharingChange {
+  share?: FolderShare[];
+  unshare?: string[];
+}
+
 /** `PATCH /api/nodes/<nodeId>/folders/<folderId>`: only the settings the form changed; the folder ID cannot change. */
 export type FolderSettingsChange = Partial<
   Pick<FolderSettings, "label" | "path" | "type" | "rescanIntervalS" | "fsWatcherEnabled" | "fsWatcherDelayS" | "ignorePerms" | "order" | "minDiskFree" | "maxConflicts" | "syncOwnership" | "syncXattrs">
->;
+> & { devices?: FolderSharingChange };
 
 /** Each editable folder setting as the form labels it; a refusal names the setting the same way. */
 export const folderSettingLabels: Record<keyof FolderSettingsChange, string> = {
@@ -746,6 +763,7 @@ export const folderSettingLabels: Record<keyof FolderSettingsChange, string> = {
   maxConflicts: "Conflict copies kept",
   syncOwnership: "Sync ownership",
   syncXattrs: "Sync extended attributes",
+  devices: "Sharing",
 };
 
 /** A refused or failed request's answer. */

@@ -7,7 +7,7 @@ import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import type { NodeRoot } from "../src/pathGuard.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
-import { addFolder, browseDirectories, checkFolderPath, editFolder, folderEditText, folderIdFromLabel, newFolderDefaults, nodeFolderRoutes } from "../src/routes/nodeFolders.js";
+import { type FolderEdit, addFolder, browseDirectories, checkFolderPath, editFolder, folderEditText, folderIdFromLabel, newFolderDefaults, nodeFolderRoutes } from "../src/routes/nodeFolders.js";
 import { folderSettings } from "../src/folderIndex.js";
 import { SyncthingClient, type SyncthingFolderSettings } from "../src/syncthing.js";
 import { changedFields } from "../src/syncthingConfig.js";
@@ -16,6 +16,15 @@ import { until } from "./until.js";
 
 const apiKey = "node-folders-test-key";
 const ownId = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+const laptopId = "LAPTOPA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+const arrayId = "ARRAYAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+const strangerId = "STRANGE-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+const arraySecret = "array-folder-secret";
+const configuredDevices = [
+  { deviceID: ownId, name: "dashboard-test-peer", untrusted: false },
+  { deviceID: laptopId, name: "laptop", untrusted: false },
+  { deviceID: arrayId, name: "private-array", untrusted: true },
+];
 
 /** Syncthing's own template for a new folder, as `/rest/config/defaults/folder` answers; its values are deliberately not the dashboard's. */
 const syncthingDefaults = {
@@ -53,6 +62,11 @@ function reply(response: ServerResponse, body: unknown, status = 200): void {
 
 function listen(server: Server): Promise<string> {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)));
+}
+
+function noteText(edit: FolderEdit): string {
+  assert.ok("text" in edit.note, "the edit wrote something");
+  return edit.note.text;
 }
 
 async function bodyOf(request: IncomingMessage): Promise<unknown> {
@@ -93,6 +107,7 @@ describe("adding a folder to a node", () => {
     received.push({ method: request.method ?? "", path: `${url.pathname}${url.search}`, body });
     if (request.method === "GET" && url.pathname === "/rest/config/defaults/folder") return reply(response, syncthingDefaults);
     if (request.method === "GET" && url.pathname === "/rest/config/folders") return reply(response, folders);
+    if (request.method === "GET" && url.pathname === "/rest/config/devices") return reply(response, configuredDevices);
     if (request.method === "GET" && url.pathname === "/rest/system/status") return reply(response, { myID: ownId });
     if (request.method === "GET" && url.pathname === "/rest/svc/random/string") return reply(response, { random: "AbCdEfGhIj" });
     if (request.method === "GET" && url.pathname === "/rest/system/browse") {
@@ -335,7 +350,7 @@ describe("adding a folder to a node", () => {
     const moved = await editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/./x/../dashboard-test-moved" }, roots);
     assert.deepEqual(received.find((entry) => entry.method === "PATCH")?.body, { path: "/var/syncthing/data/dashboard-test-moved" });
     assert.equal(moved.settings.path, "/var/syncthing/data/dashboard-test-moved");
-    assert.equal(moved.note.text, "dashboard-test-peer: changed folder Test A; path /var/syncthing/data/dashboard-test-moved");
+    assert.equal(noteText(moved), "dashboard-test-peer: changed folder Test A; path /var/syncthing/data/dashboard-test-moved");
 
     await assert.rejects(editFolder(pc(), "dashboard-test-e", { path: "f:/documents" }, roots), (error: Error & { status?: number }) => error.status === 409 && error.message === "pc's folder Documents already uses F:\\Documents");
     await editFolder(pc(), "documents", { path: "f:/documents/" }, roots);
@@ -352,7 +367,13 @@ describe("adding a folder to a node", () => {
     const refusals: [unknown, string][] = [
       [{}, "nothing to change"],
       [[], "nothing to change"],
-      [{ devices: [] }, "devices is not a folder setting this edit changes"],
+      [{ devices: [] }, "Sharing must say which devices to share with or stop sharing with"],
+      [{ devices: {} }, "Sharing names no device"],
+      [{ devices: { share: [{ deviceId: "" }] } }, "Sharing must say which devices to share with or stop sharing with"],
+      [{ devices: { share: [{ deviceId: laptopId, encryptionPassword: 1 }] } }, "an encryption password must be text"],
+      [{ devices: { unshare: laptopId } }, "Sharing must say which devices to share with or stop sharing with"],
+      [{ devices: { share: [{ deviceId: laptopId }], unshare: [laptopId] } }, "Sharing cannot both share with and stop sharing with the same device"],
+      [{ devices: { share: [{ deviceId: laptopId }], other: [] } }, "Sharing must say which devices to share with or stop sharing with"],
       [{ paused: true }, "paused is not a folder setting this edit changes"],
       [{ type: "receiveencrypted" }, "Type must be send and receive, send only, receive only"],
       [{ rescanIntervalS: -1 }, "Full rescan interval must be a whole number, 0 or more"],
@@ -381,7 +402,7 @@ describe("adding a folder to a node", () => {
     loseWriteAnswer = true;
     const edit = await editFolder(peer(), "dashboard-test-e", { label: "Renamed", order: "alphabetic" }, roots, fastReadBacks);
     assert.deepEqual([edit.settings.label, edit.settings.order], ["Renamed", "alphabetic"]);
-    assert.equal(edit.note.text, "dashboard-test-peer: changed folder Test A; label Renamed; pull order alphabetic");
+    assert.equal(noteText(edit), "dashboard-test-peer: changed folder Test A; label Renamed; pull order alphabetic");
   });
 
   it("a lost answer is read back again while the node does not answer, and a late answer with the change in place is saved", async () => {
@@ -396,7 +417,7 @@ describe("adding a folder to a node", () => {
     loseWriteAnswer = true;
     storedPath = (path) => `${path.toLowerCase()}\\`;
     const edit = await editFolder(pc(), "documents", { path: "F:\\Docs Moved" }, roots, fastReadBacks);
-    assert.equal(edit.note.text, "pc: changed folder Documents; path F:\\Docs Moved");
+    assert.equal(noteText(edit), "pc: changed folder Documents; path F:\\Docs Moved");
   });
 
   it("a receive encrypted folder keeps its type, refused before anything is written", async () => {
@@ -427,6 +448,121 @@ describe("adding a folder to a node", () => {
     const opened = folderSettings(folders.find((folder) => folder.id === "dashboard-test-e") as unknown as SyncthingFolderSettings);
     const draft: FolderSettings = { ...structuredClone(opened), rescanIntervalS: 60, minDiskFree: { unit: opened.minDiskFree.unit, value: opened.minDiskFree.value } as FolderSettings["minDiskFree"] };
     assert.deepEqual(changedFields(opened, draft), { rescanIntervalS: 60 }, "an object whose keys come in another order is no change");
+  });
+
+  function shareFixture(): void {
+    folders = folders.map((folder) =>
+      folder.id === "dashboard-test-e"
+        ? {
+            ...folder,
+            devices: [
+              { deviceID: ownId, introducedBy: "", encryptionPassword: "" },
+              { deviceID: arrayId, introducedBy: "", encryptionPassword: arraySecret },
+            ],
+          }
+        : folder,
+    );
+  }
+
+  function patchedBodies(): unknown[] {
+    return received.filter((entry) => entry.method === "PATCH").map((entry) => entry.body);
+  }
+
+  it("sharing adds the device and keeps the others", async () => {
+    shareFixture();
+    const edit = await editFolder(peer(), "dashboard-test-e", { devices: { share: [{ deviceId: laptopId }] } }, roots);
+    assert.deepEqual(patchedBodies(), [
+      {
+        devices: [
+          { deviceID: ownId, introducedBy: "", encryptionPassword: "" },
+          { deviceID: arrayId, introducedBy: "", encryptionPassword: arraySecret },
+          { deviceID: laptopId },
+        ],
+      },
+    ]);
+    assert.deepEqual(edit.settings.devices, [
+      { deviceId: ownId, encrypted: false },
+      { deviceId: arrayId, encrypted: true },
+      { deviceId: laptopId, encrypted: false },
+    ]);
+    assert.deepEqual(edit.note, { nodeId: "d7e5", nodeName: "dashboard-test-peer", folderId: "dashboard-test-e", text: "dashboard-test-peer: changed folder Test A; shared with laptop" });
+  });
+
+  it("an untrusted device without a password is 400", async () => {
+    shareFixture();
+    folders = folders.map((folder) => (folder.id === "dashboard-test-e" ? { ...folder, devices: [{ deviceID: ownId, introducedBy: "", encryptionPassword: "" }] } : folder));
+    for (const share of [{ deviceId: arrayId }, { deviceId: arrayId, encryptionPassword: "" }, { deviceId: arrayId, encryptionPassword: "  " }]) {
+      await assert.rejects(editFolder(peer(), "dashboard-test-e", { devices: { share: [share] } }, roots), { status: 400, message: "private-array is untrusted, so it is shared a folder only with an encryption password" }, JSON.stringify(share));
+    }
+    assert.deepEqual(patchedBodies(), [], "a refused share writes nothing");
+
+    const edit = await editFolder(peer(), "dashboard-test-e", { devices: { share: [{ deviceId: arrayId, encryptionPassword: arraySecret }] } }, roots);
+    assert.deepEqual(patchedBodies(), [{ devices: [{ deviceID: ownId, introducedBy: "", encryptionPassword: "" }, { deviceID: arrayId, encryptionPassword: arraySecret }] }]);
+    assert.deepEqual(edit.settings.devices.at(-1), { deviceId: arrayId, encrypted: true });
+    assert.equal(noteText(edit), "dashboard-test-peer: changed folder Test A; shared with private-array, encrypted");
+    assert.doesNotMatch(JSON.stringify(edit), new RegExp(arraySecret), "the password never comes back");
+  });
+
+  it("unsharing removes only that device", async () => {
+    shareFixture();
+    folders = folders.map((folder) => (folder.id === "dashboard-test-e" ? { ...folder, devices: [...(folder.devices as unknown[]), { deviceID: laptopId, introducedBy: "", encryptionPassword: "" }] } : folder));
+    const edit = await editFolder(peer(), "dashboard-test-e", { devices: { unshare: [laptopId] } }, roots);
+    assert.deepEqual(patchedBodies(), [
+      {
+        devices: [
+          { deviceID: ownId, introducedBy: "", encryptionPassword: "" },
+          { deviceID: arrayId, introducedBy: "", encryptionPassword: arraySecret },
+        ],
+      },
+    ]);
+    assert.deepEqual(edit.settings.devices.map((device) => device.deviceId), [ownId, arrayId]);
+    assert.equal(noteText(edit), "dashboard-test-peer: changed folder Test A; stopped sharing with laptop");
+  });
+
+  it("sharing goes with other changed settings in one write, and a share already in place writes nothing", async () => {
+    shareFixture();
+    const edit = await editFolder(peer(), "dashboard-test-e", { label: "Shared", devices: { share: [{ deviceId: laptopId }], unshare: [arrayId] } }, roots);
+    assert.deepEqual(patchedBodies(), [{ label: "Shared", devices: [{ deviceID: ownId, introducedBy: "", encryptionPassword: "" }, { deviceID: laptopId }] }]);
+    assert.equal(noteText(edit), "dashboard-test-peer: changed folder Test A; label Shared; shared with laptop; stopped sharing with private-array");
+
+    received.length = 0;
+    const again = await editFolder(peer(), "dashboard-test-e", { devices: { share: [{ deviceId: laptopId }], unshare: [arrayId] } }, roots);
+    assert.deepEqual(patchedBodies(), [], "a device already shared and one already not shared change nothing");
+    assert.deepEqual(again.note, { nothingWritten: true });
+    assert.deepEqual(again.settings.devices.map((device) => device.deviceId), [ownId, laptopId]);
+  });
+
+  it("a device the node does not have, or the node's own, cannot be shared or unshared", async () => {
+    shareFixture();
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { devices: { share: [{ deviceId: strangerId }] } }, roots), { status: 400, message: "dashboard-test-peer has no device STRANGE" });
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { devices: { unshare: [ownId] } }, roots), { status: 400, message: "dashboard-test-peer is the node's own device; it keeps every folder of the node" });
+    assert.deepEqual(patchedBodies(), []);
+  });
+
+  it("a lost answer to a share is read back by the device list", async () => {
+    shareFixture();
+    loseWriteAnswer = true;
+    const edit = await editFolder(peer(), "dashboard-test-e", { devices: { share: [{ deviceId: laptopId }], unshare: [arrayId] } }, roots, fastReadBacks);
+    assert.deepEqual(edit.settings.devices.map((device) => device.deviceId), [ownId, laptopId]);
+    assert.equal(noteText(edit), "dashboard-test-peer: changed folder Test A; shared with laptop; stopped sharing with private-array");
+  });
+
+  it("the join's share sends only the folder's devices and keeps the others' entries", async () => {
+    shareFixture();
+    assert.equal(await peer().client.shareFolder("dashboard-test-e", laptopId), true);
+    assert.deepEqual(patchedBodies(), [
+      {
+        devices: [
+          { deviceID: ownId, introducedBy: "", encryptionPassword: "" },
+          { deviceID: arrayId, introducedBy: "", encryptionPassword: arraySecret },
+          { deviceID: laptopId },
+        ],
+      },
+    ]);
+    received.length = 0;
+    assert.equal(await peer().client.shareFolder("dashboard-test-e", laptopId), true);
+    assert.equal(await peer().client.shareFolder("nowhere", laptopId), false);
+    assert.deepEqual(patchedBodies(), [], "a share in place and a folder the node lacks write nothing");
   });
 
   it("an edit's activity entry names every changed setting in words", () => {
@@ -478,14 +614,28 @@ describe("adding a folder to a node", () => {
       const check = (await (await fetch(`${dashboard.url}/api/nodes/d7e5/folder-path-check?path=${encodeURIComponent("/var/syncthing/data/dashboard-test-e")}&folder=dashboard-test-e`)).json()) as FolderPathCheck;
       assert.equal(check.problem, null);
 
+      const shared = await patch(folderUrl, { devices: { share: [{ deviceId: arrayId, encryptionPassword: arraySecret }] } });
+      assert.equal(shared.status, 200);
+      const sharedText = await shared.text();
+      assert.doesNotMatch(sharedText, new RegExp(arraySecret), "the page never gets the password back");
+      assert.deepEqual((JSON.parse(sharedText) as FolderSettings).devices.at(-1), { deviceId: arrayId, encrypted: true });
+      assert.equal(effects.notes.at(-1)?.text, "dashboard-test-peer: changed folder Test A; shared with private-array, encrypted");
+      assert.doesNotMatch(JSON.stringify(effects.notes), new RegExp(arraySecret), "nor does Activity");
+      const refused = await patch(folderUrl, { devices: { share: [{ deviceId: laptopId }], unshare: [laptopId] } });
+      assert.equal(refused.status, 400);
+      const unchanged = await patch(folderUrl, { devices: { share: [{ deviceId: arrayId, encryptionPassword: "other" }] } });
+      assert.equal(unchanged.status, 200);
+      assert.equal(effects.notes.length, 2, "a share already in place enters nothing");
+      assert.equal(effects.invalidations, 2);
+
       wrote = false;
       loseWriteAnswer = true;
       silentAfterWrite = true;
       const unsure = await patch(folderUrl, { label: "Renamed" });
       assert.equal(unsure.status, 503);
       assert.equal(((await unsure.json()) as { maybeSaved?: boolean }).maybeSaved, true);
-      assert.equal(effects.notes.length, 1, "a write that may not have happened enters nothing");
-      assert.equal(effects.invalidations, 2, "a write that may have happened drops the shared build");
+      assert.equal(effects.notes.length, 2, "a write that may not have happened enters nothing");
+      assert.equal(effects.invalidations, 3, "a write that may have happened drops the shared build");
     } finally {
       dashboard.close();
     }

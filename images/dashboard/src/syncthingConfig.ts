@@ -1,5 +1,5 @@
 import { deviceSettingLabels, shareFoldersLabel } from "./api/deviceText.js";
-import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type DiskFreeUnit, type FolderSettingsChange, type FolderType, type InstanceGui, type InstanceOptions, type PullOrder, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts } from "./api/types.js";
+import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type DiskFreeUnit, type FolderSettingsChange, type FolderSharingChange, type FolderType, type InstanceGui, type InstanceOptions, type PullOrder, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts } from "./api/types.js";
 
 type SyncthingObject = Record<string, unknown>;
 
@@ -172,6 +172,7 @@ export function newDeviceProblem(body: unknown): string | null {
   const { deviceId, shareFolders, ...settings } = body;
   if (typeof deviceId !== "string" || !deviceId.trim()) return "the device ID is missing";
   if (shareFolders !== undefined && !isStringList(shareFolders)) return `${shareFoldersLabel} must be a list of folder IDs`;
+  if (settings.untrusted === true && shareFolders?.length) return "an untrusted device is shared a folder only with an encryption password: add it, then share from its Folders list";
   return firstSettingProblem(settings);
 }
 
@@ -183,6 +184,47 @@ function minDiskFreeCheck(value: unknown, label: string): string | null {
   if (!diskFreeUnits.includes(free.unit as DiskFreeUnit)) return `${label} must be in ${diskFreeUnits.join(", ")}`;
   if (free.unit === "%" && free.value > 100) return `${label} cannot be more than 100 %`;
   return Object.keys(free).length === 2 ? null : `${label} takes only a value and a unit`;
+}
+
+const shareKeys = new Set(["deviceId", "encryptionPassword"]);
+
+function isShareShape(value: unknown): value is { deviceId: string; encryptionPassword?: unknown } {
+  return isPlainObject(value) && Object.keys(value).every((key) => shareKeys.has(key)) && typeof value.deviceId === "string" && value.deviceId.trim() !== "";
+}
+
+function isSharingShape(value: unknown): value is { share?: { deviceId: string; encryptionPassword?: unknown }[]; unshare?: string[] } {
+  if (!isPlainObject(value) || Object.keys(value).some((key) => key !== "share" && key !== "unshare")) return false;
+  const { share = [], unshare = [] } = value;
+  return Array.isArray(share) && share.every(isShareShape) && isStringList(unshare) && unshare.every((deviceId) => deviceId.trim() !== "");
+}
+
+function sharingCheck(value: unknown, label: string): string | null {
+  if (!isSharingShape(value)) return `${label} must say which devices to share with or stop sharing with`;
+  const { share = [], unshare = [] } = value;
+  if (share.some((entry) => entry.encryptionPassword !== undefined && typeof entry.encryptionPassword !== "string")) return "an encryption password must be text";
+  if (share.length + unshare.length === 0) return `${label} names no device`;
+  return share.some((entry) => unshare.includes(entry.deviceId)) ? `${label} cannot both share with and stop sharing with the same device` : null;
+}
+
+/** One entry of a folder's `devices` in Syncthing's config. */
+export interface FolderDeviceEntry {
+  deviceID: string;
+  introducedBy?: string;
+  encryptionPassword?: string;
+}
+
+/** The part of `change` that changes `current`: devices not yet shared to share, shared ones to unshare; the first entry of a device counts. */
+export function effectiveSharing(current: readonly FolderDeviceEntry[], change: FolderSharingChange): Required<FolderSharingChange> {
+  const shared = new Set(current.map((entry) => entry.deviceID));
+  const share = (change.share ?? []).filter((entry, index, all) => !shared.has(entry.deviceId) && all.findIndex((other) => other.deviceId === entry.deviceId) === index);
+  return { share, unshare: [...new Set(change.unshare ?? [])].filter((deviceId) => shared.has(deviceId)) };
+}
+
+/** The folder's device list after `sharing`: every other entry exactly as Syncthing has it, its password included, as Syncthing replaces the whole list. */
+export function sharedDevices(current: readonly FolderDeviceEntry[], sharing: FolderSharingChange): FolderDeviceEntry[] {
+  const unshared = new Set(sharing.unshare ?? []);
+  const added = (sharing.share ?? []).map((entry) => ({ deviceID: entry.deviceId, ...(entry.encryptionPassword ? { encryptionPassword: entry.encryptionPassword } : {}) }));
+  return [...current.filter((entry) => !unshared.has(entry.deviceID)), ...added];
 }
 
 const folderFieldChecks: Record<keyof FolderSettingsChange, FieldCheck> = {
@@ -198,6 +240,7 @@ const folderFieldChecks: Record<keyof FolderSettingsChange, FieldCheck> = {
   maxConflicts: (value, label) => (typeof value === "number" && Number.isInteger(value) && value >= -1 ? null : `${label} must be a whole number, or -1 for unlimited`),
   syncOwnership: booleanField,
   syncXattrs: booleanField,
+  devices: sharingCheck,
 };
 
 function folderSettingProblem(key: string, value: unknown): string | null {

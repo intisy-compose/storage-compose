@@ -1,14 +1,31 @@
-import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type SaveResult, type StorageNode, changedFields, deviceDisplayName, deviceSettingLabels, removeDevice, saveDeviceSettings } from "./api.js";
+import {
+  type DeviceCompression,
+  type DeviceSettings,
+  type DeviceSettingsChange,
+  type FolderSettings,
+  type FolderSettingsChange,
+  type SaveResult,
+  type StorageNode,
+  changedFields,
+  deviceDisplayName,
+  deviceSettingLabels,
+  removeDevice,
+  saveDeviceSettings,
+  saveFolderSettings,
+} from "./api.js";
 import { button, element, section } from "./dom.js";
 import { registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
+import { type SharingChoice, clearSharing, sharingList } from "./sharingFields.js";
 import { type DeviceFormState, type Notice, appState, locationFor } from "./state.js";
 
 const formId = "device-form";
 registerForm(formId);
 const removeFormId = "device-remove-form";
 registerForm(removeFormId);
+const foldersFormId = "device-folders-form";
+registerForm(foldersFormId);
 
 type TextField = "name";
 type ListField = "addresses" | "allowedNetworks";
@@ -256,13 +273,106 @@ function removedBody(node: StorageNode, name: string): HTMLElement {
   );
 }
 
+function folderChoices(node: StorageNode, form: DeviceFormState, name: string): SharingChoice[] {
+  const choices = node.folders.map((folder): SharingChoice => ({
+    key: folder.id,
+    label: folder.label || folder.id,
+    detail: folder.path,
+    isShared: folder.sharedWith.some((peer) => peer.deviceId === form.deviceId),
+    needsPassword: form.saved?.untrusted ?? false,
+    receiver: name,
+  }));
+  return choices.sort((first, second) => first.label.localeCompare(second.label));
+}
+
+interface FolderShareWrite {
+  folderId: string;
+  change: FolderSettingsChange;
+}
+
+function folderShareWrites(form: DeviceFormState): FolderShareWrite[] {
+  const shares = [...form.sharing.share].map(([folderId, password]) => ({ folderId, change: { devices: { share: [{ deviceId: form.deviceId, ...(password ? { encryptionPassword: password } : {}) }] } } }));
+  const unshares = [...form.sharing.unshare].map((folderId) => ({ folderId, change: { devices: { unshare: [form.deviceId] } } }));
+  return [...shares, ...unshares];
+}
+
+/** @implNote Looked up again, like a removal: the node the form was drawn with may be an earlier poll's. */
+function showSharedInCurrentNode(form: DeviceFormState, settings: FolderSettings, name: string): void {
+  const folder = appState.data?.nodes.find((candidate) => candidate.id === form.nodeId)?.folders.find((candidate) => candidate.id === settings.id);
+  if (!folder) return;
+  const others = folder.sharedWith.filter((peer) => peer.deviceId !== form.deviceId);
+  folder.sharedWith = settings.devices.some((device) => device.deviceId === form.deviceId) ? [...others, { deviceId: form.deviceId, name }] : others;
+}
+
+function forgetSaved(form: DeviceFormState, folderId: string): void {
+  form.sharing.share.delete(folderId);
+  form.sharing.unshare.delete(folderId);
+  form.sharing.revealed.delete(folderId);
+}
+
+function sharingNotice(failures: string[], unsure: string[]): Notice {
+  if (failures.length) return { text: `Not saved for ${failures.join("; ")}`, tone: "bad" };
+  return unsure.length ? { text: `${unsure.join("; ")}.`, tone: "warn" } : { text: "Saved.", tone: "ok" };
+}
+
+/** Each ticked or unticked folder is its own edit of that folder's sharing; one that fails stays ticked to try again. */
+async function saveSharing(form: DeviceFormState, name: string): Promise<void> {
+  const writes = folderShareWrites(form);
+  if (writes.length === 0) {
+    form.sharingResult = { text: "Nothing changed.", tone: "ok" };
+    return requestRender();
+  }
+  form.sharingSaving = true;
+  form.sharingResult = null;
+  requestRender();
+  const failures: string[] = [];
+  const unsure: string[] = [];
+  for (const write of writes) {
+    const result = await saveFolderSettings(form.nodeId, write.folderId, write.change);
+    if (result.ok) {
+      forgetSaved(form, write.folderId);
+      showSharedInCurrentNode(form, result.value, name);
+    } else if (result.maybeSaved) {
+      unsure.push(`${write.folderId}: ${result.message}`);
+    } else {
+      failures.push(`${write.folderId}: ${result.message}`);
+    }
+  }
+  form.sharingSaving = false;
+  form.sharingResult = sharingNotice(failures, unsure);
+  requestRender();
+}
+
+function revertSharing(form: DeviceFormState): void {
+  clearSharing(form.sharing);
+  form.sharingResult = null;
+  requestRender();
+}
+
+function foldersForm(node: StorageNode, form: DeviceFormState, name: string): HTMLElement {
+  const choices = folderChoices(node, form, name);
+  if (choices.length === 0) return element("p", { className: "muted" }, `${node.name} has no folder yet.`);
+  return element(
+    "div",
+    { className: "device-form", attributes: { id: foldersFormId } },
+    sharingList(foldersFormId, `${node.name}'s folders shared with ${name}`, form.sharing, choices, form.sharingSaving),
+    resultLine(form.sharingResult),
+    element(
+      "div",
+      { className: "button-row" },
+      Object.assign(button(form.sharingSaving ? "Saving…" : "Save sharing", () => void saveSharing(form, name), "button primary"), { disabled: form.sharingSaving }),
+      Object.assign(button("Revert", () => revertSharing(form), "button ghost"), { disabled: form.sharingSaving }),
+    ),
+  );
+}
+
 function deviceSections(node: StorageNode, form: DeviceFormState, name: string): HTMLElement[] {
   if (form.removed) return [section("Removed", removedBody(node, name))];
-  const removable = node.local && form.saved !== null && !isOwnDevice(node, form);
+  const isOtherLocalDevice = node.local && form.saved !== null && !isOwnDevice(node, form);
   return [
     section("Device ID", element("code", { className: "device-id" }, form.deviceId)),
     section("Settings", formBody(node, form)),
-    ...(removable ? [section("Remove device", removeForm(node, form, name))] : []),
+    ...(isOtherLocalDevice ? [section("Folders", foldersForm(node, form, name)), section("Remove device", removeForm(node, form, name))] : []),
   ];
 }
 

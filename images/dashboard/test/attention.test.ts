@@ -54,6 +54,7 @@ function peer(overrides: Partial<Peer>): Peer {
     name: "phone",
     connected: false,
     paused: false,
+    untrusted: false,
     connectionType: null,
     connectionKind: null,
     address: null,

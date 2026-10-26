@@ -6,8 +6,10 @@ import {
   type FolderSettingsChange,
   type FolderType,
   type PullOrder,
+  type StorageNode,
   changedFields,
   checkFolderPath,
+  deviceDisplayName,
   diskFreeUnits,
   editableFolderTypes,
   folderSettingLabels,
@@ -21,6 +23,7 @@ import { plural } from "./format.js";
 import { registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
+import { type SharingChoice, clearSharing, folderSharingChange, hasSharingChanges, sharingList } from "./sharingFields.js";
 import { type EditFolderFormState, appState, explorerLocation } from "./state.js";
 
 const formId = "edit-folder-form";
@@ -232,10 +235,52 @@ function advancedSection(form: EditFolderFormState): HTMLElement {
   );
 }
 
+function nodeOf(nodeId: string): StorageNode | undefined {
+  return appState.data?.nodes.find((node) => node.id === nodeId);
+}
+
+/** The node's devices, other than its own, and any device the folder is shared with that the node no longer lists. */
+function deviceChoices(form: EditFolderFormState): SharingChoice[] {
+  const saved = form.saved as FolderSettings;
+  const node = nodeOf(form.nodeId);
+  const peers = node?.peers ?? [];
+  const deviceIds = [...new Set([...peers.map((peer) => peer.deviceId), ...saved.devices.map((device) => device.deviceId)])].filter((deviceId) => deviceId !== node?.syncthing?.deviceId);
+  const choices = deviceIds.map((deviceId): SharingChoice => {
+    const peer = peers.find((candidate) => candidate.deviceId === deviceId);
+    const shared = saved.devices.find((device) => device.deviceId === deviceId);
+    const name = deviceDisplayName(peer?.name, deviceId);
+    return { key: deviceId, label: name, detail: shared?.encrypted ? "encrypted" : null, isShared: shared !== undefined, needsPassword: peer?.untrusted ?? false, receiver: name };
+  });
+  return choices.sort((first, second) => first.label.localeCompare(second.label));
+}
+
+function sharingSection(form: EditFolderFormState): HTMLElement {
+  const choices = deviceChoices(form);
+  return section(
+    "Sharing",
+    choices.length
+      ? sharingList(formId, "Shared with", form.sharing, choices, form.saving)
+      : element("p", { className: "muted" }, "This node has no other device yet; add one on its Nodes page to share the folder with it."),
+  );
+}
+
+/** The folder detail shows the saved settings and sharing at once, rather than after the next poll. */
+function showSavedInDetail(form: EditFolderFormState, settings: FolderSettings): void {
+  const detail = appState.folderDetail;
+  if (detail?.summary.id !== form.folderId) return;
+  detail.settings[form.nodeId] = settings;
+  const copy = copyOf(detail, form.nodeId);
+  const node = nodeOf(form.nodeId);
+  if (!copy || !node?.syncthing) return;
+  const others = settings.devices.filter((device) => device.deviceId !== node.syncthing?.deviceId);
+  copy.sharedWith = others.map((device) => ({ deviceId: device.deviceId, name: deviceDisplayName(node.peers.find((peer) => peer.deviceId === device.deviceId)?.name, device.deviceId) }));
+}
+
 /** @implNote Measured against `saved`, the answer the form opened with, so a setting the person did not touch is never sent. */
 async function save(form: EditFolderFormState): Promise<void> {
   if (!form.saved || !form.draft) return;
   const change = changedFields(form.saved, form.draft) as FolderSettingsChange;
+  if (hasSharingChanges(form.sharing)) change.devices = folderSharingChange(form.sharing);
   if (Object.keys(change).length === 0) {
     form.result = { text: "Nothing changed.", tone: "ok" };
     return requestRender();
@@ -249,8 +294,9 @@ async function save(form: EditFolderFormState): Promise<void> {
     form.saved = result.value;
     form.draft = structuredClone(result.value);
     form.pathCheck = null;
+    clearSharing(form.sharing);
     form.result = { text: "Saved.", tone: "ok" };
-    if (appState.folderDetail?.summary.id === form.folderId) appState.folderDetail.settings[form.nodeId] = result.value;
+    showSavedInDetail(form, result.value);
   } else {
     form.result = editFailureNotice(result);
   }
@@ -260,6 +306,7 @@ async function save(form: EditFolderFormState): Promise<void> {
 function revert(form: EditFolderFormState): void {
   if (form.saved) form.draft = structuredClone(form.saved);
   form.pathCheck = null;
+  clearSharing(form.sharing);
   form.result = null;
   requestRender();
 }
@@ -272,6 +319,7 @@ function formBody(form: EditFolderFormState, copy: FolderCopy | undefined): HTML
       "div",
       { className: "device-form", attributes: { id: formId } },
       generalSection(form, copy),
+      sharingSection(form),
       advancedSection(form),
       resultLine(form.result),
       element(

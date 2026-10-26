@@ -454,6 +454,10 @@ describe("a node's devices", () => {
     await assert.rejects(addDevice(pc(), { deviceId: newId, addresses: ["ftp://bad"] }), (error: Error & { status?: number }) => error.status === 400 && /ftp:\/\/bad/.test(error.message));
     await assert.rejects(addDevice(pc(), { deviceId: newId, shareFolders: "dashboard-test-a" }), (error: Error & { status?: number }) => error.status === 400 && error.message === "Share these folders must be a list of folder IDs");
     await assert.rejects(addDevice(pc(), { deviceId: newId, ignoredFolders: [] }), (error: Error & { status?: number }) => error.status === 400 && error.message === "ignoredFolders is not a device setting");
+    await assert.rejects(
+      addDevice(pc(), { deviceId: newId, untrusted: true, shareFolders: ["dashboard-test-a"] }),
+      (error: Error & { status?: number }) => error.status === 400 && error.message === "an untrusted device is shared a folder only with an encryption password: add it, then share from its Folders list",
+    );
     const remote: RemoteInstance = { kind: "remote", nodeId: "a1b2", name: "p53-data", host: "p53", dashboardUrl: "http://127.0.0.1:1" };
     await assert.rejects(addDevice(remote, { deviceId: newId }), (error: Error & { status?: number }) => error.status === 409 && error.message === "act on p53's dashboard");
     assert.deepEqual(writes, []);
