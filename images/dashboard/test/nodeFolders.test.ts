@@ -9,6 +9,7 @@ import type { NodeRoot } from "../src/pathGuard.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
 import { addFolder, browseDirectories, checkFolderPath, folderIdFromLabel, newFolderDefaults, nodeFolderRoutes } from "../src/routes/nodeFolders.js";
 import { SyncthingClient } from "../src/syncthing.js";
+import { draftOf, newFolderBody } from "../ui/src/folderDraft.js";
 import { until } from "./until.js";
 
 const apiKey = "node-folders-test-key";
@@ -219,6 +220,18 @@ describe("adding a folder to a node", () => {
     const above = await checkFolderPath(pc(), "F:\\", roots.filter((root) => root.nodeId !== "a1b2"));
     assert.equal(above.problem, null);
     assert.match(above.warning ?? "", /^holds folder Documents/);
+  });
+
+  it("an add from under=Projects/Dashboard Test C sends and stores the label", async () => {
+    const offered = await newFolderDefaults(pc(), "Projects/Dashboard Test C");
+    const body = newFolderBody(offered.settings, draftOf(offered.settings));
+    assert.deepEqual(body, { id: "dashboard-test-c", label: "Dashboard Test C", path: "F:\\Projects\\Dashboard Test C" });
+
+    const addition = await addFolder(pc(), body, roots);
+    const posted = received.find((entry) => entry.method === "POST")?.body as Record<string, unknown>;
+    assert.equal(posted.label, "Dashboard Test C");
+    assert.equal(addition.added.label, "Dashboard Test C");
+    assert.equal(addition.note.text, "pc: added folder Dashboard Test C (dashboard-test-c) at F:\\Projects\\Dashboard Test C");
   });
 
   it("a folder ID is derived from a directory's name", () => {

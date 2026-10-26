@@ -44,6 +44,31 @@ describe("the folder path guard", () => {
     assert.equal(isInsideRoot("~/x", "/var/syncthing/data", "linux"), false);
   });
 
+  it("a windows 8.3 short name is refused, so F:\\STORAG~1\\stick cannot reach a nested node", () => {
+    assert.equal(isInsideRoot("F:\\STORAG~1\\stick", "F:\\", "windows"), false);
+    assert.equal(isInsideRoot("F:\\Documents\\PROGRA~2", "F:\\", "windows"), false);
+    assert.match(folderPathProblem("F:\\STORAG~1\\stick\\photos", pc, [pc, nestedOnPc]) ?? "", /names STORAG~1, which Windows may read as another name/);
+    assert.equal(isInsideRoot("F:\\Backup~old", "F:\\", "windows"), true, "a tilde without a digit is no short name");
+  });
+
+  it("a windows name with a trailing dot or space is refused, as Windows drops it", () => {
+    assert.equal(isInsideRoot("F:\\.storage.\\stick", "F:\\", "windows"), false);
+    assert.equal(isInsideRoot("F:\\.storage \\stick", "F:\\", "windows"), false);
+    assert.match(folderPathProblem("F:\\Documents.", pc, [pc]) ?? "", /names Documents\./);
+    assert.equal(isInsideRoot("F:\\Documents\\.\\x\\..\\y", "F:\\", "windows"), true, "dot and dot-dot segments are not names");
+  });
+
+  it("a windows name with a stream colon or a reserved character is refused", () => {
+    for (const name of ["Documents:stream", "a*b", "a?b", "a\"b", "a<b", "a>b", "a|b"]) {
+      assert.equal(isInsideRoot(`F:\\${name}\\x`, "F:\\", "windows"), false, name);
+      assert.match(folderPathProblem(`F:\\${name}`, pc, [pc]) ?? "", /which Windows may read as another name/, name);
+    }
+  });
+
+  it("linux names are taken as written", () => {
+    assert.equal(isInsideRoot("/var/syncthing/data/a~1/b. /c:d", "/var/syncthing/data", "linux"), true);
+  });
+
   it("a linux backslash is part of a name, not a separator", () => {
     assert.equal(isInsideRoot("/var/syncthing/data\\..\\..", "/var/syncthing/data", "linux"), false);
     assert.equal(isInsideRoot("/var/syncthing/data/a\\..\\..", "/var/syncthing/data", "linux"), true);

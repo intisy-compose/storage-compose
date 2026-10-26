@@ -71,6 +71,8 @@ export interface FolderDraft {
 export interface AddFolderFormState {
   /** Null until the person chooses one of this host's nodes. */
   nodeId: string | null;
+  /** The explorer's view the form was opened from; the form stays open only while the address names the same view and directory. */
+  openedFrom: string;
   /** The explorer's directory the form was opened at, which places the default path. */
   under: string;
   /** The chosen node's defaults, which the form's changes are measured against. */
@@ -195,13 +197,13 @@ const pages: PageId[] = ["nodes", "folders", "attention", "activity", "requests"
 const addFolderFlag = "folder";
 
 function emptyAddFolderForm(node: string, under: string): AddFolderFormState {
-  return { nodeId: node === allNodesView ? null : node, under, defaults: null, draft: null, pathCheck: null, suggestions: [], loadError: null, saving: false, result: null, added: null };
+  return { nodeId: node === allNodesView ? null : node, openedFrom: node, under, defaults: null, draft: null, pathCheck: null, suggestions: [], loadError: null, saving: false, result: null, added: null };
 }
 
-/** Keeps the open add form, and what was typed into it, while the address names the same directory. */
+/** Keeps the open add form, and what was typed into it, while the address names the same view and directory. */
 function readAddFolderForm(adding: boolean, node: string, under: string): void {
   const open = appState.addFolderForm;
-  appState.addFolderForm = adding ? (open?.under === under ? open : emptyAddFolderForm(node, under)) : null;
+  appState.addFolderForm = adding ? (open?.under === under && open.openedFrom === node ? open : emptyAddFolderForm(node, under)) : null;
 }
 
 function readExplorerLocation(query: URLSearchParams): void {

@@ -1,6 +1,7 @@
-import { type FolderSettings, type FolderType, type NewFolder, type StorageNode, addFolder, browseFolderPaths, checkFolderPath, fetchFolderDefaults, folderTypeTexts } from "./api.js";
+import { type FolderType, type StorageNode, addFolder, browseFolderPaths, checkFolderPath, fetchFolderDefaults, folderTypeTexts } from "./api.js";
 import { controlId, resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
+import { draftOf, newFolderBody } from "./folderDraft.js";
 import { registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
@@ -23,10 +24,6 @@ export function addableNodes(): StorageNode[] {
 
 function isAddable(nodeId: string): boolean {
   return addableNodes().some((node) => node.id === nodeId);
-}
-
-function draftOf(settings: FolderSettings): FolderDraft {
-  return { id: settings.id, label: settings.label, path: settings.path, type: settings.type, paused: settings.paused };
 }
 
 const defaultsInFlight = new Set<AddFolderFormState>();
@@ -186,25 +183,13 @@ function forgetLastAttempt(form: AddFolderFormState): void {
   form.result = null;
 }
 
-/** The new folder's ID and path, and only the settings that differ from the node's defaults, which the node fills in for the rest. */
-function newFolder(form: AddFolderFormState, draft: FolderDraft): NewFolder {
-  const defaults = draftOf((form.defaults as NonNullable<AddFolderFormState["defaults"]>).settings);
-  return {
-    id: draft.id.trim(),
-    path: draft.path.trim(),
-    ...(draft.label !== defaults.label ? { label: draft.label } : {}),
-    ...(draft.type !== defaults.type ? { type: draft.type } : {}),
-    ...(draft.paused !== defaults.paused ? { paused: draft.paused } : {}),
-  };
-}
-
 async function submit(form: AddFolderFormState): Promise<void> {
-  const { nodeId, draft } = form;
-  if (!nodeId || !form.defaults || !draft) return;
+  const { nodeId, draft, defaults } = form;
+  if (!nodeId || !defaults || !draft) return;
   form.saving = true;
   form.result = null;
   requestRender();
-  const result = await addFolder(nodeId, newFolder(form, draft));
+  const result = await addFolder(nodeId, newFolderBody(defaults.settings, draft));
   form.saving = false;
   if (result.ok) {
     form.added = result.value;
@@ -215,10 +200,16 @@ async function submit(form: AddFolderFormState): Promise<void> {
   requestRender();
 }
 
+/** The directory that lists `path` as a row, so the opened folder's row is in view. */
+function parentOf(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? "" : path.slice(0, slash);
+}
+
 function actions(form: AddFolderFormState): HTMLElement {
   const added = form.added;
   if (added) {
-    return element("div", { className: "button-row" }, element("a", { className: "button primary", attributes: { href: explorerLocation(added.id, form.nodeId ?? appState.explorer.node, form.under) } }, `Open ${added.label || added.id}`));
+    return element("div", { className: "button-row" }, element("a", { className: "button primary", attributes: { href: explorerLocation(added.id, form.nodeId ?? appState.explorer.node, parentOf(form.under)) } }, `Open ${added.label || added.id}`));
   }
   return element("div", { className: "button-row" }, Object.assign(button(form.saving ? "Adding…" : "Add", () => void submit(form), "button primary"), { disabled: form.saving }));
 }

@@ -16,9 +16,23 @@ function isAbsolutePath(path: string, os: NodeOs): boolean {
   return os === "windows" ? /^[A-Za-z]:[\\/]/.test(path) : path.startsWith("/");
 }
 
-/** Whether `path` is the root or below it once `..` is resolved; case-insensitive and either slash on Windows. */
+/**
+ * The first name after the drive that Windows may resolve to a different name than the one written: an 8.3
+ * short name (`STORAG~1`), a trailing dot or space (dropped by Windows), or a reserved character (`:` opens a stream).
+ */
+export function windowsAliasSegment(path: string): string | null {
+  const names = path.split(/[\\/]/).slice(1).filter((name) => name !== "" && name !== "." && name !== "..");
+  return names.find((name) => /~\d/.test(name) || /[. ]$/.test(name) || /[:*?"<>|]/.test(name)) ?? null;
+}
+
+/**
+ * Whether `path` is the root or below it once `..` is resolved; case-insensitive and either slash on Windows,
+ * where a name Windows may resolve to another one is refused because only the written names are compared.
+ * @implNote Symlinks and junctions are not seen: the guard compares names, with no realpath on the host.
+ */
 export function isInsideRoot(path: string, root: string, os: NodeOs): boolean {
-  return isAbsolutePath(path, os) && relativeToRoot(path, root, os) !== null;
+  if (!isAbsolutePath(path, os) || (os === "windows" && windowsAliasSegment(path) !== null)) return false;
+  return relativeToRoot(path, root, os) !== null;
 }
 
 /** Another node whose root lies strictly below this node's, the only kind a folder of this node can reach into. */
@@ -44,6 +58,8 @@ function holdsOtherNode(path: string, node: NodeRoot, nodes: NodeRoot[]): NodeRo
 /** Why `path` cannot be a folder of `node`, or null: outside its root, inside another node's root, or holding one. */
 export function folderPathProblem(path: string, node: NodeRoot, nodes: NodeRoot[]): string | null {
   if (!path.trim()) return "the folder path is missing";
+  const alias = node.os === "windows" && isAbsolutePath(path, node.os) ? windowsAliasSegment(path) : null;
+  if (alias) return `${path} names ${alias}, which Windows may read as another name (a short name, a trailing dot or space, or a reserved character)`;
   if (!isInsideRoot(path, node.root, node.os)) return `${path} is outside ${node.name}'s root ${node.root}`;
   const inside = isInsideOtherNode(path, node, nodes);
   if (inside) return `${path} is inside ${inside.name}'s root ${inside.root}`;
