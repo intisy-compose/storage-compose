@@ -1,9 +1,10 @@
 import { deviceDisplayName, shortDeviceId } from "../api/deviceText.js";
-import { type FolderPathCheck, type FolderSettings, type FolderSettingsChange, type FolderShare, type FolderSharingChange, type FolderType, type NewFolder, type NewFolderDefaults, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "../api/types.js";
+import { type FolderPathCheck, type FolderSettings, type FolderSettingsChange, type FolderShare, type FolderSharingChange, type FolderType, type NewFolder, type NewFolderDefaults, type Versioning, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "../api/types.js";
+import { versioningWords, versionsPathLabel } from "../api/versioningText.js";
 import { folderSettings } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, localNodeInfos, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
-import { type NodeRoot, folderPathProblem, isInsideOtherNode, isInsideRoot, isStrictlyBelow, pathUnderRoot } from "../pathGuard.js";
+import { type NodeRoot, folderPathProblem, isAbsolutePath, isInsideOtherNode, isInsideRoot, isStrictlyBelow, pathUnderRoot } from "../pathGuard.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import type { SyncthingDeviceConfig, SyncthingFolderSettings } from "../syncthing.js";
 import { effectiveSharing, folderChangeProblem, isChangeInPlace, sharedDevices } from "../syncthingConfig.js";
@@ -158,6 +159,7 @@ function settingValueWords(key: ChangedSetting, change: Required<SettingsChange>
   if (key === "rescanIntervalS") return change.rescanIntervalS ? `${change.rescanIntervalS} s` : "off";
   if (key === "fsWatcherDelayS") return `${change.fsWatcherDelayS} s`;
   if (key === "maxConflicts") return change.maxConflicts < 0 ? "unlimited" : String(change.maxConflicts);
+  if (key === "versioning") return versioningWords(change.versioning);
   return String(value) || "none";
 }
 
@@ -190,6 +192,38 @@ function guardedPath(instance: LocalInstance, path: string, nodes: NodeRoot[]): 
   return checkedPath(path.trim(), node);
 }
 
+/** A typed versions path as Syncthing reads it: in full, or below the folder's path. */
+function versionsPathOf(typed: string, folderPath: string, node: NodeRoot): string {
+  if (isAbsolutePath(typed, node.os)) return typed;
+  return pathUnderRoot(folderPath, node.os === "windows" ? typed.replace(/\\/g, "/") : typed, node.os);
+}
+
+/**
+ * The versioning with its versions path judged like a folder path and sent as checked; empty keeps `.stversions` inside the folder.
+ * @implNote A relative path is sent in full, read from the folder's path as Syncthing reads it, so a later move of the folder
+ * cannot carry its versions outside the root.
+ */
+function guardedVersioning(instance: LocalInstance, versioning: Versioning, folderPath: string, nodes: NodeRoot[]): Versioning {
+  const typed = versioning.fsPath.trim();
+  if (!typed) return { ...versioning, fsPath: "" };
+  const { node } = rooted(instance);
+  const path = versionsPathOf(typed, folderPath, node);
+  const problem = folderPathProblem(path, node, nodes);
+  if (problem) throw new RequestError(400, `${versionsPathLabel}: ${problem}`);
+  return { ...versioning, fsPath: checkedPath(path, node) };
+}
+
+function isSameVersionsPath(current: string, sent: string, node: NodeRoot): boolean {
+  return current === sent || (current !== "" && sent !== "" && isSamePath(current, sent, node));
+}
+
+/** @implNote Only the sent params are compared: Syncthing keeps the params of the folder's earlier types beside them. */
+function isVersioningInPlace(current: SyncthingFolderSettings["versioning"], sent: Versioning, node: NodeRoot): boolean {
+  const now = current ?? {};
+  const isSameParams = Object.entries(sent.params).every(([key, value]) => now.params?.[key] === value);
+  return (now.type ?? "") === sent.type && now.cleanupIntervalS === sent.cleanupIntervalS && isSameVersionsPath(now.fsPath ?? "", sent.fsPath, node) && isSameParams;
+}
+
 function otherFolderAtPath(instance: LocalInstance, folders: SyncthingFolderSettings[], folderId: string, path: string): string | null {
   const { node } = rooted(instance);
   return samePathProblem(instance, folders.filter((folder) => folder.id !== folderId), path, node);
@@ -202,8 +236,11 @@ function isSharingInPlace(current: SyncthingFolderSettings, sharing: Sharing): b
 
 /** @implNote The path is compared as the guard reads paths, so Syncthing writing it with another case or a trailing separator still counts. */
 function isFolderChangeInPlace(instance: LocalInstance, current: SyncthingFolderSettings, settings: SettingsChange, sharing: Sharing): boolean {
-  const { path, ...rest } = settings;
-  return isChangeInPlace(current, rest) && (path === undefined || isSamePath(current.path, path, rooted(instance).node)) && isSharingInPlace(current, sharing);
+  const { path, versioning, ...rest } = settings;
+  const { node } = rooted(instance);
+  const isPathInPlace = path === undefined || isSamePath(current.path, path, node);
+  const isVersioningSaved = versioning === undefined || isVersioningInPlace(current.versioning, versioning, node);
+  return isChangeInPlace(current, rest) && isPathInPlace && isVersioningSaved && isSharingInPlace(current, sharing);
 }
 
 interface SharingPlan {
@@ -292,10 +329,11 @@ export async function editFolder(instance: ResolvedInstance, folderId: string, c
   const problem = folderChangeProblem(change);
   if (problem) throw new RequestError(400, problem);
   const { devices: sharingChange, ...valid } = change as FolderSettingsChange;
-  const settings: SettingsChange = valid.path === undefined ? valid : { ...valid, path: guardedPath(local, valid.path, nodes) };
+  const moved: SettingsChange = valid.path === undefined ? valid : { ...valid, path: guardedPath(local, valid.path, nodes) };
   const folders = await configuredFolders(local);
   const listed = folders.find((folder) => folder.id === folderId);
   if (!listed) throw new RequestError(404, `${local.name} has no folder ${folderId}`);
+  const settings: SettingsChange = moved.versioning === undefined ? moved : { ...moved, versioning: guardedVersioning(local, moved.versioning, moved.path ?? listed.path, nodes) };
   const typeProblem = typeChangeProblem(listed, settings);
   if (typeProblem) throw new RequestError(400, typeProblem);
   const samePath = settings.path === undefined ? null : otherFolderAtPath(local, folders, folderId, settings.path);

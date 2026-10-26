@@ -682,12 +682,15 @@ export interface FoldersResponse {
   offersUnreadable: { nodeId: string; nodeName: string; error: string }[];
 }
 
+/** A folder's file versioning in Syncthing's own shape: `params` are strings, `fsPath` is the versions path, empty for `.stversions` inside the folder. */
 export interface Versioning {
   type: "" | "trashcan" | "simple" | "staggered" | "external";
   params: Record<string, string>;
   cleanupIntervalS: number;
   fsPath: string;
 }
+
+export type VersioningType = Versioning["type"];
 
 /** A node's Syncthing settings for one folder. */
 export interface FolderSettings {
@@ -757,9 +760,12 @@ export interface FolderSharingChange {
   unshare?: string[];
 }
 
-/** `PATCH /api/nodes/<nodeId>/folders/<folderId>`: only the settings the form changed; the folder ID cannot change. */
+/**
+ * `PATCH /api/nodes/<nodeId>/folders/<folderId>`: only the settings the form changed; the folder ID cannot change.
+ * `versioning` goes whole, with exactly its type's params: Syncthing resets a cleanup interval left out of it.
+ */
 export type FolderSettingsChange = Partial<
-  Pick<FolderSettings, "label" | "path" | "type" | "rescanIntervalS" | "fsWatcherEnabled" | "fsWatcherDelayS" | "ignorePerms" | "order" | "minDiskFree" | "maxConflicts" | "syncOwnership" | "syncXattrs">
+  Pick<FolderSettings, "label" | "path" | "type" | "rescanIntervalS" | "fsWatcherEnabled" | "fsWatcherDelayS" | "ignorePerms" | "order" | "minDiskFree" | "maxConflicts" | "syncOwnership" | "syncXattrs" | "versioning">
 > & { devices?: FolderSharingChange };
 
 /** Each editable folder setting as the form labels it; a refusal names the setting the same way. */
@@ -776,6 +782,7 @@ export const folderSettingLabels: Record<keyof FolderSettingsChange, string> = {
   maxConflicts: "Conflict copies kept",
   syncOwnership: "Sync ownership",
   syncXattrs: "Sync extended attributes",
+  versioning: "File versioning",
   devices: "Sharing",
 };
 

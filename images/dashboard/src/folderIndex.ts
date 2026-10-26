@@ -1,5 +1,6 @@
 import { deviceDisplayName } from "./api/deviceText.js";
-import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type FoldersResponse, type PendingFolderOffer, type PullOrder, diskFreeUnits, pullOrderTexts } from "./api/types.js";
+import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type FoldersResponse, type PendingFolderOffer, type PullOrder, type Versioning, type VersioningType, diskFreeUnits, pullOrderTexts } from "./api/types.js";
+import { versioningParamKeys, versioningTypeTexts } from "./api/versioningText.js";
 import { RequestError } from "./http.js";
 import type { SetupLayout } from "./setupRepo.js";
 import { type SyncthingClient, type SyncthingDeviceConfig, SyncthingError, type PendingFolders, type SyncthingFolderSettings, SyncthingUnavailable, instanceFolders } from "./syncthing.js";
@@ -132,7 +133,19 @@ function oneOf<Value extends string>(value: string | undefined, allowed: readonl
 }
 
 const orders = Object.keys(pullOrderTexts) as PullOrder[];
-const versioningTypes = ["", "trashcan", "simple", "staggered", "external"] as const;
+const versioningTypes = Object.keys(versioningTypeTexts) as VersioningType[];
+
+/** @implNote Only the type's own params: Syncthing keeps the keys of every type a folder had, as a PATCH merges `params`. */
+function versioning(config: SyncthingFolderSettings["versioning"]): Versioning {
+  const type = oneOf(config?.type, versioningTypes, "");
+  const params = config?.params ?? {};
+  return {
+    type,
+    params: Object.fromEntries(versioningParamKeys[type].flatMap((key) => (typeof params[key] === "string" ? [[key, params[key]]] : []))),
+    cleanupIntervalS: config?.cleanupIntervalS ?? 0,
+    fsPath: config?.fsPath ?? "",
+  };
+}
 
 /** @implNote Built field by field, so nothing Syncthing adds later (or a password) reaches the page. */
 export function folderSettings(config: SyncthingFolderSettings): FolderSettings {
@@ -152,12 +165,7 @@ export function folderSettings(config: SyncthingFolderSettings): FolderSettings 
     syncOwnership: config.syncOwnership ?? false,
     syncXattrs: config.syncXattrs ?? false,
     devices: config.devices.map((device) => ({ deviceId: device.deviceID, encrypted: Boolean(device.encryptionPassword) })),
-    versioning: {
-      type: oneOf(config.versioning?.type, versioningTypes, ""),
-      params: { ...(config.versioning?.params ?? {}) },
-      cleanupIntervalS: config.versioning?.cleanupIntervalS ?? 0,
-      fsPath: config.versioning?.fsPath ?? "",
-    },
+    versioning: versioning(config.versioning),
   };
 }
 

@@ -1,5 +1,6 @@
 import { deviceSettingLabels, shareFoldersLabel } from "./api/deviceText.js";
-import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type DiskFreeUnit, type FolderSettingsChange, type FolderSharingChange, type FolderType, type InstanceGui, type InstanceOptions, type PullOrder, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "./api/types.js";
+import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type DiskFreeUnit, type FolderSettingsChange, type FolderSharingChange, type FolderType, type InstanceGui, type InstanceOptions, type PullOrder, type VersioningType, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "./api/types.js";
+import { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versionsPathLabel } from "./api/versioningText.js";
 
 type SyncthingObject = Record<string, unknown>;
 
@@ -230,6 +231,34 @@ export function sharedDevices(current: readonly FolderDeviceEntry[], sharing: Fo
   return [...current.filter((entry) => !unshared.has(entry.deviceID)), ...added];
 }
 
+const versioningKeys = ["cleanupIntervalS", "fsPath", "params", "type"];
+const offeredVersioningTypes: readonly VersioningType[] = (Object.keys(versioningTypeTexts) as VersioningType[]).filter((type) => type !== "external");
+const paramMinimums: Record<Exclude<VersioningParam, "command">, number> = { cleanoutDays: 0, keep: 1, maxAge: 0 };
+
+function paramProblem(key: VersioningParam, value: unknown): string | null {
+  const minimum = paramMinimums[key as Exclude<VersioningParam, "command">];
+  const isWholeNumberText = typeof value === "string" && /^\d+$/.test(value) && Number(value) >= minimum;
+  return isWholeNumberText ? null : `${versioningParamLabels[key]} must be a whole number, ${minimum} or more`;
+}
+
+function paramsProblem(type: VersioningType, params: Record<string, unknown>): string | null {
+  const expected = versioningParamKeys[type];
+  const hasExactKeys = Object.keys(params).length === expected.length && expected.every((key) => Object.hasOwn(params, key));
+  if (!hasExactKeys) return expected.length ? `${versioningTypeTexts[type]} versioning takes ${expected.map((key) => versioningParamLabels[key]).join(", ")}` : "no versioning takes no settings";
+  return expected.map((key) => paramProblem(key, params[key])).find((problem) => problem !== null) ?? null;
+}
+
+/**
+ * A versioning change is Syncthing's whole object with exactly its type's params, each a string as Syncthing keeps them.
+ * @implNote Whole, because Syncthing 2.1.6 resets a cleanup interval a PATCH leaves out to 3600.
+ */
+function versioningCheck(value: unknown, label: string): string | null {
+  if (!isPlainObject(value) || Object.keys(value).sort().join() !== versioningKeys.join() || !isPlainObject(value.params)) return `${label} must give its type, settings, cleanup interval and versions path`;
+  if (value.type === "external") return externalVersioningRefusal;
+  if (!offeredVersioningTypes.includes(value.type as VersioningType)) return `${label} must be ${offeredVersioningTypes.map((type) => versioningTypeTexts[type]).join(", ")}`;
+  return paramsProblem(value.type as VersioningType, value.params) ?? wholeNumberField(value.cleanupIntervalS, cleanupIntervalLabel) ?? (typeof value.fsPath === "string" ? null : `${versionsPathLabel} must be text`);
+}
+
 const folderFieldChecks: Record<keyof FolderSettingsChange, FieldCheck> = {
   label: (value, label) => (typeof value === "string" ? null : `${label} must be text`),
   path: (value, label) => (typeof value === "string" && value.trim() ? null : `${label} is missing`),
@@ -243,6 +272,7 @@ const folderFieldChecks: Record<keyof FolderSettingsChange, FieldCheck> = {
   maxConflicts: (value, label) => (typeof value === "number" && Number.isInteger(value) && value >= -1 ? null : `${label} must be a whole number, or -1 for unlimited`),
   syncOwnership: booleanField,
   syncXattrs: booleanField,
+  versioning: versioningCheck,
   devices: sharingCheck,
 };
 

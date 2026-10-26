@@ -1,4 +1,5 @@
-import type { FolderSettings, NewFolder } from "../../src/api/types.js";
+import type { FolderSettings, NewFolder, Versioning, VersioningType } from "../../src/api/types.js";
+import { type VersioningParam, versioningParamKeys } from "../../src/api/versioningText.js";
 import type { FolderDraft } from "./state.js";
 
 export function draftOf(settings: FolderSettings): FolderDraft {
@@ -29,4 +30,17 @@ export function newFolderBody(offered: FolderSettings, draft: FolderDraft): NewF
     ...(draft.type !== defaults.type ? { type: draft.type } : {}),
     ...(draft.paused !== defaults.paused ? { paused: draft.paused } : {}),
   };
+}
+
+/** What Syncthing's own page offers for a newly chosen versioning type; shown in the fields, where the person changes them. */
+const syncthingVersioningDefaults: Record<VersioningParam, string> = { cleanoutDays: "0", keep: "5", maxAge: "31536000", command: "" };
+
+/**
+ * The draft's versioning once `type` is chosen: the saved versioning when it is the saved type, otherwise the type's params
+ * as typed so far, else as saved, else Syncthing's defaults; the cleanup interval and versions path carry over.
+ */
+export function versioningOfType(saved: Versioning, draft: Versioning, type: VersioningType): Versioning {
+  if (type === saved.type) return structuredClone(saved);
+  const params = Object.fromEntries(versioningParamKeys[type].map((key) => [key, draft.params[key] ?? saved.params[key] ?? syncthingVersioningDefaults[key]]));
+  return { type, params, cleanupIntervalS: draft.cleanupIntervalS, fsPath: type === "" ? "" : draft.fsPath };
 }

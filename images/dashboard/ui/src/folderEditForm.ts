@@ -25,6 +25,7 @@ import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
 import { type SharingChoice, clearSharing, folderSharingChange, hasSharingChanges, sharingList } from "./sharingFields.js";
 import { type EditFolderFormState, appState, explorerLocation } from "./state.js";
+import { versioningSection } from "./versioningSection.js";
 
 const formId = "edit-folder-form";
 registerForm(formId);
@@ -320,6 +321,7 @@ function formBody(form: EditFolderFormState, copy: FolderCopy | undefined): HTML
       { className: "device-form", attributes: { id: formId } },
       generalSection(form, copy),
       sharingSection(form),
+      versioningSection(form, formId),
       advancedSection(form),
       resultLine(form.result),
       element(

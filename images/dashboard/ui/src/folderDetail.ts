@@ -1,4 +1,4 @@
-import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type PendingFolderOffer, deviceDisplayName, folderTypeTexts } from "./api.js";
+import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type PendingFolderOffer, deviceDisplayName, folderTypeTexts, versioningWords } from "./api.js";
 import { element, keyValueList, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, formatPercent, normaliseCompletion, plural } from "./format.js";
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
@@ -72,13 +72,6 @@ function offerLine(offer: PendingFolderOffer): HTMLElement {
   );
 }
 
-function versioningText(settings: FolderSettings): string {
-  const versioning = settings.versioning;
-  if (!versioning.type) return "none";
-  const params = Object.entries(versioning.params).map(([key, value]) => `${key} ${value}`);
-  return [versioning.type, ...params, `cleaned every ${seconds(versioning.cleanupIntervalS)}`].join(", ");
-}
-
 function settingsRows(settings: FolderSettings, names: Map<string, string>): [string, HTMLElement | string][] {
   return [
     ["Label", settings.label || "none"],
@@ -93,7 +86,7 @@ function settingsRows(settings: FolderSettings, names: Map<string, string>): [st
     ["Conflict copies kept", settings.maxConflicts < 0 ? "unlimited" : String(settings.maxConflicts)],
     ["Sync ownership", onOff(settings.syncOwnership)],
     ["Sync extended attributes", onOff(settings.syncXattrs)],
-    ["Versioning", versioningText(settings)],
+    ["Versioning", versioningWords(settings.versioning)],
     ["Devices", settings.devices.map((device) => `${deviceDisplayName(names.get(device.deviceId), device.deviceId)}${device.encrypted ? " (encrypted)" : ""}`).join(", ")],
   ];
 }

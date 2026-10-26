@@ -12,7 +12,7 @@ export interface NodeRoot {
  * @implNote Only a path that names its drive and starts at that drive's top counts on Windows: `F:foo`
  * is relative to F:'s current directory, and a UNC or `\\?\` path names no drive letter the root can match.
  */
-function isAbsolutePath(path: string, os: NodeOs): boolean {
+export function isAbsolutePath(path: string, os: NodeOs): boolean {
   return os === "windows" ? /^[A-Za-z]:[\\/]/.test(path) : path.startsWith("/");
 }
 

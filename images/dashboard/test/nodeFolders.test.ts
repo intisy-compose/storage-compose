@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
-import type { FolderPathCheck, FolderSettings, NewFolderDefaults } from "../src/api/types.js";
+import type { FolderPathCheck, FolderSettings, NewFolderDefaults, Versioning } from "../src/api/types.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import type { NodeRoot } from "../src/pathGuard.js";
@@ -11,7 +11,7 @@ import { type FolderEdit, addFolder, browseDirectories, checkFolderPath, editFol
 import { folderSettings } from "../src/folderIndex.js";
 import { SyncthingClient, type SyncthingFolderSettings } from "../src/syncthing.js";
 import { changedFields } from "../src/syncthingConfig.js";
-import { draftOf, newFolderBody, treePathOf } from "../ui/src/folderDraft.js";
+import { draftOf, newFolderBody, treePathOf, versioningOfType } from "../ui/src/folderDraft.js";
 import { until } from "./until.js";
 
 const apiKey = "node-folders-test-key";
@@ -62,6 +62,13 @@ function reply(response: ServerResponse, body: unknown, status = 200): void {
 
 function listen(server: Server): Promise<string> {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)));
+}
+
+/** As Syncthing 2.1.6 decodes a PATCH's versioning over the folder's: `params` keeps earlier keys, a missing `cleanupIntervalS` is 3600 again. */
+function mergedVersioning(current: unknown, patched: unknown): unknown {
+  const before = current as { params?: Record<string, string> };
+  const sent = patched as { params?: Record<string, string> };
+  return { ...before, cleanupIntervalS: 3600, ...sent, params: { ...before.params, ...sent.params } };
 }
 
 function noteText(edit: FolderEdit): string {
@@ -132,7 +139,7 @@ describe("adding a folder to a node", () => {
       const folderId = decodeURIComponent(folderPath[1] as string);
       const patched = body as Record<string, unknown>;
       const stored = typeof patched.path === "string" ? { ...patched, path: storedPath(patched.path) } : patched;
-      folders = folders.map((folder) => (folder.id === folderId ? { ...folder, ...stored } : folder));
+      folders = folders.map((folder) => (folder.id === folderId ? { ...folder, ...stored, ...(patched.versioning ? { versioning: mergedVersioning(folder.versioning, patched.versioning) } : {}) } : folder));
       wrote = true;
       if (loseWriteAnswer) return request.socket.destroy();
       return reply(response, null);
@@ -617,6 +624,67 @@ describe("adding a folder to a node", () => {
     assert.equal(await peer().client.shareFolder("dashboard-test-e", laptopId), true);
     assert.equal(await peer().client.shareFolder("nowhere", laptopId), false);
     assert.deepEqual(patchedBodies(), [], "a share in place and a folder the node lacks write nothing");
+  });
+
+  const staggered: Versioning = { type: "staggered", params: { maxAge: "31536000" }, cleanupIntervalS: 3600, fsPath: "" };
+
+  function versionedAs(folderId: string, versioning: Record<string, unknown>): void {
+    folders = folders.map((folder) => (folder.id === folderId ? { ...folder, versioning: { fsType: "basic", ...versioning } } : folder));
+  }
+
+  it("a versioning change sends the whole versioning object, and syncthing's left-over params do not leave it unconfirmed", async () => {
+    versionedAs("dashboard-test-e", { type: "simple", params: { keep: "5", cleanoutDays: "0" }, cleanupIntervalS: 1200, fsPath: "" });
+    loseWriteAnswer = true;
+    const edit = await editFolder(peer(), "dashboard-test-e", { versioning: staggered }, roots, fastReadBacks);
+    assert.deepEqual(patchedBodies(), [{ versioning: staggered }]);
+    assert.deepEqual((folders.find((folder) => folder.id === "dashboard-test-e") as { versioning: { params: unknown } }).versioning.params, { keep: "5", cleanoutDays: "0", maxAge: "31536000" }, "the fake keeps old keys as Syncthing does");
+    assert.deepEqual(edit.settings.versioning, staggered);
+    assert.equal(noteText(edit), "dashboard-test-peer: changed folder Test A; file versioning staggered, versions kept up to 365 days, cleanup every 3600 s, in .stversions inside the folder");
+  });
+
+  it("a versions path is judged like a folder path, before anything is written", async () => {
+    for (const fsPath of ["/etc", "../../../etc", "/var/syncthing/data/../config"]) {
+      await assert.rejects(editFolder(peer(), "dashboard-test-e", { versioning: { ...staggered, fsPath } }, roots), (error: Error & { status?: number }) => error.status === 400 && error.message.startsWith("Versions path: "), fsPath);
+    }
+    for (const fsPath of ["C:\\Versions", "F:\\.storage\\stick\\versions", "F:\\Versions~1", "F:versions"]) {
+      await assert.rejects(editFolder(pc(), "documents", { versioning: { ...staggered, fsPath } }, roots), (error: Error & { status?: number }) => error.status === 400 && error.message.startsWith("Versions path: "), fsPath);
+    }
+    assert.deepEqual(patchedBodies(), []);
+  });
+
+  it("a versions path inside the root is sent as checked, a relative one in full below the folder's path", async () => {
+    await editFolder(pc(), "documents", { versioning: { ...staggered, fsPath: "f:/versions/./documents/" } }, roots);
+    await editFolder(peer(), "dashboard-test-e", { versioning: { ...staggered, fsPath: "versions/../old-versions" } }, roots);
+    await editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/moved", versioning: { ...staggered, fsPath: "old-versions" } }, roots);
+    assert.deepEqual(
+      patchedBodies().map((body) => (body as { versioning: Versioning }).versioning.fsPath),
+      ["F:\\versions\\documents", "/var/syncthing/data/dashboard-test-e/old-versions", "/var/syncthing/data/moved/old-versions"],
+    );
+  });
+
+  it("external versioning is refused before anything is read, and a folder that has it can leave it", async () => {
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { versioning: { type: "external", params: { command: "/bin/sh -c id" }, cleanupIntervalS: 0, fsPath: "" } }, roots), {
+      status: 400,
+      message: "external versioning runs a program on the node, so it is set in the node's own Syncthing configuration, not from the dashboard",
+    });
+    assert.deepEqual(received, []);
+    versionedAs("dashboard-test-e", { type: "external", params: { command: "/usr/local/bin/keep %FILE_PATH%" }, cleanupIntervalS: 3600, fsPath: "" });
+    const edit = await editFolder(peer(), "dashboard-test-e", { versioning: { type: "", params: {}, cleanupIntervalS: 3600, fsPath: "" } }, roots);
+    assert.equal(edit.settings.versioning.type, "");
+    assert.equal(noteText(edit), "dashboard-test-peer: changed folder Test A; file versioning off");
+  });
+
+  it("choosing a versioning type in the form offers syncthing's defaults and keeps what was typed", () => {
+    const none: Versioning = { type: "", params: {}, cleanupIntervalS: 3600, fsPath: "" };
+    assert.deepEqual(versioningOfType(none, none, "staggered"), staggered);
+    assert.deepEqual(versioningOfType(none, none, "simple").params, { keep: "5", cleanoutDays: "0" });
+    assert.deepEqual(versioningOfType(none, none, "trashcan").params, { cleanoutDays: "0" });
+    const simple = { ...versioningOfType(none, none, "simple"), params: { keep: "9", cleanoutDays: "14" }, fsPath: "/var/syncthing/data/v" };
+    assert.deepEqual(versioningOfType(none, simple, "trashcan"), { type: "trashcan", params: { cleanoutDays: "14" }, cleanupIntervalS: 3600, fsPath: "/var/syncthing/data/v" });
+    assert.deepEqual(versioningOfType(none, simple, ""), none, "back to the saved type is the saved versioning");
+    const opened = folderSettings({ ...syncthingDefaults, id: "x", path: "/x", versioning: { ...staggered, fsType: "basic" } } as unknown as SyncthingFolderSettings);
+    const draft = { ...structuredClone(opened), versioning: versioningOfType(opened.versioning, versioningOfType(opened.versioning, opened.versioning, "simple"), "staggered") };
+    assert.deepEqual(changedFields(opened, draft), {}, "leaving a type and coming back is no change");
   });
 
   it("an edit's activity entry names every changed setting in words", () => {
