@@ -141,6 +141,11 @@ export async function resolveInstance(nodeId: string, sources: ResolverSources =
     if (!local.instance) throw notAnswering(local.name);
     return local.instance;
   }
+  return resolveRemote(nodeId, sources);
+}
+
+/** A node another host's dashboard reported, for a caller that already knows it is not this host's. */
+export async function resolveRemote(nodeId: string, sources: ResolverSources = defaultResolverSources): Promise<RemoteInstance> {
   const remote = (await sources.otherHostNodes()).find((node) => node.id === nodeId);
   if (!remote) throw new RequestError(404, `no node ${nodeId}`);
   return { kind: "remote", nodeId, name: remote.name, host: remote.host, dashboardUrl: remote.dashboardUrl };
