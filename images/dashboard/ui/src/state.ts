@@ -1,4 +1,4 @@
-import type { ActivityFilters, ActivityResponse, DevicesResponse, FolderDetailResponse, NodesResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, DevicesResponse, FolderDetailResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -71,6 +71,8 @@ export interface AppState {
   activityFilters: ActivityFilters;
   /** How many entries the page asks for; "Show older entries" raises it by `activityPageSize`. */
   activityLimit: number;
+  requests: RequestsResponse | null;
+  requestsError: string | null;
 }
 
 export const activityPageSize = 300;
@@ -103,6 +105,8 @@ export const appState: AppState = {
   activityError: null,
   activityFilters: { node: "", folder: "", source: "", routine: false },
   activityLimit: activityPageSize,
+  requests: null,
+  requestsError: null,
 };
 
 const pages: PageId[] = ["nodes", "folders", "attention", "activity", "requests", "settings"];

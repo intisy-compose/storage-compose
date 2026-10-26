@@ -428,6 +428,31 @@ export interface PendingFolderOffer {
   receiveEncrypted: boolean;
 }
 
+/** A device that asked to connect to a node and was neither accepted nor ignored there. */
+export interface PendingDevice {
+  nodeId: string;
+  nodeName: string;
+  deviceId: string;
+  name: string;
+  address: string;
+  time: string;
+}
+
+/** A device admitted through the join API; `setup` says what became of it in the setup repo. */
+export interface JoinEntry {
+  name: string;
+  joinedAt: string;
+  setup: string;
+}
+
+/** `GET /api/requests`; `?scope=local` leaves the other hosts out. `unreadable` names a node or host whose requests could not be read. */
+export interface RequestsResponse {
+  devices: PendingDevice[];
+  folders: PendingFolderOffer[];
+  joins: JoinEntry[];
+  unreadable: { name: string; reason: string }[];
+}
+
 export const topDirectoryDefault = 0;
 
 /**

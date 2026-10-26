@@ -1,6 +1,6 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
 import type { NodesResponse } from "./api.js";
-import { fetchActivity, fetchDevices, fetchFolderDetail, fetchNodes } from "./api.js";
+import { fetchActivity, fetchDevices, fetchFolderDetail, fetchNodes, fetchRequests } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
 import { element } from "./dom.js";
@@ -12,9 +12,10 @@ import { isFormOpen } from "./forms.js";
 import { renderItemNotFound } from "./itemNotFound.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
 import { renderNodesPage } from "./nodesPage.js";
-import { renderSettingsPage, renderUpcomingPage } from "./otherPages.js";
+import { renderSettingsPage } from "./otherPages.js";
 import { applyTheme } from "./preferences.js";
 import { onRenderRequested } from "./renderRequest.js";
+import { renderRequestsPage } from "./requestsPage.js";
 import { renderMenu } from "./shell.js";
 import { activityPageSize, appState, explorerLocation, locationFor, readLocation, selectedItemId } from "./state.js";
 
@@ -51,10 +52,10 @@ function renderPage(): HTMLElement {
   if (appState.page === "settings") return renderSettingsPage();
   if (appState.page === "folders") return renderExplorerPage();
   if (appState.page === "activity") return renderActivityPage(activityActions);
+  if (appState.page === "requests") return renderRequestsPage();
   if (!data) return element("div", { className: "page loading" }, appState.loadError ? "" : "Loading nodes…");
   if (appState.page === "nodes") return renderNodesPage(data, appState.devices);
-  if (appState.page === "attention") return renderAttentionPage(data);
-  return renderUpcomingPage(appState.page);
+  return renderAttentionPage(data);
 }
 
 function renderFolderPanel(): HTMLElement {
@@ -176,11 +177,21 @@ async function loadActivity(): Promise<void> {
   }
 }
 
+async function loadRequests(): Promise<void> {
+  try {
+    appState.requests = await fetchRequests();
+    appState.requestsError = null;
+  } catch (error) {
+    appState.requestsError = messageOf(error);
+  }
+}
+
 /** The current page's own data besides the nodes every page shows in its menu. */
 async function loadPageData(): Promise<void> {
   if (appState.page === "nodes") await loadDevices();
   if (appState.page === "folders") await loadFolders();
   if (appState.page === "activity") await loadActivity();
+  if (appState.page === "requests") await loadRequests();
 }
 
 async function poll(): Promise<void> {

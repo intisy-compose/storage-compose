@@ -11,6 +11,7 @@ import { type Job, isJobRunning, parityState, recentLog, startJob } from "./pari
 import { activityRoutes } from "./routes/activity.js";
 import { deviceIndexRoutes } from "./routes/deviceIndex.js";
 import { folderRoutes } from "./routes/folders.js";
+import { pendingRoutes } from "./routes/pending.js";
 import { treeRoutes } from "./routes/tree.js";
 import { arrayStatusDirectory, clusterArrayId, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
 import { SyncthingError, SyncthingUnavailable } from "./syncthing.js";
@@ -139,6 +140,7 @@ const routes: Route[] = [
   ...activityRoutes,
   ...treeRoutes,
   ...deviceIndexRoutes(joinRecords),
+  ...pendingRoutes(joinRecords),
   { pattern: /^\/api\/join$/, handle: async () => joinElsewhere() },
 ];
 

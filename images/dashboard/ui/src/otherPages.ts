@@ -1,14 +1,7 @@
 import { element } from "./dom.js";
 import { applyTheme } from "./preferences.js";
 import { requestRender } from "./renderRequest.js";
-import { type PageId, appState } from "./state.js";
-
-const upcoming: Record<Exclude<PageId, "nodes" | "folders" | "attention" | "activity" | "settings">, { title: string; summary: string }> = {
-  requests: {
-    title: "Requests",
-    summary: "Devices and folders asking to join, accepted or refused here.",
-  },
-};
+import { appState } from "./state.js";
 
 function pageHeader(title: string, summary: string): HTMLElement {
   return element("header", { className: "page-header" }, element("h1", {}, title), element("p", { className: "page-summary" }, summary));
@@ -21,11 +14,6 @@ function comingState(): HTMLElement {
     element("strong", {}, "Comes with the layered sync"),
     element("p", {}, "This page is built together with priorities, thresholds and hand-off. Nodes works today."),
   );
-}
-
-export function renderUpcomingPage(page: keyof typeof upcoming): HTMLElement {
-  const { title, summary } = upcoming[page];
-  return element("div", { className: "page" }, pageHeader(title, summary), comingState());
 }
 
 function themeSetting(): HTMLElement {

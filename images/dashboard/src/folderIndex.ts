@@ -31,7 +31,7 @@ function deviceName(devices: SyncthingDeviceConfig[], deviceId: string): string 
   return devices.find((device) => device.deviceID === deviceId)?.name || deviceId.slice(0, 7);
 }
 
-function offersOf(instance: FolderInstance, devices: SyncthingDeviceConfig[], pending: PendingFolders): PendingFolderOffer[] {
+export function offersOf(instance: Pick<FolderInstance, "nodeId" | "nodeName">, devices: SyncthingDeviceConfig[], pending: PendingFolders): PendingFolderOffer[] {
   return Object.entries(pending).flatMap(([folderId, entry]) =>
     Object.entries(entry.offeredBy).map(([offeredBy, offer]) => ({
       nodeId: instance.nodeId,

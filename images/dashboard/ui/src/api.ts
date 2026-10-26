@@ -26,6 +26,7 @@ export type {
   FoldersResponse,
   FolderType,
   InstanceConnection,
+  JoinEntry,
   MemberSmart,
   NodeArray,
   NodeEntryState,
@@ -35,11 +36,13 @@ export type {
   NodeSync,
   Parity,
   ParityJob,
+  PendingDevice,
   PendingFolderOffer,
   PresenceWindow,
   PriorityInfo,
   Peer,
   RemoteState,
+  RequestsResponse,
   Space,
   StorageNode,
   SyncState,
@@ -53,7 +56,7 @@ export type {
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
-import type { ActivityResponse, ArrayAction, ArrayActionBody, DevicesResponse, FolderDetailResponse, NodesResponse, TreeListing } from "../../src/api/types.js";
+import type { ActivityResponse, ArrayAction, ArrayActionBody, DevicesResponse, FolderDetailResponse, NodesResponse, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
@@ -80,6 +83,10 @@ export function fetchNodes(): Promise<NodesResponse> {
 
 export function fetchDevices(): Promise<DevicesResponse> {
   return getJson("api/devices");
+}
+
+export function fetchRequests(): Promise<RequestsResponse> {
+  return getJson("api/requests");
 }
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {
