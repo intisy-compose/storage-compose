@@ -12,8 +12,12 @@ export const hostName = process.env.STORAGE_NODE || "this host";
 /** The tailnet name of this host's dashboard and cluster, as `up` wrote it into config.env. */
 export const tailnetHost = process.env.STORAGE_HOST ?? "";
 export const statusDirectory = process.env.STATUS_DIRECTORY ?? "/status";
-/** How often the mounter rescans every device; one of its rounds can take that long. */
-export const discoveryPollSeconds = Number(process.env.DISCOVERY_POLL_SECONDS ?? 300);
+/** DISCOVERY_POLL_SECONDS from config.env: how often the mounter rescans every device; a missing or unusable value takes 300. */
+export function discoveryPollSecondsOf(environment: Record<string, string | undefined>): number {
+  return positiveNumber(environment.DISCOVERY_POLL_SECONDS, 300);
+}
+
+export const discoveryPollSeconds = discoveryPollSecondsOf(process.env);
 export const arraysStatusDirectory = `${statusDirectory}/arrays`;
 export const registryDirectory = `${statusDirectory}/nodes`;
 export const joinsFile = `${statusDirectory}/joins.json`;

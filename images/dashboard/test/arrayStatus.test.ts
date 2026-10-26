@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { type ArrayStatus, type DriveStatus, arrayStatus, listedArrayIds } from "../src/arrayStatus.js";
 import { arrayHealth } from "../src/nodes.js";
+import { discoveryPollSecondsOf } from "../src/settings.js";
 
 const now = Date.parse("2026-10-26T13:30:00Z");
 
@@ -103,5 +104,14 @@ describe("array status", () => {
     assert.equal(fresh.drives[0].condition, "present");
     assert.equal(arrayHealth(fresh), "healthy");
     assert.equal(arrayHealth(await read(status({ state: "stopped" }))), "frozen");
+  });
+});
+
+describe("the discovery poll the silence check waits on", () => {
+  it("an unusable DISCOVERY_POLL_SECONDS takes the default instead of never calling the mounter silent", () => {
+    assert.equal(discoveryPollSecondsOf({ DISCOVERY_POLL_SECONDS: "5m" }), 300);
+    assert.equal(discoveryPollSecondsOf({ DISCOVERY_POLL_SECONDS: "-1" }), 300);
+    assert.equal(discoveryPollSecondsOf({}), 300);
+    assert.equal(discoveryPollSecondsOf({ DISCOVERY_POLL_SECONDS: "60" }), 60);
   });
 });
