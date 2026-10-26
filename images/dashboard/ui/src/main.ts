@@ -1,9 +1,10 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
-import { fetchActivity, fetchFolderDetail, fetchFolders, fetchNodes } from "./api.js";
+import { fetchActivity, fetchFolderDetail, fetchNodes } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { element } from "./dom.js";
-import { renderEmptyFolderDetail, renderFolderDetail, renderFolderNotFound } from "./folderDetail.js";
-import { renderFoldersPage } from "./foldersPage.js";
+import { folderRootPriority, renderExplorerDetail } from "./explorerDetail.js";
+import { loadExplorer, placeAtFolder, renderExplorerPage } from "./explorerPage.js";
+import { renderFolderDetail, renderFolderLoading, renderFolderNotFound } from "./folderDetail.js";
 import { isFormOpen } from "./forms.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
 import { renderNodesPage } from "./nodesPage.js";
@@ -11,7 +12,7 @@ import { renderSettingsPage, renderUpcomingPage } from "./otherPages.js";
 import { applyTheme } from "./preferences.js";
 import { onRenderRequested } from "./renderRequest.js";
 import { renderMenu } from "./shell.js";
-import { activityPageSize, appState, locationFor, readLocation, selectedItemId } from "./state.js";
+import { activityPageSize, appState, explorerLocation, locationFor, readLocation, selectedItemId } from "./state.js";
 
 const pollMilliseconds = 5000;
 
@@ -44,7 +45,7 @@ function connectionBanner(): HTMLElement | null {
 function renderPage(): HTMLElement {
   const data = appState.data;
   if (appState.page === "settings") return renderSettingsPage();
-  if (appState.page === "folders") return renderFoldersPage();
+  if (appState.page === "folders") return renderExplorerPage();
   if (appState.page === "activity") return renderActivityPage(activityActions);
   if (!data) return element("div", { className: "page loading" }, appState.loadError ? "" : "Loading nodes…");
   if (appState.page === "nodes") return renderNodesPage(data);
@@ -52,13 +53,12 @@ function renderPage(): HTMLElement {
   return renderUpcomingPage(appState.page);
 }
 
-function renderFolderPanel(): HTMLElement | null {
+function renderFolderPanel(): HTMLElement {
   const folderId = appState.selectedFolderId;
-  if (!appState.folders) return null;
-  if (!folderId) return renderEmptyFolderDetail();
+  if (!folderId) return renderExplorerDetail();
   const detail = appState.folderDetail?.summary.id === folderId ? appState.folderDetail : null;
-  const summary = appState.folders.folders.find((folder) => folder.id === folderId) ?? detail?.summary;
-  return summary ? renderFolderDetail(summary, detail) : renderFolderNotFound(folderId);
+  if (detail) return renderFolderDetail(detail.summary, detail, folderRootPriority(folderId));
+  return appState.folderDetailError ? renderFolderNotFound(folderId, appState.folderDetailError) : renderFolderLoading(folderId);
 }
 
 function renderDetail(): HTMLElement | null {
@@ -81,7 +81,7 @@ function render(): void {
   const hasSelection = hasDetail && selectedItemId() !== null && detail !== null;
   root.className = `app page-${appState.page}${hasDetail ? " with-detail" : ""}${hasSelection ? " has-selection" : ""}`;
   const regions: HTMLElement[] = [renderMenu(), element("main", { className: "main" }, connectionBanner(), renderPage())];
-  if (detail) regions.push(element("aside", { className: "detail", attributes: { "aria-label": appState.page === "folders" ? "Folder detail" : "Node detail" } }, detail));
+  if (detail) regions.push(element("aside", { className: "detail", attributes: { "aria-label": appState.page === "folders" ? "Directory detail" : "Node detail" } }, detail));
   root.replaceChildren(...regions);
   const newDetail = document.querySelector(".detail");
   if (newDetail) newDetail.scrollTop = detailScroll;
@@ -115,14 +115,23 @@ async function loadNodes(): Promise<void> {
   }
 }
 
-async function loadFolders(): Promise<void> {
+async function loadFolderDetail(): Promise<void> {
   const folderId = appState.selectedFolderId;
-  const [folders, detail] = await Promise.allSettled([fetchFolders(), folderId ? fetchFolderDetail(folderId) : Promise.resolve(null)]);
-  if (folders.status === "fulfilled") appState.folders = folders.value;
-  appState.foldersError = folders.status === "rejected" ? messageOf(folders.reason) : null;
-  if (folderId !== appState.selectedFolderId) return;
-  if (detail.status === "fulfilled") appState.folderDetail = detail.value;
-  appState.folderDetailError = detail.status === "rejected" ? messageOf(detail.reason) : null;
+  if (!folderId) return;
+  try {
+    const detail = await fetchFolderDetail(folderId);
+    if (folderId !== appState.selectedFolderId) return;
+    appState.folderDetail = detail;
+    appState.folderDetailError = null;
+  } catch (error) {
+    if (folderId === appState.selectedFolderId) appState.folderDetailError = messageOf(error);
+  }
+}
+
+async function loadFolders(): Promise<void> {
+  await Promise.all([loadExplorer(), loadFolderDetail()]);
+  const detail = appState.folderDetail;
+  if (detail?.summary.id === appState.selectedFolderId && placeAtFolder(detail.summary)) await loadExplorer();
 }
 
 async function loadActivity(): Promise<void> {
@@ -180,11 +189,22 @@ function onLocationChange(): void {
   }
   render();
   if (previousItem !== selectedItemId()) document.querySelector(".detail")?.scrollTo(0, 0);
-  if (isNewItem) void refreshPage();
+  if (appState.page === "folders") void loadPageData().then(render);
+  else if (isNewItem) void refreshPage();
+}
+
+function closeSelection(): void {
+  if (appState.page !== "folders") {
+    location.hash = locationFor(appState.page);
+    return;
+  }
+  appState.explorer.selectedPath = null;
+  if (appState.selectedFolderId) location.hash = explorerLocation(null);
+  else render();
 }
 
 function onKey(event: KeyboardEvent): void {
-  if (event.key === "Escape" && selectedItemId() && !isInUse()) location.hash = locationFor(appState.page);
+  if (event.key === "Escape" && selectedItemId() && !isInUse()) closeSelection();
 }
 
 applyTheme(appState.theme);

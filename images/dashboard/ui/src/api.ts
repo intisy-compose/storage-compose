@@ -43,7 +43,9 @@ export type {
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
-import type { ActivityResponse, ArrayAction, ArrayActionBody, FolderDetailResponse, FoldersResponse, NodesResponse } from "../../src/api/types.js";
+import type { ActivityResponse, ArrayAction, ArrayActionBody, FolderDetailResponse, FoldersResponse, NodesResponse, TreeListing } from "../../src/api/types.js";
+
+export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 
 export interface ActionResult {
   ok: boolean;
@@ -69,6 +71,11 @@ export function fetchFolders(): Promise<FoldersResponse> {
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {
   return getJson(`api/folders/${encodeURIComponent(folderId)}`);
+}
+
+export function fetchTree(node: string, path: string, page: number): Promise<TreeListing> {
+  const query = new URLSearchParams({ node, path, page: String(page) });
+  return getJson(`api/tree?${query.toString()}`);
 }
 
 export { routineActivityTypes } from "../../src/api/types.js";

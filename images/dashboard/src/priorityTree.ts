@@ -1,7 +1,7 @@
-import type { PriorityInfo } from "./api/types.js";
+import { type PriorityInfo, topDirectoryDefault } from "./api/types.js";
 import { type LayoutFolder, type SetupLayout, normaliseRelativePath, topDirectoryPath } from "./setupRepo.js";
 
-export const topDirectoryDefault = 0;
+export { topDirectoryDefault };
 
 export interface PriorityOverride {
   path: string;

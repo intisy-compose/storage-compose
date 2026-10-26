@@ -339,6 +339,8 @@ export interface PendingFolderOffer {
   receiveEncrypted: boolean;
 }
 
+export const topDirectoryDefault = 0;
+
 /**
  * One directory's priority in the tree, where the top directory is 0 unless the layout sets `.`.
  * `inheritedFrom` is the layout path of the ancestor that set `inherited` (`.` for the top

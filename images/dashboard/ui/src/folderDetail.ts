@@ -1,9 +1,10 @@
 import type { FolderCopy, FolderDetailResponse, FolderSettings, FolderSummary, FolderType, PendingFolderOffer } from "./api.js";
 import { element, keyValueList, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, formatPercent, normaliseCompletion, plural } from "./format.js";
-import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./foldersPage.js";
+import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
+import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./folderCondition.js";
 import { icon } from "./icons.js";
-import { appState, locationFor } from "./state.js";
+import { appState, explorerLocation, locationFor } from "./state.js";
 
 const typeTexts: Record<FolderType, string> = {
   sendreceive: "send and receive",
@@ -141,39 +142,40 @@ function detailHeader(summary: FolderSummary): HTMLElement {
   return element(
     "header",
     { className: "detail-header" },
-    element("a", { className: "icon-button close-detail", title: "Close", attributes: { href: locationFor("folders"), "aria-label": "Close detail" } }, icon("close")),
+    element("a", { className: "icon-button close-detail", title: "Close", attributes: { href: explorerLocation(null), "aria-label": "Close detail" } }, icon("close")),
     element("h2", {}, summary.label),
     element("p", { className: "detail-status" }, element("span", { className: `dot tone-${condition.tone}` }), `${placementText(summary)}, ${condition.label}`),
   );
 }
 
-export function renderFolderDetail(summary: FolderSummary, detail: FolderDetailResponse | null): HTMLElement {
+/** The explorer's priority of the folder's root when its row is loaded, else the setup repo's number for the folder. */
+function folderPrioritySection(summary: FolderSummary, priority: FolderRootPriority | null): HTMLElement {
+  if (priority) return prioritySection(priority.info, priority.overridesBelow);
+  return section("Priority", keyValueList([["Priority", priorityText(summary)]]));
+}
+
+export function renderFolderDetail(summary: FolderSummary, detail: FolderDetailResponse | null, priority: FolderRootPriority | null): HTMLElement {
   return element(
     "div",
     { className: "detail-inner" },
     detailHeader(summary),
-    section(
-      "Folder",
-      keyValueList([
-        ["Folder ID", element("code", {}, summary.id)],
-        ["Priority", priorityText(summary)],
-      ]),
-    ),
+    section("Folder", keyValueList([["Folder ID", element("code", {}, summary.id)]])),
+    folderPrioritySection(summary, priority),
     section(`Copies (${summary.copies.length})`, summary.copies.length ? element("div", { className: "copy-list" }, ...summary.copies.map(copyCard)) : element("p", { className: "muted" }, "No node keeps this folder yet.")),
     summary.offers.length ? section(`Offers not accepted (${summary.offers.length})`, ...summary.offers.map(offerLine)) : null,
     settingsSection(summary, detail),
   );
 }
 
-export function renderFolderNotFound(folderId: string): HTMLElement {
+export function renderFolderNotFound(folderId: string, error: string): HTMLElement {
   return element(
     "div",
     { className: "detail-inner detail-empty" },
-    element("p", {}, `No node has a folder ${folderId}, and none is offered.`),
-    element("a", { attributes: { href: locationFor("folders") } }, "Back to all folders"),
+    element("p", {}, `Folder ${folderId} could not be shown: ${error}`),
+    element("a", { attributes: { href: explorerLocation(null) } }, "Close"),
   );
 }
 
-export function renderEmptyFolderDetail(): HTMLElement {
-  return element("div", { className: "detail-inner detail-empty" }, element("p", {}, "Select a folder to see where it is kept, its offers and each node's settings."));
+export function renderFolderLoading(folderId: string): HTMLElement {
+  return element("div", { className: "detail-inner detail-empty" }, element("p", { className: "muted" }, `Reading folder ${folderId}…`));
 }
