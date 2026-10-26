@@ -54,6 +54,11 @@ const deviceIdPattern = /^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$/;
 const namePattern = /^[a-z0-9][a-z0-9-]*$/;
 const operatingSystems = ["linux", "windows", "macos"];
 
+/** A name the setup repo's layout takes as a device's section key. */
+export function isDeviceName(value: string): boolean {
+  return namePattern.test(value);
+}
+
 export function isDeviceId(value: string): boolean {
   return deviceIdPattern.test(value);
 }
@@ -80,7 +85,7 @@ export async function admitCaller(dependencies: JoinDependencies, addresses: str
 
 export function validateJoinRequest(body: unknown): JoinRequest {
   const request = (body ?? {}) as Partial<JoinRequest>;
-  if (typeof request.name !== "string" || !namePattern.test(request.name)) throw new JoinError(400, "name must match [a-z0-9-]");
+  if (typeof request.name !== "string" || !isDeviceName(request.name)) throw new JoinError(400, "name must match [a-z0-9-]");
   if (typeof request.os !== "string" || !operatingSystems.includes(request.os)) throw new JoinError(400, "os must be linux, windows or macos");
   if (typeof request.syncthingDeviceId !== "string" || !isDeviceId(request.syncthingDeviceId)) throw new JoinError(400, "syncthingDeviceId is not a Syncthing device ID");
   if (!Array.isArray(request.nodes) || request.nodes.length === 0) throw new JoinError(400, "nodes must list at least one node");

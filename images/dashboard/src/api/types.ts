@@ -439,6 +439,21 @@ export interface PendingDevice {
   time: string;
 }
 
+/**
+ * `POST /api/nodes/<nodeId>/pending/devices/<deviceId>/accept`: adds the asking device under `name`, every
+ * other setting Syncthing's default. `recordInSetup` false keeps it out of the setup repo; absent, it is recorded.
+ */
+export interface AcceptDeviceBody {
+  name: string;
+  recordInSetup?: boolean;
+}
+
+/** The accepted device as the node now has it; `setup` says what became of it in the setup repo. */
+export interface AcceptedDevice {
+  device: DeviceSettings;
+  setup: string;
+}
+
 /** A device admitted through the join API; `setup` says what became of it in the setup repo. */
 export interface JoinEntry {
   name: string;

@@ -1,4 +1,6 @@
 export type {
+  AcceptDeviceBody,
+  AcceptedDevice,
   ActivityEntry,
   ActivityLevel,
   ActivityResponse,
@@ -70,7 +72,7 @@ export type {
   WarningLevel,
 } from "../../src/api/types.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, NearbyDevice, NewDevice, FolderDetailResponse, RemoveDeviceBody, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, NearbyDevice, NewDevice, FolderDetailResponse, RemoveDeviceBody, HostSettings, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
@@ -191,6 +193,25 @@ export function addDevice(nodeId: string, device: NewDevice): Promise<SaveResult
 /** Pauses or resumes every device of the node; the answer is each of them, the node's own left out, as it now stands. */
 export function pauseNode(nodeId: string, paused: boolean): Promise<SaveResult<DeviceSettings[]>> {
   return sendWrite(nodeApiPath(nodeId, paused ? "pause" : "resume"), "POST");
+}
+
+function pendingDevicePath(nodeId: string, deviceId: string, answer: "accept" | "ignore" | "dismiss"): string {
+  return nodeApiPath(nodeId, `pending/devices/${encodeURIComponent(deviceId)}/${answer}`);
+}
+
+/** Adds the asking device under `name`; the answer is the device as the node now has it and what became of it in the setup repo. */
+export function acceptPendingDevice(nodeId: string, deviceId: string, body: AcceptDeviceBody): Promise<SaveResult<AcceptedDevice>> {
+  return sendWrite(pendingDevicePath(nodeId, deviceId, "accept"), "POST", body);
+}
+
+/** The device is not offered again, as Syncthing's own Ignore. */
+export function ignorePendingDevice(nodeId: string, deviceId: string): Promise<SaveResult<PendingDevice>> {
+  return sendWrite(pendingDevicePath(nodeId, deviceId, "ignore"), "POST");
+}
+
+/** Drops the request; the device is listed again when it next asks. */
+export function dismissPendingDevice(nodeId: string, deviceId: string): Promise<SaveResult<PendingDevice>> {
+  return sendWrite(pendingDevicePath(nodeId, deviceId, "dismiss"), "POST");
 }
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {

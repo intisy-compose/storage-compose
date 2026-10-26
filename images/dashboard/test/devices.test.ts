@@ -9,6 +9,7 @@ import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes
 import { addDevice, checkDeviceId, deviceEditText, deviceRoutes, editDevice, nearbyDevices, pauseDevice, pauseNode, readDeviceDefaults, readDeviceSettings, removeDevice } from "../src/routes/devices.js";
 import { SyncthingClient } from "../src/syncthing.js";
 import { addressProblem, changedFields, deviceChangeProblem, deviceSettings } from "../src/syncthingConfig.js";
+import { until } from "./until.js";
 
 const apiKey = "devices-test-key";
 const ownId = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
@@ -169,7 +170,7 @@ describe("a node's devices", () => {
   });
 
   beforeEach(async () => {
-    while (openRequests > 0) await new Promise((resolve) => setTimeout(resolve, 5));
+    await until(() => openRequests === 0, "the fake Syncthing to finish the last test's requests");
     writes.length = 0;
     dropAfter = null;
     failDeviceReadsAfter = null;

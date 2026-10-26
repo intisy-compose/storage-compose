@@ -336,7 +336,8 @@ async function sendQr(instance: ResolvedInstance, text: string, response: Server
   response.end(image);
 }
 
-function decodedSegment(segment: string, what: string): string {
+/** A path segment as sent, decoded; one that is not valid percent-encoding is 400. */
+export function decodedSegment(segment: string, what: string): string {
   try {
     return decodeURIComponent(segment);
   } catch {
