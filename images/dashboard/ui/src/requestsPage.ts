@@ -1,4 +1,4 @@
-import { type JoinEntry, type PendingDevice, type PendingFolderOffer, type RequestsResponse, acceptPendingDevice, deviceDisplayName, dismissPendingDevice, ignorePendingDevice, shortDeviceId } from "./api.js";
+import { type JoinEntry, type PendingDevice, type PendingFolderOffer, type RequestsResponse, acceptPendingDevice, deviceDisplayName, deviceSettingLabels, dismissPendingDevice, ignorePendingDevice, shortDeviceId } from "./api.js";
 import { button, element } from "./dom.js";
 import { formatAge, formatDate } from "./format.js";
 import { registerForm } from "./forms.js";
@@ -99,7 +99,7 @@ function nameField(device: PendingDevice, answer: DeviceAnswer): HTMLElement {
   input.value = answer.name;
   input.disabled = answer.busy;
   input.addEventListener("input", () => (answer.name = input.value));
-  return element("label", { className: "request-name", attributes: { for: id } }, element("span", {}, "Accept as"), input);
+  return element("label", { className: "request-name", attributes: { for: id } }, element("span", {}, deviceSettingLabels.name), input);
 }
 
 function recordField(device: PendingDevice, answer: DeviceAnswer): HTMLElement {
