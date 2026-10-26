@@ -478,7 +478,7 @@ describe("answering a device that asks to connect", () => {
     const server = createServer((request, response) => void handler(request, response));
     const dashboard = await listen(server);
     try {
-      const answer = await fetch(`${dashboard}/api/nodes/d7e5/pending/devices/${strangerId}/ignore`, { method: "POST" });
+      const answer = await fetch(`${dashboard}/api/nodes/d7e5/pending/devices/${strangerId}/ignore`, { method: "POST", headers: { "Content-Type": "application/json" } });
       assert.equal(answer.status, 200);
       assert.equal(((await answer.json()) as { alreadyIgnored: boolean }).alreadyIgnored, true);
       assert.deepEqual(notes, []);

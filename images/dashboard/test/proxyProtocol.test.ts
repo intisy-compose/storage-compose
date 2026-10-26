@@ -78,8 +78,8 @@ function exchange(server: Server, ...writes: Buffer[]): Promise<string> {
   });
 }
 
-function httpRequest(method: string, path: string, body = ""): Buffer {
-  return Buffer.from(`${method} ${path} HTTP/1.1\r\nHost: storage\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+function httpRequest(method: string, path: string, body = "", headers = "Content-Type: application/json\r\n"): Buffer {
+  return Buffer.from(`${method} ${path} HTTP/1.1\r\nHost: storage\r\nConnection: close\r\n${headers}Content-Length:${Buffer.byteLength(body)}\r\n\r\n${body}`);
 }
 
 describe("the join listener", () => {
@@ -114,6 +114,15 @@ describe("the join listener", () => {
       assert.match(answer, /^HTTP\/1.1 404/, `${method} ${path}`);
       assert.match(answer, /serves only POST \/api\/join/);
     }
+  });
+
+  it("refuses a join a page on another site sent through the browser, and hands it on to nothing", async () => {
+    const count = seen.length;
+    const crossSite = await exchange(server, Buffer.concat([ipv4Header(), httpRequest("POST", "/api/join", "{}", "Content-Type: application/json\r\nOrigin: https://evil.example\r\n")]));
+    assert.match(crossSite, /^HTTP\/1.1 403/);
+    const plainForm = await exchange(server, Buffer.concat([ipv4Header(), httpRequest("POST", "/api/join", "{}", "Content-Type: text/plain\r\n")]));
+    assert.match(plainForm, /^HTTP\/1.1 415/);
+    assert.equal(seen.length, count);
   });
 
   it("closes a connection without a header unanswered", async () => {

@@ -4,7 +4,7 @@ import type { ArrayAction, ArrayActionBody } from "./api/types.js";
 import { type ArrayStatus, arrayStatus } from "./arrayStatus.js";
 import { isReplacementCandidate, listBlockDevices } from "./blockDevices.js";
 import { recordDashboardActivity, refreshEventFeeds } from "./eventFeed.js";
-import { RequestError, readBody, sendJson } from "./http.js";
+import { RequestError, readBody, refuseCrossSiteWrite, sendJson } from "./http.js";
 import { fileJoinRecords } from "./join.js";
 import { invalidateLocalNodes, nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
@@ -236,6 +236,7 @@ async function runRoute(candidate: AnyRoute, context: RouteContext): Promise<Wri
 }
 
 async function route(routeList: AnyRoute[], effects: WriteEffects, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  refuseCrossSiteWrite(request);
   const url = new URL(request.url ?? "/", "http://dashboard");
   for (const candidate of routeList) {
     if (candidate.method && candidate.method !== request.method) continue;

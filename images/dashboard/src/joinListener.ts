@@ -1,6 +1,7 @@
 import { type IncomingMessage, type ServerResponse, createServer as createHttpServer } from "node:http";
 import { lookup } from "node:dns/promises";
 import { type Server, type Socket, createServer as createNetServer } from "node:net";
+import { crossSiteRefusal } from "./http.js";
 import { type ProxySource, parseProxyV2 } from "./proxyProtocol.js";
 
 export type CallerHandler = (request: IncomingMessage, response: ServerResponse, caller: ProxySource) => Promise<void>;
@@ -54,6 +55,8 @@ export function createJoinListener(handleJoin: CallerHandler, gatewayAddresses: 
     const caller = callers.get(request.socket as Socket);
     if (!caller) return void request.socket.destroy();
     if (!isJoinRequest(request)) return sendJson(response, 404, { error: "this port serves only POST /api/join" });
+    const refusal = crossSiteRefusal(request);
+    if (refusal) return sendJson(response, refusal.status, { error: refusal.message });
     handleJoin(request, response, caller).catch((error: unknown) => {
       console.error(error);
       if (!response.headersSent) sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
