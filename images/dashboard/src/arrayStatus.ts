@@ -40,7 +40,8 @@ export interface ArrayStatus {
 /**
  * @implNote The mounter rewrites the status every round while it runs and exits while the cluster's data1
  * is missing, so a status it stopped rewriting still says every drive is present long after they went.
- * A round that rescans every device can take up to the discovery poll, hence the margin above it.
+ * A round comes about every 10 s; the discovery poll is how often one also rescans every device, not how
+ * long a round takes, so a whole poll plus two minutes is a wide margin that a running mounter never misses.
  */
 const mounterSilentAfterMilliseconds = (discoveryPollSeconds + 120) * 1000;
 
