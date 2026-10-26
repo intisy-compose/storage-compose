@@ -1,6 +1,6 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
 import type { NodesResponse } from "./api.js";
-import { fetchActivity, fetchDevices, fetchFolderDetail, fetchNodes, fetchRequests } from "./api.js";
+import { fetchActivity, fetchDevices, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
 import { element } from "./dom.js";
@@ -12,10 +12,10 @@ import { isFormOpen } from "./forms.js";
 import { renderItemNotFound } from "./itemNotFound.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
 import { renderNodesPage } from "./nodesPage.js";
-import { renderSettingsPage } from "./otherPages.js";
 import { applyTheme } from "./preferences.js";
 import { onRenderRequested } from "./renderRequest.js";
 import { renderRequestsPage } from "./requestsPage.js";
+import { localNodes, renderSettingsPage } from "./settingsPage.js";
 import { renderMenu } from "./shell.js";
 import { activityPageSize, appState, explorerLocation, locationFor, readLocation, selectedItemId } from "./state.js";
 
@@ -186,16 +186,40 @@ async function loadRequests(): Promise<void> {
   }
 }
 
-/** The current page's own data besides the nodes every page shows in its menu. */
-async function loadPageData(): Promise<void> {
+async function loadHostSettings(): Promise<void> {
+  try {
+    appState.hostSettings = await fetchHostSettings();
+    appState.hostSettingsError = null;
+  } catch (error) {
+    appState.hostSettingsError = messageOf(error);
+  }
+}
+
+async function loadNodeOptions(nodeId: string): Promise<void> {
+  try {
+    appState.nodeOptions.set(nodeId, await fetchNodeOptions(nodeId));
+  } catch (error) {
+    appState.nodeOptions.set(nodeId, { error: messageOf(error) });
+  }
+}
+
+/** @implNote Waits for the nodes, as they say which nodes are this host's. */
+async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
+  await Promise.all([loadHostSettings(), nodesLoaded.then(() => Promise.all(localNodes().map((node) => loadNodeOptions(node.id))))]);
+}
+
+/** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */
+async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Promise<void> {
   if (appState.page === "nodes") await loadDevices();
   if (appState.page === "folders") await loadFolders();
   if (appState.page === "activity") await loadActivity();
   if (appState.page === "requests") await loadRequests();
+  if (appState.page === "settings") await loadSettings(nodesLoaded);
 }
 
 async function poll(): Promise<void> {
-  await Promise.all([loadNodes(), loadPageData()]);
+  const nodesLoaded = loadNodes();
+  await Promise.all([nodesLoaded, loadPageData(nodesLoaded)]);
   if (!isInUse()) render();
 }
 

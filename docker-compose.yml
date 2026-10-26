@@ -95,6 +95,8 @@ services:
       STORAGE_PEERS: ${STORAGE_PEERS:-}
       TAILNET_PROXY: http://gateway:1055
       JOIN_ALLOWED_USERS: ${JOIN_ALLOWED_USERS:-}
+      NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
       SETUP_REPO_DIR: ${SETUP_REPO_DIR:-./data}
       SETUP_LAYOUT: ${SETUP_LAYOUT:-drive-sync.toml}
       GIT_CONFIG_COUNT: 1

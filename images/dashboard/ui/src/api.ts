@@ -25,13 +25,17 @@ export type {
   FolderSummary,
   FoldersResponse,
   FolderType,
+  HostSettings,
   InstanceConnection,
+  InstanceGui,
+  InstanceOptions,
   JoinEntry,
   MemberSmart,
   NodeArray,
   NodeEntryState,
   NodeFolder,
   NodeKind,
+  NodeOptionsResponse,
   NodesResponse,
   NodeSync,
   Parity,
@@ -39,6 +43,7 @@ export type {
   PendingDevice,
   PendingFolderOffer,
   PresenceWindow,
+  PriorityBand,
   PriorityInfo,
   Peer,
   RemoteState,
@@ -56,7 +61,7 @@ export type {
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
-import type { ActivityResponse, ArrayAction, ArrayActionBody, DevicesResponse, FolderDetailResponse, NodesResponse, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { ActivityResponse, ArrayAction, ArrayActionBody, DevicesResponse, FolderDetailResponse, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
@@ -87,6 +92,14 @@ export function fetchDevices(): Promise<DevicesResponse> {
 
 export function fetchRequests(): Promise<RequestsResponse> {
   return getJson("api/requests");
+}
+
+export function fetchHostSettings(): Promise<HostSettings> {
+  return getJson("api/settings");
+}
+
+export function fetchNodeOptions(nodeId: string): Promise<NodeOptionsResponse> {
+  return getJson(`api/nodes/${encodeURIComponent(nodeId)}/options`);
 }
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {

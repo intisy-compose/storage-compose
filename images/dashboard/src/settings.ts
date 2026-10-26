@@ -29,6 +29,10 @@ export const candidateTransports = list(process.env.CANDIDATE_TRANSPORTS ?? "usb
 export const anyArrayLabelPattern = new RegExp(`^([0-9a-f]{4}|${clusterArrayId})-((data|parity)\\d+)$`);
 /** Other hosts' dashboards, read for their nodes, e.g. https://storage-p53.tailnet.ts.net. */
 export const peerDashboards = list(process.env.STORAGE_PEERS);
+/** Where the mounter sends notifications; the dashboard shows it on Settings. */
+export const ntfyUrl = process.env.NTFY_URL ?? "";
+/** @implNote Only whether a topic is set: the topic itself lets anyone read the notifications. */
+export const ntfyTopicSet = Boolean(process.env.NTFY_TOPIC);
 /** An HTTP proxy into the tailnet: tailscale runs in userspace, so only it reaches tailnet addresses. */
 export const tailnetProxy = process.env.TAILNET_PROXY ?? "";
 export const tailscaleSocket = process.env.TAILSCALE_SOCKET ?? "/var/run/tailscale/tailscaled.sock";

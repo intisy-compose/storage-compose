@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import type { PriorityBand } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { setupLayoutPath, setupRepoDirectory } from "./settings.js";
 import { type TomlTable, parseToml } from "./toml.js";
@@ -28,6 +29,13 @@ export interface SetupRecordResult {
 
 /** The layered sync's reading of C-30's categories. */
 const categoryPriority: Record<string, number> = { synced: 80, archive: 30, local: 0 };
+
+/** The categories as priority bands, highest first. */
+export function categoryBands(): PriorityBand[] {
+  return Object.entries(categoryPriority)
+    .map(([name, from]) => ({ name, from }))
+    .sort((left, right) => right.from - left.from);
+}
 
 /** @implNote The same derivation as drive-sync's `folder_id`; Syncthing matches folders across devices by it. */
 export function folderId(relativePath: string): string {

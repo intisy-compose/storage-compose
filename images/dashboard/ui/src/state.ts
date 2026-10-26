@@ -1,4 +1,4 @@
-import type { ActivityFilters, ActivityResponse, DevicesResponse, FolderDetailResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, DevicesResponse, FolderDetailResponse, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -73,6 +73,10 @@ export interface AppState {
   activityLimit: number;
   requests: RequestsResponse | null;
   requestsError: string | null;
+  hostSettings: HostSettings | null;
+  hostSettingsError: string | null;
+  /** Each local node's options by node ID, or why they could not be read. */
+  nodeOptions: Map<string, NodeOptionsResponse | { error: string }>;
 }
 
 export const activityPageSize = 300;
@@ -107,6 +111,9 @@ export const appState: AppState = {
   activityLimit: activityPageSize,
   requests: null,
   requestsError: null,
+  hostSettings: null,
+  hostSettingsError: null,
+  nodeOptions: new Map(),
 };
 
 const pages: PageId[] = ["nodes", "folders", "attention", "activity", "requests", "settings"];

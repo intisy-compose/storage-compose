@@ -453,6 +453,60 @@ export interface RequestsResponse {
   unreadable: { name: string; reason: string }[];
 }
 
+/** A node's Syncthing options in our names; `deviceName` is the node's own device entry, not an option. Rates are KiB/s, 0 unlimited. */
+export interface InstanceOptions {
+  deviceName: string;
+  listenAddresses: string[];
+  globalAnnounceEnabled: boolean;
+  localAnnounceEnabled: boolean;
+  globalAnnounceServers: string[];
+  relaysEnabled: boolean;
+  natEnabled: boolean;
+  maxSendKbps: number;
+  maxRecvKbps: number;
+  limitBandwidthInLan: boolean;
+  minHomeDiskFree: { value: number; unit: string };
+  /** Syncthing's usage reporting: -1 declined, 0 not asked yet, otherwise the accepted version. */
+  urAccepted: number;
+  crashReportingEnabled: boolean;
+  reconnectionIntervalS: number;
+  alwaysLocalNets: string[];
+}
+
+/** A node's Syncthing GUI, which the stack sets up; never its password or API key. */
+export interface InstanceGui {
+  address: string;
+  useTLS: boolean;
+  authMode: string;
+  user: string;
+  managedBy: "stack";
+}
+
+/** `GET /api/nodes/<nodeId>/options`. */
+export interface NodeOptionsResponse {
+  options: InstanceOptions;
+  gui: InstanceGui;
+}
+
+/** A priority band of the layout: priorities from `from` up to the next band belong to `name`. */
+export interface PriorityBand {
+  name: string;
+  from: number;
+}
+
+/** `GET /api/settings`: this host's identity and the settings config.env gives its dashboard. */
+export interface HostSettings {
+  name: string;
+  /** Null until `up` has joined the tailnet and written the name. */
+  tailnetName: string | null;
+  peerDashboards: string[];
+  /** Whether a topic is set, never the topic: anyone who knows it can read the notifications. */
+  ntfy: { url: string; topicSet: boolean };
+  /** The setup repo's folder categories, which the layout turns into priorities while the layered sync sets no bands of its own. */
+  priorityBands: PriorityBand[];
+  setupRepo: boolean;
+}
+
 export const topDirectoryDefault = 0;
 
 /**
