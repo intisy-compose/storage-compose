@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { deviceDisplayName } from "./api/deviceText.js";
 import type { ConnectionKind, Peer, StorageNode } from "./api/types.js";
 import { closestKind } from "./connectionKind.js";
 import { hostName, seenDirectory, seenWriteIntervalSeconds } from "./settings.js";
@@ -108,7 +109,7 @@ function thisHostRecord(previous: DeviceSeen | undefined, localNodes: ReadonlyMa
 }
 
 function peerRecord(deviceId: string, previous: DeviceSeen | undefined, sightings: Sighting[], now: Date): DeviceSeen {
-  const name = sightings.find((sighting) => sighting.peer.name)?.peer.name || previous?.name || deviceId.slice(0, 7);
+  const name = deviceDisplayName(sightings.find((sighting) => sighting.peer.name.trim())?.peer.name || previous?.name, deviceId);
   const base = { key: deviceId, name, deviceIds: [deviceId], nodeByDeviceId: {} };
   const connected = sightings.filter((sighting) => sighting.peer.connected && sighting.peer.connectionKind);
   const kind = closestKind(connected.map((sighting) => sighting.peer.connectionKind!));

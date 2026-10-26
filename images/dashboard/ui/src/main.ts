@@ -1,8 +1,10 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
 import type { NodesResponse } from "./api.js";
-import { fetchActivity, fetchDevices, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests } from "./api.js";
+import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests, savedWriteCount } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
+import { loadAddDeviceForm, renderAddDeviceForm } from "./addDeviceForm.js";
+import { renderDeviceForm } from "./deviceForm.js";
 import { element } from "./dom.js";
 import { renderDriveDetail } from "./driveDetail.js";
 import { folderRootPriority, renderExplorerDetail } from "./explorerDetail.js";
@@ -13,9 +15,9 @@ import { renderItemNotFound } from "./itemNotFound.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
 import { renderNodesPage } from "./nodesPage.js";
 import { applyTheme } from "./preferences.js";
-import { skipWhileRunning } from "./pollGuard.js";
-import { onRenderRequested } from "./renderRequest.js";
-import { renderRequestsPage } from "./requestsPage.js";
+import { coalesceWhileRunning, readUntilSettled } from "./pollGuard.js";
+import { onRefreshRequested, onRenderRequested } from "./renderRequest.js";
+import { forgetLastAnswer, renderRequestsPage } from "./requestsPage.js";
 import { readableLocalNodes, renderSettingsPage } from "./settingsPage.js";
 import { renderMenu } from "./shell.js";
 import { activityPageSize, appState, explorerLocation, locationFor, readLocation, selectedItemId } from "./state.js";
@@ -88,6 +90,8 @@ function renderDetail(): HTMLElement | null {
   const devicePanel = renderDevicesPanel(data);
   if (devicePanel) return devicePanel;
   const node = data.nodes.find((candidate) => candidate.id === appState.selectedNodeId);
+  if (node && appState.deviceForm) return renderDeviceForm(node, appState.deviceForm);
+  if (node && appState.addDeviceForm) return renderAddDeviceForm(node, appState.addDeviceForm);
   return node ? renderNodeDetail(data, node) : renderEmptyDetail(data);
 }
 
@@ -127,9 +131,14 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** An answer that started before a write was saved is read again, so a row the write changed never flicks back to how it was. */
+function readAfterSavedWrites<T>(read: () => Promise<T>): Promise<T> {
+  return readUntilSettled(read, savedWriteCount);
+}
+
 async function loadNodes(): Promise<void> {
   try {
-    appState.data = await fetchNodes();
+    appState.data = await readAfterSavedWrites(fetchNodes);
     appState.lastLoaded = Date.now();
     appState.loadError = null;
   } catch (error) {
@@ -139,11 +148,34 @@ async function loadNodes(): Promise<void> {
 
 async function loadDevices(): Promise<void> {
   try {
-    appState.devices = await fetchDevices();
+    appState.devices = await readAfterSavedWrites(fetchDevices);
     appState.devicesError = null;
   } catch (error) {
     appState.devicesError = messageOf(error);
   }
+}
+
+/** Reads the device once per opening, so a later read never moves what the form's changes are measured against. */
+async function loadDeviceForm(): Promise<void> {
+  const form = appState.deviceForm;
+  if (!form || form.saved) return;
+  try {
+    const settings = await fetchDeviceSettings(form.nodeId, form.deviceId);
+    if (form !== appState.deviceForm || form.saved) return;
+    form.saved = settings;
+    form.draft = structuredClone(settings);
+    form.loadError = null;
+  } catch (error) {
+    form.loadError = messageOf(error);
+  }
+}
+
+/** @implNote Waits for the nodes, as they say whether the form's node is this host's. */
+async function loadAddDevice(nodesLoaded: Promise<void>): Promise<void> {
+  const form = appState.addDeviceForm;
+  if (!form) return;
+  await nodesLoaded;
+  await loadAddDeviceForm(form, appState.data?.nodes.find((node) => node.id === form.nodeId));
 }
 
 async function loadFolderDetail(): Promise<void> {
@@ -180,7 +212,7 @@ async function loadActivity(): Promise<void> {
 
 async function loadRequests(): Promise<void> {
   try {
-    appState.requests = await fetchRequests();
+    appState.requests = await readAfterSavedWrites(fetchRequests);
     appState.requestsError = null;
   } catch (error) {
     appState.requestsError = messageOf(error);
@@ -211,14 +243,14 @@ async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
 
 /** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */
 async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Promise<void> {
-  if (appState.page === "nodes") await loadDevices();
+  if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm(), loadAddDevice(nodesLoaded)]);
   if (appState.page === "folders") await loadFolders();
   if (appState.page === "activity") await loadActivity();
   if (appState.page === "requests") await loadRequests();
   if (appState.page === "settings") await loadSettings(nodesLoaded);
 }
 
-const poll = skipWhileRunning(async () => {
+const poll = coalesceWhileRunning(async () => {
   const nodesLoaded = loadNodes();
   await Promise.all([nodesLoaded, loadPageData(nodesLoaded)]);
   if (!isInUse()) render();
@@ -246,6 +278,7 @@ function onLocationChange(): void {
   const previousItem = selectedItemId();
   const previousPage = appState.page;
   readLocation();
+  if (previousPage === "requests" && appState.page !== "requests") forgetLastAnswer();
   const isNewItem = previousItem !== selectedItemId() || previousPage !== appState.page;
   if (isNewItem) {
     appState.openForm = null;
@@ -276,6 +309,7 @@ function onKey(event: KeyboardEvent): void {
 applyTheme(appState.theme);
 readLocation();
 onRenderRequested(render);
+onRefreshRequested(() => void poll());
 window.addEventListener("hashchange", onLocationChange);
 window.addEventListener("keydown", onKey);
 render();

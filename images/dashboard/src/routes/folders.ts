@@ -8,10 +8,7 @@ import { readLayout } from "../setupRepo.js";
 
 async function fromEveryPeer(path: string): Promise<unknown[]> {
   const answers = await Promise.allSettled(
-    peerDashboards.map((peer) => {
-      const dashboardUrl = peer.replace(/\/$/, "");
-      return readDashboard(dashboardUrl, new URL(dashboardUrl).hostname, path);
-    }),
+    peerDashboards.map((dashboardUrl) => readDashboard(dashboardUrl, new URL(dashboardUrl).hostname, path)),
   );
   return answers.flatMap((answer) => (answer.status === "fulfilled" ? [answer.value] : []));
 }

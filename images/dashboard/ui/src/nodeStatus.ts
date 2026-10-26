@@ -1,4 +1,4 @@
-import { type ArrayMember, type MemberSmart, type NodesResponse, type StorageNode, type Warning, isReachable } from "./api.js";
+import { type ArrayMember, type MemberSmart, type NodesResponse, type StorageNode, type Warning, deviceDisplayName, isNodePaused, isReachable } from "./api.js";
 import { formatAge, formatPercent, normaliseCompletion, usedFraction } from "./format.js";
 
 export type Tone = "ok" | "warn" | "bad" | "muted" | "accent";
@@ -40,7 +40,7 @@ export function failedItems(node: StorageNode): number {
 export function waitingForNames(response: NodesResponse, node: StorageNode): string[] {
   const names = (node.sync.waitingFor ?? []).map((deviceId) => {
     const known = response.nodes.find((candidate) => candidate.syncthing?.deviceId === deviceId);
-    return known?.name ?? node.peers.find((peer) => peer.deviceId === deviceId)?.name ?? deviceId.slice(0, 7);
+    return known?.name ?? deviceDisplayName(node.peers.find((peer) => peer.deviceId === deviceId)?.name, deviceId);
   });
   return [...new Set(names)];
 }
@@ -65,6 +65,7 @@ function onlineOrOfflineState(node: StorageNode, response?: NodesResponse): Shor
   if (isArrayAbsent(node)) return { symbol: "", label: node.sync.lastSeen ? `not connected, ${formatAge(node.sync.lastSeen)}` : "not connected", tone: "muted" };
   if (isOffline(node)) return { symbol: "", label: formatAge(node.sync.lastSeen), tone: "muted" };
   if (node.sync.state === "error") return { symbol: "!", label: "error", tone: "bad" };
+  if (isNodePaused(node)) return { symbol: "‖", label: "paused", tone: "warn" };
   if (node.sync.state === "unknown") return { symbol: "?", label: "completion unavailable", tone: "muted" };
   if (node.sync.state === "syncing") {
     return { symbol: transferSymbol(node), label: formatPercent(normaliseCompletion(node.sync.completion)), tone: "accent" };

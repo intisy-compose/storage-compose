@@ -190,7 +190,10 @@ login. Its tests read `tests/fixtures/drive-sync.toml`, never a real list:
 Tailscale serve forwards the tailnet ports straight into the stack: 443 (dashboard and join API), 445 (Samba),
 22000 (Syncthing sync), 22001 to 22008 (the node Syncthings) and 51515 (Kopia). The host itself
 reaches the dashboard at `http://localhost:8442` and the Syncthing GUI at `http://localhost:8443`,
-both published on 127.0.0.1; the GUI is not on the tailnet. The logins are generated once and kept on the cluster's `data1`, so every host that
+both published on 127.0.0.1; the GUI is not on the tailnet. The dashboard answers only requests
+addressed to `localhost`, `127.0.0.1`, `[::1]`, its `ts.net` name or a name in
+`DASHBOARD_EXTRA_HOSTS`, and any other name gets 421, so a site that points its own name at
+127.0.0.1 cannot read or change it. The logins are generated once and kept on the cluster's `data1`, so every host that
 runs the array presents the same ones; `credentials` prints them.
 
 - **Samba**: user `storage`. The share hides the stack's own folders (`.storage`, `kopia`,

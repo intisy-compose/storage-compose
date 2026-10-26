@@ -1,4 +1,4 @@
-import type { FolderCopy, FolderDetailResponse, FolderSettings, FolderSummary, FolderType, PendingFolderOffer } from "./api.js";
+import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type FolderType, type PendingFolderOffer, deviceDisplayName } from "./api.js";
 import { element, keyValueList, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, formatPercent, normaliseCompletion, plural } from "./format.js";
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
@@ -101,7 +101,7 @@ function settingsRows(settings: FolderSettings, names: Map<string, string>): [st
     ["Sync ownership", onOff(settings.syncOwnership)],
     ["Sync extended attributes", onOff(settings.syncXattrs)],
     ["Versioning", versioningText(settings)],
-    ["Devices", settings.devices.map((device) => `${names.get(device.deviceId) ?? device.deviceId.slice(0, 7)}${device.encrypted ? " (encrypted)" : ""}`).join(", ")],
+    ["Devices", settings.devices.map((device) => `${deviceDisplayName(names.get(device.deviceId), device.deviceId)}${device.encrypted ? " (encrypted)" : ""}`).join(", ")],
   ];
 }
 

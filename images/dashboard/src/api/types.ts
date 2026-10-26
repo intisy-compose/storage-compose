@@ -300,6 +300,7 @@ export type WarningKind =
   | "pending-folder"
   | "offline"
   | "full"
+  | "paused"
   | "conflicts"
   | "other";
 
@@ -438,6 +439,26 @@ export interface PendingDevice {
   time: string;
 }
 
+/**
+ * `POST /api/nodes/<nodeId>/pending/devices/<deviceId>/accept`: adds the asking device under `name`, every
+ * other setting Syncthing's default. `recordInSetup` false keeps it out of the setup repo; absent, it is recorded.
+ */
+export interface AcceptDeviceBody {
+  name: string;
+  recordInSetup?: boolean;
+}
+
+/** `POST .../pending/devices/<deviceId>/ignore`: the offer that was ignored; `alreadyIgnored` when the node had it ignored already and nothing was written. */
+export interface IgnoredDevice extends PendingDevice {
+  alreadyIgnored: boolean;
+}
+
+/** The accepted device as the node now has it; `setup` says what became of it in the setup repo. */
+export interface AcceptedDevice {
+  device: DeviceSettings;
+  setup: string;
+}
+
 /** A device admitted through the join API; `setup` says what became of it in the setup repo. */
 export interface JoinEntry {
   name: string;
@@ -489,6 +510,69 @@ export interface InstanceGui {
 export interface NodeOptionsResponse {
   options: InstanceOptions;
   gui: InstanceGui;
+}
+
+export type DeviceCompression = "metadata" | "always" | "never";
+
+/** `GET /api/nodes/<nodeId>/devices/<deviceId>`: one device as that node's Syncthing has it configured. */
+export interface DeviceSettings {
+  deviceId: string;
+  name: string;
+  /** `dynamic`, or `tcp://`, `quic://` and `relay://` addresses. */
+  addresses: string[];
+  compression: DeviceCompression;
+  introducer: boolean;
+  autoAcceptFolders: boolean;
+  paused: boolean;
+  untrusted: boolean;
+  allowedNetworks: string[];
+  /** 0 is unlimited. */
+  maxSendKbps: number;
+  maxRecvKbps: number;
+  /** 0 lets Syncthing choose. */
+  numConnections: number;
+}
+
+/** `PATCH /api/nodes/<nodeId>/devices/<deviceId>`: only the fields the person changed. */
+export type DeviceSettingsChange = Partial<Omit<DeviceSettings, "deviceId">>;
+
+/**
+ * `POST /api/nodes/<nodeId>/devices`: the new device's ID and only the settings that differ from the
+ * node's Syncthing defaults (`GET /api/nodes/<nodeId>/device-defaults`), which fill the rest.
+ */
+export interface NewDevice extends DeviceSettingsChange {
+  deviceId: string;
+  /** The node's folders to share with the device; none by default. */
+  shareFolders?: string[];
+}
+
+/** The answer to `POST /api/nodes/<nodeId>/devices`: the device as now configured and which folders were shared with it. */
+export interface AddedDevice {
+  device: DeviceSettings;
+  shared: string[];
+  /** A folder whose share failed after the device was added, with why. */
+  notShared: { folderId: string; problem: string }[];
+}
+
+/**
+ * `DELETE /api/nodes/<nodeId>/devices/<deviceId>`: the device's name as the dashboard shows it, typed to confirm.
+ * The answer is the device as it was configured. The node's own device cannot be removed (409).
+ */
+export interface RemoveDeviceBody {
+  confirm: string;
+}
+
+/** `GET /api/nodes/<nodeId>/nearby`: a device the node's Syncthing found by discovery and has not configured. */
+export interface NearbyDevice {
+  deviceId: string;
+  addresses: string[];
+}
+
+/** `GET /api/nodes/<nodeId>/device-id-check?id=`: the ID as Syncthing reads it, or why it cannot be added to the node. */
+export interface DeviceIdCheck {
+  /** Null when Syncthing does not read it as a device ID. */
+  deviceId: string | null;
+  problem: string | null;
 }
 
 /** A priority band of the layout: priorities from `from` up to the next band belong to `name`. */

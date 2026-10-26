@@ -1,6 +1,8 @@
 import { type IncomingMessage, type ServerResponse, createServer as createHttpServer } from "node:http";
 import { lookup } from "node:dns/promises";
 import { type Server, type Socket, createServer as createNetServer } from "node:net";
+import { type HostAllowlist, crossSiteRefusal, hostAllowlist, hostRefusal } from "./http.js";
+import { dashboardHosts } from "./settings.js";
 import { type ProxySource, parseProxyV2 } from "./proxyProtocol.js";
 
 export type CallerHandler = (request: IncomingMessage, response: ServerResponse, caller: ProxySource) => Promise<void>;
@@ -48,12 +50,16 @@ function isJoinRequest(request: IncomingMessage): boolean {
  * address from tailscale's own header. The address is resolved per connection because the gateway gets a new one
  * whenever it is recreated.
  */
-export function createJoinListener(handleJoin: CallerHandler, gatewayAddresses: GatewayResolver): Server {
+export function createJoinListener(handleJoin: CallerHandler, gatewayAddresses: GatewayResolver, hosts: HostAllowlist = hostAllowlist(dashboardHosts)): Server {
   const callers = new WeakMap<Socket, ProxySource>();
   const http = createHttpServer((request, response) => {
     const caller = callers.get(request.socket as Socket);
     if (!caller) return void request.socket.destroy();
+    const misdirected = hostRefusal(request, hosts);
+    if (misdirected) return sendJson(response, misdirected.status, { error: misdirected.message });
     if (!isJoinRequest(request)) return sendJson(response, 404, { error: "this port serves only POST /api/join" });
+    const refusal = crossSiteRefusal(request);
+    if (refusal) return sendJson(response, refusal.status, { error: refusal.message });
     handleJoin(request, response, caller).catch((error: unknown) => {
       console.error(error);
       if (!response.headersSent) sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });

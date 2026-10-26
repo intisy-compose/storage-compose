@@ -1,3 +1,4 @@
+import { deviceDisplayName } from "./api/deviceText.js";
 import { type ActivityEntry, type ActivityLevel, type ActivityResponse, type ActivitySource, type ParityJob, routineActivityTypes } from "./api/types.js";
 import { arrayIds, arrayStatus } from "./arrayStatus.js";
 import { localInstances } from "./instanceResolver.js";
@@ -150,10 +151,11 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function deviceName(context: EventContext, deviceId: unknown): string {
+/** The name the event itself reports first, then the configured one, then the short ID. */
+function deviceName(context: EventContext, deviceId: unknown, reported?: unknown): string {
   const id = text(deviceId);
   const known = context.deviceNames.get(id) ?? [...context.deviceNames].find(([fullId]) => fullId.startsWith(`${id}-`))?.[1];
-  return known || id.slice(0, 7) || "a device";
+  return id ? deviceDisplayName(text(reported).trim() ? text(reported) : known, id) : "a device";
 }
 
 function folderName(context: EventContext, folderId: unknown, label?: unknown): string {
@@ -218,7 +220,7 @@ function pendingDevices(context: EventContext, data: EventData): Described | nul
   const added = (Array.isArray(data.added) ? data.added : []) as { deviceID?: unknown; name?: unknown }[];
   const removed = (Array.isArray(data.removed) ? data.removed : []) as { deviceID?: unknown }[];
   const parts = [
-    ...added.map((device) => `${text(device.name) || deviceName(context, device.deviceID)} asks to connect`),
+    ...added.map((device) => `${deviceName(context, device.deviceID, device.name)} asks to connect`),
     ...removed.map((device) => `${deviceName(context, device.deviceID)} no longer asks to connect`),
   ];
   return parts.length ? { folderId: null, type: "pending-devices", level: "info", text: parts.join("; ") } : null;

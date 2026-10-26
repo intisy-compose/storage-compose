@@ -34,6 +34,8 @@ services:
   dashboard:
     image: storage-dashboard:c24test
     container_name: c24t-dashboard
+    environment:
+      DASHBOARD_EXTRA_HOSTS: dashboard
 
   kopia:
     image: storage-kopia:c24test

@@ -1,3 +1,4 @@
+import { deviceDisplayName } from "./api/deviceText.js";
 import type { ConnectionKind, DeviceSource, DeviceSummary, DevicesResponse, DriveRecord, DriveSummary, InstanceConnection, Peer, StorageNode } from "./api/types.js";
 import { closestKind } from "./connectionKind.js";
 import { mergeDriveRecords } from "./driveHistory.js";
@@ -182,7 +183,7 @@ function summary(device: DeviceDraft): DeviceSummary {
   const connection = device.thisHost ? null : currentConnection(device.reach);
   return {
     key: device.key,
-    name: device.name ?? device.key.slice(0, 7),
+    name: deviceDisplayName(device.name, device.key),
     thisHost: device.thisHost,
     online: device.thisHost || device.dashboardAnswered || connection !== null,
     connection,

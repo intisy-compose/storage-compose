@@ -37,8 +37,12 @@ export const defaultResolverSources: ResolverSources = {
   otherHostNodes: () => otherHostNodes(fileJoinRecords(joinsFile)),
 };
 
+/** Where this host knows a node from: the mounter's arrays, the registry the mounter and nodes service write, or the Windows host agent. */
+export type LocalNodeSource = "array" | "registry" | "host-agent";
+
 interface LocalNode {
   nodeId: string;
+  source: LocalNodeSource;
   name: string;
   root: string | null;
   os: LocalInstance["os"];
@@ -54,6 +58,7 @@ async function arrayNode(nodeId: string, sources: ResolverSources): Promise<Loca
   if (!status && nodeId !== clusterArrayId) return null;
   return {
     nodeId,
+    source: "array",
     name: status?.name ?? nodeId,
     root: poolPath(nodeId),
     os: "linux",
@@ -65,10 +70,11 @@ async function arrayNode(nodeId: string, sources: ResolverSources): Promise<Loca
 }
 
 async function registryNodes(sources: ResolverSources): Promise<LocalNode[]> {
-  const fromStatus = (await statusRegistryEntries(sources.registryDirectory)).map((entry) => ({ entry, os: "linux" as const }));
-  const fromAgent = agentEntries(await readHeartbeat(sources.heartbeatPath)).map((entry) => ({ entry, os: "windows" as const }));
-  return [...fromStatus, ...fromAgent].map(({ entry, os }) => ({
+  const fromStatus = (await statusRegistryEntries(sources.registryDirectory)).map((entry) => ({ entry, os: "linux" as const, source: "registry" as const }));
+  const fromAgent = agentEntries(await readHeartbeat(sources.heartbeatPath)).map((entry) => ({ entry, os: "windows" as const, source: "host-agent" as const }));
+  return [...fromStatus, ...fromAgent].map(({ entry, os, source }) => ({
     nodeId: entry.id,
+    source,
     name: entry.name,
     root: entry.root || null,
     os,
@@ -91,6 +97,7 @@ async function toInstance(node: LocalNode): Promise<LocalInstance | null> {
 /** A node of this host whether or not its Syncthing can be addressed; `instance` is null while it cannot. */
 export interface LocalNodeInfo {
   nodeId: string;
+  source: LocalNodeSource;
   name: string;
   root: string | null;
   os: LocalInstance["os"];
@@ -100,7 +107,7 @@ export interface LocalNodeInfo {
 }
 
 async function toInfo(local: LocalNode): Promise<LocalNodeInfo> {
-  return { nodeId: local.nodeId, name: local.name, root: local.root, os: local.os, threshold: local.threshold, present: local.present, instance: await toInstance(local) };
+  return { nodeId: local.nodeId, source: local.source, name: local.name, root: local.root, os: local.os, threshold: local.threshold, present: local.present, instance: await toInstance(local) };
 }
 
 /** Every node of this host, the cluster first: each array, the cluster, registry entries and host agent nodes. */

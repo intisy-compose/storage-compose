@@ -1,4 +1,4 @@
-import type { ConnectionKind, DeviceSummary, DriveSummary, StorageNode } from "./types.js";
+import type { ConnectionKind, DeviceSettingsChange, DeviceSummary, DriveSummary, StorageNode } from "./types.js";
 
 export type ReachTone = "ok" | "muted";
 
@@ -33,6 +33,39 @@ function addressParts(address: string): AddressParts {
 /** The host of `tcp://host:port`, `host:port`, `[ipv6]:port`, a bare IPv4 or IPv6 address, or a relay URL. */
 export function addressHost(address: string): string {
   return addressParts(address).host;
+}
+
+/** A node of this host that syncs with no device, every one of them paused, until it is resumed. */
+export function isNodePaused(node: StorageNode): boolean {
+  return node.local && node.peers.length > 0 && node.peers.every((peer) => peer.paused);
+}
+
+/** The device form's label of each setting; refusals and Activity entries name a setting the same way. */
+export const deviceSettingLabels: Record<keyof DeviceSettingsChange, string> = {
+  name: "Name",
+  addresses: "Addresses",
+  compression: "Compression",
+  introducer: "Introducer",
+  autoAcceptFolders: "Accept folders automatically",
+  paused: "Paused",
+  untrusted: "Untrusted",
+  allowedNetworks: "Allowed networks",
+  maxSendKbps: "Send limit",
+  maxRecvKbps: "Receive limit",
+  numConnections: "Connections",
+};
+
+/** The add form's choice of the node's folders to share with the new device. */
+export const shareFoldersLabel = "Share these folders";
+
+/** The first group of a device ID, as Syncthing's own page shortens it. */
+export function shortDeviceId(deviceId: string): string {
+  return deviceId.slice(0, 7);
+}
+
+/** A device's name, or its short ID while the name is empty, so a nameless device never shows blank. */
+export function deviceDisplayName(name: string | null | undefined, deviceId: string): string {
+  return name?.trim() ? name : shortDeviceId(deviceId);
 }
 
 export function connectionKindText(kind: ConnectionKind): string {

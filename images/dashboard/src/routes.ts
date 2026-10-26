@@ -4,17 +4,18 @@ import type { ArrayAction, ArrayActionBody } from "./api/types.js";
 import { type ArrayStatus, arrayStatus } from "./arrayStatus.js";
 import { isReplacementCandidate, listBlockDevices } from "./blockDevices.js";
 import { recordDashboardActivity, refreshEventFeeds } from "./eventFeed.js";
-import { RequestError, readBody, sendJson } from "./http.js";
+import { type HostAllowlist, RequestError, hostAllowlist, hostRefusal, readBody, refuseCrossSiteWrite, sendJson } from "./http.js";
 import { fileJoinRecords } from "./join.js";
-import { nodesResponse } from "./nodes.js";
+import { invalidateLocalNodes, nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
 import { activityRoutes } from "./routes/activity.js";
 import { deviceIndexRoutes } from "./routes/deviceIndex.js";
+import { deviceRoutes } from "./routes/devices.js";
 import { folderRoutes } from "./routes/folders.js";
 import { optionsRoutes } from "./routes/options.js";
 import { pendingRoutes } from "./routes/pending.js";
 import { treeRoutes } from "./routes/tree.js";
-import { arrayStatusDirectory, clusterArrayId, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
+import { arrayStatusDirectory, clusterArrayId, dashboardHosts, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
 import { SyncthingError, SyncthingUnavailable } from "./syncthing.js";
 
 export const joinRecords = fileJoinRecords(joinsFile);
@@ -27,12 +28,70 @@ export interface RouteContext {
   params: string[];
 }
 
-export interface Route {
-  /** Any method when absent. */
-  method?: string;
+/** What a write changed, in words, for Activity: `pc: renamed device dashboard-test-peer to backup`. */
+export interface WriteNote {
+  nodeId: string;
+  nodeName: string;
+  folderId: string | null;
+  text: string;
+}
+
+type WriteMethod = "POST" | "PUT" | "PATCH" | "DELETE";
+
+declare const hostWriteBrand: unique symbol;
+
+/** The pattern of a write that is no node's, made only by `hostWritePattern`. */
+export type HostWritePattern = RegExp & { readonly [hostWriteBrand]: true };
+
+const nodeProbePaths = ["/api/nodes/x", "/api/nodes/x/y", "/api/nodes/x/y/z"];
+
+/** The path a pattern stands for with each group filled by one segment: `/api/nodes/x/devices` for `^\/api\/nodes\/([^/]+)\/devices$`. */
+function samplePath(pattern: RegExp): string {
+  return pattern.source.replace(/^\^/, "").replace(/\$$/, "").replaceAll("\\/", "/").replace(/\((?:[^()]|\([^()]*\))*\)/g, "x");
+}
+
+/** Whether a route pattern answers paths under /api/nodes/: it takes a probe path, such as through an alternation, or the path it stands for is one. */
+export function isNodePattern(pattern: RegExp): boolean {
+  return nodeProbePaths.some((probe) => pattern.test(probe)) || samplePath(pattern).startsWith("/api/nodes/");
+}
+
+/**
+ * Marks a write route's pattern as no node's.
+ * @implNote It refuses a path under /api/nodes/, so the only way to declare a write there is a `NodeWriteRoute`, which has to name its change for Activity.
+ */
+export function hostWritePattern(pattern: RegExp): HostWritePattern {
+  if (isNodePattern(pattern)) throw new Error(`${pattern} is a node's path: declare its write as a NodeWriteRoute`);
+  return pattern as HostWritePattern;
+}
+
+interface ReadRoute {
+  method: "GET";
   pattern: RegExp;
   handle: (context: RouteContext) => Promise<void>;
 }
+
+/** A write that is no node's, such as an array action; any method when `method` is absent. */
+interface HostWriteRoute {
+  method?: WriteMethod;
+  pattern: HostWritePattern;
+  handle: (context: RouteContext) => Promise<void>;
+}
+
+export type Route = ReadRoute | HostWriteRoute;
+
+/** A node write's answer when it found nothing to change, so Activity does not record a write that never happened. */
+export interface NothingWritten {
+  nothingWritten: true;
+}
+
+/** A write to a node: it must answer with the note Activity records, or say outright that it wrote nothing, so a write that names nothing does not compile. */
+export interface NodeWriteRoute {
+  method: WriteMethod;
+  pattern: RegExp;
+  write: (context: RouteContext) => Promise<WriteNote | NothingWritten>;
+}
+
+export type AnyRoute = Route | NodeWriteRoute;
 
 async function knownArray(arrayId: string): Promise<ArrayStatus> {
   const status = /^[a-z0-9]+$/.test(arrayId) ? await arrayStatus(arrayId) : null;
@@ -108,7 +167,8 @@ async function legacyState(): Promise<unknown> {
   return { array: await arrayStatus(clusterArrayId), parity: await parityState(clusterArrayId), log: await recentLog(clusterArrayId) };
 }
 
-const routes: Route[] = [
+/** Every route the dashboard answers, in the order they are tried. */
+export const dashboardRoutes: AnyRoute[] = [
   { method: "GET", pattern: /^\/$/, handle: ({ response }) => serveIndex(response) },
   {
     method: "GET",
@@ -129,12 +189,12 @@ const routes: Route[] = [
   },
   {
     method: "POST",
-    pattern: /^\/api\/arrays\/([^/]+)\/(sync|scrub|add|rebuild|remove|accept-smart)$/,
+    pattern: hostWritePattern(/^\/api\/arrays\/([^/]+)\/(sync|scrub|add|rebuild|remove|accept-smart)$/),
     handle: ({ request, response, params: [arrayId, action] }) => handleArrayAction(arrayId, action as ArrayAction, request, response),
   },
   {
     method: "POST",
-    pattern: /^\/api\/(sync|scrub|rebuild|remove)$/,
+    pattern: hostWritePattern(/^\/api\/(sync|scrub|rebuild|remove)$/),
     handle: ({ request, response, params: [action] }) => handleArrayAction(clusterArrayId, action as ArrayAction, request, response),
   },
   ...folderRoutes,
@@ -143,36 +203,49 @@ const routes: Route[] = [
   ...deviceIndexRoutes(joinRecords),
   ...pendingRoutes(joinRecords),
   ...optionsRoutes,
-  { pattern: /^\/api\/join$/, handle: async () => joinElsewhere() },
+  ...deviceRoutes(),
+  { pattern: hostWritePattern(/^\/api\/join$/), handle: async () => joinElsewhere() },
 ];
 
-const writeVerbs: Record<string, string> = { POST: "added", PUT: "set", PATCH: "changed", DELETE: "removed" };
-
-function decoded(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
+export interface WriteEffects {
+  invalidate(): void;
+  record(note: WriteNote): void;
 }
 
-/** Enters a successful write to a node in Activity, e.g. `pc: changed devices/ABCDEFG`. */
-function recordNodeWrite(method: string, path: string, response: ServerResponse): void {
-  const match = path.match(/^\/api\/nodes\/([^/]+)\/(.+)$/);
-  if (!match || method === "GET" || response.statusCode >= 400) return;
-  const [, nodeId, rest] = match;
-  const folderId = rest.match(/^folders\/([^/]+)/)?.[1];
-  recordDashboardActivity(decoded(nodeId), folderId ? decoded(folderId) : null, `${decoded(nodeId)}: ${writeVerbs[method] ?? method} ${decoded(rest)}`);
+const liveWriteEffects: WriteEffects = {
+  invalidate: invalidateLocalNodes,
+  record: (note) => recordDashboardActivity(note.nodeId, note.folderId, note.text),
+};
+
+function withText(note: WriteNote): WriteNote {
+  return note.text.trim() ? note : { ...note, text: `${note.nodeName}: changed through the dashboard` };
 }
 
-async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
+/** After a successful write: the shared local nodes build is dropped so the next read shows it, and a node write's note enters Activity. */
+export function settleWrite(method: string, statusCode: number, note: WriteNote | NothingWritten | null, effects: WriteEffects = liveWriteEffects): void {
+  if (method === "GET" || method === "HEAD" || statusCode >= 400) return;
+  if (note && "nothingWritten" in note) return;
+  effects.invalidate();
+  if (note) effects.record(withText(note));
+}
+
+async function runRoute(candidate: AnyRoute, context: RouteContext): Promise<WriteNote | NothingWritten | null> {
+  if ("write" in candidate) return candidate.write(context);
+  await candidate.handle(context);
+  return null;
+}
+
+async function route(routeList: AnyRoute[], effects: WriteEffects, hosts: HostAllowlist, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const misdirected = hostRefusal(request, hosts);
+  if (misdirected) throw misdirected;
+  refuseCrossSiteWrite(request);
   const url = new URL(request.url ?? "/", "http://dashboard");
-  for (const candidate of routes) {
+  for (const candidate of routeList) {
     if (candidate.method && candidate.method !== request.method) continue;
     const match = url.pathname.match(candidate.pattern);
     if (!match) continue;
-    await candidate.handle({ request, response, url, params: match.slice(1) });
-    return recordNodeWrite(request.method ?? "GET", url.pathname, response);
+    const note = await runRoute(candidate, { request, response, url, params: match.slice(1) });
+    return settleWrite(request.method ?? "GET", response.statusCode, note, effects);
   }
   throw new RequestError(404, "not found");
 }
@@ -184,12 +257,21 @@ function errorStatus(error: unknown): number {
   return 500;
 }
 
-export async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
-  try {
-    await route(request, response);
-  } catch (error) {
-    const status = errorStatus(error);
-    if (status === 500) console.error(error);
-    sendJson(response, status, { error: error instanceof Error ? error.message : String(error) });
-  }
+/** Answers a request from `routeList`; a refusal or failure becomes `{ error }` with its status. */
+export function requestHandler(
+  routeList: AnyRoute[],
+  effects: WriteEffects = liveWriteEffects,
+  hosts: HostAllowlist = hostAllowlist(dashboardHosts),
+): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
+  return async (request, response) => {
+    try {
+      await route(routeList, effects, hosts, request, response);
+    } catch (error) {
+      const status = errorStatus(error);
+      if (status === 500) console.error(error);
+      sendJson(response, status, { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
 }
+
+export const handleRequest = requestHandler(dashboardRoutes);

@@ -81,7 +81,7 @@ describe("instance resolver", () => {
     process.env.ARRAY_PREFIX = "storage";
     process.env.CLUSTER_SYNCTHING_URL = `http://127.0.0.1:${syncthingPort}`;
     process.env.HOST_AGENT_SYNCTHING_HOST = "127.0.0.1";
-    process.env.STORAGE_PEERS = "";
+    process.env.STORAGE_PEERS = "https://storage-p53.example.ts.net/, https://storage-x.example.ts.net//,https://storage-y.example.ts.net";
     process.env.TAILNET_PROXY = "";
     settings = await import("../src/settings.js");
     resolver = await import("../src/instanceResolver.js");
@@ -201,5 +201,10 @@ describe("instance resolver", () => {
     assert(instance.kind === "remote");
     await assert.rejects(resolver.forwardRead(instance, "/api/nodes/device-abcdefg/folders"), { status: 404, message: "no dashboard for laptop" });
     assert.throws(() => resolver.requireLocal(instance), { status: 409, message: "act on laptop's dashboard" });
+  });
+
+  it("a peer dashboard's address is used without a trailing slash, however config.env wrote it", () => {
+    assert.deepEqual(settings.peerDashboards, ["https://storage-p53.example.ts.net", "https://storage-x.example.ts.net", "https://storage-y.example.ts.net"]);
+    assert.equal(settings.dashboardBaseUrl("http://127.0.0.1:8442///"), "http://127.0.0.1:8442");
   });
 });

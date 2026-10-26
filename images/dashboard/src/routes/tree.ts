@@ -38,8 +38,7 @@ export async function treeResponse(request: TreeRequest, sources: TreeRouteSourc
   return forwardRead(instance, `/api/tree?${query.toString()}`);
 }
 
-function otherHostOf(peer: string): OtherHost {
-  const dashboardUrl = peer.replace(/\/$/, "");
+function otherHostOf(dashboardUrl: string): OtherHost {
   return { host: new URL(dashboardUrl).hostname, dashboardUrl };
 }
 
