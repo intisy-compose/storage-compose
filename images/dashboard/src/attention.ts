@@ -173,7 +173,7 @@ function isOffline(node: StorageNode): boolean {
 export function offlineWarnings(nodes: StorageNode[], thresholds: AttentionThresholds, now = Date.now(), localDeviceIds = new Map<string, string>()): Warning[] {
   const local = nodes.filter((node) => node.local);
   const warnings: Warning[] = [];
-  for (const node of local) {
+  for (const node of local.filter((candidate) => candidate.array?.state !== "absent")) {
     const elapsed = isOffline(node) ? offlineSince(node.sync.lastSeen, thresholds, now) : null;
     if (elapsed === null) continue;
     warnings.push(warning({ id: `offline:node:${node.id}`, level: "warning", kind: "offline", text: `${node.name} has been offline for ${offlineDuration(elapsed)}`, nodeId: node.id, at: node.sync.lastSeen! }));

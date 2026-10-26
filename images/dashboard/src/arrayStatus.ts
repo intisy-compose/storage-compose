@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import type { NodeFile } from "./nodeFile.js";
-import { arrayStatusDirectory, arraysStatusDirectory, clusterArrayId } from "./settings.js";
+import { arrayStatusDirectory, arraysStatusDirectory, clusterArrayId, discoveryPollSeconds } from "./settings.js";
 
 export type MounterState = "healthy" | "degraded" | "stopped";
 export type DriveCondition = "present" | "dropped" | "missing" | "failing";
@@ -35,10 +35,11 @@ export interface ArrayStatus {
 }
 
 /**
- * @implNote The mounter rewrites the status every 10 s while it runs, and exits while the cluster's data1
+ * @implNote The mounter rewrites the status every round while it runs and exits while the cluster's data1
  * is missing, so a status it stopped rewriting still says every drive is present long after they went.
+ * A round that rescans every device can take up to the discovery poll, hence the margin above it.
  */
-const mounterSilentAfterMilliseconds = 2 * 60_000;
+const mounterSilentAfterMilliseconds = (discoveryPollSeconds + 120) * 1000;
 
 function isMounterSilent(status: ArrayStatus, now: number): boolean {
   const updated = Date.parse(status.updated);
@@ -47,14 +48,14 @@ function isMounterSilent(status: ArrayStatus, now: number): boolean {
 
 function notConnected(status: ArrayStatus): ArrayStatus {
   const detail = `not connected since ${status.updated}`;
-  return { ...status, present: false, complete: false, reasons: [], drives: status.drives.map((drive) => ({ ...drive, condition: "missing", mounted: false, detail })) };
+  return { ...status, present: false, complete: false, drives: status.drives.map((drive) => ({ ...drive, condition: "missing", mounted: false, detail })) };
 }
 
 export async function arrayStatus(arrayId: string, directory = arrayStatusDirectory(arrayId), now = Date.now()): Promise<ArrayStatus | null> {
   try {
     const written = JSON.parse(await readFile(`${directory}/status.json`, "utf8")) as ArrayStatus;
     const status = { ...written, id: written.id ?? arrayId, name: written.name ?? arrayId, present: written.present ?? true };
-    return isMounterSilent(status, now) ? notConnected(status) : status;
+    return status.present && isMounterSilent(status, now) ? notConnected(status) : status;
   } catch {
     return null;
   }

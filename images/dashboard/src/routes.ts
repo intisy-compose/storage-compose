@@ -81,6 +81,7 @@ async function acceptSmart(status: ArrayStatus, body: ArrayActionBody, response:
 
 async function handleArrayAction(arrayId: string, action: ArrayAction, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const status = await knownArray(arrayId);
+  if (!status.present) throw new RequestError(409, `${status.name} is not connected`);
   const body = (await readBody(request)) as ArrayActionBody;
   if (action === "accept-smart") return acceptSmart(status, body, response);
   if (isJobRunning(arrayId) || (await parityState(arrayId)).job) throw new RequestError(409, `a job is running on ${status.name}`);

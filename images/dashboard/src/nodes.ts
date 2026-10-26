@@ -92,7 +92,7 @@ function arrayWarnings(status: ArrayStatus, node: StorageNode): Warning[] {
     for (const reason of status.reasons) warnings.push(warning({ id: `array:${status.id}:${reason.split(" is ")[0]}`, level, kind: "array", text: `${status.name}: ${reason}`, nodeId }));
   }
   if (status.present && status.state === "stopped") warnings.push(warning({ id: `array:${status.id}:frozen`, level: "error", kind: "array", text: `${status.name} is frozen: the share is read-only and Syncthing paused`, nodeId }));
-  for (const folder of status.splitFolders) {
+  for (const folder of status.present ? status.splitFolders : []) {
     const text = `Syncthing folder ${folder.id} lies on ${folder.drives.join(", ")}; move it onto one drive`;
     warnings.push(warning({ id: `split:${status.id}:${folder.id}`, level: "warning", kind: "array", text, nodeId, folderId: folder.id }));
   }

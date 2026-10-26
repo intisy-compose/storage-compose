@@ -178,6 +178,19 @@ describe("attention", () => {
     );
   });
 
+  it("an array that is not connected raises no offline warning", () => {
+    const parity = { job: null, lastSync: null, lastScrub: null, refused: null, lastSyncResult: null, lastScrubResult: null };
+    const array = node({
+      id: "5784",
+      name: "private-array",
+      kind: "array",
+      online: false,
+      sync: { state: "offline", completion: 0, lastSeen: new Date(now - 5 * 24 * hour).toISOString() },
+      array: { state: "absent", members: [], parity, candidates: [], reasons: [] },
+    });
+    assert.deepEqual(offlineWarnings([array], defaults, now), []);
+  });
+
   it("the threshold comes from the setting", () => {
     const thresholds = attentionThresholds({ ATTENTION_OFFLINE_HOURS: "1", ATTENTION_FULL_PERCENT: "50" });
     assert.deepEqual(thresholds, { offlineHours: 1, fullPercent: 50 });

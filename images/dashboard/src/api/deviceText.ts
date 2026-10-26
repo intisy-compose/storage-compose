@@ -9,7 +9,7 @@ interface AddressParts {
 
 const unspecifiedHosts = new Set(["", "0.0.0.0", "::"]);
 
-function hostAndPort(authority: string): string {
+function hostOf(authority: string): string {
   if (authority.startsWith("[")) return authority.slice(1, authority.indexOf("]"));
   const colons = authority.split(":").length - 1;
   return colons === 1 ? authority.slice(0, authority.indexOf(":")) : authority;
@@ -19,7 +19,7 @@ function addressParts(address: string): AddressParts {
   const scheme = /^([a-z0-9+-]+):\/\//i.exec(address);
   const rest = scheme ? address.slice(scheme[0].length) : address;
   const authority = rest.split(/[/?]/, 1)[0];
-  return { scheme: scheme ? scheme[1].toLowerCase() : null, host: hostAndPort(authority) };
+  return { scheme: scheme ? scheme[1].toLowerCase() : null, host: hostOf(authority) };
 }
 
 export function isReachable(node: Pick<StorageNode, "online" | "sync">): boolean {

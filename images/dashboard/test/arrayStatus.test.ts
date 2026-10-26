@@ -61,6 +61,22 @@ describe("array status", () => {
     assert.equal(arrayHealth(absent), "absent");
   });
 
+  it("a status the mounter says is absent stays absent with its reasons, however fresh", async () => {
+    const held = await read(status({ state: "stopped", complete: false, present: false, reasons: ["in use by p53"], drives: [] }));
+    assert.equal(held.present, false);
+    assert.deepEqual(held.reasons, ["in use by p53"]);
+    assert.equal(arrayHealth(held), "absent");
+  });
+
+  it("a round as long as the discovery poll does not make the array absent", async () => {
+    const slow = await read(status({ updated: new Date(now - 6 * 60_000).toISOString() }));
+    assert.equal(slow.present, true);
+    assert.equal(slow.drives[0].condition, "present");
+    const silent = await read(status({ updated: new Date(now - 8 * 60_000).toISOString(), reasons: ["5784-data3 is missing"] }));
+    assert.equal(silent.present, false);
+    assert.deepEqual(silent.reasons, ["5784-data3 is missing"]);
+  });
+
   it("an array the mounter reports in time keeps its state", async () => {
     const fresh = await read(status({}));
     assert.equal(fresh.present, true);

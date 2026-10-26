@@ -125,7 +125,6 @@ export function needsAttention(response: NodesResponse, node: StorageNode): bool
   return tone === "warn" || tone === "bad";
 }
 
-
 export function countRoles(members: ArrayMember[]): { data: number; parity: number } {
   const parity = members.filter((member) => member.role.startsWith("parity")).length;
   return { data: members.length - parity, parity };
