@@ -168,6 +168,7 @@ interface SystemStatus {
 
 /** What one Syncthing instance says about itself, its folders and the devices it knows. */
 export interface InstanceView {
+  nodeId: string;
   nodeName: string;
   device: SyncthingDevice;
   instance: SyncthingInstance;
@@ -561,6 +562,7 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint, nod
         ),
     );
     return {
+      nodeId: key,
       nodeName,
       device: { deviceId: status.myID, addresses: addressesOf(status), connectionType: null, inRate: total.inRate, outRate: total.outRate, version: version.version },
       instance: instanceOf(status, connections),

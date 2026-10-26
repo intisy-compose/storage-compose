@@ -8,7 +8,7 @@ import { type JoinRecords } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { parityState } from "./parity.js";
 import { attentionSettings, hostName, peerDashboards, poolPath } from "./settings.js";
-import { deviceSeenStore, recordDevices, rememberedLocalDeviceIds } from "./seenStore.js";
+import { deviceSeenStore, localDeviceIds, recordDevices, rememberedLocalNodes } from "./seenStore.js";
 import { type InstanceView, classifyConnections, instanceView, peerSync } from "./syncthing.js";
 import { fetchTailnetJson } from "./tailnet.js";
 import { statfs } from "node:fs/promises";
@@ -117,10 +117,10 @@ function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
 }
 
 /**
- * @param deviceIds filled with the Syncthing device ID of each local node the host agent names, so an
+ * @param agentNodes filled with device ID to node ID of each local node the host agent names, so an
  * offline node is not listed a second time as an offline device.
  */
-async function localNodes(warnings: Warning[], views: InstanceView[], deviceIds: Set<string>): Promise<StorageNode[]> {
+async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes: Map<string, string>): Promise<StorageNode[]> {
   const [devices, sources, entries] = await Promise.all([listBlockDevices(), mountSources(), registryEntries()]);
   const nodes: StorageNode[] = [];
   for (const id of await arrayIds()) {
@@ -143,7 +143,7 @@ async function localNodes(warnings: Warning[], views: InstanceView[], deviceIds:
     if (!entry.present) warnings.push(warning({ id: `absent:${entry.id}`, level: "info", kind: "offline", text: `${entry.name} is not attached to this host`, nodeId: entry.id }));
   }
   const heartbeat = await readHeartbeat();
-  for (const agentNode of heartbeat?.nodes ?? []) if (agentNode.syncthing?.deviceId) deviceIds.add(agentNode.syncthing.deviceId);
+  for (const agentNode of heartbeat?.nodes ?? []) if (agentNode.syncthing?.deviceId) agentNodes.set(agentNode.syncthing.deviceId, agentNode.id);
   warnings.push(...hostWarnings(hostName, await registryWarnings(), agentProblem(heartbeat), heartbeat?.problems ?? []));
   return nodes;
 }
@@ -207,34 +207,44 @@ export async function syncthingOnlyNodes(known: StorageNode[], views: InstanceVi
 let lastOtherHostNodes: { at: number; nodes: StorageNode[] } | null = null;
 const otherHostNodesMaxAgeMilliseconds = 60_000;
 
-/** The device IDs of this host's instances: those read now, those the host agent names, and those remembered. */
-async function localDeviceIdsOf(views: InstanceView[], agentDeviceIds: Set<string>): Promise<Set<string>> {
-  const remembered = rememberedLocalDeviceIds(await deviceSeenStore.load());
-  return new Set([...views.map((view) => view.device.deviceId), ...agentDeviceIds, ...remembered]);
-}
-
-async function rememberDevices(views: InstanceView[], localDeviceIds: ReadonlySet<string>): Promise<void> {
+async function rememberDevices(views: InstanceView[], running: ReadonlyMap<string, string>): Promise<void> {
   try {
-    await recordDevices(views, localDeviceIds, new Date());
+    await recordDevices(views, running, new Date());
   } catch (error) {
     console.error(`devices seen file not written: ${(error as Error).message}`);
   }
 }
 
+/** A local node without a running instance carries the device ID it is remembered by, so its peer rows fold into it. */
+export function withRememberedDevice(node: StorageNode, remembered: ReadonlyMap<string, string>, local: ReadonlySet<string>): StorageNode {
+  if (node.syncthing) return node;
+  const deviceId = [...remembered].find(([candidate, nodeId]) => nodeId === node.id && local.has(candidate))?.[0];
+  return deviceId ? { ...node, syncthing: { deviceId, addresses: [], connectionType: null, inRate: 0, outRate: 0, version: null } } : node;
+}
+
+/**
+ * @implNote Other hosts are read before peers are classified, because a remembered instance stops
+ * being this host's once another dashboard reports its node; a local-scope build uses the last
+ * full build's answers.
+ */
 export async function nodesResponse(scope: "all" | "local", records: JoinRecords): Promise<NodesResponse> {
   const warnings: Warning[] = [];
   const views: InstanceView[] = [];
-  const agentDeviceIds = new Set<string>();
-  const nodes = await localNodes(warnings, views, agentDeviceIds);
-  const localDeviceIds = await localDeviceIdsOf(views, agentDeviceIds);
-  classifyConnections(views, localDeviceIds);
-  await rememberDevices(views, localDeviceIds);
+  const agentNodes = new Map<string, string>();
+  const ownNodes = await localNodes(warnings, views, agentNodes);
+  const otherHostNodes = scope === "all" ? await remoteNodes(warnings) : cachedOtherHostNodes();
+  const running = new Map([...views.map((view): [string, string] => [view.device.deviceId, view.nodeId]), ...agentNodes]);
+  const remembered = rememberedLocalNodes(await deviceSeenStore.load());
+  const local = localDeviceIds({ running, remembered, localNodeIds: new Set(ownNodes.map((node) => node.id)), otherHostNodes });
+  classifyConnections(views, local);
+  await rememberDevices(views, running);
+  const nodes = ownNodes.map((node) => withRememberedDevice(node, remembered, local));
   if (scope === "all") {
-    nodes.push(...(await remoteNodes(warnings)));
-    nodes.push(...(await syncthingOnlyNodes(nodes, views, records, localDeviceIds)));
+    nodes.push(...otherHostNodes);
+    nodes.push(...(await syncthingOnlyNodes(nodes, views, records, local)));
     lastOtherHostNodes = { at: Date.now(), nodes: nodes.filter((node) => !node.local) };
   }
-  warnings.push(...offlineWarnings(nodes, attentionSettings, Date.now(), localDeviceIds));
+  warnings.push(...offlineWarnings(nodes, attentionSettings, Date.now(), local));
   const unique = withoutDuplicates(warnings);
   if (scope === "all") pruneFirstSeen(unique);
   return { host: { name: hostName }, nodes, warnings: unique };

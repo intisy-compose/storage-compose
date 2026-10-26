@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { ConnectionKind, Peer } from "./api/types.js";
+import type { ConnectionKind, Peer, StorageNode } from "./api/types.js";
 import { closestKind } from "./connectionKind.js";
 import { hostName, seenDirectory, seenWriteIntervalSeconds } from "./settings.js";
 import type { InstanceView } from "./syncthing.js";
@@ -16,6 +16,8 @@ export interface DeviceSeen {
   lastAddress: string | null;
   /** The name of the node whose Syncthing saw the last connection. */
   seenBy: string | null;
+  /** This host's record only: the node each of its instances' device IDs belongs to; empty for a peer. */
+  nodeByDeviceId: Record<string, string>;
 }
 
 function serialise(records: unknown[]): string {
@@ -99,14 +101,15 @@ function newest(times: (string | null)[]): string | null {
   return parsed.length ? new Date(Math.max(...parsed)).toISOString() : null;
 }
 
-function thisHostRecord(previous: DeviceSeen | undefined, localDeviceIds: ReadonlySet<string>, host: string): DeviceSeen {
-  const deviceIds = [...new Set([...(previous?.deviceIds ?? []), ...localDeviceIds])].sort();
-  return { key: host, name: host, deviceIds, lastSeen: null, lastKind: null, lastAddress: null, seenBy: null };
+function thisHostRecord(previous: DeviceSeen | undefined, localNodes: ReadonlyMap<string, string>, host: string): DeviceSeen {
+  const merged = { ...(previous?.nodeByDeviceId ?? {}), ...Object.fromEntries(localNodes) };
+  const nodeByDeviceId = Object.fromEntries(Object.entries(merged).sort(([first], [second]) => first.localeCompare(second)));
+  return { key: host, name: host, deviceIds: Object.keys(nodeByDeviceId), lastSeen: null, lastKind: null, lastAddress: null, seenBy: null, nodeByDeviceId };
 }
 
 function peerRecord(deviceId: string, previous: DeviceSeen | undefined, sightings: Sighting[], now: Date): DeviceSeen {
   const name = sightings.find((sighting) => sighting.peer.name)?.peer.name || previous?.name || deviceId.slice(0, 7);
-  const base = { key: deviceId, name, deviceIds: [deviceId] };
+  const base = { key: deviceId, name, deviceIds: [deviceId], nodeByDeviceId: {} };
   const connected = sightings.filter((sighting) => sighting.peer.connected && sighting.peer.connectionKind);
   const kind = closestKind(connected.map((sighting) => sighting.peer.connectionKind!));
   const closest = connected.find((sighting) => sighting.peer.connectionKind === kind);
@@ -123,19 +126,45 @@ function peerRecord(deviceId: string, previous: DeviceSeen | undefined, sighting
 /**
  * The records with this host's instances and every peer they see brought up to date: a connected
  * peer takes the closest connection any instance has to it, a disconnected one keeps its last.
+ * @param localNodes device ID to node ID of the instances this host runs now.
  */
-export function seenDevices(records: DeviceSeen[], views: InstanceView[], localDeviceIds: ReadonlySet<string>, now: Date, host: string): DeviceSeen[] {
+export function seenDevices(records: DeviceSeen[], views: InstanceView[], localNodes: ReadonlyMap<string, string>, now: Date, host: string): DeviceSeen[] {
   const byKey = new Map(records.map((record) => [record.key, record]));
-  byKey.set(host, thisHostRecord(byKey.get(host), localDeviceIds, host));
+  byKey.set(host, thisHostRecord(byKey.get(host), localNodes, host));
   for (const [deviceId, sightings] of sightingsByDevice(views)) byKey.set(deviceId, peerRecord(deviceId, byKey.get(deviceId), sightings, now));
   return [...byKey.values()];
 }
 
-export function recordDevices(views: InstanceView[], localDeviceIds: ReadonlySet<string>, now: Date, store = deviceSeenStore, host = hostName): Promise<DeviceSeen[]> {
-  return store.update((records) => seenDevices(records, views, localDeviceIds, now, host), now.getTime());
+export function recordDevices(views: InstanceView[], localNodes: ReadonlyMap<string, string>, now: Date, store = deviceSeenStore, host = hostName): Promise<DeviceSeen[]> {
+  return store.update((records) => seenDevices(records, views, localNodes, now, host), now.getTime());
 }
 
-/** Every device ID this host's own instances have had, the ones not running now included. */
-export function rememberedLocalDeviceIds(records: DeviceSeen[], host = hostName): Set<string> {
-  return new Set(records.find((record) => record.key === host)?.deviceIds ?? []);
+/** Device ID to node ID of every instance this host has run, the ones not running now included. */
+export function rememberedLocalNodes(records: DeviceSeen[], host = hostName): Map<string, string> {
+  return new Map(Object.entries(records.find((record) => record.key === host)?.nodeByDeviceId ?? {}));
+}
+
+export interface LocalDeviceInputs {
+  /** Device ID to node ID of the instances this host runs now. */
+  running: ReadonlyMap<string, string>;
+  remembered: ReadonlyMap<string, string>;
+  /** Every node this host lists, present or absent. */
+  localNodeIds: ReadonlySet<string>;
+  /** The nodes other hosts' dashboards report. */
+  otherHostNodes: StorageNode[];
+}
+
+/**
+ * The device IDs that are this host's: those it runs now, and a remembered one while this host still
+ * lists its node and no other dashboard reports that node or that device.
+ * @implNote An array's Syncthing identity travels with its drives, so once another host reports the
+ * node, the device is that host's and is classified, listed and warned about as any other.
+ */
+export function localDeviceIds({ running, remembered, localNodeIds, otherHostNodes }: LocalDeviceInputs): Set<string> {
+  const reported = otherHostNodes.filter((node) => node.dashboardUrl);
+  const elsewhereNodeIds = new Set(reported.map((node) => node.id));
+  const elsewhereDeviceIds = new Set(reported.map((node) => node.syncthing?.deviceId));
+  const isStillLocal = (deviceId: string, nodeId: string) => localNodeIds.has(nodeId) && !elsewhereNodeIds.has(nodeId) && !elsewhereDeviceIds.has(deviceId);
+  const kept = [...remembered].filter(([deviceId, nodeId]) => isStillLocal(deviceId, nodeId)).map(([deviceId]) => deviceId);
+  return new Set([...running.keys(), ...kept]);
 }

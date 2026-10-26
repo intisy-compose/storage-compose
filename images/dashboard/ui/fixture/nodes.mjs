@@ -25,6 +25,21 @@ function syncthing(seed, overrides = {}) {
   return { deviceId: deviceId(seed), addresses: ["dynamic"], connectionType: "LAN", inRate: 0, outRate: 0, version: "v2.0.10", ...overrides };
 }
 
+function connectedPeer(seed, name, connectionKind, address, connectionType = "tcp-client") {
+  return {
+    deviceId: deviceId(seed), name, connected: true, paused: false, connectionType, connectionKind, address, version: "v2.0.10",
+    inRate: 1.2e5, outRate: 3e4, lastSeen: ago(0), completion: 100, needBytes: 0, remoteState: "valid", folders: ["documents"],
+  };
+}
+
+const onePeerPerConnectionKind = [
+  connectedPeer("b71c", "cold-backup", "this-device", "100.75.83.74:22000"),
+  connectedPeer("17aa", "finn-pc-disk", "local-network", "192.168.0.101:22000", "quic-client"),
+  connectedPeer("2b90", "p53", "tailscale", "100.64.0.12:22000"),
+  connectedPeer("d3e8", "phone", "internet", "203.0.113.40:22000"),
+  connectedPeer("c204", "spisor-cluster", "relay", "relay://relay.example:22067", "relay-client"),
+];
+
 function member(role, label, size, used, asset, overrides = {}) {
   return {
     role, label, serial: `ZA${label.length}${role.toUpperCase()}${size}`.slice(0, 12), size, used, asset, present: true,
@@ -58,6 +73,7 @@ function privateArray() {
       candidates: [],
     },
     syncthing: syncthing("a3f9", { addresses: ["tcp://192.168.0.100:22000", "quic://192.168.0.100:22000"], inRate: 4.2e6, outRate: 3e5 }),
+    peers: onePeerPerConnectionKind,
     folders: commonFolders,
   };
 }

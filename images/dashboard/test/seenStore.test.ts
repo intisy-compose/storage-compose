@@ -3,9 +3,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import type { Peer } from "../src/api/types.js";
-import { syncthingOnlyNodes } from "../src/nodes.js";
-import { type DeviceSeen, SeenStore, recordDevices, rememberedLocalDeviceIds } from "../src/seenStore.js";
+import type { Peer, StorageNode } from "../src/api/types.js";
+import { connectionKind } from "../src/connectionKind.js";
+import { syncthingOnlyNodes, withRememberedDevice } from "../src/nodes.js";
+import { type DeviceSeen, SeenStore, localDeviceIds, recordDevices, rememberedLocalNodes } from "../src/seenStore.js";
 import type { InstanceView } from "../src/syncthing.js";
 
 const pcId = "PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6";
@@ -40,6 +41,7 @@ function peer(overrides: Partial<Peer>): Peer {
 
 function view(nodeName: string, deviceId: string, peers: Peer[]): InstanceView {
   return {
+    nodeId: nodeName,
     nodeName,
     device: { deviceId, addresses: [], connectionType: null, inRate: 0, outRate: 0, version: "v2.1.6" },
     instance: { uptime: 0, cpuPercent: 0, memoryBytes: 0, listeners: [], discoveryErrors: [], inTotal: 0, outTotal: 0 },
@@ -97,12 +99,12 @@ describe("seen store", () => {
 
   it("the last kind survives a disconnect", async () => {
     const store = new SeenStore<DeviceSeen>(join(directory, "devices.json"), minute);
-    const localDeviceIds = new Set([pcId, arrayId]);
+    const running = new Map([[pcId, "fb98"], [arrayId, "5784"]]);
     const connected = peer({ connected: true, connectionType: "tcp-client", connectionKind: "this-device", address: "100.75.83.74:22000" });
-    await recordDevices([view("pc", pcId, [connected])], localDeviceIds, new Date("2026-10-21T12:00:00Z"), store, "finn");
+    await recordDevices([view("pc", pcId, [connected])], running, new Date("2026-10-21T12:00:00Z"), store, "finn");
 
     const gone = peer({ lastSeen: "2026-10-21T12:30:00Z" });
-    const records = await recordDevices([view("pc", pcId, [gone])], new Set([pcId]), new Date("2026-10-26T12:00:00Z"), store, "finn");
+    const records = await recordDevices([view("pc", pcId, [gone])], new Map([[pcId, "fb98"]]), new Date("2026-10-26T12:00:00Z"), store, "finn");
 
     const array = records.find((record) => record.key === arrayId)!;
     assert.deepEqual(array, {
@@ -113,8 +115,9 @@ describe("seen store", () => {
       lastKind: "this-device",
       lastAddress: "100.75.83.74:22000",
       seenBy: "pc",
+      nodeByDeviceId: {},
     });
-    assert.deepEqual([...rememberedLocalDeviceIds(records, "finn")].sort(), [arrayId, pcId].sort(), "an instance seen once stays one of this host's");
+    assert.deepEqual(rememberedLocalNodes(records, "finn"), new Map([[pcId, "fb98"], [arrayId, "5784"]]), "an instance seen once is remembered with its node");
   });
 
   it("a device several instances reach keeps the closest connection", async () => {
@@ -122,7 +125,7 @@ describe("seen store", () => {
     const laptopId = "LAPTOPA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
     const overTailnet = peer({ deviceId: laptopId, name: "laptop", connected: true, connectionType: "tcp-client", connectionKind: "tailscale", address: "100.70.1.2:22000" });
     const overLan = peer({ deviceId: laptopId, name: "laptop", connected: true, connectionType: "quic-client", connectionKind: "local-network", address: "192.168.1.20:22000" });
-    const records = await recordDevices([view("pc", pcId, [overTailnet]), view("private-array", arrayId, [overLan])], new Set([pcId, arrayId]), new Date("2026-10-26T12:00:00Z"), store, "finn");
+    const records = await recordDevices([view("pc", pcId, [overTailnet]), view("private-array", arrayId, [overLan])], new Map([[pcId, "fb98"], [arrayId, "5784"]]), new Date("2026-10-26T12:00:00Z"), store, "finn");
     const laptop = records.find((record) => record.key === laptopId)!;
     assert.equal(laptop.lastKind, "local-network");
     assert.equal(laptop.lastAddress, "192.168.1.20:22000");
@@ -138,5 +141,47 @@ describe("devices of this host", () => {
     const records = { all: async () => ({}), put: async () => {} };
     const nodes = await syncthingOnlyNodes([], [view("pc", pcId, [offlineArray, stranger])], records, new Set([pcId, arrayId]));
     assert.deepEqual(nodes.map((node) => node.name), ["phone"]);
+  });
+
+  const peerId = "QIXEYHJ-4CIPXRY-2FVAONW-OX6QPBK-M5OCSUU-5HCZY4M-DPELEBU-7UOJ5QI";
+  const remembered = new Map([[pcId, "fb98"], [arrayId, "5784"], [peerId, "d7e5"]]);
+  const running = new Map([[pcId, "fb98"]]);
+  const noRecords = { all: async () => ({}), put: async () => {} };
+
+  function remoteNode(overrides: Partial<StorageNode>): StorageNode {
+    return { id: "5784", name: "private-array", kind: "array", threshold: 0, assigned: [], local: false, online: true, host: "p53", space: null, sync: { state: "idle", completion: 100, lastSeen: null }, offersWaiting: 0, syncthing: null, instance: null, peers: [], folders: [], dashboardUrl: "https://storage-p53.example", ...overrides };
+  }
+
+  it("an absent node this host still lists keeps its remembered device as this host's", () => {
+    const local = localDeviceIds({ running, remembered, localNodeIds: new Set(["fb98", "5784"]), otherHostNodes: [] });
+    assert.deepEqual([...local].sort(), [arrayId, pcId].sort());
+  });
+
+  it("a node moved to another host stops being this device here and is listed as a device", async () => {
+    const atP53 = remoteNode({ syncthing: { deviceId: arrayId, addresses: [], connectionType: null, inRate: 0, outRate: 0, version: null } });
+    const local = localDeviceIds({ running, remembered, localNodeIds: new Set(["fb98", "5784"]), otherHostNodes: [atP53] });
+    assert.equal(local.has(arrayId), false);
+    assert.equal(connectionKind({ deviceId: arrayId, connected: true, type: "tcp-client", address: "100.70.1.9:22000", localDeviceIds: local }), "tailscale");
+
+    const unreachable = localDeviceIds({ running, remembered, localNodeIds: new Set(["fb98"]), otherHostNodes: [] });
+    const listed = await syncthingOnlyNodes([], [view("pc", pcId, [peer({ connected: true, address: "100.70.1.9:22000" })])], noRecords, unreachable);
+    assert.deepEqual(listed.map((node) => node.name), ["private-array"], "with no dashboard reporting it, Syncthing's view lists it");
+  });
+
+  it("a test peer's ID stops being local once its registry files are gone", async () => {
+    const local = localDeviceIds({ running, remembered, localNodeIds: new Set(["fb98", "5784"]), otherHostNodes: [] });
+    assert.equal(local.has(peerId), false);
+    const gonePeer = peer({ deviceId: peerId, name: "dashboard-test-peer", lastSeen: "2026-10-26T14:13:36Z" });
+    const listed = await syncthingOnlyNodes([], [view("pc", pcId, [gonePeer])], noRecords, local);
+    assert.deepEqual(listed.map((node) => node.name), ["dashboard-test-peer"]);
+  });
+
+  it("an absent array carries its remembered device ID, so another instance's row for it folds into it", async () => {
+    const local = localDeviceIds({ running, remembered, localNodeIds: new Set(["fb98", "5784"]), otherHostNodes: [] });
+    const array = withRememberedDevice(remoteNode({ local: true, online: false, host: "finn", dashboardUrl: null }), remembered, local);
+    assert.equal(array.syncthing?.deviceId, arrayId);
+    const listed = await syncthingOnlyNodes([array], [view("pc", pcId, [peer({ lastSeen: "2026-10-21T12:35:28Z" })])], noRecords, new Set());
+    assert.deepEqual(listed, []);
+    assert.equal(withRememberedDevice(array, new Map(), new Set()), array, "a node with a device keeps it");
   });
 });
