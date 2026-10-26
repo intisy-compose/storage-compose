@@ -10,6 +10,7 @@ import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { parityState } from "./parity.js";
 import { attentionSettings, hostName, peerDashboards, poolPath, registryDirectory } from "./settings.js";
 import { deviceSeenStore, localDeviceIds, recordDevices, rememberable, rememberedLocalNodes } from "./seenStore.js";
+import { SharedRead } from "./sharedRead.js";
 import { type InstanceView, classifyConnections, instanceView, peerSync } from "./syncthing.js";
 import { fetchTailnetJson } from "./tailnet.js";
 import { readdir, statfs } from "node:fs/promises";
@@ -219,6 +220,10 @@ export async function syncthingOnlyNodes(known: StorageNode[], views: InstanceVi
 
 let lastOtherHostNodes: { at: number; nodes: StorageNode[] } | null = null;
 const otherHostNodesMaxAgeMilliseconds = 60_000;
+/** @implNote Under the page's 5 s poll, so the devices read of one poll shares the nodes read it came with, never an older one. */
+const localNodesShareMilliseconds = 4_000;
+const localNodesBuild = new SharedRead<StorageNode[]>(localNodesShareMilliseconds);
+const otherHostNodesBuild = new SharedRead<StorageNode[]>(0);
 
 async function rememberDevices(views: InstanceView[], running: ReadonlyMap<string, string>): Promise<void> {
   try {
@@ -243,12 +248,24 @@ export function withRememberedDevice(node: StorageNode, remembered: ReadonlyMap<
   return deviceId ? { ...node, syncthing: { deviceId, addresses: [], connectionType: null, inRate: 0, outRate: 0, version: null } } : node;
 }
 
+/** A nodes answer; its local part is shared with the devices read for a few seconds. */
+export function nodesResponse(scope: "all" | "local", records: JoinRecords): Promise<NodesResponse> {
+  const build = buildNodesResponse(scope, records);
+  localNodesBuild.offer(build.then((response) => response.nodes.filter((node) => node.local)));
+  return build;
+}
+
+/** This host's own nodes, from any build that started in the last few seconds or is still running. */
+export function sharedLocalNodes(records: JoinRecords): Promise<StorageNode[]> {
+  return localNodesBuild.read(async () => (await buildNodesResponse("local", records)).nodes);
+}
+
 /**
  * @implNote Other hosts are read before peers are classified, because a remembered instance stops
  * being this host's once another dashboard reports its node; a local-scope build uses the last
  * full build's answers.
  */
-export async function nodesResponse(scope: "all" | "local", records: JoinRecords): Promise<NodesResponse> {
+async function buildNodesResponse(scope: "all" | "local", records: JoinRecords): Promise<NodesResponse> {
   const warnings: Warning[] = [];
   const views: InstanceView[] = [];
   const agentNodes = new Map<string, string>();
@@ -280,7 +297,9 @@ function isOtherHostNodesFresh(): boolean {
   return lastOtherHostNodes !== null && Date.now() - lastOtherHostNodes.at < otherHostNodesMaxAgeMilliseconds;
 }
 
-let otherHostRefresh: Promise<void> | null = null;
+function sharedOtherHostNodesBuild(records: JoinRecords): Promise<StorageNode[]> {
+  return otherHostNodesBuild.read(async () => (await nodesResponse("all", records)).nodes.filter((node) => !node.local));
+}
 
 /**
  * Starts a full build when the other hosts' nodes are missing or stale, so a local-scope build, which
@@ -289,15 +308,8 @@ let otherHostRefresh: Promise<void> | null = null;
  * would have two hosts wait on each other; the in-flight build is shared, so a burst starts one.
  */
 export function refreshOtherHostNodes(records: JoinRecords): void {
-  if (peerDashboards.length === 0 || otherHostRefresh || isOtherHostNodesFresh()) return;
-  otherHostRefresh = nodesResponse("all", records)
-    .then(
-      () => undefined,
-      (error: Error) => console.error(`other hosts' nodes not refreshed: ${error.message}`),
-    )
-    .finally(() => {
-      otherHostRefresh = null;
-    });
+  if (peerDashboards.length === 0 || isOtherHostNodesFresh()) return;
+  sharedOtherHostNodesBuild(records).catch((error: Error) => console.error(`other hosts' nodes not refreshed: ${error.message}`));
 }
 
 /** The other hosts' nodes as the last full `/api/nodes` built them, however old; never builds them. */
@@ -312,5 +324,5 @@ export function cachedOtherHostNodes(): StorageNode[] {
  */
 export async function otherHostNodes(records: JoinRecords): Promise<StorageNode[]> {
   if (lastOtherHostNodes && isOtherHostNodesFresh()) return lastOtherHostNodes.nodes;
-  return (await nodesResponse("all", records)).nodes.filter((node) => !node.local);
+  return sharedOtherHostNodesBuild(records);
 }

@@ -4,7 +4,7 @@ import { driveSeenStore } from "../driveHistory.js";
 import { sendJson } from "../http.js";
 import { readDashboard } from "../instanceResolver.js";
 import type { JoinRecords, JoinedDevice } from "../join.js";
-import { cachedOtherHostNodes, nodesResponse, otherHostNodes } from "../nodes.js";
+import { cachedOtherHostNodes, otherHostNodes, sharedLocalNodes } from "../nodes.js";
 import type { Route } from "../routes.js";
 import { type DeviceSeen, deviceSeenStore } from "../seenStore.js";
 import { hostName, peerDashboards } from "../settings.js";
@@ -86,7 +86,7 @@ function liveSources(records: JoinRecords): DevicesRouteSources {
   return {
     host: hostName,
     peerDashboards,
-    ownNodes: async () => (await nodesResponse("local", records)).nodes,
+    ownNodes: () => sharedLocalNodes(records),
     otherHostNodes: async (scope) => (scope === "all" ? otherHostNodes(records) : cachedOtherHostNodes()),
     peerAnswers: new PeerDevicesCache(peerAnswerMaxAgeMs),
     seen: () => deviceSeenStore.load(),
