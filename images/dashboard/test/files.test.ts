@@ -4,7 +4,7 @@ import type { NodesResponse } from "../src/api/types.js";
 import type { ArrayStatus } from "../src/arrayStatus.js";
 import { arrayMembers } from "../src/members.js";
 import { formatNodeFile, newestDescription, parseNodeFile } from "../src/nodeFile.js";
-import { folderId, parseLayout, upsertDevice } from "../src/setupRepo.js";
+import { folderId, parseLayout, upsertDevice, withoutUrlCredentials } from "../src/setupRepo.js";
 import { parseToml } from "../src/toml.js";
 
 const arrayFile = `# the contract's example
@@ -118,5 +118,20 @@ describe("array members", () => {
     assert.equal(data1?.asset, "SAM-0056");
     assert.equal("assetUrl" in (data1 ?? {}), false);
     assert.equal(nodesResponseHasSettings, false);
+  });
+});
+
+describe("git output shown in answers and Activity", () => {
+  it("masks credentials in a URL, a user and token or a token alone", () => {
+    assert.equal(
+      withoutUrlCredentials("fatal: unable to access 'https://finn:ghp_secret123@github.com/intisy/setup.git/': 403"),
+      "fatal: unable to access 'https://***@github.com/intisy/setup.git/': 403",
+    );
+    assert.equal(withoutUrlCredentials("To https://x-access-token:abc@github.com/o/r.git and http://tok@host:3000/r"), "To https://***@github.com/o/r.git and http://***@host:3000/r");
+  });
+
+  it("leaves a URL without credentials and an SSH remote as they are", () => {
+    const plain = "To https://github.com/intisy/setup.git\n ! [rejected] main -> main (fetch first)\nerror: failed to push some refs to 'git@github.com:intisy/setup.git'";
+    assert.equal(withoutUrlCredentials(plain), plain);
   });
 });

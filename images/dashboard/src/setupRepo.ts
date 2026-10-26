@@ -128,9 +128,16 @@ export async function readLayout(): Promise<SetupLayout | null> {
   return text === null ? null : parseLayout(text);
 }
 
+const urlCredentials = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@'"]+@/gi;
+
+/** `text` with the user and token of every URL in it masked, so a remote pushed with a token in its URL never shows it in an answer or in Activity. */
+export function withoutUrlCredentials(text: string): string {
+  return text.replace(urlCredentials, "$1***@");
+}
+
 async function git(...args: string[]): Promise<{ ok: boolean; output: string }> {
   const result = await runCommand("git", ["-C", setupRepoDirectory, ...args], 60_000);
-  return { ok: result.exitCode === 0, output: `${result.stdout}${result.stderr}`.trim() };
+  return { ok: result.exitCode === 0, output: withoutUrlCredentials(`${result.stdout}${result.stderr}`.trim()) };
 }
 
 /** Writes the device into the layout, commits with the repo's own identity, and pushes. */

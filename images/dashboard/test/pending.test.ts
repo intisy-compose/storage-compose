@@ -437,6 +437,20 @@ describe("answering a device that asks to connect", () => {
     assert.equal(result.accepted.setup, "not recorded in the setup repo: EACCES: drive-sync.toml");
   });
 
+  it("credentials in the setup repo's remote never reach the answer or Activity", async () => {
+    const leaky = "https://finn:ghp_secret@github.com/intisy/setup.git";
+    const answered: SetupRecorder = { layout: async () => ({ devices: [], folders: [], bands: [] }), record: async () => ({ committed: true, pushed: false, message: `committed, not pushed yet: fatal: unable to access '${leaky}/'` }) };
+    const answer = await acceptPendingDevice(peer(), strangerId, { name: "laptop" }, answered);
+    configured = configured.filter((device) => device.deviceID !== strangerId);
+    pending[strangerId] = laptopOffer();
+    const thrown: SetupRecorder = { ...answered, record: () => Promise.reject(new Error(`git push ${leaky} failed`)) };
+    const failure = await acceptPendingDevice(peer(), strangerId, { name: "laptop" }, thrown);
+    for (const text of [answer.accepted.setup, answer.note.text, failure.accepted.setup, failure.note.text]) {
+      assert.doesNotMatch(text, /ghp_secret|finn:/, text);
+      assert.match(text, /https:\/\/\*\*\*@github\.com\/intisy\/setup\.git/);
+    }
+  });
+
   it("a device that is not asking, or a body without a name, is refused before anything is written", async () => {
     await assert.rejects(acceptPendingDevice(peer(), newcomerId, { name: "x" }, null), (error: Refusal) => error.status === 404 && error.message === "NEWCOME is not asking to connect to dashboard-test-peer");
     await assert.rejects(acceptPendingDevice(peer(), strangerId, {}, null), (error: Refusal) => error.status === 400 && error.message === "the name to accept the device under is missing");

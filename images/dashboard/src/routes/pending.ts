@@ -6,7 +6,7 @@ import { type LocalInstance, type ResolvedInstance, callSyncthing, localNodeInfo
 import { type JoinRecords, type JoinedDevice, conflictingId, isDeviceName } from "../join.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { peerDashboards, setupRepoDirectory } from "../settings.js";
-import { type SetupLayout, type SetupRecordResult, readLayout, recordDevice } from "../setupRepo.js";
+import { type SetupLayout, type SetupRecordResult, readLayout, recordDevice, withoutUrlCredentials } from "../setupRepo.js";
 import { type PendingDevices, type SyncthingClient, SyncthingError, SyncthingUnavailable } from "../syncthing.js";
 import { addDevice, decodedSegment } from "./devices.js";
 
@@ -159,9 +159,9 @@ async function recordAccepted(instance: LocalInstance, request: AcceptDeviceBody
   try {
     const refusal = await setupRefusal(instance, request.name, deviceId, setup, joins);
     if (refusal || !setup) return refusal ?? "";
-    return (await setup.record(request.name, deviceId, null)).message;
+    return withoutUrlCredentials((await setup.record(request.name, deviceId, null)).message);
   } catch (error) {
-    return `not recorded in the setup repo: ${(error as Error).message}`;
+    return `not recorded in the setup repo: ${withoutUrlCredentials((error as Error).message)}`;
   }
 }
 
