@@ -27,6 +27,7 @@ export type {
   FolderCopy,
   FolderDetailResponse,
   FolderFile,
+  FolderPathCheck,
   FolderPeer,
   FolderSettings,
   FolderSummary,
@@ -41,6 +42,8 @@ export type {
   MemberSmart,
   NearbyDevice,
   NewDevice,
+  NewFolder,
+  NewFolderDefaults,
   NodeArray,
   NodeEntryState,
   NodeFolder,
@@ -73,9 +76,9 @@ export type {
   WarningLevel,
 } from "../../src/api/types.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, NearbyDevice, NewDevice, FolderDetailResponse, RemoveDeviceBody, HostSettings, IgnoredDevice, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderPathCheck, FolderSettings, RemoveDeviceBody, HostSettings, IgnoredDevice, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
-export { topDirectoryDefault } from "../../src/api/types.js";
+export { folderTypeTexts, topDirectoryDefault } from "../../src/api/types.js";
 
 export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
@@ -213,6 +216,25 @@ export function ignorePendingDevice(nodeId: string, deviceId: string): Promise<S
 /** Drops the request; the device is listed again when it next asks. */
 export function dismissPendingDevice(nodeId: string, deviceId: string): Promise<SaveResult<PendingDevice>> {
   return sendWrite(pendingDevicePath(nodeId, deviceId, "dismiss"), "POST");
+}
+
+/** A new folder as the node's Syncthing would make it, placed at the explorer's directory `under`. */
+export function fetchFolderDefaults(nodeId: string, under: string): Promise<NewFolderDefaults> {
+  return getJson(`${nodeApiPath(nodeId, "folder-defaults")}?under=${encodeURIComponent(under)}`);
+}
+
+/** The directories the node's Syncthing completes `current` to, inside the node's root only. */
+export function browseFolderPaths(nodeId: string, current: string): Promise<string[]> {
+  return getJson(`${nodeApiPath(nodeId, "browse")}?current=${encodeURIComponent(current)}`);
+}
+
+export function checkFolderPath(nodeId: string, path: string): Promise<FolderPathCheck> {
+  return getJson(`${nodeApiPath(nodeId, "folder-path-check")}?path=${encodeURIComponent(path)}`);
+}
+
+/** Sends the new folder's ID, path and only the settings that differ from the node's defaults. */
+export function addFolder(nodeId: string, folder: NewFolder): Promise<SaveResult<FolderSettings>> {
+  return sendWrite(nodeApiPath(nodeId, "folders"), "POST", folder);
 }
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {

@@ -1,17 +1,10 @@
-import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type FolderType, type PendingFolderOffer, deviceDisplayName } from "./api.js";
+import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type PendingFolderOffer, deviceDisplayName, folderTypeTexts } from "./api.js";
 import { element, keyValueList, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, formatPercent, normaliseCompletion, plural } from "./format.js";
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
 import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./folderCondition.js";
 import { icon } from "./icons.js";
 import { appState, explorerLocation, locationFor } from "./state.js";
-
-const typeTexts: Record<FolderType, string> = {
-  sendreceive: "send and receive",
-  sendonly: "send only",
-  receiveonly: "receive only",
-  receiveencrypted: "receive encrypted",
-};
 
 function onOff(value: boolean): string {
   return value ? "on" : "off";
@@ -45,7 +38,7 @@ function copyCard(copy: FolderCopy): HTMLElement {
   const condition = copyCondition(copy);
   const rows: [string, HTMLElement | string][] = [
     ["Path", element("code", {}, copy.path)],
-    ["Type", typeTexts[copy.type] ?? copy.type],
+    ["Type", folderTypeTexts[copy.type] ?? copy.type],
     ["State", element("span", { className: `tone-text-${condition.tone}` }, condition.label)],
     ["Global", itemsText(copy)],
     ["Out of sync", outOfSyncText(copy)],
@@ -90,7 +83,7 @@ function settingsRows(settings: FolderSettings, names: Map<string, string>): [st
   return [
     ["Label", settings.label || "none"],
     ["Path", element("code", {}, settings.path)],
-    ["Type", typeTexts[settings.type] ?? settings.type],
+    ["Type", folderTypeTexts[settings.type] ?? settings.type],
     ["Paused", settings.paused ? "yes" : "no"],
     ["Full rescan", `every ${seconds(settings.rescanIntervalS)}`],
     ["Watch for changes", settings.fsWatcherEnabled ? `on, ${settings.fsWatcherDelayS} s delay` : "off"],

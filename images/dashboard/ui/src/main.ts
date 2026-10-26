@@ -10,6 +10,7 @@ import { renderDriveDetail } from "./driveDetail.js";
 import { folderRootPriority, renderExplorerDetail } from "./explorerDetail.js";
 import { isNodeSelectorOpen, loadExplorer, placeAtFolder, renderExplorerPage } from "./explorerPage.js";
 import { renderFolderDetail, renderFolderLoading, renderFolderNotFound } from "./folderDetail.js";
+import { loadAddFolderForm, renderAddFolderForm } from "./folderForm.js";
 import { isFormOpen } from "./forms.js";
 import { renderItemNotFound } from "./itemNotFound.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
@@ -63,6 +64,7 @@ function renderPage(): HTMLElement {
 
 function renderFolderPanel(): HTMLElement {
   const folderId = appState.selectedFolderId;
+  if (appState.addFolderForm) return renderAddFolderForm(appState.addFolderForm);
   if (!folderId) return renderExplorerDetail();
   const detail = appState.folderDetail?.summary.id === folderId ? appState.folderDetail : null;
   if (detail) return renderFolderDetail(detail.summary, detail, folderRootPriority(folderId));
@@ -191,8 +193,16 @@ async function loadFolderDetail(): Promise<void> {
   }
 }
 
-async function loadFolders(): Promise<void> {
-  await Promise.all([loadExplorer(), loadFolderDetail()]);
+/** @implNote Waits for the nodes, as they say which nodes can take a folder. */
+async function loadAddFolder(nodesLoaded: Promise<void>): Promise<void> {
+  const form = appState.addFolderForm;
+  if (!form) return;
+  await nodesLoaded;
+  await loadAddFolderForm(form);
+}
+
+async function loadFolders(nodesLoaded: Promise<void>): Promise<void> {
+  await Promise.all([loadExplorer(), loadFolderDetail(), loadAddFolder(nodesLoaded)]);
   const detail = appState.folderDetail;
   if (detail?.summary.id === appState.selectedFolderId && placeAtFolder(detail.summary)) await loadExplorer();
 }
@@ -244,7 +254,7 @@ async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
 /** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */
 async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Promise<void> {
   if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm(), loadAddDevice(nodesLoaded)]);
-  if (appState.page === "folders") await loadFolders();
+  if (appState.page === "folders") await loadFolders(nodesLoaded);
   if (appState.page === "activity") await loadActivity();
   if (appState.page === "requests") await loadRequests();
   if (appState.page === "settings") await loadSettings(nodesLoaded);

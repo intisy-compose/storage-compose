@@ -1,4 +1,4 @@
-import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -58,6 +58,34 @@ export interface AddDeviceFormState {
   added: AddedDevice | null;
 }
 
+/** What the add folder form holds, typed or not. */
+export interface FolderDraft {
+  id: string;
+  label: string;
+  path: string;
+  type: FolderType;
+  paused: boolean;
+}
+
+/** The form of `#/folders?node=&path=&add=folder`: a folder to add to one node, placed at the explorer's directory by default. */
+export interface AddFolderFormState {
+  /** Null until the person chooses one of this host's nodes. */
+  nodeId: string | null;
+  /** The explorer's directory the form was opened at, which places the default path. */
+  under: string;
+  /** The chosen node's defaults, which the form's changes are measured against. */
+  defaults: NewFolderDefaults | null;
+  draft: FolderDraft | null;
+  /** How the add would judge the typed path, for the path it was asked about. */
+  pathCheck: { typed: string; check: FolderPathCheck } | null;
+  /** Directories the node completes the typed path to. */
+  suggestions: string[];
+  loadError: string | null;
+  saving: boolean;
+  result: Notice | null;
+  added: FolderSettings | null;
+}
+
 /** The Folders page's file explorer: which node's view, which directory, and what the person opened in it. */
 export interface ExplorerState {
   node: string;
@@ -86,6 +114,7 @@ export interface AppState {
   selectedDriveKey: string | null;
   deviceForm: DeviceFormState | null;
   addDeviceForm: AddDeviceFormState | null;
+  addFolderForm: AddFolderFormState | null;
   data: NodesResponse | null;
   devices: DevicesResponse | null;
   devicesError: string | null;
@@ -129,6 +158,7 @@ export const appState: AppState = {
   selectedDriveKey: null,
   deviceForm: null,
   addDeviceForm: null,
+  addFolderForm: null,
   data: null,
   devices: null,
   devicesError: null,
@@ -161,11 +191,25 @@ export const appState: AppState = {
 
 const pages: PageId[] = ["nodes", "folders", "attention", "activity", "requests", "settings"];
 
+/** The value of `add` that opens the add folder form over the explorer. */
+const addFolderFlag = "folder";
+
+function emptyAddFolderForm(node: string, under: string): AddFolderFormState {
+  return { nodeId: node === allNodesView ? null : node, under, defaults: null, draft: null, pathCheck: null, suggestions: [], loadError: null, saving: false, result: null, added: null };
+}
+
+/** Keeps the open add form, and what was typed into it, while the address names the same directory. */
+function readAddFolderForm(adding: boolean, node: string, under: string): void {
+  const open = appState.addFolderForm;
+  appState.addFolderForm = adding ? (open?.under === under ? open : emptyAddFolderForm(node, under)) : null;
+}
+
 function readExplorerLocation(query: URLSearchParams): void {
   const node = query.get("node") || allNodesView;
   const path = query.get("path") ?? "";
   if (node !== appState.explorer.node || path !== appState.explorer.path) appState.explorer = emptyExplorer(node, path);
   appState.explorer.placeAtFolder = appState.selectedFolderId !== null && !query.has("path");
+  readAddFolderForm(appState.selectedFolderId === null && query.get("add") === addFolderFlag, node, path);
 }
 
 function emptyDeviceForm(nodeId: string, deviceId: string): DeviceFormState {
@@ -210,6 +254,7 @@ export function readLocation(): void {
   readNodesSelection(appState.page === "nodes" ? selected : null, subItemId ? decodeURIComponent(subItemId) : null, deviceId ? decodeURIComponent(deviceId) : null);
   appState.selectedFolderId = appState.page === "folders" ? selected : null;
   if (appState.page === "folders") readExplorerLocation(query);
+  else appState.addFolderForm = null;
 }
 
 function encodePath(path: string): string {
@@ -224,6 +269,11 @@ export function explorerLocation(folderId: string | null, node = appState.explor
   const base = locationFor("folders", folderId);
   if (!folderId && node === allNodesView && !path) return base;
   return `${base}?node=${encodeURIComponent(node)}&path=${encodePath(path)}`;
+}
+
+/** The add folder form over the explorer at a node's view of a directory, the folder placed there by default. */
+export function addFolderLocation(node: string, path: string): string {
+  return `${locationFor("folders")}?node=${encodeURIComponent(node)}&path=${encodePath(path)}&add=${addFolderFlag}`;
 }
 
 /** The address of a page, or of one node or folder on it. */
@@ -254,5 +304,6 @@ export function selectedItemId(): string | null {
   if (appState.selectedDriveKey !== null) return `drive/${appState.selectedDriveKey}`;
   if (appState.deviceForm) return `${appState.deviceForm.nodeId}/devices/${appState.deviceForm.deviceId}`;
   if (appState.addDeviceForm) return `${appState.addDeviceForm.nodeId}/devices/${newDeviceSegment}`;
+  if (appState.addFolderForm) return `add-folder/${appState.addFolderForm.under}`;
   return appState.selectedNodeId ?? appState.selectedFolderId ?? (appState.page === "folders" ? appState.explorer.selectedPath : null);
 }

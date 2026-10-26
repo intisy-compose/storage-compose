@@ -8,7 +8,7 @@ import { warningBanner } from "./nodesPage.js";
 import { arrayStateLabel, countRoles, isArrayAbsent, isNotConnected, isOffline, shortSyncState, spaceTone, warningsFor } from "./nodeStatus.js";
 import { peersSection } from "./peersSection.js";
 import { requestRender } from "./renderRequest.js";
-import { appState, deviceFormLocation, locationFor } from "./state.js";
+import { addFolderLocation, appState, deviceFormLocation, locationFor } from "./state.js";
 
 function kindText(node: StorageNode): string {
   if (node.kind === "device") return "a Syncthing device; no dashboard or join record says what it holds";
@@ -159,10 +159,16 @@ function folderRow(folder: StorageNode["folders"][number]): HTMLElement {
   );
 }
 
+function addFolderLink(node: StorageNode): HTMLElement | null {
+  if (!node.local || !node.online || !node.syncthing) return null;
+  return element("a", { className: "button", attributes: { href: addFolderLocation(node.id, "") } }, "Add a folder");
+}
+
 function foldersSection(node: StorageNode): HTMLElement {
   return section(
     `Folders on this node (${node.folders.length})`,
     node.folders.length ? element("div", { className: "folder-list" }, ...node.folders.map(folderRow)) : element("p", { className: "muted" }, "No folders shared with this node."),
+    addFolderLink(node),
   );
 }
 

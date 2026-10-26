@@ -187,6 +187,14 @@ export interface SyncthingDevice {
 
 export type FolderType = "sendreceive" | "sendonly" | "receiveonly" | "receiveencrypted";
 
+/** A folder type in words, as the pages and Activity name it. */
+export const folderTypeTexts: Record<FolderType, string> = {
+  sendreceive: "send and receive",
+  sendonly: "send only",
+  receiveonly: "receive only",
+  receiveencrypted: "receive encrypted",
+};
+
 export interface FolderFile {
   at: string;
   filename: string;
@@ -698,6 +706,33 @@ export interface FolderSettings {
   /** `encrypted`: the device gets this folder encrypted; the password itself never leaves Syncthing. */
   devices: { deviceId: string; encrypted: boolean }[];
   versioning: Versioning;
+}
+
+/** `POST /api/nodes/<nodeId>/folders`: a folder to add to the node; every setting it leaves out is the node's Syncthing default. */
+export interface NewFolder {
+  id: string;
+  label?: string;
+  /** Inside the node's root and not inside another node's root on this host. */
+  path: string;
+  type?: FolderType;
+  paused?: boolean;
+}
+
+/** `GET /api/nodes/<nodeId>/folder-defaults?under=<tree path>`: a new folder as the node's Syncthing would make it, placed at that directory. */
+export interface NewFolderDefaults {
+  settings: FolderSettings;
+  /** The node's root, inside which the path must stay. */
+  root: string;
+}
+
+/** `GET /api/nodes/<nodeId>/folder-path-check?path=`: how the add would judge a typed path. */
+export interface FolderPathCheck {
+  /** The path as it would be sent: `..` resolved, the node's separator. */
+  path: string;
+  /** Why the add would refuse it. */
+  problem: string | null;
+  /** An overlap with one of the node's folders, which Syncthing allows but syncs twice. */
+  warning: string | null;
 }
 
 /** `GET /api/folders/<folderId>`; `settings` is keyed by node ID. */

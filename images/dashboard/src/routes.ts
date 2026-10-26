@@ -12,6 +12,7 @@ import { activityRoutes } from "./routes/activity.js";
 import { deviceIndexRoutes } from "./routes/deviceIndex.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { folderRoutes } from "./routes/folders.js";
+import { nodeFolderRoutes } from "./routes/nodeFolders.js";
 import { optionsRoutes } from "./routes/options.js";
 import { pendingRoutes } from "./routes/pending.js";
 import { treeRoutes } from "./routes/tree.js";
@@ -204,6 +205,7 @@ export const dashboardRoutes: AnyRoute[] = [
   ...pendingRoutes(joinRecords),
   ...optionsRoutes,
   ...deviceRoutes(),
+  ...nodeFolderRoutes(),
   { pattern: hostWritePattern(/^\/api\/join$/), handle: async () => joinElsewhere() },
 ];
 

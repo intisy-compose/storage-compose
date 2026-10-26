@@ -1,11 +1,12 @@
 import { type EntryStatus, type FolderSummary, type StorageNode, type TreeEntry, type TreeListing, fetchTree, statusPresentation } from "./api.js";
 import { element } from "./dom.js";
 import { loadedEntries } from "./explorerDetail.js";
+import { addableNodes } from "./folderForm.js";
 import { type DotColumns, explorerNote, explorerRow, notSharedDot, notSharedText, presentationClasses } from "./explorerRow.js";
 import { plural } from "./format.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
-import { type ExplorerState, allNodesView, appState, explorerLocation, readLocation } from "./state.js";
+import { type ExplorerState, addFolderLocation, allNodesView, appState, explorerLocation, readLocation } from "./state.js";
 
 let isNodeMenuOpen = false;
 
@@ -291,6 +292,12 @@ function statusLines(explorer: ExplorerState): (HTMLElement | null)[] {
   ];
 }
 
+function addFolderLink(): HTMLElement | null {
+  if (!addableNodes().length) return null;
+  const { node, path } = appState.explorer;
+  return element("a", { className: "button", title: "Add a Syncthing folder, placed at this directory by default", attributes: { href: addFolderLocation(node, path) } }, "Add folder");
+}
+
 export function renderExplorerPage(): HTMLElement {
   const explorer = appState.explorer;
   const listing = explorer.listing;
@@ -298,7 +305,7 @@ export function renderExplorerPage(): HTMLElement {
     "div",
     { className: "page folders-page" },
     element("header", { className: "page-header" }, element("h1", {}, "Folders"), element("p", { className: "page-summary" }, listingSummary(listing))),
-    element("div", { className: "filter-bar explorer-toolbar" }, nodeSelector(), searchBox()),
+    element("div", { className: "filter-bar explorer-toolbar" }, nodeSelector(), searchBox(), addFolderLink()),
     breadcrumb(),
     legend(),
     ...statusLines(explorer),
