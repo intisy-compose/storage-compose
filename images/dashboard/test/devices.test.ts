@@ -102,8 +102,11 @@ describe("a node's devices", () => {
   let deadUrl = "";
   /** Requests the fake has not finished answering, so a test starts only once the last one's stragglers are done. */
   let openRequests = 0;
+  /** Requests that reached the fake since the test began, so a test can wait for a request still on its way. */
+  let arrivals = 0;
   const syncthing = createServer(async (request, response) => {
     openRequests += 1;
+    arrivals += 1;
     response.on("close", () => (openRequests -= 1));
     if (dropAfter !== null && dropAfter-- === 0) return request.socket.destroy();
     if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
@@ -171,6 +174,7 @@ describe("a node's devices", () => {
 
   beforeEach(async () => {
     await until(() => openRequests === 0, "the fake Syncthing to finish the last test's requests");
+    arrivals = 0;
     writes.length = 0;
     dropAfter = null;
     failDeviceReadsAfter = null;
@@ -524,6 +528,7 @@ describe("a node's devices", () => {
   it("a node that stops answering after it paused still reports every device paused and enters it", async () => {
     dropAfter = 3;
     const pause = await pauseNode(pc(), true);
+    await until(() => arrivals === 5, "the read-back's other request, so it cannot reach the next test");
     assert.deepEqual(writes, [{ method: "POST", path: "/rest/system/pause", body: null }]);
     assert.deepEqual(pause.devices.map((device) => [device.deviceId, device.paused]), [[peerId, true]]);
     assert.deepEqual(pause.note, { nodeId: "fb98", nodeName: "pc", folderId: null, text: "pc: paused every device" });
@@ -534,6 +539,7 @@ describe("a node's devices", () => {
     try {
       dropAfter = 3;
       const resume = await pauseNode(pc(), false);
+      await until(() => arrivals === 5, "the read-back's other request, so it cannot reach the next test");
       assert.deepEqual(resume.devices.map((device) => device.paused), [false]);
       assert.equal(logged.mock.callCount(), 0);
     } finally {
