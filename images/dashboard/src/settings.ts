@@ -17,6 +17,8 @@ export const discoveryPollSeconds = Number(process.env.DISCOVERY_POLL_SECONDS ??
 export const arraysStatusDirectory = `${statusDirectory}/arrays`;
 export const registryDirectory = `${statusDirectory}/nodes`;
 export const joinsFile = `${statusDirectory}/joins.json`;
+/** The dashboard's own memory of devices and drives; a cache in the `rebuilt` status volume. */
+export const seenDirectory = `${statusDirectory}/seen`;
 export const publicDirectory = new URL("../public/", import.meta.url).pathname;
 export const port = Number(process.env.PORT ?? 8080);
 /** The join port inside the stack: the gateway forwards /api/join on 443 here with a PROXY protocol header. */
@@ -89,3 +91,8 @@ export function explorerNeedLimit(environment: Record<string, string | undefined
 }
 
 export const explorerSettings = { needLimit: explorerNeedLimit(process.env) };
+
+/** SEEN_WRITE_INTERVAL_S from config.env: the devices and drives seen files are rewritten at most this often. */
+export function seenWriteIntervalSeconds(environment: Record<string, string | undefined>): number {
+  return positiveNumber(environment.SEEN_WRITE_INTERVAL_S, 60);
+}

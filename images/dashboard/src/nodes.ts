@@ -8,7 +8,8 @@ import { type JoinRecords } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { parityState } from "./parity.js";
 import { attentionSettings, hostName, peerDashboards, poolPath } from "./settings.js";
-import { type InstanceView, instanceView, peerSync } from "./syncthing.js";
+import { deviceSeenStore, recordDevices, rememberedLocalDeviceIds } from "./seenStore.js";
+import { type InstanceView, classifyConnections, instanceView, peerSync } from "./syncthing.js";
 import { fetchTailnetJson } from "./tailnet.js";
 import { statfs } from "node:fs/promises";
 
@@ -119,14 +120,14 @@ function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
  * @param deviceIds filled with the Syncthing device ID of each local node the host agent names, so an
  * offline node is not listed a second time as an offline device.
  */
-async function localNodes(warnings: Warning[], views: InstanceView[], deviceIds: Map<string, string>): Promise<StorageNode[]> {
+async function localNodes(warnings: Warning[], views: InstanceView[], deviceIds: Set<string>): Promise<StorageNode[]> {
   const [devices, sources, entries] = await Promise.all([listBlockDevices(), mountSources(), registryEntries()]);
   const nodes: StorageNode[] = [];
   for (const id of await arrayIds()) {
     const status = await arrayStatus(id);
     if (!status) continue;
     const endpoint = await syncthingEndpoint(id);
-    const view = endpoint && status.present ? await instanceView(id, endpoint) : null;
+    const view = endpoint && status.present ? await instanceView(id, endpoint, status.name) : null;
     if (view) views.push(view);
     const node = await arrayNode(status, devices, sources, view);
     nodes.push(node);
@@ -134,7 +135,7 @@ async function localNodes(warnings: Warning[], views: InstanceView[], deviceIds:
   }
   for (const entry of entries) {
     const endpoint = entry.present ? await syncthingEndpoint(entry.id, entry) : null;
-    const view = endpoint ? await instanceView(entry.id, endpoint) : null;
+    const view = endpoint ? await instanceView(entry.id, endpoint, entry.name) : null;
     if (view) views.push(view);
     const node = registryNode(entry, view);
     nodes.push(node);
@@ -142,7 +143,7 @@ async function localNodes(warnings: Warning[], views: InstanceView[], deviceIds:
     if (!entry.present) warnings.push(warning({ id: `absent:${entry.id}`, level: "info", kind: "offline", text: `${entry.name} is not attached to this host`, nodeId: entry.id }));
   }
   const heartbeat = await readHeartbeat();
-  for (const agentNode of heartbeat?.nodes ?? []) if (agentNode.syncthing?.deviceId) deviceIds.set(agentNode.syncthing.deviceId, agentNode.id);
+  for (const agentNode of heartbeat?.nodes ?? []) if (agentNode.syncthing?.deviceId) deviceIds.add(agentNode.syncthing.deviceId);
   warnings.push(...hostWarnings(hostName, await registryWarnings(), agentProblem(heartbeat), heartbeat?.problems ?? []));
   return nodes;
 }
@@ -168,10 +169,11 @@ async function remoteNodes(warnings: Warning[]): Promise<StorageNode[]> {
 /**
  * Devices this host's Syncthing instances know that no dashboard reported: a joined device without a
  * dashboard, or a host that could not be reached. Their nodes come from the join record when there is
- * one; the state is what Syncthing sees.
+ * one; the state is what Syncthing sees. An instance of this host, running or not, is never one: it
+ * is a node of this host already.
  */
-async function syncthingOnlyNodes(known: StorageNode[], views: InstanceView[], records: JoinRecords): Promise<StorageNode[]> {
-  const reported = new Set(known.map((node) => node.syncthing?.deviceId).filter(Boolean));
+export async function syncthingOnlyNodes(known: StorageNode[], views: InstanceView[], records: JoinRecords, localDeviceIds: ReadonlySet<string>): Promise<StorageNode[]> {
+  const reported = new Set([...known.map((node) => node.syncthing?.deviceId).filter(Boolean), ...localDeviceIds]);
   const joined = Object.values(await records.all());
   const nodes = new Map<string, StorageNode>();
   for (const view of views) {
@@ -205,17 +207,34 @@ async function syncthingOnlyNodes(known: StorageNode[], views: InstanceView[], r
 let lastOtherHostNodes: { at: number; nodes: StorageNode[] } | null = null;
 const otherHostNodesMaxAgeMilliseconds = 60_000;
 
+/** The device IDs of this host's instances: those read now, those the host agent names, and those remembered. */
+async function localDeviceIdsOf(views: InstanceView[], agentDeviceIds: Set<string>): Promise<Set<string>> {
+  const remembered = rememberedLocalDeviceIds(await deviceSeenStore.load());
+  return new Set([...views.map((view) => view.device.deviceId), ...agentDeviceIds, ...remembered]);
+}
+
+async function rememberDevices(views: InstanceView[], localDeviceIds: ReadonlySet<string>): Promise<void> {
+  try {
+    await recordDevices(views, localDeviceIds, new Date());
+  } catch (error) {
+    console.error(`devices seen file not written: ${(error as Error).message}`);
+  }
+}
+
 export async function nodesResponse(scope: "all" | "local", records: JoinRecords): Promise<NodesResponse> {
   const warnings: Warning[] = [];
   const views: InstanceView[] = [];
-  const deviceIds = new Map<string, string>();
-  const nodes = await localNodes(warnings, views, deviceIds);
+  const agentDeviceIds = new Set<string>();
+  const nodes = await localNodes(warnings, views, agentDeviceIds);
+  const localDeviceIds = await localDeviceIdsOf(views, agentDeviceIds);
+  classifyConnections(views, localDeviceIds);
+  await rememberDevices(views, localDeviceIds);
   if (scope === "all") {
     nodes.push(...(await remoteNodes(warnings)));
-    nodes.push(...(await syncthingOnlyNodes(nodes, views, records)));
+    nodes.push(...(await syncthingOnlyNodes(nodes, views, records, localDeviceIds)));
     lastOtherHostNodes = { at: Date.now(), nodes: nodes.filter((node) => !node.local) };
   }
-  warnings.push(...offlineWarnings(nodes, attentionSettings, Date.now(), deviceIds));
+  warnings.push(...offlineWarnings(nodes, attentionSettings, Date.now(), localDeviceIds));
   const unique = withoutDuplicates(warnings);
   if (scope === "all") pruneFirstSeen(unique);
   return { host: { name: hostName }, nodes, warnings: unique };

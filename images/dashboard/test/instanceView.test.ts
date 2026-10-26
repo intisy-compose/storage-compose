@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
-import { type InstanceView, instanceView } from "../src/syncthing.js";
+import { type InstanceView, classifyConnections, instanceView } from "../src/syncthing.js";
 
 const ownId = "OWNAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 const arrayId = "ARRAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
@@ -167,6 +167,16 @@ describe("instance view", () => {
     const stranger = view.peers.find((peer) => peer.deviceId === strangerId)!;
     assert.equal(stranger.remoteState, "notSharing");
     assert.equal(stranger.lastSeen, null);
+  });
+
+  it("each peer is classified once every instance of this host is known", () => {
+    const storage = view.peers.find((peer) => peer.deviceId === arrayId)!;
+    const stranger = view.peers.find((peer) => peer.deviceId === strangerId)!;
+    classifyConnections([view], new Set());
+    assert.equal(storage.connectionKind, "local-network");
+    classifyConnections([view], new Set([ownId, arrayId]));
+    assert.equal(storage.connectionKind, "this-device");
+    assert.equal(stranger.connectionKind, null);
   });
 
   it("a paused peer is paused and does not make the node wait", async () => {

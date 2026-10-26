@@ -1,4 +1,4 @@
-import type { NodesResponse, Peer, RemoteState, StorageNode } from "./api.js";
+import { type NodesResponse, type Peer, type RemoteState, type StorageNode, connectionKindLabel } from "./api.js";
 import { element, section } from "./dom.js";
 import { formatAge, formatPercent, formatRate, normaliseCompletion } from "./format.js";
 
@@ -20,6 +20,11 @@ function connectionText(peer: Peer): string {
   return [peer.address, peer.connectionType].filter(Boolean).join(", ");
 }
 
+function kindChip(peer: Peer): HTMLElement | null {
+  if (!peer.connectionKind) return null;
+  return element("span", { className: "chip", title: connectionText(peer) }, connectionKindLabel(peer.connectionKind));
+}
+
 function completionText(peer: Peer): string {
   if (peer.remoteState === "notSharing" || peer.remoteState === "unavailable") return "";
   return formatPercent(normaliseCompletion(peer.completion));
@@ -39,7 +44,7 @@ function peerRow(peer: Peer, displayName: string): HTMLElement {
     element(
       "span",
       { className: "peer-name" },
-      element("strong", {}, displayName),
+      element("span", { className: "peer-title" }, element("strong", {}, displayName), kindChip(peer)),
       element("small", {}, connectionText(peer)),
       note ? element("small", { className: "tone-text-warn" }, note) : null,
     ),

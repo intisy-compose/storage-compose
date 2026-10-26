@@ -166,11 +166,11 @@ function isOffline(node: StorageNode): boolean {
 /**
  * This host's nodes, and the devices their Syncthing instances know, that have been away longer than
  * the threshold.
- * @param localDeviceIds device ID to node ID for local nodes whose device is known while they are offline.
+ * @param localDeviceIds the device IDs of this host's instances, those not running now included.
  * @implNote A device that belongs to a node some dashboard reports is left to that node's own entry;
  * one seen by several instances is listed once. A device never seen, or paused on purpose, is not offline.
  */
-export function offlineWarnings(nodes: StorageNode[], thresholds: AttentionThresholds, now = Date.now(), localDeviceIds = new Map<string, string>()): Warning[] {
+export function offlineWarnings(nodes: StorageNode[], thresholds: AttentionThresholds, now = Date.now(), localDeviceIds: ReadonlySet<string> = new Set()): Warning[] {
   const local = nodes.filter((node) => node.local);
   const warnings: Warning[] = [];
   for (const node of local.filter((candidate) => candidate.array?.state !== "absent")) {
@@ -178,7 +178,7 @@ export function offlineWarnings(nodes: StorageNode[], thresholds: AttentionThres
     if (elapsed === null) continue;
     warnings.push(warning({ id: `offline:node:${node.id}`, level: "warning", kind: "offline", text: `${node.name} has been offline for ${offlineDuration(elapsed)}`, nodeId: node.id, at: node.sync.lastSeen! }));
   }
-  const reported = new Set([...nodes.filter((node) => node.local || node.dashboardUrl).map((node) => node.syncthing?.deviceId), ...localDeviceIds.keys()]);
+  const reported = new Set([...nodes.filter((node) => node.local || node.dashboardUrl).map((node) => node.syncthing?.deviceId), ...localDeviceIds]);
   const listed = new Set<string>();
   for (const node of local) {
     for (const peer of node.peers) {

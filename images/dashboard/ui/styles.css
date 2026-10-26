@@ -386,6 +386,7 @@ a.warning:hover { filter: brightness(0.98); text-decoration: underline; text-und
 }
 .peer-row:first-child { border-top: 0; }
 .peer-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.peer-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .peer-name small { color: var(--text-faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .peer-name small.tone-text-warn { color: var(--warn); }
 .peer-rates { color: var(--text-faint); font-size: 11.5px; white-space: nowrap; }

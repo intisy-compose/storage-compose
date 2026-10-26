@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { listedAddresses } from "./api/deviceText.js";
+import { connectionKind } from "./connectionKind.js";
 import type { FolderFile, FolderPeer, FolderType, NodeFolder, NodeSync, Peer, RemoteState, SyncthingDevice, SyncthingInstance } from "./api/types.js";
 
 export interface SyncthingEndpoint {
@@ -167,6 +168,7 @@ interface SystemStatus {
 
 /** What one Syncthing instance says about itself, its folders and the devices it knows. */
 export interface InstanceView {
+  nodeName: string;
   device: SyncthingDevice;
   instance: SyncthingInstance;
   folders: NodeFolder[];
@@ -472,6 +474,7 @@ function peerOf({ device, connection, rate, lastSeen, sharedFolders, completion 
     connected: connection?.connected ?? false,
     paused: device.paused ?? false,
     connectionType: connection?.connected ? connection.type : null,
+    connectionKind: null,
     address: connection?.connected ? connection.address : null,
     version: connection?.clientVersion || null,
     inRate: rate.inRate,
@@ -513,8 +516,19 @@ export async function instanceFolders(client: SyncthingClient): Promise<{ folder
   return { folders: folderConfigs.map((config, index) => ({ config, view: views[index] })), devices: deviceConfigs };
 }
 
+/**
+ * Sets how each peer of these instances is reached.
+ * @implNote Runs once every instance of this host is read, because "this device" depends on all
+ * of their device IDs, not only the instance's own.
+ */
+export function classifyConnections(views: InstanceView[], localDeviceIds: ReadonlySet<string>): void {
+  for (const peer of views.flatMap((view) => view.peers)) {
+    peer.connectionKind = connectionKind({ deviceId: peer.deviceId, connected: peer.connected, type: peer.connectionType, address: peer.address, localDeviceIds });
+  }
+}
+
 /** Everything the Nodes page needs from one instance, or null while it does not answer. */
-export async function instanceView(key: string, endpoint: SyncthingEndpoint): Promise<InstanceView | null> {
+export async function instanceView(key: string, endpoint: SyncthingEndpoint, nodeName = key): Promise<InstanceView | null> {
   const client = new SyncthingClient(endpoint);
   try {
     const [status, version, connections, folderConfigs, deviceConfigs, deviceStats, folderStats, pendingDevices, pendingFolders, systemErrors] = await Promise.all([
@@ -547,6 +561,7 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint): Pr
         ),
     );
     return {
+      nodeName,
       device: { deviceId: status.myID, addresses: addressesOf(status), connectionType: null, inRate: total.inRate, outRate: total.outRate, version: version.version },
       instance: instanceOf(status, connections),
       folders,

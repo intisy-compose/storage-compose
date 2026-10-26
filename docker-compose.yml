@@ -105,6 +105,7 @@ services:
       ATTENTION_FULL_PERCENT: ${ATTENTION_FULL_PERCENT:-90}
       ACTIVITY_BUFFER: ${ACTIVITY_BUFFER:-2000}
       EXPLORER_NEED_LIMIT: ${EXPLORER_NEED_LIMIT:-20000}
+      SEEN_WRITE_INTERVAL_S: ${SEEN_WRITE_INTERVAL_S:-60}
       DISCOVERY_POLL_SECONDS: ${DISCOVERY_POLL_SECONDS:-300}
       GIT_CONFIG_GLOBAL: /setup-home/.gitconfig
       GIT_SSH_COMMAND: ssh -o IdentityFile=/setup-home/.ssh/id_ed25519 -o IdentityFile=/setup-home/.ssh/id_rsa -o UserKnownHostsFile=/setup-home/.ssh/known_hosts

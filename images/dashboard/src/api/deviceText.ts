@@ -1,4 +1,4 @@
-import type { StorageNode } from "./types.js";
+import type { ConnectionKind, StorageNode } from "./types.js";
 
 export type ReachTone = "ok" | "muted";
 
@@ -6,6 +6,14 @@ interface AddressParts {
   scheme: string | null;
   host: string;
 }
+
+const connectionKindLabels: Record<ConnectionKind, string> = {
+  "this-device": "this device",
+  "local-network": "local network",
+  tailscale: "Tailscale",
+  internet: "internet",
+  relay: "relay",
+};
 
 const unspecifiedHosts = new Set(["", "0.0.0.0", "::"]);
 
@@ -20,6 +28,15 @@ function addressParts(address: string): AddressParts {
   const rest = scheme ? address.slice(scheme[0].length) : address;
   const authority = rest.split(/[/?]/, 1)[0];
   return { scheme: scheme ? scheme[1].toLowerCase() : null, host: hostOf(authority) };
+}
+
+/** The host of `tcp://host:port`, `host:port`, `[ipv6]:port`, a bare IPv4 or IPv6 address, or a relay URL. */
+export function addressHost(address: string): string {
+  return addressParts(address).host;
+}
+
+export function connectionKindLabel(kind: ConnectionKind): string {
+  return connectionKindLabels[kind];
 }
 
 export function isReachable(node: Pick<StorageNode, "online" | "sync">): boolean {

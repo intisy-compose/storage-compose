@@ -162,12 +162,17 @@ export interface SyncthingInstance {
  */
 export type RemoteState = "valid" | "unknown" | "notSharing" | "paused" | "unavailable";
 
+/** How a connection reaches the other device, closest first. */
+export type ConnectionKind = "this-device" | "local-network" | "tailscale" | "internet" | "relay";
+
 export interface Peer {
   deviceId: string;
   name: string;
   connected: boolean;
   paused: boolean;
   connectionType: string | null;
+  /** Null while not connected. */
+  connectionKind: ConnectionKind | null;
   address: string | null;
   version: string | null;
   inRate: number;

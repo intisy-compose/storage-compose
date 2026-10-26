@@ -54,6 +54,7 @@ function peer(overrides: Partial<Peer>): Peer {
     connected: false,
     paused: false,
     connectionType: null,
+    connectionKind: null,
     address: null,
     version: null,
     inRate: 0,
@@ -238,8 +239,15 @@ describe("attention", () => {
     const lastSeen = new Date(now - 72 * hour).toISOString();
     const pc = node({ online: false, sync: { state: "offline", completion: 0, lastSeen } });
     const array = node({ id: "5784", name: "private-array", kind: "array", peers: [peer({ deviceId: pcId, name: "pc", lastSeen })] });
-    const warnings = offlineWarnings([pc, array], defaults, now, new Map([[pcId, "fb98"]]));
+    const warnings = offlineWarnings([pc, array], defaults, now, new Set([pcId]));
     assert.deepEqual(warnings.map((entry) => entry.text), ["pc has been offline for 3 days"]);
+  });
+
+  it("an absent array this host remembers raises no offline warning through another instance's peer row", () => {
+    const lastSeen = new Date(now - 120 * hour).toISOString();
+    const array = node({ id: "5784", name: "private-array", kind: "array", online: false, syncthing: null, sync: { state: "offline", completion: 0, lastSeen }, array: { state: "absent" } as StorageNode["array"] });
+    const pc = node({ peers: [peer({ deviceId: strangerId, name: "private-array", lastSeen })] });
+    assert.deepEqual(offlineWarnings([array, pc], defaults, now, new Set([strangerId])), []);
   });
 
   it("two hosts with a host agent problem give two entries", () => {
