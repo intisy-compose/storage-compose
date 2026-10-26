@@ -130,6 +130,14 @@ describe("git output shown in answers and Activity", () => {
     assert.equal(withoutUrlCredentials("To https://x-access-token:abc@github.com/o/r.git and http://tok@host:3000/r"), "To https://***@github.com/o/r.git and http://***@host:3000/r");
   });
 
+  it("masks a password holding an unencoded @ up to the last @ before the host", () => {
+    assert.equal(
+      withoutUrlCredentials("fatal: unable to access 'https://finn:p@ss@word@github.com/intisy/setup.git/': 403"),
+      "fatal: unable to access 'https://***@github.com/intisy/setup.git/': 403",
+    );
+    assert.equal(withoutUrlCredentials("To https://u:a@b@host/r and https://github.com/o/r?x=a@b"), "To https://***@host/r and https://github.com/o/r?x=a@b");
+  });
+
   it("leaves a URL without credentials and an SSH remote as they are", () => {
     const plain = "To https://github.com/intisy/setup.git\n ! [rejected] main -> main (fetch first)\nerror: failed to push some refs to 'git@github.com:intisy/setup.git'";
     assert.equal(withoutUrlCredentials(plain), plain);

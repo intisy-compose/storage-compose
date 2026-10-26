@@ -128,9 +128,12 @@ export async function readLayout(): Promise<SetupLayout | null> {
   return text === null ? null : parseLayout(text);
 }
 
-const urlCredentials = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@'"]+@/gi;
+const urlCredentials = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#'"]+@/gi;
 
-/** `text` with the user and token of every URL in it masked, so a remote pushed with a token in its URL never shows it in an answer or in Activity. */
+/**
+ * `text` with the user and token of every URL in it masked, so a remote pushed with a token in its URL never shows it in an answer or in Activity.
+ * @implNote Everything up to the last `@` before the host is masked, so a password holding an unencoded `@` is never shown in part.
+ */
 export function withoutUrlCredentials(text: string): string {
   return text.replace(urlCredentials, "$1***@");
 }
