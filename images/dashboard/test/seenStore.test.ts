@@ -143,6 +143,13 @@ describe("devices of this host", () => {
     assert.deepEqual(nodes.map((node) => node.name), ["phone"]);
   });
 
+  it("a syncthing-only device without a join record is a device, not a drive node", async () => {
+    const phone = peer({ deviceId: "STRAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH", name: "phone" });
+    const records = { all: async () => ({}), put: async () => {} };
+    const [listed] = await syncthingOnlyNodes([], [view("pc", pcId, [phone])], records, new Set([pcId]));
+    assert.equal(listed.kind, "device");
+  });
+
   const peerId = "QIXEYHJ-4CIPXRY-2FVAONW-OX6QPBK-M5OCSUU-5HCZY4M-DPELEBU-7UOJ5QI";
   const remembered = new Map([[pcId, "fb98"], [arrayId, "5784"], [peerId, "d7e5"]]);
   const running = new Map([[pcId, "fb98"]]);

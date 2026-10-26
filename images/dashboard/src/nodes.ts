@@ -197,7 +197,7 @@ export async function syncthingOnlyNodes(known: StorageNode[], views: InstanceVi
       nodes.set(peer.deviceId, {
         id: `device-${peer.deviceId.slice(0, 7).toLowerCase()}`,
         name: record?.name ?? (peer.name || peer.deviceId.slice(0, 7)),
-        kind: node?.kind ?? "drive",
+        kind: node?.kind ?? "device",
         threshold: node?.threshold ?? 0,
         assigned: [],
         local: false,

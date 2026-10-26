@@ -3,7 +3,8 @@
  * Sizes are bytes, rates bytes per second, times ISO 8601 strings in UTC, percentages 0 to 100.
  */
 
-export type NodeKind = "array" | "drive" | "folder";
+/** "device" is a Syncthing device no dashboard and no join record describes, so nothing says what node it holds. */
+export type NodeKind = "array" | "drive" | "folder" | "device";
 
 /** "unknown" is a connected device whose completion could not be read. */
 export type SyncState = "idle" | "syncing" | "waiting" | "error" | "offline" | "unknown";
