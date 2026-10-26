@@ -5,6 +5,18 @@ function Get-MarkedProcesses([string]$marker) {
     @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($marker) })
 }
 
+<#
+.NOTES
+Windows takes a moment to drop an ended process from the process list, so the check waits for it up to a
+bound instead of a fixed pause that is either too long or, on a loaded machine, too short.
+#>
+function Wait-NoMarkedProcesses([string]$marker, [int]$TimeoutSeconds) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ((Get-MarkedProcesses $marker).Count -gt 0 -and [DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 100
+    }
+}
+
 Describe 'screenshot.ps1' {
     It 'ends a browser that hangs after its timeout, fails naming it, and leaves nothing running' {
         $marker = "127.$(Get-Random -Minimum 1 -Maximum 254).$(Get-Random -Minimum 1 -Maximum 254).$(Get-Random -Minimum 1 -Maximum 254)"
@@ -16,7 +28,7 @@ Describe 'screenshot.ps1' {
         { & $screenshot -Route 'nodes' -Out $out -Browser $hangingBrowser -TimeoutSeconds 2 } | Should Throw 'did not finish within 2 s'
 
         $clock.Elapsed.TotalSeconds | Should BeLessThan 30
-        Start-Sleep -Milliseconds 500
+        Wait-NoMarkedProcesses $marker -TimeoutSeconds 10
         (Get-MarkedProcesses $marker).Count | Should Be 0
         Test-Path $out | Should Be $false
     }
