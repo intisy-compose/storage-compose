@@ -139,6 +139,23 @@ export function recordDevices(views: InstanceView[], localNodes: ReadonlyMap<str
   return store.update((records) => seenDevices(records, views, localNodes, now, host), now.getTime());
 }
 
+export interface Sightings {
+  views: InstanceView[];
+  /** Device ID to node ID of the instances this host runs now. */
+  running: ReadonlyMap<string, string>;
+  nodes: StorageNode[];
+}
+
+/** What the seen files may keep: a node whose registry entry says `remember: false` is left out as an instance, as a peer and as a drive. */
+export function rememberable({ views, running, nodes }: Sightings, ephemeralNodeIds: ReadonlySet<string>): Sightings {
+  const ephemeralDeviceIds = new Set([...running].filter(([, nodeId]) => ephemeralNodeIds.has(nodeId)).map(([deviceId]) => deviceId));
+  return {
+    views: views.filter((view) => !ephemeralNodeIds.has(view.nodeId)).map((view) => ({ ...view, peers: view.peers.filter((peer) => !ephemeralDeviceIds.has(peer.deviceId)) })),
+    running: new Map([...running].filter(([deviceId]) => !ephemeralDeviceIds.has(deviceId))),
+    nodes: nodes.filter((node) => !ephemeralNodeIds.has(node.id)),
+  };
+}
+
 /** Device ID to node ID of every instance this host has run, the ones not running now included. */
 export function rememberedLocalNodes(records: DeviceSeen[], host = hostName): Map<string, string> {
   return new Map(Object.entries(records.find((record) => record.key === host)?.nodeByDeviceId ?? {}));

@@ -127,7 +127,10 @@ export interface DeviceSummary {
   sources: DeviceSource[];
 }
 
-/** `GET /api/devices`; with `?scope=local`, this host's view only, as another host's dashboard reads it. */
+/**
+ * `GET /api/devices`; with `?scope=local`, this host's view only, as another host's dashboard reads it.
+ * In that scope other hosts are not read, so their devices read online only through a live connection.
+ */
 export interface DevicesResponse {
   devices: DeviceSummary[];
   drives: DriveSummary[];
@@ -552,4 +555,6 @@ export interface NodeRegistryEntry {
   syncthing: { url: string; apiKey: string } | null;
   /** When the writer last confirmed the entry; one older than 5 minutes is shown offline. */
   updated: string;
+  /** False for an ephemeral node such as a test peer: its instance ID and drive are never written to the seen files. Absent means true. */
+  remember?: boolean;
 }

@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { type Server, createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, describe, it } from "node:test";
 import type { DeviceSummary, DevicesResponse, DriveAttachment, DriveRecord, Peer, StorageNode } from "../src/api/types.js";
 import { type DeviceIndexSources, deviceIndex } from "../src/deviceIndex.js";
-import type { DeviceSeen } from "../src/seenStore.js";
+import { seenDrives } from "../src/driveHistory.js";
+import { type DevicesRouteSources, PeerDevicesCache, devicesResponse } from "../src/routes/deviceIndex.js";
+import { type DeviceSeen, SeenStore, recordDevices, rememberable } from "../src/seenStore.js";
+import type { InstanceView } from "../src/syncthing.js";
 
 const pcId = "PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6";
 const arrayId = "X7KCOB7-4ZJQ2RT-W352REX-D36FWRQ-YSGVXEA-6YA5PZK-PHYIU5M-32WVQQ4";
@@ -104,6 +112,7 @@ describe("device index", () => {
     assert.deepEqual(finn.nodeIds, ["5784", "fb98"]);
     assert.deepEqual([...finn.deviceIds].sort(), [arrayId, pcId, testPeerId].sort());
     assert.deepEqual(finn.perInstance, [], "an instance's connection to another instance of this host is not a device's connection");
+    assert.deepEqual(finn.sources, ["dashboard"], "its own instances' rows and records add no source to this host");
     assert.equal(finn.connection, null);
   });
 
@@ -203,5 +212,162 @@ describe("device index", () => {
     assert.deepEqual(device(response, "finn").driveKeys, []);
     assert.deepEqual(device(response, "p53").deviceIds, [arrayId], "the moved array's identity is p53's, not this host's remembered one");
     assert.deepEqual(device(response, "finn").deviceIds, [pcId]);
+  });
+
+  it("a join record does not rename a host a dashboard reports, even while it does not answer", () => {
+    const p53Node = node("2b90", "p53", p53Id, { local: false, host: "p53", dashboardUrl: "https://p53.example.ts.net" });
+    const joined = { name: "p53-laptop", syncthingDeviceId: p53Id, os: "linux" as const, nodes: [], joinedAt: "2026-10-20T00:00:00Z", tailnetName: "p53.example.ts.net", setup: null };
+    const response = deviceIndex(sources({ otherHosts: [{ host: "p53", nodes: [p53Node], answer: null }], joins: [joined] }));
+
+    assert.equal(device(response, "p53").name, "p53");
+    assert.deepEqual(device(response, "p53").sources, ["dashboard", "join"]);
+  });
+});
+
+function view(nodeId: string, nodeName: string, deviceId: string, peers: Peer[]): InstanceView {
+  return {
+    nodeId,
+    nodeName,
+    device: { deviceId, addresses: [], connectionType: null, inRate: 0, outRate: 0, version: "v2.1.6" },
+    instance: { uptime: 0, cpuPercent: 0, memoryBytes: 0, listeners: [], discoveryErrors: [], inTotal: 0, outTotal: 0 },
+    folders: [],
+    sync: { state: "idle", completion: 100, lastSeen: null },
+    peers,
+    pendingDevices: {},
+    pendingFolders: {},
+    offersWaiting: 0,
+    systemErrors: [],
+  };
+}
+
+describe("a node that asks not to be remembered", () => {
+  let directory: string;
+
+  before(async () => {
+    directory = await mkdtemp(join(tmpdir(), "device-index-"));
+  });
+
+  after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("leaves no instance ID, peer record or drive record in the seen files", async () => {
+    const now = new Date("2026-10-26T15:00:00Z");
+    const connected = { connected: true, connectionKind: "this-device" as const, address: "100.75.76.90:50978", connectionType: "tcp-server" };
+    const pc = node("fb98", "pc", pcId);
+    const testPeer = node("d7e5", "dashboard-test-peer", testPeerId, { kind: "folder" });
+    const sightings = {
+      views: [view("fb98", "pc", pcId, [peer(testPeerId, { name: "dashboard-test-peer", ...connected })]), view("d7e5", "dashboard-test-peer", testPeerId, [peer(pcId, { name: "pc", ...connected })])],
+      running: new Map([
+        [pcId, "fb98"],
+        [testPeerId, "d7e5"],
+      ]),
+      nodes: [pc, testPeer],
+    };
+
+    const kept = rememberable(sightings, new Set(["d7e5"]));
+    const devices = await recordDevices(kept.views, kept.running, now, new SeenStore<DeviceSeen>(join(directory, "devices.json"), 0), "finn");
+    const drives = seenDrives([], kept.nodes, "finn", now);
+
+    assert.deepEqual(
+      devices.map((record) => record.key),
+      ["finn"],
+      "neither the peer's record nor pc's record as the peer saw it",
+    );
+    assert.deepEqual(devices[0].deviceIds, [pcId]);
+    assert.deepEqual(devices[0].nodeByDeviceId, { [pcId]: "fb98" });
+    assert.deepEqual(
+      drives.map((record) => record.key),
+      ["node:fb98"],
+    );
+    assert.equal(sightings.views[0].peers.length, 1, "the live views are not changed");
+  });
+});
+
+describe("the devices route", () => {
+  const servers: Server[] = [];
+  const requests = new Map<string, number>();
+
+  function peerAnswer(host: string, nodeId: string, deviceId: string): DevicesResponse {
+    const own: DeviceSummary = { key: host, name: host, thisHost: true, online: true, connection: null, perInstance: [], lastSeen: null, lastConnection: null, deviceIds: [deviceId], nodeIds: [nodeId], driveKeys: [`node:${nodeId}`], sources: ["dashboard"] };
+    const record = { ...drive(`node:${nodeId}`, [stay(host, "2026-10-25T08:00:00Z", "2026-10-26T15:00:00Z", null, `drive node ${host}`)]), kind: "drive-node" as const, serial: null, arrayId: null, nodeId };
+    return { devices: [own], drives: [{ ...record, present: true, currentHost: host, lastHost: host, lastAt: "2026-10-26T15:00:00Z" }] };
+  }
+
+  async function fakePeer(answer: DevicesResponse): Promise<string> {
+    let base = "";
+    const server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://peer");
+      const isLocalDevices = url.pathname === "/api/devices" && url.searchParams.get("scope") === "local";
+      requests.set(base, (requests.get(base) ?? 0) + 1);
+      response.writeHead(isLocalDevices ? 200 : 404, { "Content-Type": "application/json" });
+      response.end(JSON.stringify(isLocalDevices ? answer : { error: "not found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    servers.push(server);
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    return base;
+  }
+
+  async function deadPeer(): Promise<string> {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    return url;
+  }
+
+  after(async () => {
+    await Promise.all(servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  });
+
+  function routeSources(peerDashboards: string[], cached: StorageNode[], peerAnswers = new PeerDevicesCache(5_000, 2_000)): DevicesRouteSources {
+    return {
+      host: "finn",
+      peerDashboards,
+      ownNodes: async () => [node("fb98", "pc", pcId)],
+      otherHostNodes: async () => cached,
+      peerAnswers,
+      seen: async () => [],
+      joins: async () => [],
+      drives: async () => [],
+    };
+  }
+
+  it("an answering peer, a dead peer and a peer with no nodes cached each give their device", async () => {
+    const p53Url = await fakePeer(peerAnswer("p53", "2b90", p53Id));
+    const spisorUrl = await fakePeer(peerAnswer("spisor", "c204", stickId));
+    const atticUrl = await deadPeer();
+    const cached = [node("2b90", "p53", p53Id, { local: false, host: "p53", dashboardUrl: p53Url }), node("6d07", "attic-nas", laptopId, { local: false, host: "attic-nas", dashboardUrl: atticUrl })];
+
+    const response = await devicesResponse("all", routeSources([p53Url, spisorUrl, atticUrl], cached));
+
+    assert.deepEqual(
+      response.devices.map((entry) => [entry.key, entry.online]),
+      [
+        ["finn", true],
+        ["p53", true],
+        ["spisor", true],
+        ["attic-nas", false],
+      ],
+    );
+    assert.deepEqual(device(response, "spisor").nodeIds, ["c204"], "the host and its nodes come from its answer when none are cached");
+    assert.deepEqual(device(response, "p53").driveKeys, ["node:2b90"]);
+    assert.deepEqual(device(response, "spisor").driveKeys, ["node:c204"]);
+    assert.deepEqual(device(response, "attic-nas").nodeIds, ["6d07"], "a dead peer keeps its cached nodes");
+  });
+
+  it("a peer's answer is read once within the cache time, and local scope reads no peer", async () => {
+    const url = await fakePeer(peerAnswer("p53", "2b90", p53Id));
+    const peerAnswers = new PeerDevicesCache(5_000, 2_000);
+    const sourcesOf = routeSources([url], [], peerAnswers);
+
+    await devicesResponse("all", sourcesOf);
+    await devicesResponse("all", sourcesOf);
+    await devicesResponse("local", sourcesOf);
+    assert.equal(requests.get(url), 1);
+
+    await peerAnswers.read(url, Date.now() + 5_000);
+    assert.equal(requests.get(url), 2, "an answer older than the cache time is read again");
   });
 });

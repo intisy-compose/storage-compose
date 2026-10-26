@@ -129,8 +129,8 @@ function foldIntoThisHost(book: DeviceBook, thisHost: DeviceDraft, seen: DeviceS
 
 function addPeer(book: DeviceBook, node: StorageNode, peer: Peer): void {
   const device = book.ownerOf(peer.deviceId);
-  device.sources.add("syncthing");
   if (device.thisHost) return;
+  device.sources.add("syncthing");
   device.name ??= peer.name || null;
   device.peerLastSeen.push(peer.lastSeen);
   device.reach.push({ connection: { nodeId: node.id, nodeName: node.name, connected: peer.connected, kind: peer.connectionKind, address: peer.address }, type: peer.connectionType });
@@ -139,13 +139,14 @@ function addPeer(book: DeviceBook, node: StorageNode, peer: Peer): void {
 function addJoin(book: DeviceBook, joined: JoinedDevice): void {
   const device = book.ownerOf(joined.syncthingDeviceId);
   device.sources.add("join");
-  if (!device.thisHost && !device.dashboardAnswered) device.name = joined.name;
+  if (!device.thisHost && !device.sources.has("dashboard")) device.name = joined.name;
 }
 
 function addHistory(book: DeviceBook, record: DeviceSeen, host: string): void {
   if (record.key === host) return;
   for (const deviceId of record.deviceIds) {
     const device = book.ownerOf(deviceId);
+    if (device.thisHost) continue;
     device.sources.add("history");
     device.history.push(record);
     device.name ??= record.name;

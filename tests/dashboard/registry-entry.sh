@@ -39,7 +39,7 @@ write_atomically() {
 announce() {
     api_key=$(sed -n 's:.*<apikey>\(.*\)</apikey>.*:\1:p' "$home/config.xml")
     write_atomically "$registry/$node_id.json" "$(printf \
-        '{"id":"%s","name":"%s","kind":"folder","threshold":0,"assigned":[],"root":"%s","present":true,"space":{"size":null,"used":null},"syncthing":null,"updated":"%s"}' \
+        '{"id":"%s","name":"%s","kind":"folder","threshold":0,"assigned":[],"root":"%s","present":true,"space":{"size":null,"used":null},"syncthing":null,"updated":"%s","remember":false}' \
         "$node_id" "$node_name" "$node_root" "$(date -u +%FT%TZ)")"
     write_atomically "$registry/$node_id.syncthing.json" "$(printf \
         '{"url":"http://gateway:%s","apiKey":"%s","syncPort":%s}' "$gui_port" "$api_key" "$sync_port")"

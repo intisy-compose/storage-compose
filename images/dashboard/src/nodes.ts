@@ -9,7 +9,7 @@ import { type JoinRecords } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { parityState } from "./parity.js";
 import { attentionSettings, hostName, peerDashboards, poolPath, registryDirectory } from "./settings.js";
-import { deviceSeenStore, localDeviceIds, recordDevices, rememberedLocalNodes } from "./seenStore.js";
+import { deviceSeenStore, localDeviceIds, recordDevices, rememberable, rememberedLocalNodes } from "./seenStore.js";
 import { type InstanceView, classifyConnections, instanceView, peerSync } from "./syncthing.js";
 import { fetchTailnetJson } from "./tailnet.js";
 import { readdir, statfs } from "node:fs/promises";
@@ -121,8 +121,9 @@ function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
  * @param agentNodes filled with device ID to node ID of each local node the host agent names, so an
  * offline node is not listed a second time as an offline device.
  * @param unread filled with what could not be read, so its drives are not taken as gone.
+ * @param ephemeral filled with the nodes whose registry entry asks not to be remembered.
  */
-async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes: Map<string, string>, unread: UnreadSources): Promise<StorageNode[]> {
+async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes: Map<string, string>, unread: UnreadSources, ephemeral: Set<string>): Promise<StorageNode[]> {
   const [devices, sources, entries, listed, registryListed] = await Promise.all([
     listBlockDevices(),
     mountSources(),
@@ -145,6 +146,7 @@ async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes
     warnings.push(...arrayWarnings(status, node), ...nodeWarnings(node, view));
   }
   for (const entry of entries) {
+    if (entry.remember === false) ephemeral.add(entry.id);
     const endpoint = entry.present ? await syncthingEndpoint(entry.id, entry) : null;
     const view = endpoint ? await instanceView(entry.id, endpoint, entry.name) : null;
     if (view) views.push(view);
@@ -252,14 +254,16 @@ export async function nodesResponse(scope: "all" | "local", records: JoinRecords
   const agentNodes = new Map<string, string>();
   const unread: UnreadSources = { allArrays: false, arrayIds: [], nodes: false };
   if (scope === "local") refreshOtherHostNodes(records);
-  const ownNodes = await localNodes(warnings, views, agentNodes, unread);
+  const ephemeral = new Set<string>();
+  const ownNodes = await localNodes(warnings, views, agentNodes, unread, ephemeral);
   const otherHostNodes = scope === "all" ? await remoteNodes(warnings) : cachedOtherHostNodes();
   const running = new Map([...views.map((view): [string, string] => [view.device.deviceId, view.nodeId]), ...agentNodes]);
   const remembered = rememberedLocalNodes(await deviceSeenStore.load());
   const local = localDeviceIds({ running, remembered, localNodeIds: new Set(ownNodes.map((node) => node.id)), otherHostNodes });
   classifyConnections(views, local);
-  await rememberDevices(views, running);
-  await rememberDrives(ownNodes, unread);
+  const kept = rememberable({ views, running, nodes: ownNodes }, ephemeral);
+  await rememberDevices(kept.views, kept.running);
+  await rememberDrives(kept.nodes, unread);
   const nodes = ownNodes.map((node) => withRememberedDevice(node, remembered, local));
   if (scope === "all") {
     nodes.push(...otherHostNodes);
