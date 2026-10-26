@@ -131,6 +131,18 @@ describe("join admission", () => {
     assert.equal(invalidations(), 1);
   });
 
+  it("enters a device added to Syncthing but not recorded in the setup repo, and drops the shared build, when recording fails", async () => {
+    const { dependencies, instance, activity, invalidations } = setup({
+      recordInSetup: async () => {
+        throw new Error("EACCES: permission denied, open '/setup/drive-sync.toml'");
+      },
+    });
+    await assert.rejects(handleJoin(dependencies, ["100.64.0.5"], p53Request), /EACCES/);
+    assert.deepEqual(instance.devices.map((device) => device.deviceID), [p53Id]);
+    assert.deepEqual(activity, ["p53 was added to private-array but not recorded in the setup repo: EACCES: permission denied, open '/setup/drive-sync.toml'"]);
+    assert.equal(invalidations(), 1);
+  });
+
   it("enters nothing for a refused join", async () => {
     const { dependencies, activity, invalidations } = setup();
     await refusal(handleJoin(dependencies, ["100.64.0.7"], p53Request));

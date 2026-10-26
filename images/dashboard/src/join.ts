@@ -148,6 +148,26 @@ async function shareWithInstances(instances: JoinInstance[], request: JoinReques
   return devices;
 }
 
+function instanceNames(devices: JoinDevice[]): string {
+  return devices.map((device) => device.name).join(", ");
+}
+
+/** Records the admission in the setup repo; when that throws, the device is already in Syncthing, so the shared build is dropped and Activity says so before the error is passed on. */
+async function recordAddedDevice(
+  dependencies: JoinDependencies,
+  recordInSetup: NonNullable<JoinDependencies["recordInSetup"]>,
+  request: JoinRequest,
+  devices: JoinDevice[],
+): Promise<SetupRecordResult> {
+  try {
+    return await recordInSetup(request.name, request.syncthingDeviceId, request.nodes[0]?.path ?? null);
+  } catch (error) {
+    dependencies.effects.invalidate();
+    dependencies.effects.record(`${request.name} was added to ${instanceNames(devices)} but not recorded in the setup repo: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
+}
+
 export async function handleJoin(dependencies: JoinDependencies, addresses: string[], body: unknown): Promise<{ response: JoinResponse; setup: SetupRecordResult | null }> {
   const caller = await admitCaller(dependencies, addresses);
   const request = validateJoinRequest(body);
@@ -161,7 +181,7 @@ export async function handleJoin(dependencies: JoinDependencies, addresses: stri
   const isRecordedInSetup = listed?.id === request.syncthingDeviceId && listed.joined;
   let setup = known?.setup ?? null;
   if (dependencies.recordInSetup && (!isRecordedInSetup || !setup?.pushed)) {
-    setup = await dependencies.recordInSetup(request.name, request.syncthingDeviceId, request.nodes[0]?.path ?? null);
+    setup = await recordAddedDevice(dependencies, dependencies.recordInSetup, request, devices);
   }
   if (!dependencies.recordInSetup) setup = { committed: false, pushed: false, message: "no setup repo is configured (SETUP_REPO_DIR); the admission is recorded on this host only" };
   await dependencies.records.put({
@@ -174,7 +194,7 @@ export async function handleJoin(dependencies: JoinDependencies, addresses: stri
     setup,
   });
   dependencies.effects.invalidate();
-  dependencies.effects.record(`${request.name} joined: added to ${devices.map((device) => device.name).join(", ")}`);
+  dependencies.effects.record(`${request.name} joined: added to ${instanceNames(devices)}`);
   return { response: { devices, folders }, setup };
 }
 
