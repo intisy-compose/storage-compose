@@ -582,6 +582,8 @@ export interface FolderSummary {
 /** `GET /api/folders`; `?scope=local` leaves the other hosts out, which is what hosts ask each other. */
 export interface FoldersResponse {
   folders: FolderSummary[];
+  /** Nodes whose Syncthing answered but refused their folder list, with the reason; their folders are not listed. */
+  unreadable: { nodeId: string; nodeName: string; error: string }[];
   /** Nodes whose Syncthing answered but whose pending offers could not be read, with the reason. */
   offersUnreadable: { nodeId: string; nodeName: string; error: string }[];
 }

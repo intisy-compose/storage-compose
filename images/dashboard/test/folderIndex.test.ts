@@ -23,6 +23,7 @@ interface FakeInstance {
   folders: FakeFolder[];
   pending: Record<string, { offeredBy: Record<string, { time: string; label: string; receiveEncrypted: boolean; remoteEncrypted: boolean }> }>;
   pendingFails?: boolean;
+  foldersRefused?: boolean;
 }
 
 function reply(response: ServerResponse, body: unknown, status = 200): void {
@@ -65,6 +66,7 @@ function fakeSyncthing(instance: FakeInstance): Server {
       case "/rest/system/status":
         return reply(response, { myID: instance.ownId });
       case "/rest/config/folders":
+        if (instance.foldersRefused) return reply(response, { error: "forbidden" }, 403);
         return reply(response, instance.folders.map((folder) => ({ ...fullConfig(folder), devices: folder.devices.map((deviceID) => ({ deviceID })) })));
       case "/rest/config/devices":
         return reply(response, [
@@ -238,6 +240,15 @@ describe("folder index", () => {
     assert.equal(answer.offersUnreadable.length, 1);
     assert.equal(answer.offersUnreadable[0].nodeId, "5784");
     assert.match(answer.offersUnreadable[0].error, /HTTP 500/);
+  });
+
+  it("a node that refuses its folder list is named and the other nodes' folders still list", async () => {
+    privateArray.foldersRefused = true;
+    const answer = await foldersResponse("local", sources).finally(() => (privateArray.foldersRefused = false));
+    assert.deepEqual(byId(answer.folders, "music").copies.map((copy) => copy.nodeId), ["fb98"]);
+    assert.deepEqual(byId(answer.folders, "documents").copies.map((copy) => copy.nodeId), ["fb98"]);
+    assert.deepEqual(answer.unreadable.map((entry) => [entry.nodeId, entry.nodeName]), [["5784", "private-array"]]);
+    assert.match(answer.unreadable[0].error, /HTTP 403/);
   });
 
   it("a folder no node has and nobody offers is 404", async () => {

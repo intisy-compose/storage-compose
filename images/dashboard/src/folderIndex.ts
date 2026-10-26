@@ -25,6 +25,7 @@ interface InstanceFolders {
   copies: FolderCopy[];
   offers: PendingFolderOffer[];
   offersError: string | null;
+  foldersError: string | null;
 }
 
 function deviceName(devices: SyncthingDeviceConfig[], deviceId: string): string {
@@ -56,15 +57,19 @@ async function readPending(client: SyncthingClient): Promise<{ pending: PendingF
   }
 }
 
-/** @implNote An instance that does not answer is left out, as the Nodes page shows it without folders. */
+/**
+ * @implNote An instance that does not answer is left out, as the Nodes page shows it without folders;
+ * one that refuses is left out and named, so one node's refusal never costs the others' folders.
+ */
 async function readInstance(instance: FolderInstance): Promise<InstanceFolders> {
   try {
     const { folders, devices } = await instanceFolders(instance.client);
     const copies = folders.map(({ config, view }) => ({ ...view, nodeId: instance.nodeId, nodeName: instance.nodeName, host: instance.host, local: true, paused: config.paused }));
     const { pending, error } = await readPending(instance.client);
-    return { copies, offers: offersOf(instance, devices, pending), offersError: error };
+    return { copies, offers: offersOf(instance, devices, pending), offersError: error, foldersError: null };
   } catch (error) {
-    if (error instanceof SyncthingUnavailable) return { copies: [], offers: [], offersError: null };
+    if (error instanceof SyncthingUnavailable) return { copies: [], offers: [], offersError: null, foldersError: null };
+    if (error instanceof SyncthingError) return { copies: [], offers: [], offersError: null, foldersError: error.message };
     throw error;
   }
 }
@@ -84,7 +89,7 @@ function byLabel(left: FolderSummary, right: FolderSummary): number {
 }
 
 /** Groups copies and offers by folder ID; a remote summary's copies are marked as not this host's. */
-function mergeSummaries(local: Omit<InstanceFolders, "offersError">[], remote: FolderSummary[], layout: SetupLayout | null): FolderSummary[] {
+function mergeSummaries(local: Pick<InstanceFolders, "copies" | "offers">[], remote: FolderSummary[], layout: SetupLayout | null): FolderSummary[] {
   const summaries = new Map<string, FolderSummary>();
   const summaryFor = (id: string, label: string) => {
     const existing = summaries.get(id) ?? emptySummary(id, label || id);
@@ -104,14 +109,21 @@ function mergeSummaries(local: Omit<InstanceFolders, "offersError">[], remote: F
   return [...summaries.values()].map((summary) => ({ ...summary, ...priorityFor(summary, layout) })).sort(byLabel);
 }
 
+function nodeErrors(instances: FolderInstance[], reads: InstanceFolders[], errorOf: (read: InstanceFolders) => string | null): FoldersResponse["unreadable"] {
+  return instances.flatMap((instance, index) => {
+    const error = errorOf(reads[index]);
+    return error ? [{ nodeId: instance.nodeId, nodeName: instance.nodeName, error }] : [];
+  });
+}
+
 export async function foldersResponse(scope: "all" | "local", sources: FolderIndexSources): Promise<FoldersResponse> {
   const instances = await sources.localInstances();
   const [local, remote, layout] = await Promise.all([Promise.all(instances.map(readInstance)), scope === "all" ? sources.peerFolders() : Promise.resolve([]), sources.layout()]);
-  const offersUnreadable = instances.flatMap((instance, index) => {
-    const error = local[index].offersError;
-    return error ? [{ nodeId: instance.nodeId, nodeName: instance.nodeName, error }] : [];
-  });
-  return { folders: mergeSummaries(local, remote, layout), offersUnreadable };
+  return {
+    folders: mergeSummaries(local, remote, layout),
+    unreadable: nodeErrors(instances, local, (read) => read.foldersError),
+    offersUnreadable: nodeErrors(instances, local, (read) => read.offersError),
+  };
 }
 
 function oneOf<Value extends string>(value: string | undefined, allowed: readonly Value[], fallback: Value): Value {
