@@ -1,3 +1,4 @@
+import { deviceDisplayName, isNodePaused, shortDeviceId } from "./api/deviceText.js";
 import type { StorageNode, Warning, WarningKind, WarningLevel } from "./api/types.js";
 import type { AttentionThresholds } from "./settings.js";
 import type { PendingDevices, PendingFolders, SystemError } from "./syncthing.js";
@@ -65,10 +66,6 @@ function plural(count: number, singular: string): string {
   return `${count} ${count === 1 ? singular : `${singular}s`}`;
 }
 
-function shortId(deviceId: string): string {
-  return deviceId.slice(0, 7);
-}
-
 export function folderErrorWarnings(node: StorageNode): Warning[] {
   return node.folders
     .filter((folder) => folder.errors > 0)
@@ -99,13 +96,13 @@ export function systemErrorWarnings(node: StorageNode, errors: SystemError[]): W
 
 /** Each device asking to connect and each folder offered to the node, as info entries for Requests. */
 export function pendingWarnings(node: StorageNode, devices: PendingDevices, folders: PendingFolders): Warning[] {
-  const nameOf = (deviceId: string) => node.peers.find((peer) => peer.deviceId === deviceId)?.name || shortId(deviceId);
+  const nameOf = (deviceId: string) => deviceDisplayName(node.peers.find((peer) => peer.deviceId === deviceId)?.name, deviceId);
   const deviceEntries = Object.entries(devices).map(([deviceId, device]) =>
     warning({
       id: `pending-device:${node.id}:${deviceId}`,
       level: "info",
       kind: "pending-device",
-      text: `${device.name || shortId(deviceId)} (${shortId(deviceId)}) asks to connect to ${node.name}`,
+      text: `${deviceDisplayName(device.name, deviceId)} (${shortDeviceId(deviceId)}) asks to connect to ${node.name}`,
       nodeId: node.id,
       at: device.time,
     }),
@@ -147,6 +144,12 @@ export function fullWarnings(node: StorageNode, thresholds: AttentionThresholds)
     warnings.push(warning({ id: `full:${node.id}:${member.label}`, level: "warning", kind: "full", text: `${member.label} in ${node.name} is ${shownPercent(memberPercent)}% full`, nodeId: node.id }));
   }
   return warnings;
+}
+
+/** A paused node stays on Attention until it is resumed, as nothing syncs with it meanwhile. */
+export function pausedWarnings(node: StorageNode): Warning[] {
+  if (!isNodePaused(node)) return [];
+  return [warning({ id: `paused:${node.id}`, level: "warning", kind: "paused", text: `${node.name}: every device paused`, nodeId: node.id })];
 }
 
 function offlineDuration(milliseconds: number): string {
@@ -192,7 +195,7 @@ export function offlineWarnings(nodes: StorageNode[], thresholds: AttentionThres
           id: `offline:device:${peer.deviceId}`,
           level: "warning",
           kind: "offline",
-          text: `${peer.name || shortId(peer.deviceId)} (seen by ${node.name}) has been offline for ${offlineDuration(elapsed)}`,
+          text: `${deviceDisplayName(peer.name, peer.deviceId)} (seen by ${node.name}) has been offline for ${offlineDuration(elapsed)}`,
           nodeId: ownNode?.id ?? node.id,
           at: peer.lastSeen!,
         }),

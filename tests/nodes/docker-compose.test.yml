@@ -28,6 +28,8 @@ services:
   dashboard:
     image: storage-dashboard:nodetest
     container_name: stn-dashboard
+    environment:
+      DASHBOARD_EXTRA_HOSTS: dashboard
 
   gateway:
     container_name: stn-gateway

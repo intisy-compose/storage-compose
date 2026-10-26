@@ -1,3 +1,4 @@
+import { deviceDisplayName } from "./api/deviceText.js";
 import type { NodeEntryState, TreeEntry, TreeListing } from "./api/types.js";
 import { entryStatus, type StatusInput } from "./explorerStatus.js";
 import { type FolderLists, PathSet, browseFor, errorTotalOf, listsWithStatus, needTotalOf, treeFingerprint } from "./folderLists.js";
@@ -112,7 +113,7 @@ export async function readNodeTree(node: TreeNode, layout: SetupLayout | null, s
       answering: true,
       ownId,
       folders: placements.map((placement, index) => ({ placement, config: configs[index] ?? null })),
-      deviceNames: new Map(devices.map((device) => [device.deviceID, device.name || device.deviceID.slice(0, 7)])),
+      deviceNames: new Map(devices.map((device) => [device.deviceID, deviceDisplayName(device.name, device.deviceID)])),
     };
   } catch (error) {
     if (error instanceof SyncthingUnavailable) return tree;
@@ -391,7 +392,7 @@ export async function nodeRowState(tree: NodeTree, layout: SetupLayout | null, r
   const local = file?.local ? { deleted: file.local.deleted, ignored: file.local.ignored } : null;
   return {
     state: nodeState(tree, entryStatus(await indexRowInput(tree, layout, row, local))),
-    availability: (file?.availability ?? []).map((device) => ({ deviceId: device.id, name: tree.deviceNames.get(device.id) ?? device.id.slice(0, 7) })),
+    availability: (file?.availability ?? []).map((device) => ({ deviceId: device.id, name: deviceDisplayName(tree.deviceNames.get(device.id), device.id) })),
   };
 }
 

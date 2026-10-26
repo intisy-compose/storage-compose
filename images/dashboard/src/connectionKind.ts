@@ -59,7 +59,7 @@ function networkKind(address: string): ConnectionKind {
 /**
  * How a peer is reached, or null while it is not connected.
  * @implNote Another instance of this host comes first: such pairs often connect over the tailnet
- * address (`pc` reaches `private-array` at `100.75.83.74:22000`), and that is still the same machine.
+ * address of the host, and that is still the same machine.
  * Relay comes before the address, which for a relayed connection is the relay's own.
  */
 export function connectionKind(input: ConnectionInput): ConnectionKind | null {

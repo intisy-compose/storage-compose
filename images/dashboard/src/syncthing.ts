@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { listedAddresses } from "./api/deviceText.js";
+import { deviceDisplayName, listedAddresses } from "./api/deviceText.js";
 import { connectionKind } from "./connectionKind.js";
 import type { FolderFile, FolderPeer, FolderType, NodeFolder, NodeSync, Peer, RemoteState, SyncthingDevice, SyncthingInstance } from "./api/types.js";
 
@@ -489,7 +489,7 @@ function peerOf({ device, connection, rate, lastSeen, sharedFolders, completion 
 }
 
 function sharedWithOf(folder: SyncthingFolderConfig, ownId: string, names: Map<string, string>): FolderPeer[] {
-  return folder.devices.filter((entry) => entry.deviceID !== ownId).map((entry) => ({ deviceId: entry.deviceID, name: names.get(entry.deviceID) ?? entry.deviceID.slice(0, 7) }));
+  return folder.devices.filter((entry) => entry.deviceID !== ownId).map((entry) => ({ deviceId: entry.deviceID, name: deviceDisplayName(names.get(entry.deviceID), entry.deviceID) }));
 }
 
 /** @implNote Optional, so an instance that refuses one of them still shows its folders and peers. */

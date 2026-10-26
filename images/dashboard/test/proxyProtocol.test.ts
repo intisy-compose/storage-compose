@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { connect } from "node:net";
 import type { AddressInfo, Server } from "node:net";
 import { after, before, describe, it } from "node:test";
+import { hostAllowlist } from "../src/http.js";
 import { createJoinListener } from "../src/joinListener.js";
 import { parseProxyV2 } from "../src/proxyProtocol.js";
 
+const storageHost = hostAllowlist(["storage"]);
 const signature = [0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a];
 
 /** The header tailscale's serve writes (go-proxyproto, v1.102.4) for a caller on 100.75.76.90:51234. */
@@ -78,8 +80,8 @@ function exchange(server: Server, ...writes: Buffer[]): Promise<string> {
   });
 }
 
-function httpRequest(method: string, path: string, body = ""): Buffer {
-  return Buffer.from(`${method} ${path} HTTP/1.1\r\nHost: storage\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+function httpRequest(method: string, path: string, body = "", headers = "Content-Type: application/json\r\n"): Buffer {
+  return Buffer.from(`${method} ${path} HTTP/1.1\r\nHost: storage\r\nConnection: close\r\n${headers}Content-Length:${Buffer.byteLength(body)}\r\n\r\n${body}`);
 }
 
 describe("the join listener", () => {
@@ -90,7 +92,7 @@ describe("the join listener", () => {
     seen.push(`${caller.address} ${Buffer.concat(chunks).toString("utf8")}`);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ caller: caller.address }));
-  }, async () => ["127.0.0.1"]);
+  }, async () => ["127.0.0.1"], storageHost);
 
   before(() => new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)));
   after(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -114,6 +116,15 @@ describe("the join listener", () => {
       assert.match(answer, /^HTTP\/1.1 404/, `${method} ${path}`);
       assert.match(answer, /serves only POST \/api\/join/);
     }
+  });
+
+  it("refuses a join a page on another site sent through the browser, and hands it on to nothing", async () => {
+    const count = seen.length;
+    const crossSite = await exchange(server, Buffer.concat([ipv4Header(), httpRequest("POST", "/api/join", "{}", "Content-Type: application/json\r\nOrigin: https://evil.example\r\n")]));
+    assert.match(crossSite, /^HTTP\/1.1 403/);
+    const plainForm = await exchange(server, Buffer.concat([ipv4Header(), httpRequest("POST", "/api/join", "{}", "Content-Type: text/plain\r\n")]));
+    assert.match(plainForm, /^HTTP\/1.1 415/);
+    assert.equal(seen.length, count);
   });
 
   it("closes a connection without a header unanswered", async () => {
@@ -143,6 +154,7 @@ describe("the join listener's source check", () => {
       resolutions++;
       return gatewayAddresses;
     },
+    storageHost,
   );
   const validJoin = () => Buffer.concat([ipv4Header(), httpRequest("POST", "/api/join", "{}")]);
 

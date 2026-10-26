@@ -11,6 +11,13 @@ export const clusterArrayId = process.env.ARRAY_PREFIX ?? "storage";
 export const hostName = process.env.STORAGE_NODE || "this host";
 /** The tailnet name of this host's dashboard and cluster, as `up` wrote it into config.env. */
 export const tailnetHost = process.env.STORAGE_HOST ?? "";
+
+/** The names the dashboard answers to: loopback, the tailnet name `up` wrote as STORAGE_HOST, and every DASHBOARD_EXTRA_HOSTS entry (comma separated). */
+export function dashboardHostsOf(environment: Record<string, string | undefined>): string[] {
+  return ["localhost", "127.0.0.1", "[::1]", ...list(environment.STORAGE_HOST), ...list(environment.DASHBOARD_EXTRA_HOSTS)];
+}
+
+export const dashboardHosts = dashboardHostsOf(process.env);
 export const statusDirectory = process.env.STATUS_DIRECTORY ?? "/status";
 /** DISCOVERY_POLL_SECONDS from config.env: how often the mounter rescans every device; a missing or unusable value takes 300. */
 export function discoveryPollSecondsOf(environment: Record<string, string | undefined>): number {
@@ -31,8 +38,13 @@ export const joinPort = Number(process.env.JOIN_PORT ?? 8447);
 export const joinGatewayHost = process.env.JOIN_GATEWAY_HOST ?? "gateway";
 export const candidateTransports = list(process.env.CANDIDATE_TRANSPORTS ?? "usb");
 export const anyArrayLabelPattern = new RegExp(`^([0-9a-f]{4}|${clusterArrayId})-((data|parity)\\d+)$`);
+/** A dashboard's address without a trailing slash, so a path can be appended to it. */
+export function dashboardBaseUrl(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
 /** Other hosts' dashboards, read for their nodes, e.g. https://storage-p53.tailnet.ts.net. */
-export const peerDashboards = list(process.env.STORAGE_PEERS);
+export const peerDashboards = list(process.env.STORAGE_PEERS).map(dashboardBaseUrl);
 /** Where the mounter sends notifications; the dashboard shows it on Settings. */
 export const ntfyUrl = process.env.NTFY_URL ?? "";
 /** @implNote Only whether a topic is set: the topic itself lets anyone read the notifications. */

@@ -37,6 +37,12 @@ export interface JoinRecords {
   put(device: JoinedDevice): Promise<void>;
 }
 
+/** What an admitted join leaves behind: the shared local nodes build dropped, so the device shows at once, and an Activity entry in words. */
+export interface JoinEffects {
+  invalidate(): void;
+  record(text: string): void;
+}
+
 export interface JoinDependencies {
   whois(address: string): Promise<WhoIs | null>;
   /** The logins whose untagged devices may join: this node's owner's and JOIN_ALLOWED_USERS. */
@@ -48,11 +54,17 @@ export interface JoinDependencies {
   /** Null when no setup repo is configured; the admission is then only in the local record. */
   recordInSetup: ((name: string, deviceId: string, root: string | null) => Promise<SetupRecordResult>) | null;
   now(): Date;
+  effects: JoinEffects;
 }
 
 const deviceIdPattern = /^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$/;
 const namePattern = /^[a-z0-9][a-z0-9-]*$/;
 const operatingSystems = ["linux", "windows", "macos"];
+
+/** A name the setup repo's layout takes as a device's section key. */
+export function isDeviceName(value: string): boolean {
+  return namePattern.test(value);
+}
 
 export function isDeviceId(value: string): boolean {
   return deviceIdPattern.test(value);
@@ -80,7 +92,7 @@ export async function admitCaller(dependencies: JoinDependencies, addresses: str
 
 export function validateJoinRequest(body: unknown): JoinRequest {
   const request = (body ?? {}) as Partial<JoinRequest>;
-  if (typeof request.name !== "string" || !namePattern.test(request.name)) throw new JoinError(400, "name must match [a-z0-9-]");
+  if (typeof request.name !== "string" || !isDeviceName(request.name)) throw new JoinError(400, "name must match [a-z0-9-]");
   if (typeof request.os !== "string" || !operatingSystems.includes(request.os)) throw new JoinError(400, "os must be linux, windows or macos");
   if (typeof request.syncthingDeviceId !== "string" || !isDeviceId(request.syncthingDeviceId)) throw new JoinError(400, "syncthingDeviceId is not a Syncthing device ID");
   if (!Array.isArray(request.nodes) || request.nodes.length === 0) throw new JoinError(400, "nodes must list at least one node");
@@ -136,6 +148,26 @@ async function shareWithInstances(instances: JoinInstance[], request: JoinReques
   return devices;
 }
 
+function instanceNames(devices: JoinDevice[]): string {
+  return devices.map((device) => device.name).join(", ");
+}
+
+/** Records the admission in the setup repo; when that throws, the device is already in Syncthing, so the shared build is dropped and Activity says so before the error is passed on. */
+async function recordAddedDevice(
+  dependencies: JoinDependencies,
+  recordInSetup: NonNullable<JoinDependencies["recordInSetup"]>,
+  request: JoinRequest,
+  devices: JoinDevice[],
+): Promise<SetupRecordResult> {
+  try {
+    return await recordInSetup(request.name, request.syncthingDeviceId, request.nodes[0]?.path ?? null);
+  } catch (error) {
+    dependencies.effects.invalidate();
+    dependencies.effects.record(`${request.name} was added to ${instanceNames(devices)} but not recorded in the setup repo: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
+}
+
 export async function handleJoin(dependencies: JoinDependencies, addresses: string[], body: unknown): Promise<{ response: JoinResponse; setup: SetupRecordResult | null }> {
   const caller = await admitCaller(dependencies, addresses);
   const request = validateJoinRequest(body);
@@ -149,7 +181,7 @@ export async function handleJoin(dependencies: JoinDependencies, addresses: stri
   const isRecordedInSetup = listed?.id === request.syncthingDeviceId && listed.joined;
   let setup = known?.setup ?? null;
   if (dependencies.recordInSetup && (!isRecordedInSetup || !setup?.pushed)) {
-    setup = await dependencies.recordInSetup(request.name, request.syncthingDeviceId, request.nodes[0]?.path ?? null);
+    setup = await recordAddedDevice(dependencies, dependencies.recordInSetup, request, devices);
   }
   if (!dependencies.recordInSetup) setup = { committed: false, pushed: false, message: "no setup repo is configured (SETUP_REPO_DIR); the admission is recorded on this host only" };
   await dependencies.records.put({
@@ -161,6 +193,8 @@ export async function handleJoin(dependencies: JoinDependencies, addresses: stri
     tailnetName: caller.nodeName,
     setup,
   });
+  dependencies.effects.invalidate();
+  dependencies.effects.record(`${request.name} joined: added to ${instanceNames(devices)}`);
   return { response: { devices, folders }, setup };
 }
 

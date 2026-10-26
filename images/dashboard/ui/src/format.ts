@@ -62,10 +62,6 @@ export function formatDate(timestamp: string | null | undefined): string {
   return date.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-export function shortDeviceId(deviceId: string): string {
-  return deviceId.split("-")[0] ?? deviceId;
-}
-
 export function formatCount(count: number): string {
   return count.toLocaleString("en-US");
 }
