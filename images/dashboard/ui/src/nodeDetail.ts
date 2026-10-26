@@ -1,5 +1,6 @@
 import { type NodesResponse, type StorageNode, type SyncthingDevice, type SyncthingInstance, addressLabel, reachTone } from "./api.js";
 import { arraySections } from "./arraySection.js";
+import { storageNodes } from "./devicePlacement.js";
 import { button, element, keyValueList, progressBar, section } from "./dom.js";
 import { formatAge, formatBytes, formatDate, formatDuration, formatPercent, formatRate, normaliseCompletion, usedFraction } from "./format.js";
 import { icon } from "./icons.js";
@@ -10,6 +11,7 @@ import { requestRender } from "./renderRequest.js";
 import { appState, locationFor } from "./state.js";
 
 function kindText(node: StorageNode): string {
+  if (node.kind === "device") return "a Syncthing device; no dashboard or join record says what it holds";
   if (!node.array) return node.kind === "folder" ? "folder (one directory)" : "drive (one whole drive or partition)";
   const { data, parity } = countRoles(node.array.members);
   return `array, ${data} data + ${parity} parity`;
@@ -213,11 +215,12 @@ export function renderNodeDetail(response: NodesResponse, node: StorageNode): HT
 }
 
 export function renderEmptyDetail(response: NodesResponse): HTMLElement {
-  const local = response.nodes.filter((node) => node.local).length;
+  const nodes = storageNodes(response.nodes);
+  const local = nodes.filter((node) => node.local).length;
   return element(
     "div",
     { className: "detail-inner detail-empty" },
     element("p", {}, "Select a device to see how it is connected, a node for its drives, parity and folders, or a drive for where it has been."),
-    element("p", { className: "muted small" }, `${local} on this PC, ${response.nodes.length - local} remote.`),
+    element("p", { className: "muted small" }, `${local} on this PC, ${nodes.length - local} remote.`),
   );
 }

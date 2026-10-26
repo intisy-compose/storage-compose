@@ -1,9 +1,8 @@
-import type { ActivityFilters, ActivityResponse, DevicesResponse, FolderDetailResponse, NodeKind, NodesResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, DevicesResponse, FolderDetailResponse, NodesResponse, TreeListing } from "./api.js";
+import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
 export type PageId = "nodes" | "folders" | "attention" | "activity" | "requests" | "settings";
-export type ReachFilter = "all" | "online" | "offline" | "attention";
-export type KindFilter = "all" | NodeKind;
 
 export interface OpenForm {
   nodeId: string;

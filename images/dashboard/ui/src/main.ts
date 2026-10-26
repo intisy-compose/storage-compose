@@ -2,13 +2,14 @@ import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from 
 import type { NodesResponse } from "./api.js";
 import { fetchActivity, fetchDevices, fetchFolderDetail, fetchNodes } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
-import { renderDeviceDetail, renderItemNotFound } from "./deviceDetail.js";
+import { renderDeviceDetail } from "./deviceDetail.js";
 import { element } from "./dom.js";
 import { renderDriveDetail } from "./driveDetail.js";
 import { folderRootPriority, renderExplorerDetail } from "./explorerDetail.js";
 import { isNodeSelectorOpen, loadExplorer, placeAtFolder, renderExplorerPage } from "./explorerPage.js";
 import { renderFolderDetail, renderFolderLoading, renderFolderNotFound } from "./folderDetail.js";
 import { isFormOpen } from "./forms.js";
+import { renderItemNotFound } from "./itemNotFound.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
 import { renderNodesPage } from "./nodesPage.js";
 import { renderSettingsPage, renderUpcomingPage } from "./otherPages.js";
@@ -66,14 +67,14 @@ function renderFolderPanel(): HTMLElement {
 
 function renderDevicesPanel(data: NodesResponse): HTMLElement | null {
   const devices = appState.devices;
-  const isLoading = devices === null && appState.devicesError === null;
+  const readError = devices === null ? appState.devicesError : null;
   if (appState.selectedDeviceKey !== null) {
     const device = devices?.devices.find((candidate) => candidate.key === appState.selectedDeviceKey);
-    return devices && device ? renderDeviceDetail(data, devices, device) : renderItemNotFound("device", appState.selectedDeviceKey, isLoading);
+    return devices && device ? renderDeviceDetail(data, devices, device) : renderItemNotFound("device", appState.selectedDeviceKey, devices !== null, readError);
   }
   if (appState.selectedDriveKey !== null) {
     const drive = devices?.drives.find((candidate) => candidate.key === appState.selectedDriveKey);
-    return devices && drive ? renderDriveDetail(data, devices, drive) : renderItemNotFound("drive", appState.selectedDriveKey, isLoading);
+    return devices && drive ? renderDriveDetail(data, devices, drive) : renderItemNotFound("drive", appState.selectedDriveKey, devices !== null, readError);
   }
   return null;
 }

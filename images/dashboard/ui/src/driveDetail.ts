@@ -1,5 +1,5 @@
 import { type DriveAttachment, type DevicesResponse, type DriveSummary, type NodesResponse, type StorageNode, driveWhereText, seenTimeText } from "./api.js";
-import { driveKindLabel, isDeviceHost, memberDrive } from "./deviceList.js";
+import { driveKindLabel, isDeviceHost, memberDrive } from "./devicePlacement.js";
 import { element, keyValueList, section } from "./dom.js";
 import { formatBytes } from "./format.js";
 import { icon } from "./icons.js";

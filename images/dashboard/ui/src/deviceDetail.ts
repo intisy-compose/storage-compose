@@ -1,5 +1,5 @@
 import { type DeviceSummary, type DevicesResponse, type DriveSummary, type InstanceConnection, type NodesResponse, type StorageNode, addressLabel, connectionKindText, deviceStateText, driveLastSeenHereText, driveWhereText, reachTone, seenTimeText } from "./api.js";
-import { driveKindLabel, isDeviceHost } from "./deviceList.js";
+import { driveKindLabel, isDeviceHost, storageNodes } from "./devicePlacement.js";
 import { element, keyValueList, section } from "./dom.js";
 import { icon } from "./icons.js";
 import { kindChipText, shortSyncState } from "./nodeStatus.js";
@@ -78,7 +78,7 @@ function nodeLink(response: NodesResponse, node: StorageNode): HTMLElement {
 }
 
 function nodesSection(response: NodesResponse, device: DeviceSummary): HTMLElement {
-  const nodes = response.nodes.filter((node) => device.nodeIds.includes(node.id));
+  const nodes = storageNodes(response.nodes.filter((node) => device.nodeIds.includes(node.id)));
   return section(
     `Nodes (${nodes.length})`,
     nodes.length ? element("div", { className: "link-list" }, ...nodes.map((node) => nodeLink(response, node))) : element("p", { className: "muted" }, "No nodes known on this device."),
@@ -132,14 +132,5 @@ export function renderDeviceDetail(response: NodesResponse, devices: DevicesResp
     drivesSection("Drives last seen here", lastHere, device, now),
     deviceIdsSection(device),
     element("p", { className: "muted small" }, `Known from ${device.sources.map((source) => sourceText[source]).join(", ")}.`),
-  );
-}
-
-export function renderItemNotFound(what: string, key: string, isLoading: boolean): HTMLElement {
-  return element(
-    "div",
-    { className: "detail-inner detail-empty" },
-    element("p", {}, isLoading ? `Reading ${what}s…` : `No ${what} ${key} is known.`),
-    element("a", { attributes: { href: locationFor("nodes") } }, "Back to all devices"),
   );
 }

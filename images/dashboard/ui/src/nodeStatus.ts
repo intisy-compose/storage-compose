@@ -44,7 +44,19 @@ function offersWaitingText(count: number): string {
   return `${count} ${count === 1 ? "offer" : "offers"} waiting`;
 }
 
+function failedText(count: number): string {
+  return `${count} failed ${count === 1 ? "item" : "items"}`;
+}
+
+/** An online node's state, with its failed items added whenever it has any, since syncing or waiting would hide them. */
 export function shortSyncState(node: StorageNode, response?: NodesResponse): ShortState {
+  const state = onlineOrOfflineState(node, response);
+  const failed = failedItems(node);
+  if (failed === 0 || isOffline(node) || state.label === failedText(failed)) return state;
+  return { symbol: state.symbol, label: `${state.label}, ${failedText(failed)}`, tone: "bad" };
+}
+
+function onlineOrOfflineState(node: StorageNode, response?: NodesResponse): ShortState {
   if (isArrayAbsent(node)) return { symbol: "", label: node.sync.lastSeen ? `not connected, ${formatAge(node.sync.lastSeen)}` : "not connected", tone: "muted" };
   if (isOffline(node)) return { symbol: "", label: formatAge(node.sync.lastSeen), tone: "muted" };
   if (node.sync.state === "error") return { symbol: "!", label: "error", tone: "bad" };
@@ -57,7 +69,7 @@ export function shortSyncState(node: StorageNode, response?: NodesResponse): Sho
     return { symbol: "…", label: names.length ? `waiting for ${names.join(", ")}` : "waiting for a peer", tone: "warn" };
   }
   const failed = failedItems(node);
-  if (failed > 0) return { symbol: "!", label: `${failed} failed ${failed === 1 ? "item" : "items"}`, tone: "bad" };
+  if (failed > 0) return { symbol: "!", label: failedText(failed), tone: "bad" };
   if (node.offersWaiting > 0) return { symbol: "…", label: offersWaitingText(node.offersWaiting), tone: "warn" };
   return { symbol: "✓", label: "in sync", tone: "ok" };
 }

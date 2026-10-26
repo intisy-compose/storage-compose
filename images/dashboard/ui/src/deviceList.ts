@@ -1,78 +1,20 @@
-import { type ArrayMember, type DeviceSummary, type DevicesResponse, type DriveSummary, type StorageNode, connectionKindText, deviceStateText, driveLastSeenHereText, driveWhereText } from "./api.js";
+import { type ArrayMember, type DeviceSummary, type DevicesResponse, type DriveSummary, type NodesResponse, type StorageNode, connectionKindText, deviceStateText, driveLastSeenHereText, driveWhereText } from "./api.js";
+import {
+  type DevicePlacement,
+  type DeviceRow,
+  type NodeFilters,
+  deviceDriveCount,
+  deviceRows,
+  driveKindLabel,
+  isDeviceHost,
+  isDeviceShown,
+  memberDrive,
+} from "./devicePlacement.js";
 import { element } from "./dom.js";
 import { formatBytes, plural } from "./format.js";
+import { chip, nodeRow } from "./nodeRow.js";
 import { requestRender } from "./renderRequest.js";
 import { appState, deviceLocation, driveLocation } from "./state.js";
-
-/** A device with the nodes it holds and the drives that are not already shown under one of those nodes. */
-export interface DevicePlacement {
-  device: DeviceSummary;
-  nodes: StorageNode[];
-  looseDrives: DriveSummary[];
-}
-
-export interface Placements {
-  placements: DevicePlacement[];
-  /** Nodes no device claims, for example while the devices are still being read. */
-  unplacedNodes: StorageNode[];
-}
-
-const driveKindText: Record<DriveSummary["kind"], string> = {
-  "array-member": "array member",
-  "drive-node": "drive node",
-  "folder-node": "folder node",
-};
-
-export function driveKindLabel(drive: DriveSummary): string {
-  return driveKindText[drive.kind];
-}
-
-export function isDeviceHost(device: DeviceSummary, host: string | null): boolean {
-  return host !== null && (device.key === host || device.name === host);
-}
-
-function isShownUnderNode(drive: DriveSummary, nodeIds: Set<string>): boolean {
-  return nodeIds.has(drive.arrayId ?? "") || nodeIds.has(drive.nodeId ?? "");
-}
-
-export function placeOnDevices(nodes: StorageNode[], response: DevicesResponse | null): Placements {
-  if (!response) return { placements: [], unplacedNodes: nodes };
-  const drivesByKey = new Map(response.drives.map((drive) => [drive.key, drive]));
-  const placed = new Set<string>();
-  const placements = response.devices.map((device) => {
-    const nodeIds = new Set(device.nodeIds);
-    const own = nodes.filter((node) => nodeIds.has(node.id));
-    for (const node of own) placed.add(node.id);
-    const drives = device.driveKeys.map((key) => drivesByKey.get(key)).filter((drive) => drive !== undefined);
-    return { device, nodes: own, looseDrives: drives.filter((drive) => !isShownUnderNode(drive, nodeIds)) };
-  });
-  return { placements, unplacedNodes: nodes.filter((node) => !placed.has(node.id)) };
-}
-
-function matchesTerms(parts: (string | null | undefined)[], search: string): boolean {
-  if (!search) return true;
-  const haystack = parts.filter(Boolean).join(" ").toLowerCase();
-  return search.toLowerCase().split(/\s+/).every((term) => haystack.includes(term));
-}
-
-export function matchesDeviceSearch(device: DeviceSummary, search: string): boolean {
-  const kind = device.thisHost ? "this device" : device.connection ? connectionKindText(device.connection.kind) : null;
-  return matchesTerms([device.name, device.key, kind, ...device.deviceIds], search);
-}
-
-export function matchesDriveSearch(drive: DriveSummary, search: string): boolean {
-  return matchesTerms([drive.label, drive.key, drive.serial, driveKindLabel(drive), ...drive.attachments.map((stay) => stay.as)], search);
-}
-
-/** The drive record of an array member: by serial, else by the role key used while the serial is unknown. */
-export function memberDrive(array: StorageNode, member: ArrayMember, drives: DriveSummary[]): DriveSummary | undefined {
-  const roleKey = `member:${array.id}-${member.role}`;
-  return drives.find((drive) => drive.arrayId === array.id && (member.serial ? drive.serial === member.serial : drive.key === roleKey));
-}
-
-function chip(label: string, className = "chip", title?: string): HTMLElement {
-  return element("span", { className, title }, label);
-}
 
 function connectionChip(device: DeviceSummary): HTMLElement | null {
   if (device.thisHost) return chip("this device");
@@ -81,8 +23,8 @@ function connectionChip(device: DeviceSummary): HTMLElement | null {
   return null;
 }
 
-function countsText(placement: DevicePlacement, memberCount: number): string {
-  const drives = placement.looseDrives.length + memberCount;
+function countsText(placement: DevicePlacement): string {
+  const drives = deviceDriveCount(placement);
   return [plural(placement.nodes.length, "node"), drives ? plural(drives, "drive") : ""].filter(Boolean).join(", ");
 }
 
@@ -91,7 +33,7 @@ function deviceNote(device: DeviceSummary, now: Date): string | null {
   return deviceStateText(device, now);
 }
 
-export function deviceLine(placement: DevicePlacement, memberCount: number, now: Date): HTMLElement {
+function deviceLine(placement: DevicePlacement, now: Date): HTMLElement {
   const { device } = placement;
   const isSelected = appState.selectedDeviceKey === device.key;
   const note = deviceNote(device, now);
@@ -102,7 +44,7 @@ export function deviceLine(placement: DevicePlacement, memberCount: number, now:
     element("strong", { className: "device-name" }, device.name),
     connectionChip(device),
     note ? element("small", { className: "device-note" }, note) : null,
-    element("small", { className: "device-counts" }, countsText(placement, memberCount)),
+    element("small", { className: "device-counts" }, countsText(placement)),
   );
   if (isSelected) line.setAttribute("aria-current", "true");
   return line;
@@ -141,30 +83,55 @@ function driveRow(facts: DriveRowFacts, device: DeviceSummary, now: Date, classN
   return row;
 }
 
-export function looseDriveRow(drive: DriveSummary, device: DeviceSummary, now: Date): HTMLElement {
+function looseDriveRow(drive: DriveSummary, device: DeviceSummary, now: Date): HTMLElement {
   const present = drive.present && isDeviceHost(device, drive.currentHost);
   return driveRow({ drive, label: drive.label, role: driveKindLabel(drive), size: drive.size, present }, device, now, "loose-drive");
 }
 
-function membersSummary(members: ArrayMember[]): string {
-  const attached = members.filter((member) => member.present).length;
+function membersSummary(array: StorageNode, shown: ArrayMember[], withArrayName: boolean): string {
+  const members = array.array?.members ?? [];
+  const attached = members.filter((entry) => entry.present).length;
   const state = attached === 0 ? "none attached" : attached === members.length ? "all attached" : `${attached} attached`;
-  return `${plural(members.length, "drive")}, ${state}`;
+  const hidden = members.length - shown.length;
+  const parts = [`${plural(members.length, "drive")}, ${state}`, hidden ? `${hidden} hidden by filters` : ""].filter(Boolean).join(", ");
+  return withArrayName ? `${array.name}: ${parts}` : parts;
 }
 
-/** An array's member drives below its row, folded or unfolded by the person. */
-export function arrayMembers(array: StorageNode, drives: DriveSummary[], device: DeviceSummary, now: Date): HTMLElement | null {
-  const members = array.array?.members ?? [];
+/** An array's member drives the filters leave, folded or unfolded by the person; named when the array's own row is filtered out. */
+function arrayMembers(array: StorageNode, members: ArrayMember[], drives: DriveSummary[], device: DeviceSummary, now: Date, withArrayName: boolean): HTMLElement | null {
   if (members.length === 0) return null;
   const isOpen = !appState.foldedArrays.has(array.id);
-  const toggle = element("button", { className: "disclosure members-toggle", attributes: { type: "button", "aria-expanded": String(isOpen) } }, membersSummary(members));
+  const toggle = element("button", { className: "disclosure members-toggle", attributes: { type: "button", "aria-expanded": String(isOpen) } }, membersSummary(array, members, withArrayName));
   toggle.addEventListener("click", () => {
     if (isOpen) appState.foldedArrays.add(array.id);
     else appState.foldedArrays.delete(array.id);
     requestRender();
   });
-  const rows = members.map((member) =>
-    driveRow({ drive: memberDrive(array, member, drives), label: member.label, role: member.role, size: member.size, present: member.present }, device, now, "member-drive"),
+  const rows = members.map((entry) =>
+    driveRow({ drive: memberDrive(array, entry, drives), label: entry.label, role: entry.role, size: entry.size, present: entry.present }, device, now, "member-drive"),
   );
   return element("div", { className: "array-members" }, toggle, isOpen ? element("div", { className: "member-drive-list" }, ...rows) : null);
+}
+
+function rowElements(response: NodesResponse, drives: DriveSummary[], device: DeviceSummary, row: DeviceRow, now: Date): (HTMLElement | null)[] {
+  if (row.type === "drive") return [looseDriveRow(row.drive, device, now)];
+  if (row.type === "members") return [arrayMembers(row.array, row.members, drives, device, now, true)];
+  return [nodeRow(response, row.node), arrayMembers(row.node, row.members, drives, device, now, false)];
+}
+
+function deviceBlock(response: NodesResponse, devices: DevicesResponse, placement: DevicePlacement, filters: NodeFilters, now: Date): HTMLElement | null {
+  const rows = deviceRows(response, devices.drives, placement, filters);
+  if (!isDeviceShown(placement, rows, filters)) return null;
+  const listed = rows.flatMap((row) => rowElements(response, devices.drives, placement.device, row, now)).filter((entry) => entry !== null);
+  return element(
+    "section",
+    { className: "device-block", attributes: { "aria-label": placement.device.name } },
+    deviceLine(placement, now),
+    listed.length ? element("div", { className: "node-list" }, ...listed) : null,
+  );
+}
+
+export function deviceBlocks(response: NodesResponse, devices: DevicesResponse, placements: DevicePlacement[], filters: NodeFilters): HTMLElement[] {
+  const now = new Date();
+  return placements.map((placement) => deviceBlock(response, devices, placement, filters, now)).filter((block) => block !== null);
 }
