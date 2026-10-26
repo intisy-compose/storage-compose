@@ -15,7 +15,7 @@ import { renderItemNotFound } from "./itemNotFound.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
 import { renderNodesPage } from "./nodesPage.js";
 import { applyTheme } from "./preferences.js";
-import { skipWhileRunning } from "./pollGuard.js";
+import { coalesceWhileRunning, readUntilSettled } from "./pollGuard.js";
 import { onRefreshRequested, onRenderRequested } from "./renderRequest.js";
 import { forgetLastAnswer, renderRequestsPage } from "./requestsPage.js";
 import { readableLocalNodes, renderSettingsPage } from "./settingsPage.js";
@@ -131,16 +131,14 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** @implNote An answer that started before a write was saved is read again, so a row the write changed never flicks back to how it was. */
+/** An answer that started before a write was saved is read again, so a row the write changed never flicks back to how it was. */
+function readAfterSavedWrites<T>(read: () => Promise<T>): Promise<T> {
+  return readUntilSettled(read, savedWriteCount);
+}
+
 async function loadNodes(): Promise<void> {
   try {
-    let writesBefore: number;
-    let data: NodesResponse;
-    do {
-      writesBefore = savedWriteCount();
-      data = await fetchNodes();
-    } while (savedWriteCount() !== writesBefore);
-    appState.data = data;
+    appState.data = await readAfterSavedWrites(fetchNodes);
     appState.lastLoaded = Date.now();
     appState.loadError = null;
   } catch (error) {
@@ -150,7 +148,7 @@ async function loadNodes(): Promise<void> {
 
 async function loadDevices(): Promise<void> {
   try {
-    appState.devices = await fetchDevices();
+    appState.devices = await readAfterSavedWrites(fetchDevices);
     appState.devicesError = null;
   } catch (error) {
     appState.devicesError = messageOf(error);
@@ -214,7 +212,7 @@ async function loadActivity(): Promise<void> {
 
 async function loadRequests(): Promise<void> {
   try {
-    appState.requests = await fetchRequests();
+    appState.requests = await readAfterSavedWrites(fetchRequests);
     appState.requestsError = null;
   } catch (error) {
     appState.requestsError = messageOf(error);
@@ -252,7 +250,7 @@ async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Pro
   if (appState.page === "settings") await loadSettings(nodesLoaded);
 }
 
-const poll = skipWhileRunning(async () => {
+const poll = coalesceWhileRunning(async () => {
   const nodesLoaded = loadNodes();
   await Promise.all([nodesLoaded, loadPageData(nodesLoaded)]);
   if (!isInUse()) render();
