@@ -54,6 +54,20 @@ describe("array status", () => {
     assert.equal(arrayHealth(silent), "absent");
   });
 
+  it("a silent mounter's members keep when its last round had them on this host", async () => {
+    const healthy = await read(status({ updated: "2026-10-21T12:35:32Z" }));
+    assert.ok(healthy.drives.every((entry) => entry.lastPresent?.since === "2026-10-21T00:43:49Z" && entry.lastPresent.at === "2026-10-21T12:35:32Z"));
+    const drives = [drive("data1"), drive("data2", { condition: "missing", mounted: false })];
+    const degraded = await read(status({ updated: "2026-10-21T12:35:32Z", state: "degraded", complete: false, drives }));
+    assert.deepEqual(
+      degraded.drives.map((entry) => entry.lastPresent),
+      [{ since: "2026-10-21T12:35:32Z", at: "2026-10-21T12:35:32Z" }, null],
+      "a degraded state's start does not date each member's arrival",
+    );
+    const fresh = await read(status({}));
+    assert.ok(fresh.drives.every((entry) => entry.lastPresent === undefined), "a connected array's members are seen now");
+  });
+
   it("an array whose members are all absent is not connected, not healthy or frozen", async () => {
     const missing = { condition: "missing" as const, mounted: false };
     const absent = await read(status({ state: "stopped", complete: false, present: false, drives: [drive("data1", missing), drive("data2", missing), drive("parity1", missing)] }));

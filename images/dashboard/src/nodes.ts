@@ -2,6 +2,7 @@ import type { NodeArray, NodeRegistryEntry, NodesResponse, StorageNode, Warning 
 import { type ArrayStatus, arrayIds, arrayStatus } from "./arrayStatus.js";
 import { folderErrorWarnings, fromOtherHost, fullWarnings, hostWarnings, offlineWarnings, pendingWarnings, pruneFirstSeen, systemErrorWarnings, warning, withoutDuplicates } from "./attention.js";
 import { type BlockDevice, listBlockDevices, replacementCandidates } from "./blockDevices.js";
+import { recordPresentDrives } from "./driveHistory.js";
 import { agentProblem, readHeartbeat } from "./hostAgent.js";
 import { registryEntries, registryWarnings, syncthingEndpoint } from "./instances.js";
 import { type JoinRecords } from "./join.js";
@@ -215,6 +216,14 @@ async function rememberDevices(views: InstanceView[], running: ReadonlyMap<strin
   }
 }
 
+async function rememberDrives(nodes: StorageNode[]): Promise<void> {
+  try {
+    await recordPresentDrives(nodes, hostName, new Date());
+  } catch (error) {
+    console.error(`drives seen file not written: ${(error as Error).message}`);
+  }
+}
+
 /** A local node without a running instance carries the device ID it is remembered by, so its peer rows fold into it. */
 export function withRememberedDevice(node: StorageNode, remembered: ReadonlyMap<string, string>, local: ReadonlySet<string>): StorageNode {
   if (node.syncthing) return node;
@@ -238,6 +247,7 @@ export async function nodesResponse(scope: "all" | "local", records: JoinRecords
   const local = localDeviceIds({ running, remembered, localNodeIds: new Set(ownNodes.map((node) => node.id)), otherHostNodes });
   classifyConnections(views, local);
   await rememberDevices(views, running);
+  await rememberDrives(ownNodes);
   const nodes = ownNodes.map((node) => withRememberedDevice(node, remembered, local));
   if (scope === "all") {
     nodes.push(...otherHostNodes);

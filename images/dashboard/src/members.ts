@@ -68,6 +68,7 @@ async function member(
     temperature: summary?.temperatureCelsius ?? null,
     condition,
     detail: drive?.detail ?? (drive ? "" : "named by the array's description, never seen on this host"),
+    lastPresent: drive?.lastPresent ?? null,
   };
 }
 

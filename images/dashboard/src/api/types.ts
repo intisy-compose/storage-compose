@@ -56,6 +56,37 @@ export interface ArrayMember {
   /** The mounter's word for the drive. */
   condition: "present" | "dropped" | "missing" | "failing";
   detail: string;
+  /** For a member of an array that is not connected: when the mounter's last round still had it on this host. */
+  lastPresent: PresenceWindow | null;
+}
+
+export interface PresenceWindow {
+  since: string;
+  at: string;
+}
+
+/** One stay of a drive on one host. */
+export interface DriveAttachment {
+  host: string;
+  since: string;
+  lastAt: string;
+  /** What the drive was there, for example `data1 of private-array` or `drive node pc`. */
+  as: string;
+}
+
+export type DriveRecordKind = "array-member" | "drive-node" | "folder-node";
+
+/** A drive and the hosts it was attached to, newest first, at most 20. */
+export interface DriveRecord {
+  /** `serial:<serial>`, else `member:<arrayId>-<role>` for an array member or `node:<nodeId>` for a node. */
+  key: string;
+  label: string;
+  kind: DriveRecordKind;
+  serial: string | null;
+  size: number | null;
+  arrayId: string | null;
+  nodeId: string | null;
+  attachments: DriveAttachment[];
 }
 
 /**

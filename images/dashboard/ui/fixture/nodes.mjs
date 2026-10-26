@@ -44,7 +44,7 @@ function member(role, label, size, used, asset, overrides = {}) {
   return {
     role, label, serial: `ZA${label.length}${role.toUpperCase()}${size}`.slice(0, 12), size, used, asset, present: true,
     smart: { state: "ok", detail: "passed", reallocatedSectors: 0, pendingSectors: 0, powerOnHours: 21000 }, temperature: 36,
-    condition: "present", detail: "", ...overrides,
+    condition: "present", detail: "", lastPresent: null, ...overrides,
   };
 }
 

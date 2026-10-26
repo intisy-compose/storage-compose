@@ -211,8 +211,8 @@ describe("attention", () => {
       array: {
         state: "healthy",
         members: [
-          { role: "data1", label: "5784-data1", serial: null, size: 100, used: 93, asset: null, present: true, smart: null, temperature: null, condition: "present", detail: "" },
-          { role: "data2", label: "5784-data2", serial: null, size: 100, used: 50, asset: null, present: true, smart: null, temperature: null, condition: "present", detail: "" },
+          { role: "data1", label: "5784-data1", serial: null, size: 100, used: 93, asset: null, present: true, smart: null, temperature: null, condition: "present", detail: "", lastPresent: null },
+          { role: "data2", label: "5784-data2", serial: null, size: 100, used: 50, asset: null, present: true, smart: null, temperature: null, condition: "present", detail: "", lastPresent: null },
         ],
         parity: { job: null, lastSync: null, lastScrub: null, refused: null, lastSyncResult: null, lastScrubResult: null },
         candidates: [],

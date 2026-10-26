@@ -1,4 +1,5 @@
 import { readFile, readdir } from "node:fs/promises";
+import type { PresenceWindow } from "./api/types.js";
 import type { NodeFile } from "./nodeFile.js";
 import { arrayStatusDirectory, arraysStatusDirectory, clusterArrayId, discoveryPollSeconds } from "./settings.js";
 
@@ -15,6 +16,8 @@ export interface DriveStatus {
   size: number | null;
   used: number | null;
   serial: string | null;
+  /** Set only on an array that is not connected, for a drive the mounter's last round had present. */
+  lastPresent?: PresenceWindow | null;
 }
 
 /** The mounter's verdict on one array, written every 10 s to /status/arrays/<id>/status.json. */
@@ -46,9 +49,24 @@ function isMounterSilent(status: ArrayStatus, now: number): boolean {
   return !Number.isFinite(updated) || now - updated > mounterSilentAfterMilliseconds;
 }
 
+function wasPresent(drive: DriveStatus): boolean {
+  return drive.condition === "present" || drive.condition === "failing";
+}
+
+/**
+ * @implNote Only a healthy and complete state dates every member's arrival: a degraded state starts
+ * when one drive goes, which says nothing about when the others came.
+ */
+function lastPresentWindow(status: ArrayStatus): PresenceWindow {
+  const everyMemberSince = status.state === "healthy" && status.complete;
+  return { since: everyMemberSince ? status.since : status.updated, at: status.updated };
+}
+
 function notConnected(status: ArrayStatus): ArrayStatus {
   const detail = `not connected since ${status.updated}`;
-  return { ...status, present: false, complete: false, drives: status.drives.map((drive) => ({ ...drive, condition: "missing", mounted: false, detail })) };
+  const window = lastPresentWindow(status);
+  const drives = status.drives.map((drive): DriveStatus => ({ ...drive, condition: "missing", mounted: false, detail, lastPresent: wasPresent(drive) ? window : null }));
+  return { ...status, present: false, complete: false, drives };
 }
 
 export async function arrayStatus(arrayId: string, directory = arrayStatusDirectory(arrayId), now = Date.now()): Promise<ArrayStatus | null> {
