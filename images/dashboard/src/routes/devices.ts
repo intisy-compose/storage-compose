@@ -2,10 +2,10 @@ import type { ServerResponse } from "node:http";
 import { deviceDisplayName, deviceSettingLabels, shortDeviceId } from "../api/deviceText.js";
 import type { AddedDevice, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, NearbyDevice, NewDevice, RemoveDeviceBody } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, forwardRead, requireLocal, resolveInstance } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, callSyncthing, forwardRead, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { SyncthingError } from "../syncthing.js";
-import { deviceChangeProblem, deviceSettings, newDeviceProblem, redactConfig } from "../syncthingConfig.js";
+import { deviceChangeProblem, deviceSettings, isChangeInPlace, newDeviceProblem, redactConfig } from "../syncthingConfig.js";
 
 type SyncthingObject = Record<string, unknown>;
 
@@ -91,7 +91,11 @@ export async function editDevice(instance: ResolvedInstance, deviceId: string, c
   const before = await configuredDevice(local, deviceId);
   const deviceName = deviceDisplayName(typeof before.name === "string" ? before.name : "", deviceId);
   const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: deviceEditText(local.name, deviceName, valid) };
-  await callSyncthing(local, (client) => client.request("PATCH", `/config/devices/${encodeURIComponent(deviceId)}`, valid));
+  await writeConfirmed(
+    local,
+    (client) => client.request("PATCH", `/config/devices/${encodeURIComponent(deviceId)}`, valid),
+    async () => isChangeInPlace(await configuredDevice(local, deviceId), valid),
+  );
   return { settings: await settingsAfter(local, deviceId, { ...before, ...valid }), note };
 }
 

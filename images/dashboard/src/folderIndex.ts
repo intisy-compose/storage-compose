@@ -1,5 +1,5 @@
 import { deviceDisplayName } from "./api/deviceText.js";
-import type { FolderCopy, FolderDetailResponse, FolderSettings, FolderSummary, FoldersResponse, PendingFolderOffer } from "./api/types.js";
+import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type FoldersResponse, type PendingFolderOffer, type PullOrder, diskFreeUnits, pullOrderTexts } from "./api/types.js";
 import { RequestError } from "./http.js";
 import type { SetupLayout } from "./setupRepo.js";
 import { type SyncthingClient, type SyncthingDeviceConfig, SyncthingError, type PendingFolders, type SyncthingFolderSettings, SyncthingUnavailable, instanceFolders } from "./syncthing.js";
@@ -131,8 +131,7 @@ function oneOf<Value extends string>(value: string | undefined, allowed: readonl
   return allowed.includes(value as Value) ? (value as Value) : fallback;
 }
 
-const orders = ["random", "alphabetic", "smallestFirst", "largestFirst", "oldestFirst", "newestFirst"] as const;
-const diskUnits = ["%", "kB", "MB", "GB", "TB"] as const;
+const orders = Object.keys(pullOrderTexts) as PullOrder[];
 const versioningTypes = ["", "trashcan", "simple", "staggered", "external"] as const;
 
 /** @implNote Built field by field, so nothing Syncthing adds later (or a password) reaches the page. */
@@ -148,7 +147,7 @@ export function folderSettings(config: SyncthingFolderSettings): FolderSettings 
     fsWatcherDelayS: config.fsWatcherDelayS ?? 0,
     ignorePerms: config.ignorePerms ?? false,
     order: oneOf(config.order, orders, "random"),
-    minDiskFree: { value: config.minDiskFree?.value ?? 0, unit: oneOf(config.minDiskFree?.unit, diskUnits, "%") },
+    minDiskFree: { value: config.minDiskFree?.value ?? 0, unit: oneOf(config.minDiskFree?.unit, diskFreeUnits, "%") },
     maxConflicts: config.maxConflicts ?? 0,
     syncOwnership: config.syncOwnership ?? false,
     syncXattrs: config.syncXattrs ?? false,

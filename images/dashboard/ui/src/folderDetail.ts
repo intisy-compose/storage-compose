@@ -4,7 +4,7 @@ import { formatBytes, formatDate, formatDuration, formatPercent, normaliseComple
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
 import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./folderCondition.js";
 import { icon } from "./icons.js";
-import { appState, explorerLocation, locationFor } from "./state.js";
+import { appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
 
 function onOff(value: boolean): string {
   return value ? "on" : "off";
@@ -105,10 +105,16 @@ function deviceNames(summary: FolderSummary): Map<string, string> {
   return names;
 }
 
+/** Only this host's copies are edited here; another host's are edited on its own dashboard. */
+function editLink(summary: FolderSummary, copy: FolderCopy | undefined): HTMLElement | null {
+  if (!copy?.local) return null;
+  return element("div", { className: "button-row" }, element("a", { className: "button", attributes: { href: editFolderLocation(summary.id, copy.nodeId) } }, "Edit settings"));
+}
+
 function settingsBlock(summary: FolderSummary, nodeId: string, settings: FolderSettings): HTMLElement {
   const key = `${summary.id}/${nodeId}`;
-  const nodeName = summary.copies.find((copy) => copy.nodeId === nodeId)?.nodeName ?? nodeId;
-  const block = element("details", { className: "settings-block" }, element("summary", {}, `On ${nodeName}`), keyValueList(settingsRows(settings, deviceNames(summary))));
+  const copy = summary.copies.find((candidate) => candidate.nodeId === nodeId);
+  const block = element("details", { className: "settings-block" }, element("summary", {}, `On ${copy?.nodeName ?? nodeId}`), keyValueList(settingsRows(settings, deviceNames(summary))), editLink(summary, copy));
   block.open = !appState.foldedSettings.has(key);
   block.addEventListener("toggle", () => {
     if (block.open) appState.foldedSettings.delete(key);

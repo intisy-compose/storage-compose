@@ -1,5 +1,5 @@
 import { deviceSettingLabels, shareFoldersLabel } from "./api/deviceText.js";
-import type { DeviceCompression, DeviceSettings, DeviceSettingsChange, InstanceGui, InstanceOptions } from "./api/types.js";
+import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type DiskFreeUnit, type FolderSettingsChange, type FolderType, type InstanceGui, type InstanceOptions, type PullOrder, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts } from "./api/types.js";
 
 type SyncthingObject = Record<string, unknown>;
 
@@ -82,13 +82,25 @@ export function deviceSettings(device: SyncthingObject): DeviceSettings {
   };
 }
 
-function isSame(first: unknown, second: unknown): boolean {
-  return JSON.stringify(first) === JSON.stringify(second);
+/** @implNote Object keys are sorted, so `{ value, unit }` from the form matches Syncthing's `{ unit, value }`. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => [key, canonical(entry)]));
 }
 
-/** The fields of `after` that differ from `before`; lists compare by content. */
+function isSame(first: unknown, second: unknown): boolean {
+  return JSON.stringify(canonical(first)) === JSON.stringify(canonical(second));
+}
+
+/** The fields of `after` that differ from `before`; lists and objects compare by content. */
 export function changedFields<T extends object>(before: T, after: T): Partial<T> {
   return Object.fromEntries(Object.entries(after).filter(([key, value]) => !isSame(before[key as keyof T], value))) as Partial<T>;
+}
+
+/** Whether every field of `change` already has its value in `current`, as Syncthing answers it. */
+export function isChangeInPlace(current: object, change: object): boolean {
+  return Object.entries(change).every(([key, value]) => isSame((current as Record<string, unknown>)[key], value));
 }
 
 const addressSchemes = new Set(["tcp", "tcp4", "tcp6", "quic", "quic4", "quic6", "relay"]);
@@ -161,4 +173,46 @@ export function newDeviceProblem(body: unknown): string | null {
   if (typeof deviceId !== "string" || !deviceId.trim()) return "the device ID is missing";
   if (shareFolders !== undefined && !isStringList(shareFolders)) return `${shareFoldersLabel} must be a list of folder IDs`;
   return firstSettingProblem(settings);
+}
+
+const folderTypeChoices = editableFolderTypes.map((type) => folderTypeTexts[type]).join(", ");
+
+function minDiskFreeCheck(value: unknown, label: string): string | null {
+  const free = isPlainObject(value) ? value : {};
+  if (typeof free.value !== "number" || !Number.isFinite(free.value) || free.value < 0) return `${label} must be a number, 0 or more`;
+  if (!diskFreeUnits.includes(free.unit as DiskFreeUnit)) return `${label} must be in ${diskFreeUnits.join(", ")}`;
+  if (free.unit === "%" && free.value > 100) return `${label} cannot be more than 100 %`;
+  return Object.keys(free).length === 2 ? null : `${label} takes only a value and a unit`;
+}
+
+const folderFieldChecks: Record<keyof FolderSettingsChange, FieldCheck> = {
+  label: (value, label) => (typeof value === "string" ? null : `${label} must be text`),
+  path: (value, label) => (typeof value === "string" && value.trim() ? null : `${label} is missing`),
+  type: (value, label) => (editableFolderTypes.includes(value as FolderType) ? null : `${label} must be ${folderTypeChoices}`),
+  rescanIntervalS: wholeNumberField,
+  fsWatcherEnabled: booleanField,
+  fsWatcherDelayS: (value, label) => (typeof value === "number" && Number.isInteger(value) && value >= 1 ? null : `${label} must be a whole number of seconds, 1 or more`),
+  ignorePerms: booleanField,
+  order: (value, label) => (Object.hasOwn(pullOrderTexts, value as PullOrder) ? null : `${label} must be ${Object.values(pullOrderTexts).join(", ")}`),
+  minDiskFree: minDiskFreeCheck,
+  maxConflicts: (value, label) => (typeof value === "number" && Number.isInteger(value) && value >= -1 ? null : `${label} must be a whole number, or -1 for unlimited`),
+  syncOwnership: booleanField,
+  syncXattrs: booleanField,
+};
+
+function folderSettingProblem(key: string, value: unknown): string | null {
+  if (key === "id") return "the folder ID cannot be changed";
+  if (!Object.hasOwn(folderFieldChecks, key)) return `${key} is not a folder setting this edit changes`;
+  const field = key as keyof FolderSettingsChange;
+  return folderFieldChecks[field](value, folderSettingLabels[field]);
+}
+
+/** Why a folder change cannot be sent to Syncthing as it is, or null when it can; a setting is named by its label in the form. */
+export function folderChangeProblem(change: unknown): string | null {
+  if (!isPlainObject(change) || Object.keys(change).length === 0) return "nothing to change";
+  for (const [key, value] of Object.entries(change)) {
+    const problem = folderSettingProblem(key, value);
+    if (problem) return problem;
+  }
+  return null;
 }

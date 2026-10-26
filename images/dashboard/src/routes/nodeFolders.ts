@@ -1,10 +1,11 @@
-import { type FolderPathCheck, type FolderSettings, type FolderType, type NewFolder, type NewFolderDefaults, folderTypeTexts } from "../api/types.js";
+import { type FolderPathCheck, type FolderSettings, type FolderSettingsChange, type FolderType, type NewFolder, type NewFolderDefaults, folderSettingLabels, folderTypeTexts, pullOrderTexts } from "../api/types.js";
 import { folderSettings } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, localNodeInfos, requireLocal, resolveInstance } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, callSyncthing, localNodeInfos, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import { type NodeRoot, folderPathProblem, isInsideOtherNode, isInsideRoot, isStrictlyBelow, pathUnderRoot } from "../pathGuard.js";
 import type { AnyRoute, WriteNote } from "../routes.js";
 import type { SyncthingFolderSettings } from "../syncthing.js";
+import { folderChangeProblem, isChangeInPlace } from "../syncthingConfig.js";
 import { otherFoldersGroup, relativeToRoot } from "../treePaths.js";
 import { decodedSegment } from "./devices.js";
 
@@ -73,13 +74,16 @@ function overlapWarning(folders: SyncthingFolderSettings[], path: string, node: 
   return held ? `holds folder ${folderName(held)} (${held.path}), so its files would sync in both` : null;
 }
 
-/** How the add would judge `typed` on this node: the guard's refusal first, without a Syncthing call, then the node's own folders. */
-export async function checkFolderPath(instance: ResolvedInstance, typed: string, nodes: NodeRoot[]): Promise<FolderPathCheck> {
+/**
+ * How an add, or the edit of `editedFolderId`, would judge `typed` on this node: the guard's refusal first, without a
+ * Syncthing call, then the node's other folders.
+ */
+export async function checkFolderPath(instance: ResolvedInstance, typed: string, nodes: NodeRoot[], editedFolderId: string | null = null): Promise<FolderPathCheck> {
   const { instance: local, node } = rooted(instance);
   const problem = folderPathProblem(typed.trim(), node, nodes);
   if (problem) return { path: typed.trim(), problem, warning: null };
   const path = checkedPath(typed.trim(), node);
-  const folders = await configuredFolders(local);
+  const folders = (await configuredFolders(local)).filter((folder) => folder.id !== editedFolderId);
   return { path, problem: samePathProblem(local, folders, path, node), warning: overlapWarning(folders, path, node) };
 }
 
@@ -136,6 +140,78 @@ export async function addFolder(instance: ResolvedInstance, body: unknown, nodes
   return { added: await settingsAfter(local, folder.id, config), note };
 }
 
+function onOff(value: boolean): string {
+  return value ? "on" : "off";
+}
+
+type ChangedSetting = keyof FolderSettingsChange;
+
+function settingValueWords(key: ChangedSetting, change: Required<FolderSettingsChange>): string {
+  const value = change[key];
+  if (typeof value === "boolean") return onOff(value);
+  if (key === "type") return folderTypeTexts[change.type];
+  if (key === "order") return pullOrderTexts[change.order];
+  if (key === "minDiskFree") return `${change.minDiskFree.value} ${change.minDiskFree.unit}`;
+  if (key === "rescanIntervalS") return change.rescanIntervalS ? `${change.rescanIntervalS} s` : "off";
+  if (key === "fsWatcherDelayS") return `${change.fsWatcherDelayS} s`;
+  if (key === "maxConflicts") return change.maxConflicts < 0 ? "unlimited" : String(change.maxConflicts);
+  return String(value) || "none";
+}
+
+function settingWords(key: ChangedSetting, change: FolderSettingsChange): string {
+  const label = folderSettingLabels[key];
+  return `${label.charAt(0).toLowerCase()}${label.slice(1)} ${settingValueWords(key, change as Required<FolderSettingsChange>)}`;
+}
+
+/** What a folder edit changed, in words: `pc: changed folder Documents; full rescan interval 60 s; pull order alphabetic`. */
+export function folderEditText(nodeName: string, folderName: string, change: FolderSettingsChange): string {
+  const details = (Object.keys(folderSettingLabels) as ChangedSetting[]).filter((key) => key in change).map((key) => settingWords(key, change));
+  return [`${nodeName}: changed folder ${folderName}`, ...details].join("; ");
+}
+
+/** The new path as the guard reads it; judged before any Syncthing call, as Syncthing rescans the folder at whatever path it is given. */
+function guardedPath(instance: LocalInstance, path: string, nodes: NodeRoot[]): string {
+  const { node } = rooted(instance);
+  const problem = folderPathProblem(path.trim(), node, nodes);
+  if (problem) throw new RequestError(400, problem);
+  return checkedPath(path.trim(), node);
+}
+
+function otherFolderAtPath(instance: LocalInstance, folders: SyncthingFolderSettings[], folderId: string, path: string): string | null {
+  const { node } = rooted(instance);
+  return samePathProblem(instance, folders.filter((folder) => folder.id !== folderId), path, node);
+}
+
+export interface FolderEdit {
+  settings: FolderSettings;
+  note: WriteNote;
+}
+
+/**
+ * Sends exactly the fields of `change` to the node's Syncthing, so a setting the person did not touch is never written
+ * back over a change made elsewhere meanwhile; a new path is judged like an add's and sent as checked.
+ * @implNote Syncthing does not move the files: the folder rescans at the new path.
+ */
+export async function editFolder(instance: ResolvedInstance, folderId: string, change: unknown, nodes: NodeRoot[]): Promise<FolderEdit> {
+  const local = requireLocal(instance);
+  const problem = folderChangeProblem(change);
+  if (problem) throw new RequestError(400, problem);
+  const valid = change as FolderSettingsChange;
+  const sent: FolderSettingsChange = valid.path === undefined ? valid : { ...valid, path: guardedPath(local, valid.path, nodes) };
+  const folders = await configuredFolders(local);
+  const before = folders.find((folder) => folder.id === folderId);
+  if (!before) throw new RequestError(404, `${local.name} has no folder ${folderId}`);
+  const samePath = sent.path === undefined ? null : otherFolderAtPath(local, folders, folderId, sent.path);
+  if (samePath) throw new RequestError(409, samePath);
+  await writeConfirmed(
+    local,
+    (client) => client.request("PATCH", `/config/folders/${encodeURIComponent(folderId)}`, sent),
+    async () => isChangeInPlace(await local.client.folderSettings(folderId), sent),
+  );
+  const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId, text: folderEditText(local.name, folderName(before), sent) };
+  return { settings: await settingsAfter(local, folderId, { ...before, ...sent }), note };
+}
+
 /** A folder ID from a directory's name, as Syncthing IDs usually look: `Dashboard Test A` becomes `dashboard-test-a`. */
 export function folderIdFromLabel(label: string): string {
   return label
@@ -151,7 +227,6 @@ async function randomFolderId(instance: LocalInstance): Promise<string> {
   return random.length === 10 ? `${random.slice(0, 5)}-${random.slice(5)}` : random;
 }
 
-/** Where a tree path lies on the node: below its root, or the root itself for a group no directory stands for. */
 interface Placement {
   path: string;
   name: string;
@@ -224,7 +299,8 @@ export function nodeFolderRoutes(sources: NodeFolderSources = liveSources): AnyR
     {
       method: "GET",
       pattern: /^\/api\/nodes\/([^/]+)\/folder-path-check$/,
-      handle: async ({ response, url, params: [nodeId] }) => sendJson(response, 200, await checkFolderPath(await node(nodeId), url.searchParams.get("path") ?? "", await sources.nodeRoots())),
+      handle: async ({ response, url, params: [nodeId] }) =>
+        sendJson(response, 200, await checkFolderPath(await node(nodeId), url.searchParams.get("path") ?? "", await sources.nodeRoots(), url.searchParams.get("folder"))),
     },
     {
       method: "POST",
@@ -234,6 +310,16 @@ export function nodeFolderRoutes(sources: NodeFolderSources = liveSources): AnyR
         const addition = await addFolder(instance, await readBody(request), await sources.nodeRoots());
         sendJson(response, 201, addition.added);
         return addition.note;
+      },
+    },
+    {
+      method: "PATCH",
+      pattern: /^\/api\/nodes\/([^/]+)\/folders\/([^/]+)$/,
+      write: async ({ request, response, params: [nodeId, folderId] }) => {
+        const instance = await node(nodeId);
+        const edit = await editFolder(instance, decodedSegment(folderId, "folder ID"), await readBody(request), await sources.nodeRoots());
+        sendJson(response, 200, edit.settings);
+        return edit.note;
       },
     },
   ];

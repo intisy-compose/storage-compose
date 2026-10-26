@@ -1,9 +1,9 @@
-import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type StorageNode, changedFields, deviceDisplayName, deviceSettingLabels, removeDevice, saveDeviceSettings } from "./api.js";
+import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type SaveResult, type StorageNode, changedFields, deviceDisplayName, deviceSettingLabels, removeDevice, saveDeviceSettings } from "./api.js";
 import { button, element, section } from "./dom.js";
 import { registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
-import { type DeviceFormState, appState, locationFor } from "./state.js";
+import { type DeviceFormState, type Notice, appState, locationFor } from "./state.js";
 
 const formId = "device-form";
 registerForm(formId);
@@ -153,7 +153,7 @@ async function save(form: DeviceFormState): Promise<void> {
     form.draft = structuredClone(result.value);
     form.result = { text: "Saved.", tone: "ok" };
   } else {
-    form.result = { text: `Not saved: ${result.message}`, tone: "bad" };
+    form.result = editFailureNotice(result);
   }
   requestRender();
 }
@@ -162,6 +162,11 @@ function revert(form: DeviceFormState): void {
   if (form.saved) form.draft = structuredClone(form.saved);
   form.result = null;
   requestRender();
+}
+
+/** An edit that was refused says so; one whose node stopped answering mid-write may have been saved, and the server's words say to check. */
+export function editFailureNotice(result: Extract<SaveResult<unknown>, { ok: false }>): Notice {
+  return result.maybeSaved ? { text: `${result.message}.`, tone: "warn" } : { text: `Not saved: ${result.message}`, tone: "bad" };
 }
 
 export function resultLine(result: DeviceFormState["result"]): HTMLElement | null {

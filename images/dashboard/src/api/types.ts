@@ -708,6 +708,53 @@ export interface FolderSettings {
   versioning: Versioning;
 }
 
+export type PullOrder = FolderSettings["order"];
+
+/** A pull order in words, as the form offers it and Activity names it. */
+export const pullOrderTexts: Record<PullOrder, string> = {
+  random: "random",
+  alphabetic: "alphabetic",
+  smallestFirst: "smallest first",
+  largestFirst: "largest first",
+  oldestFirst: "oldest first",
+  newestFirst: "newest first",
+};
+
+export type DiskFreeUnit = FolderSettings["minDiskFree"]["unit"];
+
+export const diskFreeUnits: readonly DiskFreeUnit[] = ["%", "kB", "MB", "GB", "TB"];
+
+/** The folder types a folder can be given here; receive encrypted is only ever accepted from an offer. */
+export const editableFolderTypes: readonly FolderType[] = ["sendreceive", "sendonly", "receiveonly"];
+
+/** `PATCH /api/nodes/<nodeId>/folders/<folderId>`: only the settings the form changed; the folder ID cannot change. */
+export type FolderSettingsChange = Partial<
+  Pick<FolderSettings, "label" | "path" | "type" | "rescanIntervalS" | "fsWatcherEnabled" | "fsWatcherDelayS" | "ignorePerms" | "order" | "minDiskFree" | "maxConflicts" | "syncOwnership" | "syncXattrs">
+>;
+
+/** Each editable folder setting as the form labels it; a refusal names the setting the same way. */
+export const folderSettingLabels: Record<keyof FolderSettingsChange, string> = {
+  label: "Label",
+  path: "Path",
+  type: "Type",
+  rescanIntervalS: "Full rescan interval",
+  fsWatcherEnabled: "Watch for changes",
+  fsWatcherDelayS: "Watch delay",
+  ignorePerms: "Ignore permissions",
+  order: "Pull order",
+  minDiskFree: "Minimum free disk",
+  maxConflicts: "Conflict copies kept",
+  syncOwnership: "Sync ownership",
+  syncXattrs: "Sync extended attributes",
+};
+
+/** A refused or failed request's answer. */
+export interface ErrorAnswer {
+  error: string;
+  /** Set when a write's answer was lost and its effect could not be read back: it may have been saved. */
+  maybeSaved?: true;
+}
+
 /** `POST /api/nodes/<nodeId>/folders`: a folder to add to the node; every setting it leaves out is the node's Syncthing default. */
 export interface NewFolder {
   id: string;

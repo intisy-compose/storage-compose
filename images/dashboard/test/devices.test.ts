@@ -98,6 +98,11 @@ describe("a node's devices", () => {
   let dropAfter: number | null = null;
   /** Answers the device list with HTTP 500 from this many device reads on; null keeps answering it. */
   let failDeviceReadsAfter: number | null = null;
+  /** Applies the next device PATCH and then drops its connection, as a Syncthing that restarts on the change. */
+  let loseWriteAnswer = false;
+  /** Once a device PATCH was applied, drops every later request, as a Syncthing that does not come back. */
+  let silentAfterWrite = false;
+  let wrote = false;
   let syncthingUrl = "";
   let deadUrl = "";
   /** Requests the fake has not finished answering, so a test starts only once the last one's stragglers are done. */
@@ -109,6 +114,7 @@ describe("a node's devices", () => {
     arrivals += 1;
     response.on("close", () => (openRequests -= 1));
     if (dropAfter !== null && dropAfter-- === 0) return request.socket.destroy();
+    if (silentAfterWrite && wrote) return request.socket.destroy();
     if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
     const path = new URL(request.url ?? "/", "http://fake").pathname;
     const query = new URL(request.url ?? "/", "http://fake").searchParams;
@@ -156,6 +162,8 @@ describe("a node's devices", () => {
       const body = await bodyOf(request);
       writes.push({ method: "PATCH", path, body });
       configured = configured.map((device) => (device.deviceID === decodeURIComponent(devicePath[1]) ? { ...device, ...(body as object) } : device));
+      wrote = true;
+      if (loseWriteAnswer) return request.socket.destroy();
       return reply(response, null);
     }
     reply(response, { error: "not faked" }, 404);
@@ -178,6 +186,9 @@ describe("a node's devices", () => {
     writes.length = 0;
     dropAfter = null;
     failDeviceReadsAfter = null;
+    loseWriteAnswer = false;
+    silentAfterWrite = false;
+    wrote = false;
     configured = [{ deviceID: ownId, name: "pc", addresses: ["dynamic"] }, { ...syncthingPeer }];
     folders = [
       { id: "dashboard-test-a", label: "dashboard-test-a", path: "F:/dashboard-test-a", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }] },
@@ -325,6 +336,38 @@ describe("a node's devices", () => {
       assert.equal(writes.length, 1);
       assert.deepEqual(effects.notes.map((note) => note.text), ["pc: renamed device dashboard-test-peer to dashboard-test-renamed; send limit 100 KiB/s"]);
       assert.equal(effects.invalidations, 1);
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("a lost answer whose change is in place reports the edit saved and enters it", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      loseWriteAnswer = true;
+      const answer = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`, { name: "dashboard-test-renamed" });
+      assert.equal(answer.status, 200);
+      assert.equal(((await answer.json()) as { name: string }).name, "dashboard-test-renamed");
+      assert.equal(writes.length, 1);
+      assert.deepEqual(effects.notes.map((note) => note.text), ["pc: renamed device dashboard-test-peer to dashboard-test-renamed"]);
+      assert.equal(effects.invalidations, 1);
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("a lost answer Syncthing does not confirm says the edit may have been saved, and enters nothing", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      loseWriteAnswer = true;
+      silentAfterWrite = true;
+      const answer = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`, { name: "dashboard-test-renamed" });
+      assert.equal(answer.status, 503);
+      assert.deepEqual(await answer.json(), { error: "pc's Syncthing stopped answering during the change, so it may have been saved; check once pc answers again", maybeSaved: true });
+      assert.deepEqual(effects.notes, []);
+      assert.equal(effects.invalidations, 0);
     } finally {
       dashboard.close();
     }

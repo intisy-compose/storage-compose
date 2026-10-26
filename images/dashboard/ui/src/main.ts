@@ -10,6 +10,7 @@ import { renderDriveDetail } from "./driveDetail.js";
 import { folderRootPriority, renderExplorerDetail } from "./explorerDetail.js";
 import { isNodeSelectorOpen, loadExplorer, placeAtFolder, renderExplorerPage } from "./explorerPage.js";
 import { renderFolderDetail, renderFolderLoading, renderFolderNotFound } from "./folderDetail.js";
+import { openEditFolderForm, renderEditFolderForm } from "./folderEditForm.js";
 import { loadAddFolderForm, renderAddFolderForm } from "./folderForm.js";
 import { isFormOpen } from "./forms.js";
 import { renderItemNotFound } from "./itemNotFound.js";
@@ -67,6 +68,7 @@ function renderFolderPanel(): HTMLElement {
   if (appState.addFolderForm) return renderAddFolderForm(appState.addFolderForm);
   if (!folderId) return renderExplorerDetail();
   const detail = appState.folderDetail?.summary.id === folderId ? appState.folderDetail : null;
+  if (detail && appState.editFolderForm) return renderEditFolderForm(appState.editFolderForm, detail);
   if (detail) return renderFolderDetail(detail.summary, detail, folderRootPriority(folderId));
   return appState.folderDetailError ? renderFolderNotFound(folderId, appState.folderDetailError) : renderFolderLoading(folderId);
 }
@@ -188,6 +190,7 @@ async function loadFolderDetail(): Promise<void> {
     if (folderId !== appState.selectedFolderId) return;
     appState.folderDetail = detail;
     appState.folderDetailError = null;
+    if (appState.editFolderForm) openEditFolderForm(appState.editFolderForm, detail);
   } catch (error) {
     if (folderId === appState.selectedFolderId) appState.folderDetailError = messageOf(error);
   }

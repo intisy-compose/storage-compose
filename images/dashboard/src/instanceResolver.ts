@@ -1,7 +1,7 @@
 import type { StorageNode } from "./api/types.js";
 import { arrayIds, arrayStatus } from "./arrayStatus.js";
 import { agentEntries, readHeartbeat } from "./hostAgent.js";
-import { RequestError } from "./http.js";
+import { RequestError, UnconfirmedWrite } from "./http.js";
 import { statusRegistryEntries, syncthingEndpoint } from "./instances.js";
 import { fileJoinRecords } from "./join.js";
 import { otherHostNodes } from "./nodes.js";
@@ -170,6 +170,33 @@ export async function callSyncthing<T>(instance: LocalInstance, call: (client: S
   } catch (error) {
     if (error instanceof SyncthingUnavailable) throw notAnswering(instance.name);
     throw error;
+  }
+}
+
+function isNotAnsweringError(error: unknown): boolean {
+  return error instanceof RequestError && error.status === 503;
+}
+
+async function readBack(instance: LocalInstance, isInPlace: () => Promise<boolean>): Promise<boolean> {
+  try {
+    return await isInPlace();
+  } catch {
+    throw new UnconfirmedWrite(instance.name);
+  }
+}
+
+/**
+ * Sends one write to the node's Syncthing; when its answer is lost, `isInPlace` reads whether the change took effect.
+ * A change found in place counts as saved, one found missing is the 503 of a node that does not answer, and one that
+ * cannot be read back is an `UnconfirmedWrite`.
+ * @implNote Syncthing restarts after some config changes and can drop the answer of a write it applied, so a lost answer is never taken for "not saved".
+ */
+export async function writeConfirmed(instance: LocalInstance, write: (client: SyncthingClient) => Promise<unknown>, isInPlace: () => Promise<boolean>): Promise<void> {
+  try {
+    await callSyncthing(instance, write);
+  } catch (error) {
+    if (!isNotAnsweringError(error)) throw error;
+    if (!(await readBack(instance, isInPlace))) throw error;
   }
 }
 

@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
-import type { FolderSettings, NewFolderDefaults } from "../src/api/types.js";
+import type { FolderPathCheck, FolderSettings, NewFolderDefaults } from "../src/api/types.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import type { NodeRoot } from "../src/pathGuard.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
-import { addFolder, browseDirectories, checkFolderPath, folderIdFromLabel, newFolderDefaults, nodeFolderRoutes } from "../src/routes/nodeFolders.js";
+import { addFolder, browseDirectories, checkFolderPath, editFolder, folderEditText, folderIdFromLabel, newFolderDefaults, nodeFolderRoutes } from "../src/routes/nodeFolders.js";
 import { SyncthingClient } from "../src/syncthing.js";
+import { changedFields } from "../src/syncthingConfig.js";
 import { draftOf, newFolderBody, treePathOf } from "../ui/src/folderDraft.js";
 import { until } from "./until.js";
 
@@ -65,12 +66,20 @@ describe("adding a folder to a node", () => {
   let directories: string[] = [];
   let openRequests = 0;
   let syncthingUrl = "";
+  /** Applies the next folder PATCH and then drops its connection, as a Syncthing that restarts on the change. */
+  let loseWriteAnswer = false;
+  /** Once a folder PATCH was applied, drops every later request, as a Syncthing that does not come back. */
+  let silentAfterWrite = false;
+  /** Drops the folder PATCH without applying it, as a Syncthing that stops before the change. */
+  let dropWrite = false;
+  let wrote = false;
   const syncthing = createServer(async (request, response) => {
     openRequests += 1;
     response.on("close", () => (openRequests -= 1));
+    if (silentAfterWrite && wrote) return request.socket.destroy();
     if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
     const url = new URL(request.url ?? "/", "http://fake");
-    const body = request.method === "POST" ? await bodyOf(request) : null;
+    const body = request.method === "POST" || request.method === "PATCH" ? await bodyOf(request) : null;
     received.push({ method: request.method ?? "", path: `${url.pathname}${url.search}`, body });
     if (request.method === "GET" && url.pathname === "/rest/config/defaults/folder") return reply(response, syncthingDefaults);
     if (request.method === "GET" && url.pathname === "/rest/config/folders") return reply(response, folders);
@@ -87,6 +96,14 @@ describe("adding a folder to a node", () => {
     }
     if (request.method === "POST" && url.pathname === "/rest/config/folders") {
       folders = [...folders, body as Record<string, unknown>];
+      return reply(response, null);
+    }
+    if (request.method === "PATCH" && folderPath) {
+      if (dropWrite) return request.socket.destroy();
+      const folderId = decodeURIComponent(folderPath[1] as string);
+      folders = folders.map((folder) => (folder.id === folderId ? { ...folder, ...(body as object) } : folder));
+      wrote = true;
+      if (loseWriteAnswer) return request.socket.destroy();
       return reply(response, null);
     }
     reply(response, { error: "not faked" }, 404);
@@ -113,7 +130,14 @@ describe("adding a folder to a node", () => {
   beforeEach(async () => {
     await until(() => openRequests === 0, "the fake Syncthing to finish the last test's requests");
     received.length = 0;
-    folders = [{ ...syncthingDefaults, id: "documents", label: "Documents", path: "F:\\Documents" }];
+    loseWriteAnswer = false;
+    silentAfterWrite = false;
+    dropWrite = false;
+    wrote = false;
+    folders = [
+      { ...syncthingDefaults, id: "documents", label: "Documents", path: "F:\\Documents" },
+      { ...syncthingDefaults, id: "dashboard-test-e", label: "Test A", path: "/var/syncthing/data/dashboard-test-e" },
+    ];
     directories = ["F:\\Documents\\", "F:\\Music\\", "C:\\Windows\\", "F:\\.storage\\", "F:\\.storage\\stick\\"];
   });
 
@@ -274,6 +298,113 @@ describe("adding a folder to a node", () => {
     assert.equal(received.at(-1)?.path, `/rest/system/browse?current=${encodeURIComponent("/var/syncthing/data/")}`, "the root is browsed as a directory, not completed as a name");
   });
 
+  it("editing the rescan interval sends only rescanIntervalS", async () => {
+    const edit = await editFolder(peer(), "dashboard-test-e", { rescanIntervalS: 60 }, roots);
+    assert.deepEqual(received.filter((entry) => entry.method === "PATCH"), [{ method: "PATCH", path: "/rest/config/folders/dashboard-test-e", body: { rescanIntervalS: 60 } }]);
+    assert.equal(edit.settings.rescanIntervalS, 60);
+    assert.equal(edit.settings.fsWatcherDelayS, 10, "a setting not sent keeps Syncthing's value");
+    assert.deepEqual(edit.note, { nodeId: "d7e5", nodeName: "dashboard-test-peer", folderId: "dashboard-test-e", text: "dashboard-test-peer: changed folder Test A; full rescan interval 60 s" });
+  });
+
+  it("a path change outside the root is 400", async () => {
+    for (const path of ["/etc", "/var/syncthing/data/../config", "relative/path"]) {
+      await assert.rejects(editFolder(peer(), "dashboard-test-e", { path }, roots), (error: Error & { status?: number }) => error.status === 400, path);
+    }
+    for (const path of ["C:\\Windows", "F:\\.storage\\stick\\photos", "F:\\Photos~2024"]) {
+      await assert.rejects(editFolder(pc(), "documents", { path }, roots), (error: Error & { status?: number }) => error.status === 400, path);
+    }
+    await assert.rejects(editFolder({ ...pc(), root: null }, "documents", { path: "F:\\Docs" }, roots), (error: Error & { status?: number }) => error.status === 409 && /pc has no root/.test(error.message));
+    assert.deepEqual(received, [], "a refused path reaches no Syncthing");
+  });
+
+  it("a path change inside the root is sent as checked, and one another folder uses is 409", async () => {
+    const moved = await editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/./x/../dashboard-test-moved" }, roots);
+    assert.deepEqual(received.find((entry) => entry.method === "PATCH")?.body, { path: "/var/syncthing/data/dashboard-test-moved" });
+    assert.equal(moved.settings.path, "/var/syncthing/data/dashboard-test-moved");
+    assert.equal(moved.note.text, "dashboard-test-peer: changed folder Test A; path /var/syncthing/data/dashboard-test-moved");
+
+    await assert.rejects(editFolder(pc(), "dashboard-test-e", { path: "f:/documents" }, roots), (error: Error & { status?: number }) => error.status === 409 && error.message === "pc's folder Documents already uses F:\\Documents");
+    await editFolder(pc(), "documents", { path: "f:/documents/" }, roots);
+    assert.deepEqual(received.filter((entry) => entry.method === "PATCH").at(-1)?.body, { path: "F:\\documents" }, "the folder's own path is no conflict");
+  });
+
+  it("the folder id cannot be changed", async () => {
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { id: "other" }, roots), { status: 400, message: "the folder ID cannot be changed" });
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { label: "x", id: "dashboard-test-e" }, roots), { status: 400, message: "the folder ID cannot be changed" });
+    assert.deepEqual(received, []);
+  });
+
+  it("a malformed change is 400 before anything is read, named by the form's labels", async () => {
+    const refusals: [unknown, string][] = [
+      [{}, "nothing to change"],
+      [[], "nothing to change"],
+      [{ devices: [] }, "devices is not a folder setting this edit changes"],
+      [{ paused: true }, "paused is not a folder setting this edit changes"],
+      [{ type: "receiveencrypted" }, "Type must be send and receive, send only, receive only"],
+      [{ rescanIntervalS: -1 }, "Full rescan interval must be a whole number, 0 or more"],
+      [{ fsWatcherDelayS: 0 }, "Watch delay must be a whole number of seconds, 1 or more"],
+      [{ order: "biggest" }, "Pull order must be random, alphabetic, smallest first, largest first, oldest first, newest first"],
+      [{ minDiskFree: { value: 101, unit: "%" } }, "Minimum free disk cannot be more than 100 %"],
+      [{ minDiskFree: { value: 1, unit: "PB" } }, "Minimum free disk must be in %, kB, MB, GB, TB"],
+      [{ maxConflicts: -2 }, "Conflict copies kept must be a whole number, or -1 for unlimited"],
+      [{ syncXattrs: "yes" }, "Sync extended attributes must be on or off"],
+      [{ path: " " }, "Path is missing"],
+    ];
+    for (const [change, message] of refusals) {
+      await assert.rejects(editFolder(peer(), "dashboard-test-e", change, roots), { status: 400, message }, JSON.stringify(change));
+    }
+    assert.deepEqual(received, []);
+  });
+
+  it("a remote node's edit is 409 and a folder the node lacks is 404, neither writing anything", async () => {
+    const remote: RemoteInstance = { kind: "remote", nodeId: "a1b2", name: "p53-data", host: "p53", dashboardUrl: "http://127.0.0.1:1" };
+    await assert.rejects(editFolder(remote, "music", { label: "x" }, roots), { status: 409, message: "act on p53's dashboard" });
+    await assert.rejects(editFolder(peer(), "nowhere", { label: "x" }, roots), { status: 404, message: "dashboard-test-peer has no folder nowhere" });
+    assert.deepEqual(received.filter((entry) => entry.method === "PATCH"), []);
+  });
+
+  it("a lost answer whose change is in place reports the edit saved", async () => {
+    loseWriteAnswer = true;
+    const edit = await editFolder(peer(), "dashboard-test-e", { label: "Renamed", order: "alphabetic" }, roots);
+    assert.deepEqual([edit.settings.label, edit.settings.order], ["Renamed", "alphabetic"]);
+    assert.equal(edit.note.text, "dashboard-test-peer: changed folder Test A; label Renamed; pull order alphabetic");
+  });
+
+  it("a lost answer whose change is missing is the 503 of a node that does not answer", async () => {
+    dropWrite = true;
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { label: "Renamed" }, roots), { status: 503, message: "dashboard-test-peer's Syncthing is not answering" });
+    assert.equal(folders.find((folder) => folder.id === "dashboard-test-e")?.label, "Test A");
+  });
+
+  it("a lost answer Syncthing does not confirm says the edit may have been saved", async () => {
+    loseWriteAnswer = true;
+    silentAfterWrite = true;
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { label: "Renamed" }, roots), (error: Error & { status?: number; maybeSaved?: boolean }) => {
+      assert.equal(error.status, 503);
+      assert.equal(error.message, "dashboard-test-peer's Syncthing stopped answering during the change, so it may have been saved; check once dashboard-test-peer answers again");
+      return true;
+    });
+  });
+
+  it("the edit form sends only the settings that differ from what it opened with", async () => {
+    const opened = (await editFolder(peer(), "dashboard-test-e", { label: "Test A" }, roots)).settings;
+    const draft: FolderSettings = { ...structuredClone(opened), rescanIntervalS: 60, minDiskFree: { unit: opened.minDiskFree.unit, value: opened.minDiskFree.value } as FolderSettings["minDiskFree"] };
+    assert.deepEqual(changedFields(opened, draft), { rescanIntervalS: 60 }, "an object whose keys come in another order is no change");
+  });
+
+  it("an edit's activity entry names every changed setting in words", () => {
+    assert.equal(
+      folderEditText("pc", "Documents", { label: "", type: "receiveonly", rescanIntervalS: 0, fsWatcherEnabled: false, fsWatcherDelayS: 5, ignorePerms: true, minDiskFree: { value: 5, unit: "GB" }, maxConflicts: -1, syncOwnership: true, syncXattrs: false }),
+      "pc: changed folder Documents; label none; type receive only; full rescan interval off; watch for changes off; watch delay 5 s; ignore permissions on; minimum free disk 5 GB; conflict copies kept unlimited; sync ownership on; sync extended attributes off",
+    );
+  });
+
+  it("checking a path for an edit leaves the edited folder out", async () => {
+    assert.equal((await checkFolderPath(pc(), "F:\\Documents", roots, "documents")).problem, null);
+    assert.equal((await checkFolderPath(pc(), "F:\\Documents\\Letters", roots, "documents")).warning, null);
+    assert.match((await checkFolderPath(pc(), "F:\\Documents", roots, "dashboard-test-e")).problem ?? "", /already uses/);
+  });
+
   function recordingEffects(): WriteEffects & { notes: WriteNote[]; invalidations: number } {
     const effects = { notes: [] as WriteNote[], invalidations: 0, invalidate: () => void (effects.invalidations += 1), record: (note: WriteNote) => void effects.notes.push(note) };
     return effects;
@@ -288,6 +419,40 @@ describe("adding a folder to a node", () => {
   function post(url: string, body: unknown): Promise<Response> {
     return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   }
+
+  function patch(url: string, body: unknown): Promise<Response> {
+    return fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  }
+
+  it("a folder edit goes through the router, enters Activity once saved and says when it may have been saved", async () => {
+    const effects = recordingEffects();
+    const resolve = async (nodeId: string): Promise<ResolvedInstance> => (nodeId === "d7e5" ? peer() : Promise.reject(new RequestError(404, `no node ${nodeId}`)));
+    const dashboard = await dashboardWith(effects, resolve);
+    try {
+      const folderUrl = `${dashboard.url}/api/nodes/d7e5/folders/dashboard-test-e`;
+      const saved = await patch(folderUrl, { rescanIntervalS: 120 });
+      assert.equal(saved.status, 200);
+      assert.equal(((await saved.json()) as FolderSettings).rescanIntervalS, 120);
+      assert.deepEqual(effects.notes.map((note) => note.text), ["dashboard-test-peer: changed folder Test A; full rescan interval 120 s"]);
+      assert.equal(effects.invalidations, 1);
+
+      assert.equal((await patch(folderUrl, { id: "other" })).status, 400);
+      assert.equal((await patch(`${dashboard.url}/api/nodes/d7e5/folders/%E0`, { label: "x" })).status, 400);
+      const check = (await (await fetch(`${dashboard.url}/api/nodes/d7e5/folder-path-check?path=${encodeURIComponent("/var/syncthing/data/dashboard-test-e")}&folder=dashboard-test-e`)).json()) as FolderPathCheck;
+      assert.equal(check.problem, null);
+
+      wrote = false;
+      loseWriteAnswer = true;
+      silentAfterWrite = true;
+      const unsure = await patch(folderUrl, { label: "Renamed" });
+      assert.equal(unsure.status, 503);
+      assert.equal(((await unsure.json()) as { maybeSaved?: boolean }).maybeSaved, true);
+      assert.equal(effects.notes.length, 1, "a write that may not have happened enters nothing");
+      assert.equal(effects.invalidations, 1);
+    } finally {
+      dashboard.close();
+    }
+  });
 
   it("the add, its defaults and browsing go through the router, and only the add enters Activity", async () => {
     const effects = recordingEffects();

@@ -1,10 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
-import type { ArrayAction, ArrayActionBody } from "./api/types.js";
+import type { ArrayAction, ArrayActionBody, ErrorAnswer } from "./api/types.js";
 import { type ArrayStatus, arrayStatus } from "./arrayStatus.js";
 import { isReplacementCandidate, listBlockDevices } from "./blockDevices.js";
 import { recordDashboardActivity, refreshEventFeeds } from "./eventFeed.js";
-import { type HostAllowlist, RequestError, hostAllowlist, hostRefusal, readBody, refuseCrossSiteWrite, sendJson } from "./http.js";
+import { type HostAllowlist, RequestError, UnconfirmedWrite, hostAllowlist, hostRefusal, readBody, refuseCrossSiteWrite, sendJson } from "./http.js";
 import { fileJoinRecords } from "./join.js";
 import { invalidateLocalNodes, nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
@@ -259,6 +259,11 @@ function errorStatus(error: unknown): number {
   return 500;
 }
 
+function errorAnswer(error: unknown): ErrorAnswer {
+  const answer: ErrorAnswer = { error: error instanceof Error ? error.message : String(error) };
+  return error instanceof UnconfirmedWrite ? { ...answer, maybeSaved: true } : answer;
+}
+
 /** Answers a request from `routeList`; a refusal or failure becomes `{ error }` with its status. */
 export function requestHandler(
   routeList: AnyRoute[],
@@ -271,7 +276,7 @@ export function requestHandler(
     } catch (error) {
       const status = errorStatus(error);
       if (status === 500) console.error(error);
-      sendJson(response, status, { error: error instanceof Error ? error.message : String(error) });
+      sendJson(response, status, errorAnswer(error));
     }
   };
 }

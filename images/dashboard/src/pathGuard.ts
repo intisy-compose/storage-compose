@@ -46,7 +46,10 @@ export function isStrictlyBelow(path: string, root: string, os: NodeOs): boolean
   return relative !== null && relative !== "";
 }
 
-/** The other node of this host whose root holds `path`, or null. */
+/**
+ * The other node of this host whose root holds `path`, or null.
+ * @implNote Looks only at nodes nested below this node's root, so a caller checks `isInsideRoot` first.
+ */
 export function isInsideOtherNode(path: string, node: NodeRoot, nodes: NodeRoot[]): NodeRoot | null {
   return nestedNodes(node, nodes).find((other) => relativeToRoot(path, other.root, node.os) !== null) ?? null;
 }

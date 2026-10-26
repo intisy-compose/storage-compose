@@ -14,7 +14,7 @@ export interface OpenForm {
 
 export interface Notice {
   text: string;
-  tone: "ok" | "bad";
+  tone: "ok" | "warn" | "bad";
 }
 
 export const allNodesView = "all";
@@ -88,6 +88,19 @@ export interface AddFolderFormState {
   added: FolderSettings | null;
 }
 
+/** The form of `#/folders/<folderId>?...&edit=<nodeId>`: one folder's settings as one node's Syncthing has them. */
+export interface EditFolderFormState {
+  folderId: string;
+  nodeId: string;
+  /** As the folder detail answered when the form opened or as the last save answered; changes are measured against it, never against a later read. */
+  saved: FolderSettings | null;
+  draft: FolderSettings | null;
+  /** How the node would judge the typed path, for the path it was asked about. */
+  pathCheck: { typed: string; check: FolderPathCheck } | null;
+  saving: boolean;
+  result: Notice | null;
+}
+
 /** The Folders page's file explorer: which node's view, which directory, and what the person opened in it. */
 export interface ExplorerState {
   node: string;
@@ -117,6 +130,7 @@ export interface AppState {
   deviceForm: DeviceFormState | null;
   addDeviceForm: AddDeviceFormState | null;
   addFolderForm: AddFolderFormState | null;
+  editFolderForm: EditFolderFormState | null;
   data: NodesResponse | null;
   devices: DevicesResponse | null;
   devicesError: string | null;
@@ -161,6 +175,7 @@ export const appState: AppState = {
   deviceForm: null,
   addDeviceForm: null,
   addFolderForm: null,
+  editFolderForm: null,
   data: null,
   devices: null,
   devicesError: null,
@@ -206,12 +221,20 @@ function readAddFolderForm(adding: boolean, node: string, under: string): void {
   appState.addFolderForm = adding ? (open?.under === under && open.openedFrom === node ? open : emptyAddFolderForm(node, under)) : null;
 }
 
+/** Keeps the open edit form, and what was typed into it, while the address names the same folder and node. */
+function readEditFolderForm(folderId: string | null, nodeId: string | null): void {
+  const open = appState.editFolderForm;
+  if (!folderId || !nodeId) appState.editFolderForm = null;
+  else if (open?.folderId !== folderId || open.nodeId !== nodeId) appState.editFolderForm = { folderId, nodeId, saved: null, draft: null, pathCheck: null, saving: false, result: null };
+}
+
 function readExplorerLocation(query: URLSearchParams): void {
   const node = query.get("node") || allNodesView;
   const path = query.get("path") ?? "";
   if (node !== appState.explorer.node || path !== appState.explorer.path) appState.explorer = emptyExplorer(node, path);
   appState.explorer.placeAtFolder = appState.selectedFolderId !== null && !query.has("path");
   readAddFolderForm(appState.selectedFolderId === null && query.get("add") === addFolderFlag, node, path);
+  readEditFolderForm(appState.selectedFolderId, query.get("edit"));
 }
 
 function emptyDeviceForm(nodeId: string, deviceId: string): DeviceFormState {
@@ -256,7 +279,10 @@ export function readLocation(): void {
   readNodesSelection(appState.page === "nodes" ? selected : null, subItemId ? decodeURIComponent(subItemId) : null, deviceId ? decodeURIComponent(deviceId) : null);
   appState.selectedFolderId = appState.page === "folders" ? selected : null;
   if (appState.page === "folders") readExplorerLocation(query);
-  else appState.addFolderForm = null;
+  else {
+    appState.addFolderForm = null;
+    appState.editFolderForm = null;
+  }
 }
 
 function encodePath(path: string): string {
@@ -271,6 +297,11 @@ export function explorerLocation(folderId: string | null, node = appState.explor
   const base = locationFor("folders", folderId);
   if (!folderId && node === allNodesView && !path) return base;
   return `${base}?node=${encodeURIComponent(node)}&path=${encodePath(path)}`;
+}
+
+/** The form that edits the folder's settings on the node `nodeId`, over the explorer where the folder's detail is open. */
+export function editFolderLocation(folderId: string, nodeId: string): string {
+  return `${explorerLocation(folderId)}&edit=${encodeURIComponent(nodeId)}`;
 }
 
 /** The add folder form over the explorer at a node's view of a directory, the folder placed there by default. */
@@ -307,5 +338,6 @@ export function selectedItemId(): string | null {
   if (appState.deviceForm) return `${appState.deviceForm.nodeId}/devices/${appState.deviceForm.deviceId}`;
   if (appState.addDeviceForm) return `${appState.addDeviceForm.nodeId}/devices/${newDeviceSegment}`;
   if (appState.addFolderForm) return `add-folder/${appState.addFolderForm.under}`;
+  if (appState.editFolderForm) return `edit-folder/${appState.editFolderForm.folderId}/${appState.editFolderForm.nodeId}`;
   return appState.selectedNodeId ?? appState.selectedFolderId ?? (appState.page === "folders" ? appState.explorer.selectedPath : null);
 }

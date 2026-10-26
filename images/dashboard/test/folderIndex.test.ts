@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
-import type { FolderSummary } from "../src/api/types.js";
+import type { FolderDetailResponse, FolderSettings, FolderSummary } from "../src/api/types.js";
 import { type FolderIndexSources, folderDetail, foldersResponse } from "../src/folderIndex.js";
+import { requestHandler } from "../src/routes.js";
+import { folderRoutesFrom, peerFolderReads } from "../src/routes/folders.js";
 import type { SetupLayout } from "../src/setupRepo.js";
 import { SyncthingClient } from "../src/syncthing.js";
 
@@ -249,6 +251,46 @@ describe("folder index", () => {
     assert.deepEqual(byId(answer.folders, "documents").copies.map((copy) => copy.nodeId), ["fb98"]);
     assert.deepEqual(answer.unreadable.map((entry) => [entry.nodeId, entry.nodeName]), [["5784", "private-array"]]);
     assert.match(answer.unreadable[0].error, /HTTP 403/);
+  });
+
+  it("a peer's settings for its own copy are merged into the folder detail", async () => {
+    const peerSettings: FolderSettings = { ...(await folderDetail("music", "local", sources)).settings.fb98, path: "/srv/music", type: "receiveonly" };
+    const peerDetail: FolderDetailResponse = { summary: remoteMusic, settings: { a1b2: peerSettings } };
+    const detail = await folderDetail("music", "all", { ...sources, peerFolderDetails: async () => [peerDetail] });
+    assert.deepEqual(Object.keys(detail.settings).sort(), ["5784", "a1b2", "fb98"]);
+    assert.equal(detail.settings.a1b2.path, "/srv/music");
+    assert.equal(detail.settings.fb98.path, "F:\\Music", "a peer's settings never replace a local node's");
+    assert.deepEqual(detail.summary.copies.map((copy) => [copy.nodeId, copy.local]).sort(), [["5784", true], ["a1b2", false], ["fb98", true]]);
+  });
+
+  it("a peer answering 2xx with something other than JSON adds nothing", async () => {
+    const htmlPeer = createServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "text/html" });
+      response.end("<html>sign in</html>");
+    });
+    const goodPeer = createServer((request, response) => {
+      const detail: FolderDetailResponse = { summary: remoteMusic, settings: {} };
+      reply(response, new URL(request.url ?? "/", "http://peer").pathname === "/api/folders" ? { folders: [remoteMusic], unreadable: [], offersUnreadable: [] } : detail);
+    });
+    try {
+      const reads = peerFolderReads([`http://127.0.0.1:${await listen(htmlPeer)}`, `http://127.0.0.1:${await listen(goodPeer)}`]);
+      assert.deepEqual((await reads.peerFolders()).map((folder) => folder.id), ["music"]);
+      assert.deepEqual((await reads.peerFolderDetails("music")).map((detail) => detail.summary.id), ["music"]);
+    } finally {
+      await Promise.all([close(htmlPeer), close(goodPeer)]);
+    }
+  });
+
+  it("/api/folders/%E0 answers 400", async () => {
+    const handle = requestHandler(folderRoutesFrom(sources));
+    const dashboard = createServer((request, response) => void handle(request, response));
+    try {
+      const answer = await fetch(`http://127.0.0.1:${await listen(dashboard)}/api/folders/%E0`);
+      assert.equal(answer.status, 400);
+      assert.deepEqual(await answer.json(), { error: "%E0 is not a valid folder ID" });
+    } finally {
+      await close(dashboard);
+    }
   });
 
   it("a folder no node has and nobody offers is 404", async () => {

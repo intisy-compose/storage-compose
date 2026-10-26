@@ -9,6 +9,13 @@ export class RequestError extends Error {
   }
 }
 
+/** A write whose answer was lost and whose effect could not be read back either, so it may have been saved. */
+export class UnconfirmedWrite extends RequestError {
+  constructor(nodeName: string) {
+    super(503, `${nodeName}'s Syncthing stopped answering during the change, so it may have been saved; check once ${nodeName} answers again`);
+  }
+}
+
 export function sendJson(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   response.end(JSON.stringify(body));

@@ -22,14 +22,17 @@ export type {
   DriveCandidate,
   DriveRecord,
   DriveRecordKind,
+  DiskFreeUnit,
   DriveSummary,
   EntryStatus,
+  ErrorAnswer,
   FolderCopy,
   FolderDetailResponse,
   FolderFile,
   FolderPathCheck,
   FolderPeer,
   FolderSettings,
+  FolderSettingsChange,
   FolderSummary,
   FoldersResponse,
   FolderType,
@@ -58,6 +61,7 @@ export type {
   PresenceWindow,
   PriorityBand,
   PriorityInfo,
+  PullOrder,
   Peer,
   RemoteState,
   RemoveDeviceBody,
@@ -76,9 +80,9 @@ export type {
   WarningLevel,
 } from "../../src/api/types.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderPathCheck, FolderSettings, RemoveDeviceBody, HostSettings, IgnoredDevice, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderPathCheck, FolderSettings, FolderSettingsChange, RemoveDeviceBody, HostSettings, IgnoredDevice, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
-export { folderTypeTexts, topDirectoryDefault } from "../../src/api/types.js";
+export { diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts, topDirectoryDefault } from "../../src/api/types.js";
 
 export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
@@ -126,7 +130,8 @@ export function fetchDeviceSettings(nodeId: string, deviceId: string): Promise<D
   return getJson(devicePath(nodeId, deviceId));
 }
 
-export type SaveResult<T> = { ok: true; value: T } | { ok: false; message: string };
+/** `maybeSaved`: the node stopped answering during the write, so it may have taken effect. */
+export type SaveResult<T> = { ok: true; value: T } | { ok: false; message: string; maybeSaved: boolean };
 
 let savedWrites = 0;
 
@@ -144,11 +149,12 @@ export function savedWriteCount(): number {
 async function sendWrite<T>(path: string, method: string, body?: unknown): Promise<SaveResult<T>> {
   try {
     const response = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
-    const payload = (await response.json().catch(() => ({}))) as T & { error?: string };
-    if (response.ok) noteSavedWrite();
-    return response.ok ? { ok: true, value: payload } : { ok: false, message: payload.error ?? `HTTP ${response.status}` };
+    const payload = (await response.json().catch(() => ({}))) as T & Partial<ErrorAnswer>;
+    const maybeSaved = payload.maybeSaved === true;
+    if (response.ok || maybeSaved) noteSavedWrite();
+    return response.ok ? { ok: true, value: payload } : { ok: false, message: payload.error ?? `HTTP ${response.status}`, maybeSaved };
   } catch {
-    return { ok: false, message: "The dashboard is not answering." };
+    return { ok: false, message: "The dashboard is not answering.", maybeSaved: false };
   }
 }
 
@@ -228,13 +234,20 @@ export function browseFolderPaths(nodeId: string, current: string): Promise<stri
   return getJson(`${nodeApiPath(nodeId, "browse")}?current=${encodeURIComponent(current)}`);
 }
 
-export function checkFolderPath(nodeId: string, path: string): Promise<FolderPathCheck> {
-  return getJson(`${nodeApiPath(nodeId, "folder-path-check")}?path=${encodeURIComponent(path)}`);
+/** How the node would judge `path` for a new folder, or for the edit of `editedFolderId`, whose own path is then no conflict. */
+export function checkFolderPath(nodeId: string, path: string, editedFolderId: string | null = null): Promise<FolderPathCheck> {
+  const query = new URLSearchParams({ path, ...(editedFolderId === null ? {} : { folder: editedFolderId }) });
+  return getJson(`${nodeApiPath(nodeId, "folder-path-check")}?${query.toString()}`);
 }
 
 /** Sends the new folder's ID, path and only the settings that differ from the node's defaults. */
 export function addFolder(nodeId: string, folder: NewFolder): Promise<SaveResult<FolderSettings>> {
   return sendWrite(nodeApiPath(nodeId, "folders"), "POST", folder);
+}
+
+/** Sends only `change`; the node's answer is the folder as it now stands. */
+export function saveFolderSettings(nodeId: string, folderId: string, change: FolderSettingsChange): Promise<SaveResult<FolderSettings>> {
+  return sendWrite(nodeApiPath(nodeId, `folders/${encodeURIComponent(folderId)}`), "PATCH", change);
 }
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {
