@@ -43,7 +43,9 @@ export type {
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
-import type { ActivityResponse, ArrayAction, ArrayActionBody, FolderDetailResponse, FoldersResponse, NodesResponse, TreeListing } from "../../src/api/types.js";
+import type { ActivityResponse, ArrayAction, ArrayActionBody, FolderDetailResponse, NodesResponse, TreeListing } from "../../src/api/types.js";
+
+export { topDirectoryDefault } from "../../src/api/types.js";
 
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 
@@ -63,10 +65,6 @@ async function getJson<T>(path: string): Promise<T> {
 
 export function fetchNodes(): Promise<NodesResponse> {
   return getJson("api/nodes");
-}
-
-export function fetchFolders(): Promise<FoldersResponse> {
-  return getJson("api/folders");
 }
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {

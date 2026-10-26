@@ -3,7 +3,7 @@ import { fetchActivity, fetchFolderDetail, fetchNodes } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { element } from "./dom.js";
 import { folderRootPriority, renderExplorerDetail } from "./explorerDetail.js";
-import { loadExplorer, placeAtFolder, renderExplorerPage } from "./explorerPage.js";
+import { isNodeSelectorOpen, loadExplorer, placeAtFolder, renderExplorerPage } from "./explorerPage.js";
 import { renderFolderDetail, renderFolderLoading, renderFolderNotFound } from "./folderDetail.js";
 import { isFormOpen } from "./forms.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
@@ -98,7 +98,7 @@ function isEditingDetail(): boolean {
 }
 
 function isInUse(): boolean {
-  return isEditingDetail() || isFormOpen();
+  return isEditingDetail() || isFormOpen() || isNodeSelectorOpen();
 }
 
 function messageOf(error: unknown): string {

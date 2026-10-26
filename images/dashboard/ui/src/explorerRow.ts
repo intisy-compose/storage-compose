@@ -1,4 +1,4 @@
-import { type NodeEntryState, type PriorityInfo, type StatusPresentation, type TreeEntry, priorityBadgeText, statusPresentation } from "./api.js";
+import { type NodeEntryState, type PriorityInfo, type StatusPresentation, type TreeEntry, priorityBadgeText, statusPresentation, topDirectoryDefault } from "./api.js";
 import { element } from "./dom.js";
 import { formatBytes, formatDate } from "./format.js";
 import { icon } from "./icons.js";
@@ -38,6 +38,14 @@ export function statusDot(state: NodeEntryState): HTMLElement {
   );
 }
 
+export const notSharedText = "not shared with it";
+
+/** A node's slot on a row whose folder it neither holds nor was offered. */
+export function notSharedDot(nodeName: string | null): HTMLElement {
+  const label = nodeName ? `${nodeName}: ${notSharedText}` : notSharedText;
+  return element("span", { className: "status-dot not-shared", title: label, attributes: { role: "img", "aria-label": label } });
+}
+
 function unknownReason(state: NodeEntryState, withDetail: boolean): string | null {
   const parts = [lastSeenText(state.nodeId), withDetail ? state.detail : null].filter((part): part is string => Boolean(part));
   return parts.length ? parts.join(", ") : null;
@@ -58,7 +66,7 @@ export function stateParts(state: NodeEntryState, withUnknownDetail = false): HT
 function dotSlots(entry: TreeEntry, columns: DotColumns): HTMLElement {
   const slots = columns.map((column) => {
     const state = entry.nodes.find((candidate) => candidate.nodeId === column.nodeId);
-    return state ? statusDot(state) : element("span", { className: "status-dot empty", title: `${column.nodeName}: does not have it` });
+    return state ? statusDot(state) : notSharedDot(column.nodeName);
   });
   return element("span", { className: "explorer-dots" }, ...slots);
 }
@@ -74,7 +82,7 @@ function statusCell(entry: TreeEntry, columns: DotColumns | null): HTMLElement {
 export function priorityCell(info: PriorityInfo, isTopDirectory = false): HTMLElement {
   const text = priorityBadgeText(info, isTopDirectory);
   if (info.setHere === null) return element("span", { className: "explorer-priority inherited", title: text }, String(info.effective));
-  const marksChange = isTopDirectory ? info.setHere !== info.inherited : info.overridesParent;
+  const marksChange = isTopDirectory ? info.setHere !== topDirectoryDefault : info.overridesParent;
   return element("span", { className: `chip explorer-priority${marksChange ? " overrides" : ""}`, title: text }, text);
 }
 

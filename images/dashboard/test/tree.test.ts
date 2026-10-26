@@ -528,6 +528,16 @@ describe("tree listing of all nodes", () => {
     assert.ok(stateOn(top.entries.find((entry) => entry.name === "dashboard-test-x"), nodes[2].nodeId));
   });
 
+  it("a folder offered to a node sits where another node holds it, even without a layout entry", async () => {
+    const nodes = threeNodes();
+    const sources = allSources(nodes, { layout: async () => null });
+    const top = await allNodesListing("", 1, "all", sources);
+    assert.deepEqual(stateOn(top.entries.find((entry) => entry.name === "Documents"), nodes[1].nodeId), { status: "missing", detail: "offered, not accepted" });
+    assert.ok(!top.entries.some((entry) => entry.name === "Other folders"), names(top.entries).join(", "));
+    const inside = await allNodesListing("Documents", 1, "all", sources);
+    assert.deepEqual(stateOn(inside.entries.find((entry) => entry.name === "Taxes"), nodes[1].nodeId), { status: "missing", detail: "offered, not accepted" });
+  });
+
   it("the cluster is asked for the listing first", async () => {
     const cluster = addInstance("storage", [documentsFolder("/pool/Documents")]);
     const pc = addInstance("pc", [documentsFolder("F:\\Documents")]);

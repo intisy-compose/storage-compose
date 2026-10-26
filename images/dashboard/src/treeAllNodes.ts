@@ -96,6 +96,23 @@ async function viewOf(node: TreeNode, layout: SetupLayout | null, sources: Listi
   return withinDeadline(read, waitMs, (): NodeView => ({ tree: treeWithout(node, sources), condition: "late" }));
 }
 
+/**
+ * An offer carries no path, so without a layout entry it lands under "Other folders"; where another
+ * node holds the same folder ID, the offer is placed at that node's position instead, so its rows show
+ * the offered node as not here yet.
+ */
+function placeOffersWhereHeld(trees: NodeTree[]): void {
+  const heldAt = new Map<string, NodeTree["folders"][number]["placement"]>();
+  for (const tree of trees) for (const folder of tree.folders) if (folder.config && folder.placement.placedBy !== "other" && !heldAt.has(folder.placement.folderId)) heldAt.set(folder.placement.folderId, folder.placement);
+  for (const tree of trees) {
+    tree.folders = tree.folders.map((folder) => {
+      const held = heldAt.get(folder.placement.folderId);
+      if (folder.config || folder.placement.placedBy !== "other" || !held) return folder;
+      return { ...folder, placement: { ...folder.placement, relativePath: held.relativePath, placedBy: held.placedBy } };
+    });
+  }
+}
+
 function holdsIndexAt(tree: NodeTree, path: string): boolean {
   const location = folderAt(
     tree.folders.map((folder) => folder.placement),
@@ -259,6 +276,7 @@ export async function allNodesListing(rawPath: string, page: number, scope: "all
   const [nodes, layout] = await Promise.all([sources.localNodes(), sources.layout()]);
   const views = await Promise.all(nodes.map((node) => viewOf(node, layout, sources, Math.min(sources.nodeWaitMs, remaining()))));
   const trees = views.map((view) => view.tree);
+  placeOffersWhereHeld(trees);
   const answers = await asked;
   const remoteRows = answers.flatMap((answer) => ("listing" in answer ? answer.listing.entries.map(rowOf) : []));
   const source = views.find((view) => view.condition === "read" && view.tree.answering && holdsIndexAt(view.tree, path))?.tree;

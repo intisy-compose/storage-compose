@@ -1,14 +1,21 @@
 import { type EntryStatus, type FolderSummary, type StorageNode, type TreeEntry, type TreeListing, fetchTree, statusPresentation } from "./api.js";
 import { element } from "./dom.js";
 import { loadedEntries } from "./explorerDetail.js";
-import { type DotColumns, explorerNote, explorerRow, presentationClasses } from "./explorerRow.js";
-import { registerForm } from "./forms.js";
+import { type DotColumns, explorerNote, explorerRow, notSharedDot, notSharedText, presentationClasses } from "./explorerRow.js";
 import { plural } from "./format.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
 import { type ExplorerState, allNodesView, appState, explorerLocation, readLocation } from "./state.js";
 
-const nodeFormId = "explorer-node-form";
+let isNodeMenuOpen = false;
+
+/**
+ * True while the node selector's list is open, the one moment a poll's render would close it.
+ * @implNote A change navigates and renders at once, so the selector is not protected after it.
+ */
+export function isNodeSelectorOpen(): boolean {
+  return isNodeMenuOpen;
+}
 const listingsInFlight = new Set<string>();
 
 function messageOf(error: unknown): string {
@@ -75,10 +82,15 @@ function toggleExpanded(entry: TreeEntry): void {
 }
 
 function selectEntry(entry: TreeEntry): void {
+  const isNewRow = appState.explorer.selectedPath !== entry.path;
   appState.explorer.selectedPath = entry.path;
   const target = explorerLocation(entry.folder?.id ?? null);
-  if (location.hash !== target) location.hash = target;
-  else requestRender();
+  if (location.hash !== target) {
+    location.hash = target;
+    return;
+  }
+  requestRender();
+  if (isNewRow) document.querySelector(".detail")?.scrollTo(0, 0);
 }
 
 function showMore(): void {
@@ -148,11 +160,21 @@ function nodeSelector(): HTMLElement {
     select.append(unknown);
   }
   select.value = appState.explorer.node;
+  select.addEventListener("mousedown", () => {
+    isNodeMenuOpen = !isNodeMenuOpen;
+  });
+  select.addEventListener("keydown", (event) => {
+    if (event.key === " " || event.key === "Enter" || (event.altKey && event.key === "ArrowDown")) isNodeMenuOpen = true;
+    if (event.key === "Escape" || event.key === "Tab") isNodeMenuOpen = false;
+  });
+  select.addEventListener("blur", () => {
+    isNodeMenuOpen = false;
+  });
   select.addEventListener("change", () => {
+    isNodeMenuOpen = false;
     location.hash = explorerLocation(null, select.value, appState.explorer.path);
   });
-  registerForm(nodeFormId);
-  return element("form", { className: "explorer-node-form", attributes: { id: nodeFormId } }, select);
+  return element("div", { className: "explorer-node-form" }, select);
 }
 
 function searchBox(): HTMLElement {
@@ -189,9 +211,10 @@ function legend(): HTMLElement {
     { className: "explorer-legend", attributes: { "aria-label": "Colours" } },
     ...legendStates.map((status) => {
       const shown = statusPresentation({ nodeId: "", nodeName: "", host: "", status, detail: null });
-      const label = status === "unknown" ? "not answering" : shown.label;
+      const label = status === "unknown" ? "unknown (offline or not answering)" : shown.label;
       return element("li", {}, element("span", { className: `status-dot ${presentationClasses(shown)}` }, status === "unknown" ? "?" : null), label);
     }),
+    element("li", {}, notSharedDot(null), notSharedText),
   );
 }
 
