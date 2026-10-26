@@ -1,7 +1,7 @@
 import { type FolderPathCheck, type FolderSettings, type FolderSettingsChange, type FolderType, type NewFolder, type NewFolderDefaults, folderSettingLabels, folderTypeTexts, pullOrderTexts } from "../api/types.js";
 import { folderSettings } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, localNodeInfos, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, localNodeInfos, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import { type NodeRoot, folderPathProblem, isInsideOtherNode, isInsideRoot, isStrictlyBelow, pathUnderRoot } from "../pathGuard.js";
 import type { AnyRoute, WriteNote } from "../routes.js";
 import type { SyncthingFolderSettings } from "../syncthing.js";
@@ -182,6 +182,17 @@ function otherFolderAtPath(instance: LocalInstance, folders: SyncthingFolderSett
   return samePathProblem(instance, folders.filter((folder) => folder.id !== folderId), path, node);
 }
 
+/** @implNote The path is compared as the guard reads paths, so Syncthing writing it with another case or a trailing separator still counts. */
+function isFolderChangeInPlace(instance: LocalInstance, current: SyncthingFolderSettings, sent: FolderSettingsChange): boolean {
+  const { path, ...rest } = sent;
+  return isChangeInPlace(current, rest) && (path === undefined || isSamePath(current.path, path, rooted(instance).node));
+}
+
+function typeChangeProblem(before: SyncthingFolderSettings, change: FolderSettingsChange): string | null {
+  const isEncrypted = before.type === "receiveencrypted";
+  return isEncrypted && change.type !== undefined && change.type !== before.type ? `${folderName(before)} is receive encrypted, a type it keeps: it was given it by accepting an offer` : null;
+}
+
 export interface FolderEdit {
   settings: FolderSettings;
   note: WriteNote;
@@ -192,7 +203,7 @@ export interface FolderEdit {
  * back over a change made elsewhere meanwhile; a new path is judged like an add's and sent as checked.
  * @implNote Syncthing does not move the files: the folder rescans at the new path.
  */
-export async function editFolder(instance: ResolvedInstance, folderId: string, change: unknown, nodes: NodeRoot[]): Promise<FolderEdit> {
+export async function editFolder(instance: ResolvedInstance, folderId: string, change: unknown, nodes: NodeRoot[], readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<FolderEdit> {
   const local = requireLocal(instance);
   const problem = folderChangeProblem(change);
   if (problem) throw new RequestError(400, problem);
@@ -201,12 +212,15 @@ export async function editFolder(instance: ResolvedInstance, folderId: string, c
   const folders = await configuredFolders(local);
   const before = folders.find((folder) => folder.id === folderId);
   if (!before) throw new RequestError(404, `${local.name} has no folder ${folderId}`);
+  const typeProblem = typeChangeProblem(before, sent);
+  if (typeProblem) throw new RequestError(400, typeProblem);
   const samePath = sent.path === undefined ? null : otherFolderAtPath(local, folders, folderId, sent.path);
   if (samePath) throw new RequestError(409, samePath);
   await writeConfirmed(
     local,
     (client) => client.request("PATCH", `/config/folders/${encodeURIComponent(folderId)}`, sent),
-    async () => isChangeInPlace(await local.client.folderSettings(folderId), sent),
+    async () => isFolderChangeInPlace(local, await local.client.folderSettings(folderId), sent),
+    readBackDelaysMs,
   );
   const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId, text: folderEditText(local.name, folderName(before), sent) };
   return { settings: await settingsAfter(local, folderId, { ...before, ...sent }), note };
@@ -275,6 +289,8 @@ export interface NodeFolderSources {
   resolve(nodeId: string): Promise<ResolvedInstance>;
   /** Every node of this host that has a root, the guard's view of where each keeps its data. */
   nodeRoots(): Promise<NodeRoot[]>;
+  /** The waits between read-backs of an edit whose answer was lost; tests shorten them. */
+  readBackDelaysMs?: readonly number[];
 }
 
 async function liveNodeRoots(): Promise<NodeRoot[]> {
@@ -317,7 +333,7 @@ export function nodeFolderRoutes(sources: NodeFolderSources = liveSources): AnyR
       pattern: /^\/api\/nodes\/([^/]+)\/folders\/([^/]+)$/,
       write: async ({ request, response, params: [nodeId, folderId] }) => {
         const instance = await node(nodeId);
-        const edit = await editFolder(instance, decodedSegment(folderId, "folder ID"), await readBody(request), await sources.nodeRoots());
+        const edit = await editFolder(instance, decodedSegment(folderId, "folder ID"), await readBody(request), await sources.nodeRoots(), sources.readBackDelaysMs);
         sendJson(response, 200, edit.settings);
         return edit.note;
       },

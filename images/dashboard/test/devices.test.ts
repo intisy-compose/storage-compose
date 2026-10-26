@@ -103,6 +103,8 @@ describe("a node's devices", () => {
   /** Once a device PATCH was applied, drops every later request, as a Syncthing that does not come back. */
   let silentAfterWrite = false;
   let wrote = false;
+  /** Drops this many requests once a device PATCH was applied, as a Syncthing that answers again after a restart. */
+  let dropAfterWrite = 0;
   let syncthingUrl = "";
   let deadUrl = "";
   /** Requests the fake has not finished answering, so a test starts only once the last one's stragglers are done. */
@@ -115,6 +117,10 @@ describe("a node's devices", () => {
     response.on("close", () => (openRequests -= 1));
     if (dropAfter !== null && dropAfter-- === 0) return request.socket.destroy();
     if (silentAfterWrite && wrote) return request.socket.destroy();
+    if (wrote && dropAfterWrite > 0) {
+      dropAfterWrite -= 1;
+      return request.socket.destroy();
+    }
     if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
     const path = new URL(request.url ?? "/", "http://fake").pathname;
     const query = new URL(request.url ?? "/", "http://fake").searchParams;
@@ -189,6 +195,7 @@ describe("a node's devices", () => {
     loseWriteAnswer = false;
     silentAfterWrite = false;
     wrote = false;
+    dropAfterWrite = 0;
     configured = [{ deviceID: ownId, name: "pc", addresses: ["dynamic"] }, { ...syncthingPeer }];
     folders = [
       { id: "dashboard-test-a", label: "dashboard-test-a", path: "F:/dashboard-test-a", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }] },
@@ -275,7 +282,7 @@ describe("a node's devices", () => {
   }
 
   async function dashboardWith(effects: WriteEffects): Promise<{ url: string; close: () => void }> {
-    const handle = requestHandler(deviceRoutes({ resolve: async (nodeId) => (nodeId === "fb98" ? pc() : Promise.reject(new RequestError(404, `no node ${nodeId}`))) }), effects);
+    const handle = requestHandler(deviceRoutes({ resolve: async (nodeId) => (nodeId === "fb98" ? pc() : Promise.reject(new RequestError(404, `no node ${nodeId}`))), readBackDelaysMs: [5, 10, 20] }), effects);
     const dashboard = createServer((request, response) => void handle(request, response));
     return { url: await listen(dashboard), close: () => dashboard.close() };
   }
@@ -367,7 +374,22 @@ describe("a node's devices", () => {
       assert.equal(answer.status, 503);
       assert.deepEqual(await answer.json(), { error: "pc's Syncthing stopped answering during the change, so it may have been saved; check once pc answers again", maybeSaved: true });
       assert.deepEqual(effects.notes, []);
-      assert.equal(effects.invalidations, 0);
+      assert.equal(effects.invalidations, 1, "a write that may have happened drops the shared build");
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("a lost answer is read back again until a late answer shows the edit in place", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      loseWriteAnswer = true;
+      dropAfterWrite = 2;
+      const answer = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`, { name: "dashboard-test-renamed" });
+      assert.equal(answer.status, 200);
+      assert.equal(dropAfterWrite, 0, "the first two read-backs got no answer");
+      assert.deepEqual(effects.notes.map((note) => note.text), ["pc: renamed device dashboard-test-peer to dashboard-test-renamed"]);
     } finally {
       dashboard.close();
     }

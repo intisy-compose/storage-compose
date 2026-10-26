@@ -264,7 +264,10 @@ function errorAnswer(error: unknown): ErrorAnswer {
   return error instanceof UnconfirmedWrite ? { ...answer, maybeSaved: true } : answer;
 }
 
-/** Answers a request from `routeList`; a refusal or failure becomes `{ error }` with its status. */
+/**
+ * Answers a request from `routeList`; a refusal or failure becomes `{ error }` with its status.
+ * @implNote A write that may have been saved drops the shared build, so the next read shows it if it was, but enters nothing in Activity.
+ */
 export function requestHandler(
   routeList: AnyRoute[],
   effects: WriteEffects = liveWriteEffects,
@@ -274,6 +277,7 @@ export function requestHandler(
     try {
       await route(routeList, effects, hosts, request, response);
     } catch (error) {
+      if (error instanceof UnconfirmedWrite) effects.invalidate();
       const status = errorStatus(error);
       if (status === 500) console.error(error);
       sendJson(response, status, errorAnswer(error));

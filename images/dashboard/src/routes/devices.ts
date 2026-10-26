@@ -2,7 +2,7 @@ import type { ServerResponse } from "node:http";
 import { deviceDisplayName, deviceSettingLabels, shortDeviceId } from "../api/deviceText.js";
 import type { AddedDevice, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, NearbyDevice, NewDevice, RemoveDeviceBody } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, forwardRead, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { SyncthingError } from "../syncthing.js";
 import { deviceChangeProblem, deviceSettings, isChangeInPlace, newDeviceProblem, redactConfig } from "../syncthingConfig.js";
@@ -83,7 +83,7 @@ export interface DeviceEdit {
  * Sends exactly the fields of `change` to the node's Syncthing, so a field the person did not touch
  * is never written back over a change made elsewhere meanwhile.
  */
-export async function editDevice(instance: ResolvedInstance, deviceId: string, change: unknown): Promise<DeviceEdit> {
+export async function editDevice(instance: ResolvedInstance, deviceId: string, change: unknown, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<DeviceEdit> {
   const local = requireLocal(instance);
   const problem = deviceChangeProblem(change);
   if (problem) throw new RequestError(400, problem);
@@ -95,6 +95,7 @@ export async function editDevice(instance: ResolvedInstance, deviceId: string, c
     local,
     (client) => client.request("PATCH", `/config/devices/${encodeURIComponent(deviceId)}`, valid),
     async () => isChangeInPlace(await configuredDevice(local, deviceId), valid),
+    readBackDelaysMs,
   );
   return { settings: await settingsAfter(local, deviceId, { ...before, ...valid }), note };
 }
@@ -352,6 +353,8 @@ export function decodedSegment(segment: string, what: string): string {
 
 export interface DeviceRouteSources {
   resolve(nodeId: string): Promise<ResolvedInstance>;
+  /** The waits between read-backs of an edit whose answer was lost; tests shorten them. */
+  readBackDelaysMs?: readonly number[];
 }
 
 const liveSources: DeviceRouteSources = { resolve: (nodeId) => resolveInstance(nodeId) };
@@ -403,7 +406,7 @@ export function deviceRoutes(sources: DeviceRouteSources = liveSources): AnyRout
       pattern: devicePattern,
       write: async ({ request, response, params }) => {
         const { instance, deviceId } = await target(params);
-        const edit = await editDevice(instance, deviceId, await readBody(request));
+        const edit = await editDevice(instance, deviceId, await readBody(request), sources.readBackDelaysMs);
         sendJson(response, 200, edit.settings);
         return edit.note;
       },

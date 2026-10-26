@@ -8,6 +8,7 @@ import { otherHostNodes } from "./nodes.js";
 import { clusterArrayId, hostAgentHeartbeatFile, joinsFile, poolPath, registryDirectory } from "./settings.js";
 import { type SyncthingEndpoint, SyncthingClient, SyncthingUnavailable } from "./syncthing.js";
 import { fetchTailnet } from "./tailnet.js";
+import { setTimeout as sleep } from "node:timers/promises";
 
 export type LocalInstance = {
   kind: "local";
@@ -177,26 +178,52 @@ function isNotAnsweringError(error: unknown): boolean {
   return error instanceof RequestError && error.status === 503;
 }
 
-async function readBack(instance: LocalInstance, isInPlace: () => Promise<boolean>): Promise<boolean> {
+/** The waits between read-backs of a write whose answer was lost: 7.5 s in all, about as long as Syncthing takes to restart. */
+export const defaultReadBackDelaysMs: readonly number[] = [500, 1000, 2000, 4000];
+
+type ReadBack = "in-place" | "missing" | "no-answer";
+
+async function readBackOnce(isInPlace: () => Promise<boolean>): Promise<ReadBack> {
   try {
-    return await isInPlace();
+    return (await isInPlace()) ? "in-place" : "missing";
   } catch {
-    throw new UnconfirmedWrite(instance.name);
+    return "no-answer";
   }
+}
+
+/** Reads the change back until it is found in place or the waits run out; a node that answered at least once without it has not saved it. */
+async function readBack(isInPlace: () => Promise<boolean>, delaysMs: readonly number[]): Promise<ReadBack> {
+  let outcome = await readBackOnce(isInPlace);
+  let isAnsweredMissing = outcome === "missing";
+  for (const delay of delaysMs) {
+    if (outcome === "in-place") return outcome;
+    await sleep(delay);
+    outcome = await readBackOnce(isInPlace);
+    isAnsweredMissing ||= outcome === "missing";
+  }
+  if (outcome === "in-place") return outcome;
+  return isAnsweredMissing ? "missing" : "no-answer";
 }
 
 /**
  * Sends one write to the node's Syncthing; when its answer is lost, `isInPlace` reads whether the change took effect.
- * A change found in place counts as saved, one found missing is the 503 of a node that does not answer, and one that
- * cannot be read back is an `UnconfirmedWrite`.
+ * The read-back is retried after each of `delaysMs` while it fails or finds the change missing. A change found in place
+ * counts as saved, one found missing is the 503 of a node that does not answer, and one never read back is an `UnconfirmedWrite`.
  * @implNote Syncthing restarts after some config changes and can drop the answer of a write it applied, so a lost answer is never taken for "not saved".
  */
-export async function writeConfirmed(instance: LocalInstance, write: (client: SyncthingClient) => Promise<unknown>, isInPlace: () => Promise<boolean>): Promise<void> {
+export async function writeConfirmed(
+  instance: LocalInstance,
+  write: (client: SyncthingClient) => Promise<unknown>,
+  isInPlace: () => Promise<boolean>,
+  delaysMs: readonly number[] = defaultReadBackDelaysMs,
+): Promise<void> {
   try {
     await callSyncthing(instance, write);
   } catch (error) {
     if (!isNotAnsweringError(error)) throw error;
-    if (!(await readBack(instance, isInPlace))) throw error;
+    const outcome = await readBack(isInPlace, delaysMs);
+    if (outcome === "missing") throw error;
+    if (outcome === "no-answer") throw new UnconfirmedWrite(instance.name);
   }
 }
 

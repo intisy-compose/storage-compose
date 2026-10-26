@@ -162,18 +162,25 @@ function typeField(form: EditFolderFormState): HTMLElement {
   return settingLabel("type", control);
 }
 
-function localChangesWarning(form: EditFolderFormState, copy: FolderCopy | undefined): HTMLElement | null {
-  const { saved, draft } = form as { saved: FolderSettings; draft: FolderSettings };
-  const count = copy?.localChanged ?? 0;
-  if (saved.type !== "receiveonly" || draft.type === "receiveonly" || count === 0) return null;
-  return element("p", { className: "notice tone-text-warn" }, `${plural(count, "item")} changed here ${count === 1 ? "is" : "are"} sent to the other devices once this is saved, replacing their versions.`);
+function isAre(count: number): string {
+  return count === 1 ? "is" : "are";
+}
+
+/** What leaving a one-way type does to the items that differ: receive only sends its local changes, send only pulls what is out of sync. */
+function leavingOneWayWarning(form: EditFolderFormState, copy: FolderCopy | undefined): string | null {
+  const { saved } = form as { saved: FolderSettings };
+  const changedHere = copy?.localChanged ?? 0;
+  const outOfSync = copy?.needItems ?? 0;
+  if (saved.type === "receiveonly" && changedHere > 0) return `${plural(changedHere, "item")} changed here ${isAre(changedHere)} sent to the other devices once this is saved, replacing their versions.`;
+  if (saved.type === "sendonly" && outOfSync > 0) return `${plural(outOfSync, "item")} out of sync here ${isAre(outOfSync)} pulled from the other devices once this is saved, replacing the local versions.`;
+  return null;
 }
 
 function typeNotices(form: EditFolderFormState, copy: FolderCopy | undefined): HTMLElement[] {
   const { saved, draft } = form as { saved: FolderSettings; draft: FolderSettings };
   if (draft.type === saved.type) return [];
-  const warning = localChangesWarning(form, copy);
-  return [element("p", { className: "notice tone-text-warn", attributes: { role: "status" } }, typeMeanings[draft.type]), ...(warning ? [warning] : [])];
+  const warning = leavingOneWayWarning(form, copy);
+  return [element("p", { className: "notice tone-text-warn", attributes: { role: "status" } }, typeMeanings[draft.type]), ...(warning ? [element("p", { className: "notice tone-text-warn" }, warning)] : [])];
 }
 
 function generalSection(form: EditFolderFormState, copy: FolderCopy | undefined): HTMLElement {
@@ -283,7 +290,7 @@ function formHeader(form: EditFolderFormState, detail: FolderDetailResponse, cop
     "header",
     { className: "detail-header" },
     element("a", { className: "icon-button close-detail", title: back, attributes: { href: explorerLocation(form.folderId), "aria-label": back } }, icon("close")),
-    element("h2", {}, `Edit ${detail.summary.label}`),
+    element("h2", {}, `Edit ${form.saved ? form.saved.label || form.folderId : detail.summary.label}`),
     element("p", { className: "detail-status" }, `On ${copy?.nodeName ?? form.nodeId}, folder ID `, element("code", {}, form.folderId)),
   );
 }

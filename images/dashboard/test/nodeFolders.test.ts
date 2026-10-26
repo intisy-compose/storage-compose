@@ -8,7 +8,8 @@ import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/ins
 import type { NodeRoot } from "../src/pathGuard.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
 import { addFolder, browseDirectories, checkFolderPath, editFolder, folderEditText, folderIdFromLabel, newFolderDefaults, nodeFolderRoutes } from "../src/routes/nodeFolders.js";
-import { SyncthingClient } from "../src/syncthing.js";
+import { folderSettings } from "../src/folderIndex.js";
+import { SyncthingClient, type SyncthingFolderSettings } from "../src/syncthing.js";
 import { changedFields } from "../src/syncthingConfig.js";
 import { draftOf, newFolderBody, treePathOf } from "../ui/src/folderDraft.js";
 import { until } from "./until.js";
@@ -73,10 +74,19 @@ describe("adding a folder to a node", () => {
   /** Drops the folder PATCH without applying it, as a Syncthing that stops before the change. */
   let dropWrite = false;
   let wrote = false;
+  /** Drops this many requests once a folder PATCH was applied, as a Syncthing that answers again after a restart. */
+  let dropAfterWrite = 0;
+  /** How the fake stores a patched path, as Syncthing may write it differently from how it was sent. */
+  let storedPath = (path: string) => path;
+  const fastReadBacks = [5, 10, 20];
   const syncthing = createServer(async (request, response) => {
     openRequests += 1;
     response.on("close", () => (openRequests -= 1));
     if (silentAfterWrite && wrote) return request.socket.destroy();
+    if (wrote && dropAfterWrite > 0) {
+      dropAfterWrite -= 1;
+      return request.socket.destroy();
+    }
     if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
     const url = new URL(request.url ?? "/", "http://fake");
     const body = request.method === "POST" || request.method === "PATCH" ? await bodyOf(request) : null;
@@ -101,7 +111,9 @@ describe("adding a folder to a node", () => {
     if (request.method === "PATCH" && folderPath) {
       if (dropWrite) return request.socket.destroy();
       const folderId = decodeURIComponent(folderPath[1] as string);
-      folders = folders.map((folder) => (folder.id === folderId ? { ...folder, ...(body as object) } : folder));
+      const patched = body as Record<string, unknown>;
+      const stored = typeof patched.path === "string" ? { ...patched, path: storedPath(patched.path) } : patched;
+      folders = folders.map((folder) => (folder.id === folderId ? { ...folder, ...stored } : folder));
       wrote = true;
       if (loseWriteAnswer) return request.socket.destroy();
       return reply(response, null);
@@ -134,6 +146,8 @@ describe("adding a folder to a node", () => {
     silentAfterWrite = false;
     dropWrite = false;
     wrote = false;
+    dropAfterWrite = 0;
+    storedPath = (path) => path;
     folders = [
       { ...syncthingDefaults, id: "documents", label: "Documents", path: "F:\\Documents" },
       { ...syncthingDefaults, id: "dashboard-test-e", label: "Test A", path: "/var/syncthing/data/dashboard-test-e" },
@@ -365,21 +379,44 @@ describe("adding a folder to a node", () => {
 
   it("a lost answer whose change is in place reports the edit saved", async () => {
     loseWriteAnswer = true;
-    const edit = await editFolder(peer(), "dashboard-test-e", { label: "Renamed", order: "alphabetic" }, roots);
+    const edit = await editFolder(peer(), "dashboard-test-e", { label: "Renamed", order: "alphabetic" }, roots, fastReadBacks);
     assert.deepEqual([edit.settings.label, edit.settings.order], ["Renamed", "alphabetic"]);
     assert.equal(edit.note.text, "dashboard-test-peer: changed folder Test A; label Renamed; pull order alphabetic");
   });
 
+  it("a lost answer is read back again while the node does not answer, and a late answer with the change in place is saved", async () => {
+    loseWriteAnswer = true;
+    dropAfterWrite = 3;
+    const edit = await editFolder(peer(), "dashboard-test-e", { label: "Renamed" }, roots, fastReadBacks);
+    assert.equal(edit.settings.label, "Renamed");
+    assert.equal(dropAfterWrite, 0, "the first three read-backs got no answer");
+  });
+
+  it("a read-back finds a moved path in place however Syncthing writes it", async () => {
+    loseWriteAnswer = true;
+    storedPath = (path) => `${path.toLowerCase()}\\`;
+    const edit = await editFolder(pc(), "documents", { path: "F:\\Docs Moved" }, roots, fastReadBacks);
+    assert.equal(edit.note.text, "pc: changed folder Documents; path F:\\Docs Moved");
+  });
+
+  it("a receive encrypted folder keeps its type, refused before anything is written", async () => {
+    folders = [...folders, { ...syncthingDefaults, id: "dashboard-test-enc", label: "", type: "receiveencrypted", path: "/var/syncthing/data/dashboard-test-enc" }];
+    await assert.rejects(editFolder(peer(), "dashboard-test-enc", { type: "sendreceive" }, roots), { status: 400, message: "dashboard-test-enc is receive encrypted, a type it keeps: it was given it by accepting an offer" });
+    assert.deepEqual(received.filter((entry) => entry.method === "PATCH"), []);
+    await editFolder(peer(), "dashboard-test-enc", { rescanIntervalS: 60 }, roots);
+    assert.deepEqual(received.filter((entry) => entry.method === "PATCH").map((entry) => entry.body), [{ rescanIntervalS: 60 }], "its other settings still change");
+  });
+
   it("a lost answer whose change is missing is the 503 of a node that does not answer", async () => {
     dropWrite = true;
-    await assert.rejects(editFolder(peer(), "dashboard-test-e", { label: "Renamed" }, roots), { status: 503, message: "dashboard-test-peer's Syncthing is not answering" });
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { label: "Renamed" }, roots, fastReadBacks), { status: 503, message: "dashboard-test-peer's Syncthing is not answering" });
     assert.equal(folders.find((folder) => folder.id === "dashboard-test-e")?.label, "Test A");
   });
 
   it("a lost answer Syncthing does not confirm says the edit may have been saved", async () => {
     loseWriteAnswer = true;
     silentAfterWrite = true;
-    await assert.rejects(editFolder(peer(), "dashboard-test-e", { label: "Renamed" }, roots), (error: Error & { status?: number; maybeSaved?: boolean }) => {
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { label: "Renamed" }, roots, fastReadBacks), (error: Error & { status?: number; maybeSaved?: boolean }) => {
       assert.equal(error.status, 503);
       assert.equal(error.message, "dashboard-test-peer's Syncthing stopped answering during the change, so it may have been saved; check once dashboard-test-peer answers again");
       return true;
@@ -387,7 +424,7 @@ describe("adding a folder to a node", () => {
   });
 
   it("the edit form sends only the settings that differ from what it opened with", async () => {
-    const opened = (await editFolder(peer(), "dashboard-test-e", { label: "Test A" }, roots)).settings;
+    const opened = folderSettings(folders.find((folder) => folder.id === "dashboard-test-e") as unknown as SyncthingFolderSettings);
     const draft: FolderSettings = { ...structuredClone(opened), rescanIntervalS: 60, minDiskFree: { unit: opened.minDiskFree.unit, value: opened.minDiskFree.value } as FolderSettings["minDiskFree"] };
     assert.deepEqual(changedFields(opened, draft), { rescanIntervalS: 60 }, "an object whose keys come in another order is no change");
   });
@@ -411,7 +448,7 @@ describe("adding a folder to a node", () => {
   }
 
   async function dashboardWith(effects: WriteEffects, resolve: (nodeId: string) => Promise<ResolvedInstance>): Promise<{ url: string; close: () => void }> {
-    const handle = requestHandler(nodeFolderRoutes({ resolve, nodeRoots: async () => roots }), effects);
+    const handle = requestHandler(nodeFolderRoutes({ resolve, nodeRoots: async () => roots, readBackDelaysMs: fastReadBacks }), effects);
     const dashboard = createServer((request, response) => void handle(request, response));
     return { url: await listen(dashboard), close: () => dashboard.close() };
   }
@@ -448,7 +485,7 @@ describe("adding a folder to a node", () => {
       assert.equal(unsure.status, 503);
       assert.equal(((await unsure.json()) as { maybeSaved?: boolean }).maybeSaved, true);
       assert.equal(effects.notes.length, 1, "a write that may not have happened enters nothing");
-      assert.equal(effects.invalidations, 1);
+      assert.equal(effects.invalidations, 2, "a write that may have happened drops the shared build");
     } finally {
       dashboard.close();
     }
