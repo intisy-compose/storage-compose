@@ -1,10 +1,10 @@
 import { deviceDisplayName, shortDeviceId } from "../api/deviceText.js";
-import type { AcceptDeviceBody, AcceptedDevice, JoinEntry, PendingDevice, PendingFolderOffer, RequestsResponse } from "../api/types.js";
+import type { AcceptDeviceBody, AcceptedDevice, IgnoredDevice, JoinEntry, PendingDevice, PendingFolderOffer, RequestsResponse } from "../api/types.js";
 import { offersOf } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, localNodeInfos, readDashboard, requireLocal, resolveInstance } from "../instanceResolver.js";
 import { type JoinRecords, type JoinedDevice, conflictingId, isDeviceName } from "../join.js";
-import type { AnyRoute, WriteNote } from "../routes.js";
+import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { peerDashboards, setupRepoDirectory } from "../settings.js";
 import { type SetupLayout, type SetupRecordResult, readLayout, recordDevice } from "../setupRepo.js";
 import { type PendingDevices, type SyncthingClient, SyncthingError, SyncthingUnavailable } from "../syncthing.js";
@@ -212,29 +212,30 @@ const ignoreAttempts = 2;
  * @implNote Syncthing has no endpoint for ignored devices and its PUT has no version check, so the config is read
  * again just before the PUT: a change in between (Syncthing or another browser) starts once more from the changed config.
  */
-async function writeIgnored(instance: LocalInstance, offer: PendingDevice, now: Date): Promise<void> {
+async function writeIgnored(instance: LocalInstance, offer: PendingDevice, now: Date): Promise<"written" | "already ignored"> {
   for (let attempt = 0; attempt < ignoreAttempts; attempt++) {
     const config = await readWholeConfig(instance);
-    if (ignoredDevices(config).some((device) => device.deviceID === offer.deviceId)) return;
+    if (ignoredDevices(config).some((device) => device.deviceID === offer.deviceId)) return "already ignored";
     const updated = withIgnored(config, offer, now);
     if (JSON.stringify(await readWholeConfig(instance)) !== JSON.stringify(config)) continue;
     await callSyncthing(instance, (client) => client.request("PUT", "/config", updated));
-    return;
+    return "written";
   }
   throw new RequestError(409, `${instance.name}'s configuration changed twice while ${offerName(offer)} was being ignored; nothing was written, try again`);
 }
 
 export interface DeviceIgnore {
-  ignored: PendingDevice;
-  note: WriteNote;
+  ignored: IgnoredDevice;
+  /** Nothing is entered in Activity when the node had the device ignored already. */
+  note: WriteNote | NothingWritten;
 }
 
 /** Ignores a device that asked to connect, as Syncthing's own Ignore does: it is not offered again. */
 export async function ignorePendingDevice(instance: ResolvedInstance, deviceId: string, now: () => Date = () => new Date()): Promise<DeviceIgnore> {
   const local = requireLocal(instance);
   const offer = await pendingOffer(local, deviceId);
-  await writeIgnored(local, offer, now());
-  return { ignored: offer, note: { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: `${local.name}: ignored device ${offerName(offer)} asking to connect` } };
+  if ((await writeIgnored(local, offer, now())) === "already ignored") return { ignored: { ...offer, alreadyIgnored: true }, note: { nothingWritten: true } };
+  return { ignored: { ...offer, alreadyIgnored: false }, note: { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: `${local.name}: ignored device ${offerName(offer)} asking to connect` } };
 }
 
 export interface DeviceDismissal {

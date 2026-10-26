@@ -3,6 +3,7 @@ import { button, element } from "./dom.js";
 import { formatAge, formatDate } from "./format.js";
 import { registerForm } from "./forms.js";
 import { requestRender } from "./renderRequest.js";
+import { type DeviceAnswer, answerKey, freshAnswer, ignoreClick, pruneAnswers } from "./requestAnswers.js";
 import { appState, deviceFormLocation, locationFor } from "./state.js";
 
 function since(time: string): HTMLElement {
@@ -11,13 +12,6 @@ function since(time: string): HTMLElement {
 
 function nodeLink(nodeId: string, nodeName: string): HTMLElement {
   return element("a", { attributes: { href: locationFor("nodes", nodeId) } }, nodeName);
-}
-
-/** What the person has set for one asking device before answering it, by `answerKey`. */
-interface DeviceAnswer {
-  name: string;
-  recordInSetup: boolean;
-  busy: boolean;
 }
 
 interface AnswerResult {
@@ -29,15 +23,11 @@ interface AnswerResult {
 const answers = new Map<string, DeviceAnswer>();
 let lastAnswer: AnswerResult | null = null;
 
-function answerKey(device: PendingDevice): string {
-  return `${device.nodeId} ${device.deviceId}`;
-}
-
 function answerOf(device: PendingDevice): DeviceAnswer {
   const key = answerKey(device);
   const existing = answers.get(key);
   if (existing) return existing;
-  const fresh: DeviceAnswer = { name: device.name, recordInSetup: true, busy: false };
+  const fresh = freshAnswer(device);
   answers.set(key, fresh);
   return fresh;
 }
@@ -65,12 +55,32 @@ async function accept(device: PendingDevice): Promise<void> {
 }
 
 async function ignore(device: PendingDevice): Promise<void> {
-  answerOf(device).busy = true;
+  const answer = answerOf(device);
+  if (ignoreClick(answer) === "ask") return requestRender();
+  answer.busy = true;
   requestRender();
   const result = await ignorePendingDevice(device.nodeId, device.deviceId);
   const name = deviceDisplayName(device.name, device.deviceId);
-  if (!result.ok) return finish(device, { text: `Not ignored: ${result.message}`, tone: "bad", link: null }, false);
-  finish(device, { text: `Ignored ${name} on ${device.nodeName}; it is not offered again.`, tone: "ok", link: null }, true);
+  if (!result.ok) {
+    answer.confirmingIgnore = false;
+    return finish(device, { text: `Not ignored: ${result.message}`, tone: "bad", link: null }, false);
+  }
+  const text = result.value.alreadyIgnored ? `${name} was already ignored on ${device.nodeName}; nothing changed.` : `Ignored ${name} on ${device.nodeName}; it is not offered again.`;
+  finish(device, { text, tone: "ok", link: null }, true);
+}
+
+function keepAsking(answer: DeviceAnswer): void {
+  answer.confirmingIgnore = false;
+  requestRender();
+}
+
+function ignoreButtons(device: PendingDevice, answer: DeviceAnswer): HTMLButtonElement[] {
+  const name = deviceDisplayName(device.name, device.deviceId);
+  if (!answer.confirmingIgnore) return [answerButton("Ignore", `${device.nodeName} never lists this device again (Syncthing's Ignore)`, () => ignore(device), "button", answer.busy)];
+  return [
+    answerButton(`Ignore ${name}? It stays ignored until un-ignored in Settings`, `Click again to ignore ${name} on ${device.nodeName}`, () => ignore(device), "button danger", answer.busy),
+    Object.assign(button("Keep it", () => keepAsking(answer), "button ghost"), { disabled: answer.busy }),
+  ];
 }
 
 async function dismiss(device: PendingDevice): Promise<void> {
@@ -119,7 +129,7 @@ function deviceAnswerForm(device: PendingDevice): HTMLElement {
       "div",
       { className: "button-row" },
       answerButton(answer.busy ? "Working…" : "Accept", `Add this device to ${device.nodeName} under the name typed`, () => accept(device), "button primary", answer.busy),
-      answerButton("Ignore", `${device.nodeName} never lists this device again (Syncthing's Ignore)`, () => ignore(device), "button", answer.busy),
+      ...ignoreButtons(device, answer),
       answerButton("Dismiss", "Drop this request; it is listed again when the device next asks", () => dismiss(device), "button ghost", answer.busy),
     ),
   );
@@ -150,6 +160,11 @@ function deviceEntry(device: PendingDevice): HTMLElement {
     ),
     answerPart(device),
   );
+}
+
+/** The page forgets the last answer's outcome once the person leaves it. */
+export function forgetLastAnswer(): void {
+  lastAnswer = null;
 }
 
 function lastAnswerLine(): HTMLElement | null {
@@ -215,6 +230,7 @@ function notConnectedNote(requests: RequestsResponse): HTMLElement | null {
 function body(): (HTMLElement | null)[] {
   const requests = appState.requests;
   if (!requests) return [element("p", { className: appState.requestsError ? "warning level-error" : "muted" }, appState.requestsError ?? "Loading requests…")];
+  pruneAnswers(answers, requests.devices);
   return [
     unreadableNotes(requests),
     notConnectedNote(requests),

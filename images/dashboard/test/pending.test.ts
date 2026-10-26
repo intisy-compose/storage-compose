@@ -459,9 +459,33 @@ describe("answering a device that asks to connect", () => {
     assert.deepEqual(remoteIgnoredDevices, [...(ignoredBefore as unknown[]), { time: "2026-10-26T12:00:00.000Z", deviceID: strangerId, name: "laptop", address: "192.168.1.20:22000" }]);
     assert.equal((written.gui as { apiKey: string }).apiKey, apiKey);
     assert.equal((written.gui as { password: string }).password, guiPasswordHash);
-    assert.deepEqual(result.ignored, { nodeId: "d7e5", nodeName: "dashboard-test-peer", deviceId: strangerId, name: "laptop", address: "192.168.1.20:22000", time: "2026-10-26T09:00:00Z" });
-    assert.equal(result.note.text, "dashboard-test-peer: ignored device laptop asking to connect");
+    assert.deepEqual(result.ignored, { nodeId: "d7e5", nodeName: "dashboard-test-peer", deviceId: strangerId, name: "laptop", address: "192.168.1.20:22000", time: "2026-10-26T09:00:00Z", alreadyIgnored: false });
+    assert.deepEqual(result.note, { nodeId: "d7e5", nodeName: "dashboard-test-peer", folderId: null, text: "dashboard-test-peer: ignored device laptop asking to connect" });
     assert.doesNotMatch(JSON.stringify(result), new RegExp(`${apiKey}|folder-secret|\\$2a\\$`));
+  });
+
+  it("a device the node has ignored already is answered as such, with nothing written and nothing for Activity", async () => {
+    config = { ...config, remoteIgnoredDevices: [...(config.remoteIgnoredDevices as unknown[]), { time: "2026-10-25T08:00:00Z", deviceID: strangerId, name: "laptop", address: "" }] };
+    const result = await ignorePendingDevice(peer(), strangerId);
+
+    assert.deepEqual(writesSent(), []);
+    assert.equal(result.ignored.alreadyIgnored, true);
+    assert.deepEqual(result.note, { nothingWritten: true });
+
+    const notes: string[] = [];
+    let invalidations = 0;
+    const handler = requestHandler(pendingRoutes(fileJoinRecords("/nonexistent/joins.json"), { resolve: async () => peer(), setup: null }), { invalidate: () => void (invalidations += 1), record: (note) => void notes.push(note.text) });
+    const server = createServer((request, response) => void handler(request, response));
+    const dashboard = await listen(server);
+    try {
+      const answer = await fetch(`${dashboard}/api/nodes/d7e5/pending/devices/${strangerId}/ignore`, { method: "POST" });
+      assert.equal(answer.status, 200);
+      assert.equal(((await answer.json()) as { alreadyIgnored: boolean }).alreadyIgnored, true);
+      assert.deepEqual(notes, []);
+      assert.equal(invalidations, 0);
+    } finally {
+      server.close();
+    }
   });
 
   it("ignoring a config that changed meanwhile starts once more from the changed one", async () => {

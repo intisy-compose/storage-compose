@@ -33,6 +33,7 @@ export type {
   FoldersResponse,
   FolderType,
   HostSettings,
+  IgnoredDevice,
   InstanceConnection,
   InstanceGui,
   InstanceOptions,
@@ -72,7 +73,7 @@ export type {
   WarningLevel,
 } from "../../src/api/types.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, NearbyDevice, NewDevice, FolderDetailResponse, RemoveDeviceBody, HostSettings, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, NearbyDevice, NewDevice, FolderDetailResponse, RemoveDeviceBody, HostSettings, IgnoredDevice, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
@@ -205,7 +206,7 @@ export function acceptPendingDevice(nodeId: string, deviceId: string, body: Acce
 }
 
 /** The device is not offered again, as Syncthing's own Ignore. */
-export function ignorePendingDevice(nodeId: string, deviceId: string): Promise<SaveResult<PendingDevice>> {
+export function ignorePendingDevice(nodeId: string, deviceId: string): Promise<SaveResult<IgnoredDevice>> {
   return sendWrite(pendingDevicePath(nodeId, deviceId, "ignore"), "POST");
 }
 

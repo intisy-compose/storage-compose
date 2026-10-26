@@ -17,7 +17,7 @@ import { renderNodesPage } from "./nodesPage.js";
 import { applyTheme } from "./preferences.js";
 import { skipWhileRunning } from "./pollGuard.js";
 import { onRefreshRequested, onRenderRequested } from "./renderRequest.js";
-import { renderRequestsPage } from "./requestsPage.js";
+import { forgetLastAnswer, renderRequestsPage } from "./requestsPage.js";
 import { readableLocalNodes, renderSettingsPage } from "./settingsPage.js";
 import { renderMenu } from "./shell.js";
 import { activityPageSize, appState, explorerLocation, locationFor, readLocation, selectedItemId } from "./state.js";
@@ -280,6 +280,7 @@ function onLocationChange(): void {
   const previousItem = selectedItemId();
   const previousPage = appState.page;
   readLocation();
+  if (previousPage === "requests" && appState.page !== "requests") forgetLastAnswer();
   const isNewItem = previousItem !== selectedItemId() || previousPage !== appState.page;
   if (isNewItem) {
     appState.openForm = null;

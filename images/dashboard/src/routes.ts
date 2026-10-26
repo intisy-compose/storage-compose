@@ -79,11 +79,16 @@ interface HostWriteRoute {
 
 export type Route = ReadRoute | HostWriteRoute;
 
-/** A write to a node: it must answer with the note Activity records, so a write that names nothing does not compile. */
+/** A node write's answer when it found nothing to change, so Activity does not record a write that never happened. */
+export interface NothingWritten {
+  nothingWritten: true;
+}
+
+/** A write to a node: it must answer with the note Activity records, or say outright that it wrote nothing, so a write that names nothing does not compile. */
 export interface NodeWriteRoute {
   method: WriteMethod;
   pattern: RegExp;
-  write: (context: RouteContext) => Promise<WriteNote>;
+  write: (context: RouteContext) => Promise<WriteNote | NothingWritten>;
 }
 
 export type AnyRoute = Route | NodeWriteRoute;
@@ -217,13 +222,14 @@ function withText(note: WriteNote): WriteNote {
 }
 
 /** After a successful write: the shared local nodes build is dropped so the next read shows it, and a node write's note enters Activity. */
-export function settleWrite(method: string, statusCode: number, note: WriteNote | null, effects: WriteEffects = liveWriteEffects): void {
+export function settleWrite(method: string, statusCode: number, note: WriteNote | NothingWritten | null, effects: WriteEffects = liveWriteEffects): void {
   if (method === "GET" || method === "HEAD" || statusCode >= 400) return;
+  if (note && "nothingWritten" in note) return;
   effects.invalidate();
   if (note) effects.record(withText(note));
 }
 
-async function runRoute(candidate: AnyRoute, context: RouteContext): Promise<WriteNote | null> {
+async function runRoute(candidate: AnyRoute, context: RouteContext): Promise<WriteNote | NothingWritten | null> {
   if ("write" in candidate) return candidate.write(context);
   await candidate.handle(context);
   return null;

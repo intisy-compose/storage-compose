@@ -32,6 +32,13 @@ describe("a write through the dashboard", () => {
     assert.equal(forgetful.method, "PATCH");
   });
 
+  it("a node write that wrote nothing enters nothing in Activity and keeps the shared build", () => {
+    const effects = recorder();
+    settleWrite("POST", 200, { nothingWritten: true }, effects.effects);
+    assert.deepEqual(effects.recorded, []);
+    assert.equal(effects.invalidations(), 0);
+  });
+
   it("a node write whose note is empty is still entered, naming the node", () => {
     const effects = recorder();
     settleWrite("PATCH", 200, { ...note, text: " " }, effects.effects);

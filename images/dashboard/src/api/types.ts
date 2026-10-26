@@ -448,6 +448,11 @@ export interface AcceptDeviceBody {
   recordInSetup?: boolean;
 }
 
+/** `POST .../pending/devices/<deviceId>/ignore`: the offer that was ignored; `alreadyIgnored` when the node had it ignored already and nothing was written. */
+export interface IgnoredDevice extends PendingDevice {
+  alreadyIgnored: boolean;
+}
+
 /** The accepted device as the node now has it; `setup` says what became of it in the setup repo. */
 export interface AcceptedDevice {
   device: DeviceSettings;
