@@ -1,5 +1,6 @@
 import type { HostSettings, InstanceGui, InstanceOptions, NodeOptionsResponse, PriorityBand, StorageNode } from "./api.js";
 import { element, keyValueList } from "./dom.js";
+import { priorityUnsetText } from "./folderCondition.js";
 import { applyTheme } from "./preferences.js";
 import { requestRender } from "./renderRequest.js";
 import { appState, locationFor } from "./state.js";
@@ -42,14 +43,14 @@ function dashboardLinks(peers: string[]): HTMLElement | string {
 function hostCard(settings: HostSettings): HTMLElement {
   return card(
     "This host",
-    "from config.env",
+    "from config.env and the setup repo",
     keyValueList([
       ["Name", settings.name],
       ["Tailnet name", settings.tailnetName ?? "not joined yet"],
       ["Reads", dashboardLinks(settings.peerDashboards)],
       ["ntfy", settings.ntfy.url ? `${settings.ntfy.url}, ${settings.ntfy.topicSet ? "topic set" : "no topic, notifications are only logged"}` : "not passed to the dashboard"],
       ["Setup repo", settings.setupRepo ? "configured" : "not configured"],
-      ["Priority bands", [bandsText(settings.priorityBands), element("small", { className: "muted setting-note" }, "From the setup repo's folder categories; the layered sync has set no bands of its own yet.")]],
+      ["Priority bands", settings.priorityBands ? bandsText(settings.priorityBands) : priorityUnsetText],
     ]),
   );
 }

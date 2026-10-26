@@ -49,19 +49,36 @@ function isRequestsResponse(answer: unknown): answer is RequestsResponse {
   return Array.isArray(response?.devices) && Array.isArray(response?.folders) && Array.isArray(response?.joins);
 }
 
+function hostOf(dashboardUrl: string): string | null {
+  try {
+    return new URL(dashboardUrl).hostname;
+  } catch {
+    return null;
+  }
+}
+
 async function readPeer(peer: string): Promise<RequestsResponse> {
   const dashboardUrl = peer.replace(/\/$/, "");
-  const host = new URL(dashboardUrl).hostname;
+  const host = hostOf(dashboardUrl);
+  if (!host) return unreadable(peer, "not a dashboard address in STORAGE_PEERS");
   try {
     const answer = await readDashboard(dashboardUrl, host, "/api/requests");
     return isRequestsResponse(answer) ? { ...answer, unreadable: answer.unreadable ?? [] } : unreadable(host, "its dashboard does not list requests yet");
   } catch (error) {
-    return unreadable(host, (error as Error).message);
+    return unreadable(host, (error as Error).message.replace(`${host}'s dashboard`, "its dashboard"));
   }
 }
 
 function joinEntries(records: Record<string, JoinedDevice>): JoinEntry[] {
   return Object.values(records).map((record) => ({ name: record.name, joinedAt: record.joinedAt, setup: record.setup?.message ?? "admitted" }));
+}
+
+async function readJoins(sources: RequestSources): Promise<RequestsResponse> {
+  try {
+    return { ...emptyRequests(), joins: joinEntries(await sources.joins()) };
+  } catch (error) {
+    return unreadable("the join records", (error as Error).message);
+  }
 }
 
 function newestFirst<Entry>(time: (entry: Entry) => string): (left: Entry, right: Entry) => number {
@@ -70,16 +87,16 @@ function newestFirst<Entry>(time: (entry: Entry) => string): (left: Entry, right
 
 /** Everything waiting for an answer on this host's nodes and, unless `scope` is local, on the other hosts'. */
 export async function requestsResponse(scope: "all" | "local", sources: RequestSources): Promise<RequestsResponse> {
-  const [local, remote, records] = await Promise.all([
+  const [local, remote, joins] = await Promise.all([
     sources.localNodes().then((nodes) => Promise.all(nodes.map(readNode))),
     scope === "all" ? Promise.all(sources.peerDashboards.map(readPeer)) : Promise.resolve([]),
-    sources.joins(),
+    readJoins(sources),
   ]);
-  const parts = [...local, ...remote];
+  const parts = [...local, ...remote, joins];
   return {
     devices: parts.flatMap((part) => part.devices).sort(newestFirst((device) => device.time)),
     folders: parts.flatMap((part): PendingFolderOffer[] => part.folders).sort(newestFirst((offer) => offer.time)),
-    joins: [...joinEntries(records), ...remote.flatMap((part) => part.joins)].sort(newestFirst((join) => join.joinedAt)),
+    joins: parts.flatMap((part) => part.joins).sort(newestFirst((join) => join.joinedAt)),
     unreadable: parts.flatMap((part) => part.unreadable),
   };
 }

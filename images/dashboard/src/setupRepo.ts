@@ -19,6 +19,8 @@ export interface LayoutDevice {
 export interface SetupLayout {
   devices: LayoutDevice[];
   folders: LayoutFolder[];
+  /** The layout's `[bands]` table, highest first; empty while the layered sync sets none. */
+  bands: PriorityBand[];
 }
 
 export interface SetupRecordResult {
@@ -29,13 +31,6 @@ export interface SetupRecordResult {
 
 /** The layered sync's reading of C-30's categories. */
 const categoryPriority: Record<string, number> = { synced: 80, archive: 30, local: 0 };
-
-/** The categories as priority bands, highest first. */
-export function categoryBands(): PriorityBand[] {
-  return Object.entries(categoryPriority)
-    .map(([name, from]) => ({ name, from }))
-    .sort((left, right) => right.from - left.from);
-}
 
 /** @implNote The same derivation as drive-sync's `folder_id`; Syncthing matches folders across devices by it. */
 export function folderId(relativePath: string): string {
@@ -67,7 +62,10 @@ export function parseLayout(text: string): SetupLayout {
     const priority = typeof entry.priority === "number" ? entry.priority : (categoryPriority[String(entry.category)] ?? 0);
     return { relativePath, id: folderId(relativePath), priority };
   });
-  return { devices, folders };
+  const bands = Object.entries(asTable(toml.bands))
+    .flatMap(([name, from]) => (typeof from === "number" ? [{ name, from }] : []))
+    .sort((left, right) => right.from - left.from);
+  return { devices, folders, bands };
 }
 
 function tomlString(value: string): string {

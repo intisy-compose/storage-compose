@@ -502,8 +502,8 @@ export interface HostSettings {
   peerDashboards: string[];
   /** Whether a topic is set, never the topic: anyone who knows it can read the notifications. */
   ntfy: { url: string; topicSet: boolean };
-  /** The setup repo's folder categories, which the layout turns into priorities while the layered sync sets no bands of its own. */
-  priorityBands: PriorityBand[];
+  /** The layout's bands, highest first; null while the setup repo's layout defines none. */
+  priorityBands: PriorityBand[] | null;
   setupRepo: boolean;
 }
 

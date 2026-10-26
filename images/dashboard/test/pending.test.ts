@@ -132,6 +132,20 @@ describe("requests", () => {
 
     assert.equal(response.unreadable.length, 1);
     assert.equal(response.unreadable[0].name, "127.0.0.1");
+    assert.match(response.unreadable[0].reason, /^its dashboard/);
+  });
+
+  it("a malformed peer address is named as unreadable instead of failing the page", async () => {
+    const response = await requestsResponse("all", sources([], ["not a url"]));
+
+    assert.deepEqual(response.unreadable, [{ name: "not a url", reason: "not a dashboard address in STORAGE_PEERS" }]);
+  });
+
+  it("join records that cannot be read are named as unreadable", async () => {
+    const response = await requestsResponse("local", { localNodes: async () => [], peerDashboards: [], joins: () => Promise.reject(new Error("joins.json is not JSON")) });
+
+    assert.deepEqual(response.joins, []);
+    assert.deepEqual(response.unreadable, [{ name: "the join records", reason: "joins.json is not JSON" }]);
   });
 
   it("a node whose Syncthing does not answer is named as unreadable", async () => {

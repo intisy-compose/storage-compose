@@ -209,7 +209,7 @@ describe("folder index", () => {
   });
 
   it("priority comes from the layout when it has the folder", async () => {
-    layout = { devices: [], folders: [{ relativePath: "Documents", id: "documents", priority: 80 }] };
+    layout = { devices: [], folders: [{ relativePath: "Documents", id: "documents", priority: 80 }], bands: [] };
     const { folders } = await foldersResponse("all", sources);
     layout = null;
     assert.deepEqual([byId(folders, "documents").priority, byId(folders, "documents").prioritySource], [80, "setup-repo"]);

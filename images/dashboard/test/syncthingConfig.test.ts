@@ -3,7 +3,8 @@ import { type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
 import type { LocalInstance, RemoteInstance } from "../src/instanceResolver.js";
-import { nodeOptions } from "../src/routes/options.js";
+import { hostSettings, nodeOptions } from "../src/routes/options.js";
+import { parseLayout } from "../src/setupRepo.js";
 import { SyncthingClient } from "../src/syncthing.js";
 import { instanceGui, instanceOptions, redactConfig } from "../src/syncthingConfig.js";
 
@@ -74,7 +75,7 @@ describe("syncthing configuration", () => {
     });
   });
 
-  it("options Syncthing leaves out take its defaults", () => {
+  it("options Syncthing leaves out read as off, empty or zero", () => {
     const options = instanceOptions({}, "");
 
     assert.deepEqual(options.listenAddresses, []);
@@ -155,6 +156,24 @@ describe("a node's options", () => {
     const answer = await nodeOptions(instance);
 
     assert.equal(answer.options.deviceName, "p53");
+    assert.deepEqual(Object.keys(answer.gui).sort(), ["address", "authMode", "managedBy", "useTLS", "user"]);
     assert.doesNotMatch(JSON.stringify(answer), /apikey|password|secret-api-key|\$2a\$/i);
+  });
+});
+
+describe("the host's priority bands", () => {
+  it("are the layout's own bands, highest first", () => {
+    const layout = parseLayout(["[bands]", "local = 0", "essential = 80", "working = 50", "", "[folders.Documents]", 'category = "synced"', ""].join("\n"));
+
+    assert.deepEqual(hostSettings(layout).priorityBands, [
+      { name: "essential", from: 80 },
+      { name: "working", from: 50 },
+      { name: "local", from: 0 },
+    ]);
+  });
+
+  it("are not set while the layout defines none or there is no setup repo", () => {
+    assert.equal(hostSettings(parseLayout(["[folders.Documents]", 'category = "synced"', ""].join("\n"))).priorityBands, null);
+    assert.equal(hostSettings(null).priorityBands, null);
   });
 });
