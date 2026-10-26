@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { listedAddresses } from "./api/deviceText.js";
 import type { FolderFile, FolderPeer, FolderType, NodeFolder, NodeSync, Peer, RemoteState, SyncthingDevice, SyncthingInstance } from "./api/types.js";
 
 export interface SyncthingEndpoint {
@@ -173,6 +174,8 @@ export interface InstanceView {
   peers: Peer[];
   pendingDevices: PendingDevices;
   pendingFolders: PendingFolders;
+  /** Folders offered to this instance and not accepted. */
+  offersWaiting: number;
   systemErrors: SystemError[];
 }
 
@@ -423,7 +426,7 @@ async function folderView(client: SyncthingClient, folder: SyncthingFolderConfig
 
 function addressesOf(status: SystemStatus): string[] {
   const addresses = Object.values(status.connectionServiceStatus ?? {}).flatMap((service) => [...(service.lanAddresses ?? []), ...(service.wanAddresses ?? [])]);
-  return [...new Set(addresses)];
+  return listedAddresses([...new Set(addresses)]);
 }
 
 function instanceOf(status: SystemStatus, connections: Connections): SyncthingInstance {
@@ -551,6 +554,7 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint): Pr
       peers,
       pendingDevices,
       pendingFolders,
+      offersWaiting: Object.keys(pendingFolders).length,
       systemErrors,
     };
   } catch {

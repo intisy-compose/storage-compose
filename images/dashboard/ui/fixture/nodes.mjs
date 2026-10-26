@@ -44,6 +44,7 @@ function privateArray() {
     id: "a3f9", name: "private-array", kind: "array", threshold: 0, assigned: [], local: true, online: true, host: "finn-pc",
     space: { size: 10 * terabyte, used: 7.6 * terabyte },
     sync: { state: "idle", completion: 100, lastSeen: ago(0) },
+    offersWaiting: 7,
     array: {
       state: "healthy",
       members: [
@@ -68,6 +69,7 @@ function backupArray(startedAt) {
     id: "b71c", name: "cold-backup", kind: "array", threshold: 20, assigned: ["Archive"], local: true, online: true, host: "finn-pc",
     space: { size: 6 * terabyte, used: 4.1 * terabyte },
     sync: { state: "syncing", completion: 82, lastSeen: ago(0) },
+    offersWaiting: 0,
     array: {
       state: "degraded",
       members: [
@@ -94,6 +96,7 @@ function simpleNode(id, name, kind, overrides) {
     id, name, kind, threshold: 50, assigned: [], local: false, online: true, host: name,
     space: { size: 1 * terabyte, used: 0.4 * terabyte },
     sync: { state: "idle", completion: 100, lastSeen: ago(0) },
+    offersWaiting: 0,
     syncthing: syncthing(id), folders: commonFolders.slice(0, 2),
     ...overrides,
   };

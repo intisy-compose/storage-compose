@@ -53,6 +53,7 @@ export interface AppState {
   openForm: OpenForm | null;
   notice: Notice | null;
   showCandidates: boolean;
+  showNodeDetails: boolean;
   theme: ThemeChoice;
   selectedFolderId: string | null;
   folderDetail: FolderDetailResponse | null;
@@ -81,6 +82,7 @@ export const appState: AppState = {
   openForm: null,
   notice: null,
   showCandidates: false,
+  showNodeDetails: false,
   theme: storedTheme(),
   selectedFolderId: null,
   folderDetail: null,

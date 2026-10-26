@@ -47,6 +47,7 @@ import type { ActivityResponse, ArrayAction, ArrayActionBody, FolderDetailRespon
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
+export { addressLabel, isReachable, reachTone } from "../../src/api/deviceText.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 
 export interface ActionResult {

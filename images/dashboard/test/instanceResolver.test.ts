@@ -30,6 +30,7 @@ function remoteNode(overrides: Partial<StorageNode>): StorageNode {
     host: "p53",
     space: null,
     sync: { state: "idle", completion: 100, lastSeen: null },
+    offersWaiting: 0,
     syncthing: null,
     instance: null,
     peers: [],

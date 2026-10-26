@@ -8,8 +8,11 @@ export type NodeKind = "array" | "drive" | "folder";
 /** "unknown" is a connected device whose completion could not be read. */
 export type SyncState = "idle" | "syncing" | "waiting" | "error" | "offline" | "unknown";
 
-/** "frozen" is the C-24 freeze: more drives lost than parity covers, or data1 gone or read-only. */
-export type ArrayState = "healthy" | "degraded" | "frozen";
+/**
+ * "frozen" is the C-24 freeze: more drives lost than parity covers, or data1 gone or read-only.
+ * "absent" is an array none of whose drives is connected to its host, shown as it was last seen.
+ */
+export type ArrayState = "healthy" | "degraded" | "frozen" | "absent";
 
 export type WarningLevel = "info" | "warning" | "error";
 
@@ -190,6 +193,8 @@ export interface StorageNode {
   host: string;
   space: Space | null;
   sync: NodeSync;
+  /** Folders offered to the node and not accepted, from its Syncthing's pending folders. */
+  offersWaiting: number;
   array?: NodeArray;
   syncthing: SyncthingDevice | null;
   instance: SyncthingInstance | null;

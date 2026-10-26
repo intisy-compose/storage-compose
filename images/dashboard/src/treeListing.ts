@@ -233,9 +233,13 @@ async function indexRows(tree: NodeTree, path: string): Promise<DirectoryRows & 
   return { rows: entries.map((entry) => indexRow(folder, location.inside, path, entry)), notes: [], inIndex: true };
 }
 
+function unreadableNote(node: TreeNode): string {
+  return node.present ? `${node.name}'s Syncthing is not answering` : `${node.name} is not connected`;
+}
+
 /** Index entries of the folder holding the path, with the folder roots and layout paths that lead further down. */
 export async function directoryRows(tree: NodeTree, layout: SetupLayout | null, path: string): Promise<DirectoryRows> {
-  if (!tree.answering) return { rows: directoriesAbove([], layout, path).map((name) => treeRow(path, name)), notes: [`${tree.node.name}'s Syncthing is not answering`] };
+  if (!tree.answering) return { rows: directoriesAbove([], layout, path).map((name) => treeRow(path, name)), notes: [unreadableNote(tree.node)] };
   const fromIndex = await indexRows(tree, path);
   const leadingNames = directoriesAbove(
     tree.folders.map((folder) => folder.placement),
@@ -373,6 +377,7 @@ export interface NodeRowState {
 }
 
 export async function nodeRowState(tree: NodeTree, layout: SetupLayout | null, row: Row): Promise<NodeRowState> {
+  if (!tree.node.present) return { state: nodeState(tree, { status: "unknown", detail: "not connected" }), availability: [] };
   const judged = (input: StatusInput) => ({ state: nodeState(tree, entryStatus(input)), availability: [] });
   if (row.source === "tree") return judged(await treeRowInput(tree, layout, row));
   if (row.source === "offered") return judged(outsideFolderInput(tree, layout, row.path, null));

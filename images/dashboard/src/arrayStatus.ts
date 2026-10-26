@@ -34,10 +34,27 @@ export interface ArrayStatus {
   description: NodeFile | null;
 }
 
-export async function arrayStatus(arrayId: string): Promise<ArrayStatus | null> {
+/**
+ * @implNote The mounter rewrites the status every 10 s while it runs, and exits while the cluster's data1
+ * is missing, so a status it stopped rewriting still says every drive is present long after they went.
+ */
+const mounterSilentAfterMilliseconds = 2 * 60_000;
+
+function isMounterSilent(status: ArrayStatus, now: number): boolean {
+  const updated = Date.parse(status.updated);
+  return !Number.isFinite(updated) || now - updated > mounterSilentAfterMilliseconds;
+}
+
+function notConnected(status: ArrayStatus): ArrayStatus {
+  const detail = `not connected since ${status.updated}`;
+  return { ...status, present: false, complete: false, reasons: [], drives: status.drives.map((drive) => ({ ...drive, condition: "missing", mounted: false, detail })) };
+}
+
+export async function arrayStatus(arrayId: string, directory = arrayStatusDirectory(arrayId), now = Date.now()): Promise<ArrayStatus | null> {
   try {
-    const status = JSON.parse(await readFile(`${arrayStatusDirectory(arrayId)}/status.json`, "utf8")) as ArrayStatus;
-    return { ...status, id: status.id ?? arrayId, name: status.name ?? arrayId, present: status.present ?? true };
+    const written = JSON.parse(await readFile(`${directory}/status.json`, "utf8")) as ArrayStatus;
+    const status = { ...written, id: written.id ?? arrayId, name: written.name ?? arrayId, present: written.present ?? true };
+    return isMounterSilent(status, now) ? notConnected(status) : status;
   } catch {
     return null;
   }

@@ -229,6 +229,13 @@ a.warning:hover { filter: brightness(0.98); text-decoration: underline; text-und
 .node-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
 .node-name strong, .node-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-name small { color: var(--text-faint); font-size: 12px; }
+.node-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.warning-mark {
+  flex: none; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 17px;
+}
+.warning-mark.tone-mark-warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.warning-mark.tone-mark-bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 16%, transparent); }
+.node-details .disclosure { margin-top: 0; font-weight: 600; }
 .node-chips { display: flex; gap: 5px; overflow: hidden; }
 .node-space { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .node-space small { width: 32px; text-align: right; color: var(--text-muted); font-size: 12px; flex: none; }

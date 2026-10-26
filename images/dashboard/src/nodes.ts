@@ -25,7 +25,8 @@ function offlineSync(lastSeen: string | null = null) {
   return { state: "offline" as const, completion: 0, lastSeen };
 }
 
-function arrayHealth(status: ArrayStatus): NodeArray["state"] {
+export function arrayHealth(status: ArrayStatus): NodeArray["state"] {
+  if (!status.present) return "absent";
   return status.state === "stopped" ? "frozen" : status.state;
 }
 
@@ -41,7 +42,8 @@ async function arrayNode(status: ArrayStatus, devices: BlockDevice[], sources: M
     online: status.present,
     host: hostName,
     space: status.present ? await space(poolPath(status.id)) : null,
-    sync: view?.sync ?? offlineSync(),
+    sync: view?.sync ?? offlineSync(status.present ? null : status.updated),
+    offersWaiting: view?.offersWaiting ?? 0,
     array: {
       state: arrayHealth(status),
       members: await arrayMembers(status, devices, sources),
@@ -70,6 +72,7 @@ function registryNode(entry: NodeRegistryEntry, view: InstanceView | null): Stor
     host: hostName,
     space: hasSpace ? { size: entry.space.size!, used: entry.space.used! } : null,
     sync: entry.present ? (view?.sync ?? offlineSync()) : offlineSync(entry.updated),
+    offersWaiting: view?.offersWaiting ?? 0,
     syncthing: view?.device ?? null,
     instance: view?.instance ?? null,
     peers: view?.peers ?? [],
@@ -81,11 +84,14 @@ function registryNode(entry: NodeRegistryEntry, view: InstanceView | null): Stor
 function arrayWarnings(status: ArrayStatus, node: StorageNode): Warning[] {
   const warnings: Warning[] = [];
   const nodeId = status.id;
-  if (status.state !== "healthy" || !status.complete) {
+  if (!status.present) {
+    const text = [`${status.name} is not connected to this host`, ...status.reasons].join(": ");
+    warnings.push(warning({ id: `absent:${status.id}`, level: "info", kind: "offline", text, nodeId }));
+  } else if (status.state !== "healthy" || !status.complete) {
     const level = status.state === "stopped" ? "error" : "warning";
     for (const reason of status.reasons) warnings.push(warning({ id: `array:${status.id}:${reason.split(" is ")[0]}`, level, kind: "array", text: `${status.name}: ${reason}`, nodeId }));
   }
-  if (status.state === "stopped") warnings.push(warning({ id: `array:${status.id}:frozen`, level: "error", kind: "array", text: `${status.name} is frozen: the share is read-only and Syncthing paused`, nodeId }));
+  if (status.present && status.state === "stopped") warnings.push(warning({ id: `array:${status.id}:frozen`, level: "error", kind: "array", text: `${status.name} is frozen: the share is read-only and Syncthing paused`, nodeId }));
   for (const folder of status.splitFolders) {
     const text = `Syncthing folder ${folder.id} lies on ${folder.drives.join(", ")}; move it onto one drive`;
     warnings.push(warning({ id: `split:${status.id}:${folder.id}`, level: "warning", kind: "array", text, nodeId, folderId: folder.id }));
@@ -148,7 +154,7 @@ async function remoteNodes(warnings: Warning[]): Promise<StorageNode[]> {
         const dashboardUrl = peer.replace(/\/$/, "");
         const answer = await fetchTailnetJson<NodesResponse>(`${dashboardUrl}/api/nodes?scope=local`);
         warnings.push(...answer.warnings.map((entry) => fromOtherHost(entry, answer.host.name)));
-        return answer.nodes.map((node) => ({ ...node, local: false, host: node.host || answer.host.name, dashboardUrl }));
+        return answer.nodes.map((node) => ({ ...node, offersWaiting: node.offersWaiting ?? 0, local: false, host: node.host || answer.host.name, dashboardUrl }));
       } catch (error) {
         const text = `${peer} could not be reached (${(error as Error).message}); its nodes show Syncthing's view`;
         warnings.push(warning({ id: `peer:${peer}`, level: "warning", kind: "peer", text, nodeId: null }));
@@ -184,6 +190,7 @@ async function syncthingOnlyNodes(known: StorageNode[], views: InstanceView[], r
         host: record?.tailnetName || peer.name || "unknown",
         space: null,
         sync: peerSync(peer),
+        offersWaiting: 0,
         syncthing: { deviceId: peer.deviceId, addresses: peer.address ? [peer.address] : [], connectionType: peer.connectionType, inRate: peer.inRate, outRate: peer.outRate, version: peer.version },
         instance: null,
         peers: [],

@@ -79,6 +79,7 @@ function node(overrides: Partial<StorageNode>): StorageNode {
     host: "pc",
     space: null,
     sync: { state: "idle", completion: 100, lastSeen: new Date(now).toISOString() },
+    offersWaiting: 0,
     syncthing: null,
     instance: null,
     peers: [],

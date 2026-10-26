@@ -295,6 +295,14 @@ describe("tree listing of one node", () => {
     assert.ok(listing.notes.some((note) => note.includes("not answering")));
   });
 
+  it("a node that is not connected says so instead of not answering", async () => {
+    node = { ...node, present: false, client: null };
+    const listing = await treeListing(node.nodeId, "", 1, sources());
+    assert.deepEqual(listing.notes, ["pc is not connected"]);
+    assert.deepEqual(names(listing.entries), ["Documents", "Pictures", "Videos"]);
+    assert.ok(listing.entries.every((entry) => entry.nodes[0].status === "unknown" && entry.nodes[0].detail === "not connected"));
+  });
+
   it("refuses a path that climbs out of the tree", async () => {
     await assert.rejects(treeListing(node.nodeId, "Documents/../..", 1, sources()), (error: unknown) => error instanceof RequestError && error.status === 400);
   });
@@ -668,6 +676,7 @@ describe("tree listing of all nodes", () => {
         host: "p53",
         space: null,
         sync: { state: "idle", completion: 100, lastSeen: null },
+        offersWaiting: 0,
         syncthing: null,
         instance: null,
         peers: [],

@@ -44,7 +44,8 @@ function fakeSyncthing(answers: Answers, calls: string[]): Server {
           cpuPercent: 1.5,
           sys: 52_000_000,
           connectionServiceStatus: {
-            "tcp://0.0.0.0:22000": { error: null, lanAddresses: ["tcp://192.168.1.5:22000"], wanAddresses: [] },
+            "tcp://0.0.0.0:22000": { error: null, lanAddresses: ["tcp://0.0.0.0:22000", "tcp://192.168.1.5:22000"], wanAddresses: ["tcp://:22000"] },
+            "relay://0.0.0.0": { error: null, lanAddresses: [], wanAddresses: ["relay://203.0.113.9:22067/?id=RELAYID&pingInterval=1m0s"] },
             "quic://0.0.0.0:22000": { error: "listen udp: address already in use", lanAddresses: [], wanAddresses: [] },
           },
           discoveryStatus: { local: { error: null }, "global@https://disco.example/": { error: "no route to host" } },
@@ -76,6 +77,11 @@ function fakeSyncthing(answers: Answers, calls: string[]): Server {
         return reply(response, { documents: { lastScan: "2026-10-21T08:00:00Z", lastFile: { at: "2026-10-21T07:00:00Z", filename: "a/b.txt", deleted: false } } });
       case "/rest/db/status":
         return reply(response, answers.folderStatus[url.searchParams.get("folder") ?? ""] ?? { state: "idle", globalBytes: 0, needBytes: 0 });
+      case "/rest/cluster/pending/folders":
+        return reply(response, {
+          music: { offeredBy: { [arrayId]: { time: "2026-10-21T09:00:00Z", label: "Music" } } },
+          pictures: { offeredBy: { [arrayId]: { time: "2026-10-21T09:00:00Z", label: "Pictures" }, [strangerId]: { time: "2026-10-21T09:00:00Z", label: "Pictures" } } },
+        });
       case "/rest/db/completion":
         if (answers.failingCompletion.includes(url.searchParams.get("device") ?? "")) {
           response.statusCode = 500;
@@ -132,6 +138,7 @@ describe("instance view", () => {
     assert.equal(view.device.deviceId, ownId);
     assert.deepEqual(view.instance.listeners, [
       { address: "tcp://0.0.0.0:22000", error: null },
+      { address: "relay://0.0.0.0", error: null },
       { address: "quic://0.0.0.0:22000", error: "listen udp: address already in use" },
     ]);
     assert.deepEqual(view.instance.discoveryErrors, ["global@https://disco.example/: no route to host"]);
@@ -139,6 +146,14 @@ describe("instance view", () => {
     assert.equal(view.instance.memoryBytes, 52_000_000);
     assert.equal(view.instance.inTotal, 5000);
     assert.equal(view.instance.outTotal, 7000);
+  });
+
+  it("unspecified listen addresses are left out of the device's addresses", () => {
+    assert.deepEqual(view.device.addresses, ["tcp://192.168.1.5:22000", "relay://203.0.113.9:22067/?id=RELAYID&pingInterval=1m0s"]);
+  });
+
+  it("a node with offers waiting counts them", () => {
+    assert.equal(view.offersWaiting, 2);
   });
 
   it("peers carry completion and remote state", () => {

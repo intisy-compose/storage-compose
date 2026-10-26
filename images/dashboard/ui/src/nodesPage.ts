@@ -1,9 +1,9 @@
-import type { NodesResponse, StorageNode, Warning } from "./api.js";
+import { type NodesResponse, type StorageNode, type Warning, reachTone } from "./api.js";
 import { warningHref } from "./attentionPage.js";
 import { element, progressBar } from "./dom.js";
 import { formatBytes, usedFraction } from "./format.js";
 import { icon } from "./icons.js";
-import { isOffline, kindChipText, needsAttention, nodeTone, shortSyncState, spaceTone, thresholdChipText } from "./nodeStatus.js";
+import { actionableWarnings, isArrayAbsent, isOffline, kindChipText, needsAttention, shortSyncState, spaceTone, thresholdChipText } from "./nodeStatus.js";
 import { requestRender } from "./renderRequest.js";
 import { type KindFilter, type ReachFilter, appState, locationFor } from "./state.js";
 
@@ -62,8 +62,22 @@ function remoteChip(node: StorageNode): HTMLElement | null {
   return node.syncthing?.connectionType ? chip(node.syncthing.connectionType) : null;
 }
 
+export function reachText(node: StorageNode): string {
+  if (isArrayAbsent(node)) return "not connected";
+  return isOffline(node) ? "offline" : "online";
+}
+
+/** A separate mark, so a node with warnings still shows by its dot whether it can be reached. */
+export function warningMark(response: NodesResponse, node: StorageNode): HTMLElement | null {
+  const warnings = actionableWarnings(response, node);
+  if (warnings.length === 0) return null;
+  const tone = warnings.some((warning) => warning.level === "error") ? "bad" : "warn";
+  const text = `${warnings.length} ${warnings.length === 1 ? "warning" : "warnings"}`;
+  const title = warnings.map((warning) => warning.text).join("\n");
+  return element("span", { className: `warning-mark tone-mark-${tone}`, title, attributes: { role: "img", "aria-label": text } }, `! ${warnings.length}`);
+}
+
 function nodeRow(response: NodesResponse, node: StorageNode): HTMLElement {
-  const tone = nodeTone(response, node);
   const state = shortSyncState(node, response);
   const fraction = usedFraction(node.space);
   const spaceTitle = node.space ? `${formatBytes(node.space.used)} of ${formatBytes(node.space.size)} used` : "space unknown";
@@ -74,11 +88,11 @@ function nodeRow(response: NodesResponse, node: StorageNode): HTMLElement {
       className: `node-row${isSelected ? " selected" : ""}${isOffline(node) ? " offline" : ""}`,
       attributes: { href: locationFor("nodes", node.id), "data-node": node.id },
     },
-    element("span", { className: `dot tone-${tone}`, title: isOffline(node) ? "offline" : "online" }),
+    element("span", { className: `dot tone-${reachTone(node)}`, title: reachText(node) }),
     element(
       "span",
       { className: "node-name" },
-      element("strong", {}, node.name),
+      element("span", { className: "node-title" }, element("strong", {}, node.name), warningMark(response, node)),
       node.local || node.host === node.name ? null : element("small", {}, `on ${node.host}`),
     ),
     element("span", { className: "node-chips" }, chip(kindChipText(node)), chip(thresholdChipText(node.threshold)), remoteChip(node)),
