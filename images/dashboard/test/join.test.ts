@@ -64,6 +64,8 @@ class FakeInstance implements JoinInstance {
 function setup(overrides: Partial<JoinDependencies> & { callers?: Record<string, WhoIs> } = {}) {
   const records: Record<string, JoinedDevice> = {};
   const commits: string[] = [];
+  const activity: string[] = [];
+  let invalidations = 0;
   const instance = new FakeInstance("private-array", ["documents", "documents-github", "projects", "videos"]);
   const callers: Record<string, WhoIs> = overrides.callers ?? {
     "100.64.0.5": { loginName: owner, tags: [], nodeName: "p53.example.ts.net", addresses: ["100.64.0.5/32"] },
@@ -83,9 +85,10 @@ function setup(overrides: Partial<JoinDependencies> & { callers?: Record<string,
       return { committed: true, pushed: true, message: "committed and pushed" };
     },
     now: () => new Date("2026-10-20T12:00:00Z"),
+    effects: { invalidate: () => void (invalidations += 1), record: (text) => void activity.push(text) },
     ...overrides,
   };
-  return { dependencies, records, commits, instance };
+  return { dependencies, records, commits, instance, activity, invalidations: () => invalidations };
 }
 
 const p53Request = { name: "p53", os: "linux", syncthingDeviceId: p53Id, nodes: [{ kind: "drive", path: "/data", threshold: 80 }] };
@@ -118,6 +121,22 @@ describe("join admission", () => {
     assert.deepEqual(instance.shares.sort(), [`documents-github:${p53Id}`, `documents:${p53Id}`, `projects:${p53Id}`]);
     assert.equal(records.p53.syncthingDeviceId, p53Id);
     assert.deepEqual(commits, [`p53 ${p53Id}`]);
+  });
+
+  it("enters a join in Activity in words and drops the shared local build", async () => {
+    const second = new FakeInstance("pc-data", ["documents"]);
+    const { dependencies, instance, activity, invalidations } = setup();
+    await handleJoin({ ...dependencies, instances: async () => [instance, second] }, ["100.64.0.5"], p53Request);
+    assert.deepEqual(activity, ["p53 joined: added to private-array, pc-data"]);
+    assert.equal(invalidations(), 1);
+  });
+
+  it("enters nothing for a refused join", async () => {
+    const { dependencies, activity, invalidations } = setup();
+    await refusal(handleJoin(dependencies, ["100.64.0.7"], p53Request));
+    await refusal(handleJoin(dependencies, ["100.64.0.5"], { ...p53Request, syncthingDeviceId: "not an id" }));
+    assert.deepEqual(activity, []);
+    assert.equal(invalidations(), 0);
   });
 
   it("admits a device tagged tag:storage whoever owns it", async () => {

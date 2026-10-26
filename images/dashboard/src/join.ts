@@ -37,6 +37,12 @@ export interface JoinRecords {
   put(device: JoinedDevice): Promise<void>;
 }
 
+/** What an admitted join leaves behind: the shared local nodes build dropped, so the device shows at once, and an Activity entry in words. */
+export interface JoinEffects {
+  invalidate(): void;
+  record(text: string): void;
+}
+
 export interface JoinDependencies {
   whois(address: string): Promise<WhoIs | null>;
   /** The logins whose untagged devices may join: this node's owner's and JOIN_ALLOWED_USERS. */
@@ -48,6 +54,7 @@ export interface JoinDependencies {
   /** Null when no setup repo is configured; the admission is then only in the local record. */
   recordInSetup: ((name: string, deviceId: string, root: string | null) => Promise<SetupRecordResult>) | null;
   now(): Date;
+  effects: JoinEffects;
 }
 
 const deviceIdPattern = /^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$/;
@@ -166,6 +173,8 @@ export async function handleJoin(dependencies: JoinDependencies, addresses: stri
     tailnetName: caller.nodeName,
     setup,
   });
+  dependencies.effects.invalidate();
+  dependencies.effects.record(`${request.name} joined: added to ${devices.map((device) => device.name).join(", ")}`);
   return { response: { devices, folders }, setup };
 }
 

@@ -1,10 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { listBlockDevices } from "./blockDevices.js";
-import { startEventFeeds } from "./eventFeed.js";
+import { recordDashboardActivity, startEventFeeds } from "./eventFeed.js";
 import { RequestError, readBody, sendJson } from "./http.js";
 import { type JoinDependencies, JoinError, handleJoin } from "./join.js";
 import { joinInstances } from "./joinInstances.js";
 import { createJoinListener, dockerDnsResolver } from "./joinListener.js";
+import { invalidateLocalNodes } from "./nodes.js";
 import type { ProxySource } from "./proxyProtocol.js";
 import { handleRequest, joinRecords } from "./routes.js";
 import { joinAllowedUsers, joinGatewayHost, joinPort, joinTag, port, setupRepoDirectory } from "./settings.js";
@@ -23,6 +24,7 @@ const joinDependencies: JoinDependencies = {
   records: joinRecords,
   recordInSetup: setupRepoDirectory ? recordDevice : null,
   now: () => new Date(),
+  effects: { invalidate: invalidateLocalNodes, record: (text) => recordDashboardActivity(null, null, text) },
 };
 
 async function handleJoinRequest(request: IncomingMessage, response: ServerResponse, caller: ProxySource): Promise<void> {

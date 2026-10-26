@@ -114,6 +114,7 @@ describe("the instances a joining device is added to", () => {
         return { committed: true, pushed: true, message: "committed and pushed" };
       },
       now: () => new Date("2026-10-26T12:00:00Z"),
+      effects: { invalidate: () => {}, record: () => {} },
     };
     return { dependencies, recorded, pushed };
   }
