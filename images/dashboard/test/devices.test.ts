@@ -503,12 +503,30 @@ describe("a node's devices", () => {
     }
   });
 
+  it("pausing a node with no devices but its own writes nothing and enters nothing", async () => {
+    configured = configured.filter((device) => device.deviceID === ownId);
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      for (const verb of ["pause", "resume"]) {
+        const answer = await send(`${dashboard.url}/api/nodes/fb98/${verb}`, "POST");
+        assert.equal(answer.status, 200, verb);
+        assert.deepEqual(await answer.json(), []);
+      }
+      assert.deepEqual(writes, []);
+      assert.deepEqual(effects.notes, []);
+      assert.equal(effects.invalidations, 0);
+    } finally {
+      dashboard.close();
+    }
+  });
+
   it("a node that stops answering after it paused still reports every device paused and enters it", async () => {
     dropAfter = 3;
     const pause = await pauseNode(pc(), true);
     assert.deepEqual(writes, [{ method: "POST", path: "/rest/system/pause", body: null }]);
     assert.deepEqual(pause.devices.map((device) => [device.deviceId, device.paused]), [[peerId, true]]);
-    assert.equal(pause.note.text, "pc: paused every device");
+    assert.deepEqual(pause.note, { nodeId: "fb98", nodeName: "pc", folderId: null, text: "pc: paused every device" });
   });
 
   it("a node that stops answering after a resume is expected and not logged", async () => {

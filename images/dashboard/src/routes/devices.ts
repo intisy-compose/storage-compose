@@ -3,7 +3,7 @@ import { deviceDisplayName, deviceSettingLabels, shortDeviceId } from "../api/de
 import type { AddedDevice, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, NearbyDevice, NewDevice, RemoveDeviceBody } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, forwardRead, requireLocal, resolveInstance } from "../instanceResolver.js";
-import type { AnyRoute, WriteNote } from "../routes.js";
+import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { SyncthingError } from "../syncthing.js";
 import { deviceChangeProblem, deviceSettings, newDeviceProblem, redactConfig } from "../syncthingConfig.js";
 
@@ -274,7 +274,7 @@ export async function pauseDevice(instance: ResolvedInstance, deviceId: string, 
 export interface NodePause {
   /** Every device of the node but its own, as it now stands. */
   devices: DeviceSettings[];
-  note: WriteNote;
+  note: WriteNote | NothingWritten;
 }
 
 async function otherDevices(instance: LocalInstance): Promise<SyncthingObject[]> {
@@ -302,6 +302,7 @@ function devicesAsPaused(instance: LocalInstance, before: SyncthingObject[], pau
 export async function pauseNode(instance: ResolvedInstance, paused: boolean): Promise<NodePause> {
   const local = requireLocal(instance);
   const before = await otherDevices(local);
+  if (before.length === 0) return { devices: [], note: { nothingWritten: true } };
   await callSyncthing(local, (client) => client.request("POST", `/system/${pauseVerb(paused)}`));
   const after = await otherDevices(local).catch((error: Error) => devicesAsPaused(local, before, paused, error));
   const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: `${local.name}: ${pausedWord(paused)} every device` };
