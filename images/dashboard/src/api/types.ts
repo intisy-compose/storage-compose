@@ -91,6 +91,48 @@ export interface DriveRecord {
   attachments: DriveAttachment[];
 }
 
+/** A drive with where it is now: attached on `currentHost`, or, while attached nowhere, last on `lastHost`. */
+export interface DriveSummary extends DriveRecord {
+  present: boolean;
+  currentHost: string | null;
+  lastHost: string | null;
+  lastAt: string | null;
+}
+
+export type DeviceSource = "dashboard" | "syncthing" | "join" | "history";
+
+/** How one of this host's instances reaches a device. */
+export interface InstanceConnection {
+  nodeId: string;
+  nodeName: string;
+  connected: boolean;
+  kind: ConnectionKind | null;
+  address: string | null;
+}
+
+/** A computer: a host running storage-compose, keyed by its name, or another Syncthing device, keyed by its first device ID. */
+export interface DeviceSummary {
+  key: string;
+  name: string;
+  thisHost: boolean;
+  online: boolean;
+  /** The closest connection any instance of this host has to it now; null while none is connected and for this host. */
+  connection: { kind: ConnectionKind; address: string; type: string; nodeId: string } | null;
+  perInstance: InstanceConnection[];
+  lastSeen: string | null;
+  lastConnection: { kind: ConnectionKind; address: string | null; at: string } | null;
+  deviceIds: string[];
+  nodeIds: string[];
+  driveKeys: string[];
+  sources: DeviceSource[];
+}
+
+/** `GET /api/devices`; with `?scope=local`, this host's view only, as another host's dashboard reads it. */
+export interface DevicesResponse {
+  devices: DeviceSummary[];
+  drives: DriveSummary[];
+}
+
 /**
  * @implNote Read from SnapRAID itself, its content lock and the progress its wrapper records, so a job
  * started by hand shows as well as one the dashboard or the schedule started. A run that bypassed the

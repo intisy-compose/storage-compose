@@ -251,6 +251,7 @@ export async function nodesResponse(scope: "all" | "local", records: JoinRecords
   const views: InstanceView[] = [];
   const agentNodes = new Map<string, string>();
   const unread: UnreadSources = { allArrays: false, arrayIds: [], nodes: false };
+  if (scope === "local") refreshOtherHostNodes(records);
   const ownNodes = await localNodes(warnings, views, agentNodes, unread);
   const otherHostNodes = scope === "all" ? await remoteNodes(warnings) : cachedOtherHostNodes();
   const running = new Map([...views.map((view): [string, string] => [view.device.deviceId, view.nodeId]), ...agentNodes]);
@@ -271,6 +272,30 @@ export async function nodesResponse(scope: "all" | "local", records: JoinRecords
   return { host: { name: hostName }, nodes, warnings: unique };
 }
 
+function isOtherHostNodesFresh(): boolean {
+  return lastOtherHostNodes !== null && Date.now() - lastOtherHostNodes.at < otherHostNodesMaxAgeMilliseconds;
+}
+
+let otherHostRefresh: Promise<void> | null = null;
+
+/**
+ * Starts a full build when the other hosts' nodes are missing or stale, so a local-scope build, which
+ * reads only the cache, stops counting a moved array as this host's soon after a restart.
+ * @implNote Never awaited: another host's full build reads this host's local scope, and waiting here
+ * would have two hosts wait on each other; the in-flight build is shared, so a burst starts one.
+ */
+export function refreshOtherHostNodes(records: JoinRecords): void {
+  if (peerDashboards.length === 0 || otherHostRefresh || isOtherHostNodesFresh()) return;
+  otherHostRefresh = nodesResponse("all", records)
+    .then(
+      () => undefined,
+      (error: Error) => console.error(`other hosts' nodes not refreshed: ${error.message}`),
+    )
+    .finally(() => {
+      otherHostRefresh = null;
+    });
+}
+
 /** The other hosts' nodes as the last full `/api/nodes` built them, however old; never builds them. */
 export function cachedOtherHostNodes(): StorageNode[] {
   return lastOtherHostNodes?.nodes ?? [];
@@ -282,6 +307,6 @@ export function cachedOtherHostNodes(): StorageNode[] {
  * missing one costs a full build, which reads every peer dashboard and every local instance.
  */
 export async function otherHostNodes(records: JoinRecords): Promise<StorageNode[]> {
-  if (lastOtherHostNodes && Date.now() - lastOtherHostNodes.at < otherHostNodesMaxAgeMilliseconds) return lastOtherHostNodes.nodes;
+  if (lastOtherHostNodes && isOtherHostNodesFresh()) return lastOtherHostNodes.nodes;
   return (await nodesResponse("all", records)).nodes.filter((node) => !node.local);
 }

@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { devicesFixture } from "./devices.mjs";
 import { nodesFixture } from "./nodes.mjs";
 import { treeFixture } from "./tree.mjs";
 
@@ -38,6 +39,7 @@ async function route(request, response) {
     return response.end(await readFile(pageFile));
   }
   if (request.method === "GET" && path === "/api/nodes") return sendJson(response, 200, nodesFixture(startedAt));
+  if (request.method === "GET" && path === "/api/devices") return sendJson(response, 200, devicesFixture(startedAt));
   if (request.method === "GET" && path === "/api/tree") return sendJson(response, 200, treeFixture(url.searchParams.get("node") ?? "all", url.searchParams.get("path") ?? ""));
   if (request.method === "GET" && path === "/api/fixture/actions") return sendJson(response, 200, actionLog);
   const scoped = path.match(/^\/api\/arrays\/([^/]+)\/(sync|scrub|add|rebuild|remove|accept-smart)$/);

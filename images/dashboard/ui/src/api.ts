@@ -8,10 +8,14 @@ export type {
   ArrayMember,
   ArrayState,
   ConnectionKind,
+  DeviceSource,
+  DeviceSummary,
+  DevicesResponse,
   DriveAttachment,
   DriveCandidate,
   DriveRecord,
   DriveRecordKind,
+  DriveSummary,
   EntryStatus,
   FolderCopy,
   FolderDetailResponse,
@@ -21,6 +25,7 @@ export type {
   FolderSummary,
   FoldersResponse,
   FolderType,
+  InstanceConnection,
   MemberSmart,
   NodeArray,
   NodeEntryState,
@@ -48,7 +53,7 @@ export type {
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
-import type { ActivityResponse, ArrayAction, ArrayActionBody, FolderDetailResponse, NodesResponse, TreeListing } from "../../src/api/types.js";
+import type { ActivityResponse, ArrayAction, ArrayActionBody, DevicesResponse, FolderDetailResponse, NodesResponse, TreeListing } from "../../src/api/types.js";
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
@@ -71,6 +76,10 @@ async function getJson<T>(path: string): Promise<T> {
 
 export function fetchNodes(): Promise<NodesResponse> {
   return getJson("api/nodes");
+}
+
+export function fetchDevices(): Promise<DevicesResponse> {
+  return getJson("api/devices");
 }
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {
