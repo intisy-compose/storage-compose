@@ -79,8 +79,13 @@ export async function arrayStatus(arrayId: string, directory = arrayStatusDirect
   }
 }
 
+/** The arrays the mounter has a status directory for; null when the directory cannot be listed. */
+export function listedArrayIds(directory = arraysStatusDirectory): Promise<string[] | null> {
+  return readdir(directory).catch(() => null);
+}
+
 /** The cluster first, then every array the mounter has reported this session. */
-export async function arrayIds(): Promise<string[]> {
-  const found = await readdir(arraysStatusDirectory).catch(() => [] as string[]);
+export async function arrayIds(listed?: string[] | null): Promise<string[]> {
+  const found = (listed === undefined ? await listedArrayIds() : listed) ?? [];
   return [clusterArrayId, ...found.filter((id) => id !== clusterArrayId).sort()];
 }

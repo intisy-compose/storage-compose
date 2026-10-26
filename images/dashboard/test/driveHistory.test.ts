@@ -225,6 +225,36 @@ describe("drive history", () => {
     );
   });
 
+  it("a drive seen here as something else closes its earlier stay", async () => {
+    const store = freshStore();
+    await recordPresentDrives([arrayNode([member("data1", { serial: "WKD082MD" })])], "finn", start, store);
+    const records = await recordPresentDrives([arrayNode([member("data2", { serial: "WKD082MD" })])], "finn", at(5), store);
+    assert.deepEqual(records[0].attachments, [
+      { host: "finn", since: at(5).toISOString(), lastAt: at(5).toISOString(), as: "data2 of private-array", endedAt: null },
+      { host: "finn", since: start.toISOString(), lastAt: start.toISOString(), as: "data1 of private-array", endedAt: start.toISOString() },
+    ]);
+  });
+
+  it("an unreadable status leaves the stay open", async () => {
+    const store = freshStore();
+    await recordPresentDrives([arrayNode([member("data1", { serial: "WKD082MD" })]), node({})], "finn", start, store);
+    const unreadStatus = await recordPresentDrives([node({})], "finn", at(5), store, { allArrays: false, arrayIds: ["5784"], nodes: false });
+    assert.equal(unreadStatus.find((entry) => entry.key === "serial:WKD082MD")?.attachments[0].endedAt, null, "an array whose status could not be read");
+    const unreadDirectories = await recordPresentDrives([], "finn", at(10), store, { allArrays: true, arrayIds: [], nodes: true });
+    assert.ok(unreadDirectories.every((entry) => entry.attachments[0].endedAt === null), "directories that could not be listed");
+    const read = await recordPresentDrives([], "finn", at(15), store);
+    assert.ok(read.every((entry) => entry.attachments[0].endedAt !== null), "once read and not listed, they are gone");
+  });
+
+  it("merged copies of one stay that end at the same time keep the closed one", () => {
+    const open = { host: "finn", since: start.toISOString(), lastAt: at(10).toISOString(), as: "data1 of private-array", endedAt: null };
+    const closed = { ...open, endedAt: at(10).toISOString() };
+    for (const [first, second] of [[open, closed], [closed, open]]) {
+      const [merged] = mergeDriveRecords([record("serial:WKD082MD", [first])], [[record("serial:WKD082MD", [second])]]);
+      assert.deepEqual(merged.attachments, [closed]);
+    }
+  });
+
   it("the key prefers the serial, then the member, then the node", () => {
     assert.equal(driveKey({ serial: "WKD082MD", arrayId: "5784", role: "data1" }), "serial:WKD082MD");
     assert.equal(driveKey({ serial: null, arrayId: "5784", role: "data1" }), "member:5784-data1");

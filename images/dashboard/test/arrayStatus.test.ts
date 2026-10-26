@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { type ArrayStatus, type DriveStatus, arrayStatus } from "../src/arrayStatus.js";
+import { type ArrayStatus, type DriveStatus, arrayStatus, listedArrayIds } from "../src/arrayStatus.js";
 import { arrayHealth } from "../src/nodes.js";
 
 const now = Date.parse("2026-10-26T13:30:00Z");
@@ -66,6 +66,12 @@ describe("array status", () => {
     );
     const fresh = await read(status({}));
     assert.ok(fresh.drives.every((entry) => entry.lastPresent === undefined), "a connected array's members are seen now");
+  });
+
+  it("an arrays directory that cannot be listed reads as unknown, not empty", async () => {
+    assert.equal(await listedArrayIds(join(directory, "missing")), null);
+    await mkdir(join(directory, "arrays", "5784"), { recursive: true });
+    assert.deepEqual(await listedArrayIds(join(directory, "arrays")), ["5784"]);
   });
 
   it("an array whose members are all absent is not connected, not healthy or frozen", async () => {

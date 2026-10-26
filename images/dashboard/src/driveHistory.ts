@@ -69,13 +69,15 @@ function earlier(first: string, second: string): string {
   return time(second) < time(first) ? second : first;
 }
 
-/** One stay per host and start, with the latest end any copy has, newest first. */
+/** One stay per host and start, with the latest end any copy has (a closed copy on a tie), newest first. */
 function mergedStays(stays: DriveAttachment[]): DriveAttachment[] {
   const byStart = new Map<string, DriveAttachment>();
   for (const stay of stays) {
     const id = `${stay.host}\n${stay.since}`;
     const known = byStart.get(id);
-    if (!known || time(stay.lastAt) > time(known.lastAt)) byStart.set(id, stay);
+    const isLater = !known || time(stay.lastAt) > time(known.lastAt);
+    const isClosedTwin = known && time(stay.lastAt) === time(known.lastAt) && stay.endedAt !== null && known.endedAt === null;
+    if (isLater || isClosedTwin) byStart.set(id, stay);
   }
   return [...byStart.values()].sort((first, second) => time(second.lastAt) - time(first.lastAt)).slice(0, attachmentsKept);
 }
@@ -86,8 +88,8 @@ function overlaps(stay: DriveAttachment, window: PresenceWindow): boolean {
 
 /**
  * The stays with one sighting added. A drive attached now extends the newest stay only while that
- * stay is open on the same host as the same thing; a window from a detached array joins the stay it
- * overlaps and closes it, because the drive is not here now.
+ * stay is open on the same host as the same thing, and a new stay closes any still open here; a window
+ * from a detached array joins the stay it overlaps and closes it, because the drive is not here now.
  */
 function withSighting(stays: DriveAttachment[], host: string, { as, window, attachedNow }: Sighting): DriveAttachment[] {
   const since = new Date(window.since).toISOString();
@@ -96,7 +98,7 @@ function withSighting(stays: DriveAttachment[], host: string, { as, window, atta
   const isSameStay = newest?.host === host && newest.as === as && (attachedNow ? newest.endedAt === null : overlaps(newest, window));
   const stay = isSameStay ? { ...newest, since: earlier(newest.since, since), lastAt: later(newest.lastAt, lastAt) } : { host, since, lastAt, as, endedAt: null };
   const placed = { ...stay, endedAt: attachedNow ? null : stay.lastAt };
-  return mergedStays(isSameStay ? [placed, ...rest] : [...stays, placed]);
+  return mergedStays(isSameStay ? [placed, ...rest] : [...closedOn(host, stays), placed]);
 }
 
 function closedOn(host: string, stays: DriveAttachment[]): DriveAttachment[] {
@@ -117,6 +119,23 @@ function recordSighting(byKey: Map<string, DriveRecord>, host: string, sighting:
   byKey.set(record.key, { ...record, size: record.size ?? previous?.size ?? former?.size ?? null, attachments: withSighting(stays, host, sighting) });
 }
 
+/** What a build could not read, whose drives it must not take as gone. */
+export interface UnreadSources {
+  /** The arrays' status directory could not be listed. */
+  allArrays: boolean;
+  /** Arrays listed whose status could not be read. */
+  arrayIds: string[];
+  /** The node registry could not be listed. */
+  nodes: boolean;
+}
+
+export const nothingUnread: UnreadSources = { allArrays: false, arrayIds: [], nodes: false };
+
+function isUnread(record: DriveRecord, unread: UnreadSources): boolean {
+  if (record.kind !== "array-member") return unread.nodes;
+  return unread.allArrays || unread.arrayIds.includes(record.arrayId ?? "");
+}
+
 /** @implNote A file written before stays could close has no `endedAt`; those stays are open. */
 function withEndKnown(record: DriveRecord): DriveRecord {
   return { ...record, attachments: record.attachments.map((stay) => ({ ...stay, endedAt: stay.endedAt ?? null })) };
@@ -125,20 +144,21 @@ function withEndKnown(record: DriveRecord): DriveRecord {
 /**
  * The records brought up to this build of this host's nodes: every drive attached now extends or
  * starts its stay here, and every open stay here of a drive the build does not show attached is closed.
- * @implNote The nodes are every node this host lists, so a drive left out of them, through an absent
- * member, an offline node or one no longer listed, is not here now.
+ * @implNote The nodes are every node this host could read, so a drive left out of them, through an
+ * absent member, an offline node or one no longer listed, is not here now; one whose source could not
+ * be read keeps its stay open.
  */
-export function seenDrives(records: DriveRecord[], nodes: StorageNode[], host: string, now: Date): DriveRecord[] {
+export function seenDrives(records: DriveRecord[], nodes: StorageNode[], host: string, now: Date, unread = nothingUnread): DriveRecord[] {
   const byKey = new Map(records.map((record) => [record.key, withEndKnown(record)]));
   const found = sightings(nodes, now);
   for (const sighting of found) recordSighting(byKey, host, sighting);
   const attachedNow = new Set(found.filter((sighting) => sighting.attachedNow).map((sighting) => sighting.record.key));
-  for (const [key, record] of byKey) if (!attachedNow.has(key)) byKey.set(key, { ...record, attachments: closedOn(host, record.attachments) });
+  for (const [key, record] of byKey) if (!attachedNow.has(key) && !isUnread(record, unread)) byKey.set(key, { ...record, attachments: closedOn(host, record.attachments) });
   return [...byKey.values()];
 }
 
-export function recordPresentDrives(nodes: StorageNode[], host = hostName, now = new Date(), store = driveSeenStore): Promise<DriveRecord[]> {
-  return store.update((records) => seenDrives(records, nodes, host, now), now.getTime());
+export function recordPresentDrives(nodes: StorageNode[], host = hostName, now = new Date(), store = driveSeenStore, unread = nothingUnread): Promise<DriveRecord[]> {
+  return store.update((records) => seenDrives(records, nodes, host, now, unread), now.getTime());
 }
 
 function lastAt(record: DriveRecord): number {

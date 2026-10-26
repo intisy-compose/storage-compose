@@ -1,18 +1,18 @@
 import type { NodeArray, NodeRegistryEntry, NodesResponse, StorageNode, Warning } from "./api/types.js";
-import { type ArrayStatus, arrayIds, arrayStatus } from "./arrayStatus.js";
+import { type ArrayStatus, arrayIds, arrayStatus, listedArrayIds } from "./arrayStatus.js";
 import { folderErrorWarnings, fromOtherHost, fullWarnings, hostWarnings, offlineWarnings, pendingWarnings, pruneFirstSeen, systemErrorWarnings, warning, withoutDuplicates } from "./attention.js";
 import { type BlockDevice, listBlockDevices, replacementCandidates } from "./blockDevices.js";
-import { recordPresentDrives } from "./driveHistory.js";
+import { type UnreadSources, recordPresentDrives } from "./driveHistory.js";
 import { agentProblem, readHeartbeat } from "./hostAgent.js";
 import { registryEntries, registryWarnings, syncthingEndpoint } from "./instances.js";
 import { type JoinRecords } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { parityState } from "./parity.js";
-import { attentionSettings, hostName, peerDashboards, poolPath } from "./settings.js";
+import { attentionSettings, hostName, peerDashboards, poolPath, registryDirectory } from "./settings.js";
 import { deviceSeenStore, localDeviceIds, recordDevices, rememberedLocalNodes } from "./seenStore.js";
 import { type InstanceView, classifyConnections, instanceView, peerSync } from "./syncthing.js";
 import { fetchTailnetJson } from "./tailnet.js";
-import { statfs } from "node:fs/promises";
+import { readdir, statfs } from "node:fs/promises";
 
 async function space(path: string): Promise<{ size: number; used: number } | null> {
   try {
@@ -120,12 +120,22 @@ function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
 /**
  * @param agentNodes filled with device ID to node ID of each local node the host agent names, so an
  * offline node is not listed a second time as an offline device.
+ * @param unread filled with what could not be read, so its drives are not taken as gone.
  */
-async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes: Map<string, string>): Promise<StorageNode[]> {
-  const [devices, sources, entries] = await Promise.all([listBlockDevices(), mountSources(), registryEntries()]);
+async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes: Map<string, string>, unread: UnreadSources): Promise<StorageNode[]> {
+  const [devices, sources, entries, listed, registryListed] = await Promise.all([
+    listBlockDevices(),
+    mountSources(),
+    registryEntries(),
+    listedArrayIds(),
+    readdir(registryDirectory).then(() => true, () => false),
+  ]);
+  unread.allArrays = listed === null;
+  unread.nodes = !registryListed;
   const nodes: StorageNode[] = [];
-  for (const id of await arrayIds()) {
+  for (const id of await arrayIds(listed)) {
     const status = await arrayStatus(id);
+    if (!status && listed?.includes(id)) unread.arrayIds.push(id);
     if (!status) continue;
     const endpoint = await syncthingEndpoint(id);
     const view = endpoint && status.present ? await instanceView(id, endpoint, status.name) : null;
@@ -216,9 +226,9 @@ async function rememberDevices(views: InstanceView[], running: ReadonlyMap<strin
   }
 }
 
-async function rememberDrives(nodes: StorageNode[]): Promise<void> {
+async function rememberDrives(nodes: StorageNode[], unread: UnreadSources): Promise<void> {
   try {
-    await recordPresentDrives(nodes, hostName, new Date());
+    await recordPresentDrives(nodes, hostName, new Date(), undefined, unread);
   } catch (error) {
     console.error(`drives seen file not written: ${(error as Error).message}`);
   }
@@ -240,14 +250,15 @@ export async function nodesResponse(scope: "all" | "local", records: JoinRecords
   const warnings: Warning[] = [];
   const views: InstanceView[] = [];
   const agentNodes = new Map<string, string>();
-  const ownNodes = await localNodes(warnings, views, agentNodes);
+  const unread: UnreadSources = { allArrays: false, arrayIds: [], nodes: false };
+  const ownNodes = await localNodes(warnings, views, agentNodes, unread);
   const otherHostNodes = scope === "all" ? await remoteNodes(warnings) : cachedOtherHostNodes();
   const running = new Map([...views.map((view): [string, string] => [view.device.deviceId, view.nodeId]), ...agentNodes]);
   const remembered = rememberedLocalNodes(await deviceSeenStore.load());
   const local = localDeviceIds({ running, remembered, localNodeIds: new Set(ownNodes.map((node) => node.id)), otherHostNodes });
   classifyConnections(views, local);
   await rememberDevices(views, running);
-  await rememberDrives(ownNodes);
+  await rememberDrives(ownNodes, unread);
   const nodes = ownNodes.map((node) => withRememberedDevice(node, remembered, local));
   if (scope === "all") {
     nodes.push(...otherHostNodes);
