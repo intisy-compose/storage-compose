@@ -1,3 +1,4 @@
+import { deviceSettingLabels } from "./api/deviceText.js";
 import type { DeviceCompression, DeviceSettings, DeviceSettingsChange, InstanceGui, InstanceOptions } from "./api/types.js";
 
 type SyncthingObject = Record<string, unknown>;
@@ -97,44 +98,45 @@ export function addressProblem(address: string): string | null {
   if (address === "dynamic") return null;
   const parsed = /^([a-z0-9]+):\/\/([^/?#\s]+)[^\s]*$/i.exec(address);
   if (!parsed || !addressSchemes.has(parsed[1].toLowerCase())) return `${address || "an empty address"} is not dynamic or a tcp://, quic:// or relay:// address`;
+  if (parsed[1].toLowerCase() === "relay" && !/[?&]id=[^&#]+/.test(address)) return `${address} names no relay: a relay:// address needs ?id=<the relay's device ID>`;
   return null;
 }
 
-/** Why `value` cannot be sent as the field `key`, as a sentence, or null when it can. */
-type FieldCheck = (value: unknown, key: string) => string | null;
+/** Why `value` cannot be sent as the setting labelled `label`, as a sentence, or null when it can. */
+type FieldCheck = (value: unknown, label: string) => string | null;
 
 const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((entry) => typeof entry === "string");
-const booleanField: FieldCheck = (value, key) => (typeof value === "boolean" ? null : `${key} must be true or false`);
-const wholeNumberField: FieldCheck = (value, key) => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? null : `${key} must be a whole number, 0 or more`);
+const booleanField: FieldCheck = (value, label) => (typeof value === "boolean" ? null : `${label} must be on or off`);
+const wholeNumberField: FieldCheck = (value, label) => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? null : `${label} must be a whole number, 0 or more`);
 
-function addressesCheck(value: unknown): string | null {
-  if (!isStringList(value)) return "addresses must be a list of addresses";
-  if (value.length === 0) return "a device needs at least one address, or dynamic";
+function addressesCheck(value: unknown, label: string): string | null {
+  if (!isStringList(value)) return `${label} must be a list of addresses`;
+  if (value.length === 0) return `${label} needs at least one address, or dynamic`;
   return value.map(addressProblem).find((problem) => problem !== null) ?? null;
 }
 
 const deviceFieldChecks: Record<keyof DeviceSettingsChange, FieldCheck> = {
-  name: (value) => (typeof value === "string" ? null : "name must be text"),
+  name: (value, label) => (typeof value === "string" ? null : `${label} must be text`),
   addresses: addressesCheck,
-  compression: (value) => (compressions.includes(value as DeviceCompression) ? null : `compression must be ${compressions.join(", ")}`),
+  compression: (value, label) => (compressions.includes(value as DeviceCompression) ? null : `${label} must be ${compressions.join(", ")}`),
   introducer: booleanField,
   autoAcceptFolders: booleanField,
   paused: booleanField,
   untrusted: booleanField,
-  allowedNetworks: (value) => (isStringList(value) && value.every((entry) => entry.trim() !== "") ? null : "allowedNetworks must be a list of networks"),
+  allowedNetworks: (value, label) => (isStringList(value) && value.every((entry) => entry.trim() !== "") ? null : `${label} must be a list of networks`),
   maxSendKbps: wholeNumberField,
   maxRecvKbps: wholeNumberField,
   numConnections: wholeNumberField,
 };
 
-/** Why a device change cannot be sent to Syncthing as it is, or null when it can. */
+/** Why a device change cannot be sent to Syncthing as it is, or null when it can; a setting is named by its label in the form. */
 export function deviceChangeProblem(change: unknown): string | null {
   if (typeof change !== "object" || change === null || Array.isArray(change) || Object.keys(change).length === 0) return "nothing to change";
   for (const [key, value] of Object.entries(change)) {
-    if (key === "deviceId") return "deviceId cannot be changed";
-    const check = Object.hasOwn(deviceFieldChecks, key) ? deviceFieldChecks[key as keyof DeviceSettingsChange] : null;
-    if (!check) return `${key} is not a device setting`;
-    const problem = check(value, key);
+    if (key === "deviceId") return "the device ID cannot be changed";
+    if (!Object.hasOwn(deviceFieldChecks, key)) return `${key} is not a device setting`;
+    const field = key as keyof DeviceSettingsChange;
+    const problem = deviceFieldChecks[field](value, deviceSettingLabels[field]);
     if (problem) return problem;
   }
   return null;

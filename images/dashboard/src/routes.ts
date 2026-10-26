@@ -30,7 +30,8 @@ export interface RouteContext {
 
 /** What a write changed, in words, for Activity: `pc: renamed device dashboard-test-peer to backup`. */
 export interface WriteNote {
-  nodeId: string | null;
+  nodeId: string;
+  nodeName: string;
   folderId: string | null;
   text: string;
 }
@@ -39,9 +40,17 @@ export interface Route {
   /** Any method when absent. */
   method?: string;
   pattern: RegExp;
-  /** A write to a node returns the note Activity records for it. */
-  handle: (context: RouteContext) => Promise<WriteNote | void>;
+  handle: (context: RouteContext) => Promise<void>;
 }
+
+/** A write to a node: it must answer with the note Activity records, so a write that names nothing does not compile. */
+export interface NodeWriteRoute {
+  method: "POST" | "PUT" | "PATCH" | "DELETE";
+  pattern: RegExp;
+  write: (context: RouteContext) => Promise<WriteNote>;
+}
+
+export type AnyRoute = Route | NodeWriteRoute;
 
 async function knownArray(arrayId: string): Promise<ArrayStatus> {
   const status = /^[a-z0-9]+$/.test(arrayId) ? await arrayStatus(arrayId) : null;
@@ -117,7 +126,7 @@ async function legacyState(): Promise<unknown> {
   return { array: await arrayStatus(clusterArrayId), parity: await parityState(clusterArrayId), log: await recentLog(clusterArrayId) };
 }
 
-const routes: Route[] = [
+const routes: AnyRoute[] = [
   { method: "GET", pattern: /^\/$/, handle: ({ response }) => serveIndex(response) },
   {
     method: "GET",
@@ -166,21 +175,31 @@ const liveWriteEffects: WriteEffects = {
   record: (note) => recordDashboardActivity(note.nodeId, note.folderId, note.text),
 };
 
-/** After a successful write: the shared local nodes build is dropped so the next read shows it, and its note enters Activity. */
-export function settleWrite(method: string, statusCode: number, note: WriteNote | void, effects: WriteEffects = liveWriteEffects): void {
-  if (method === "GET" || method === "HEAD" || statusCode >= 400) return;
-  effects.invalidate();
-  if (note) effects.record(note);
+function withText(note: WriteNote): WriteNote {
+  return note.text.trim() ? note : { ...note, text: `${note.nodeName}: changed through the dashboard` };
 }
 
-async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
+/** After a successful write: the shared local nodes build is dropped so the next read shows it, and a node write's note enters Activity. */
+export function settleWrite(method: string, statusCode: number, note: WriteNote | null, effects: WriteEffects = liveWriteEffects): void {
+  if (method === "GET" || method === "HEAD" || statusCode >= 400) return;
+  effects.invalidate();
+  if (note) effects.record(withText(note));
+}
+
+async function runRoute(candidate: AnyRoute, context: RouteContext): Promise<WriteNote | null> {
+  if ("write" in candidate) return candidate.write(context);
+  await candidate.handle(context);
+  return null;
+}
+
+async function route(routeList: AnyRoute[], effects: WriteEffects, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? "/", "http://dashboard");
-  for (const candidate of routes) {
+  for (const candidate of routeList) {
     if (candidate.method && candidate.method !== request.method) continue;
     const match = url.pathname.match(candidate.pattern);
     if (!match) continue;
-    const note = await candidate.handle({ request, response, url, params: match.slice(1) });
-    return settleWrite(request.method ?? "GET", response.statusCode, note);
+    const note = await runRoute(candidate, { request, response, url, params: match.slice(1) });
+    return settleWrite(request.method ?? "GET", response.statusCode, note, effects);
   }
   throw new RequestError(404, "not found");
 }
@@ -192,12 +211,17 @@ function errorStatus(error: unknown): number {
   return 500;
 }
 
-export async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
-  try {
-    await route(request, response);
-  } catch (error) {
-    const status = errorStatus(error);
-    if (status === 500) console.error(error);
-    sendJson(response, status, { error: error instanceof Error ? error.message : String(error) });
-  }
+/** Answers a request from `routeList`; a refusal or failure becomes `{ error }` with its status. */
+export function requestHandler(routeList: AnyRoute[], effects: WriteEffects = liveWriteEffects): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
+  return async (request, response) => {
+    try {
+      await route(routeList, effects, request, response);
+    } catch (error) {
+      const status = errorStatus(error);
+      if (status === 500) console.error(error);
+      sendJson(response, status, { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
 }
+
+export const handleRequest = requestHandler(routes);

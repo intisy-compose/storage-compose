@@ -68,7 +68,7 @@ import type { ActivityResponse, ArrayAction, ArrayActionBody, DeviceSettings, De
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
-export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, isReachable, reachTone, seenTimeText, shortDeviceId } from "../../src/api/deviceText.js";
+export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isReachable, reachTone, seenTimeText, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 

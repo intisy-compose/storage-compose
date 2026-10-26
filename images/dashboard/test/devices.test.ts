@@ -5,7 +5,7 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { deviceDisplayName } from "../src/api/deviceText.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance } from "../src/instanceResolver.js";
-import type { WriteNote } from "../src/routes.js";
+import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
 import { deviceEditText, deviceRoutes, editDevice, readDeviceSettings } from "../src/routes/devices.js";
 import { SyncthingClient } from "../src/syncthing.js";
 import { addressProblem, changedFields, deviceChangeProblem, deviceSettings } from "../src/syncthingConfig.js";
@@ -59,9 +59,12 @@ async function bodyOf(request: IncomingMessage): Promise<unknown> {
 describe("a node's devices", () => {
   const writes: Received[] = [];
   let configured: Record<string, unknown>[] = [];
+  /** Drops the connection of the request this many requests from now, as a Syncthing that stops answering mid-edit; null keeps answering. */
+  let dropAfter: number | null = null;
   let syncthingUrl = "";
   let deadUrl = "";
   const syncthing = createServer(async (request, response) => {
+    if (dropAfter !== null && dropAfter-- === 0) return request.socket.destroy();
     if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
     const path = new URL(request.url ?? "/", "http://fake").pathname;
     if (request.method === "GET" && path === "/rest/config/devices") return reply(response, configured);
@@ -88,6 +91,7 @@ describe("a node's devices", () => {
 
   beforeEach(() => {
     writes.length = 0;
+    dropAfter = null;
     configured = [{ deviceID: ownId, name: "pc", addresses: ["dynamic"] }, { ...syncthingPeer }];
   });
 
@@ -128,20 +132,22 @@ describe("a node's devices", () => {
     for (const address of ["dynamic", "tcp://192.168.1.5:22000", "tcp4://host.docker.internal", "quic://[fd7a:115c:a1e0::1]:22000", "relay://relay.example:22067/?id=ABC"]) {
       assert.equal(addressProblem(address), null, address);
     }
-    for (const address of ["192.168.1.5:22000", "http://example.com", "tcp://", "tcp:// spaced:22000", "dynamic,tcp://x", ""]) {
+    for (const address of ["192.168.1.5:22000", "http://example.com", "tcp://", "tcp:// spaced:22000", "dynamic,tcp://x", "", "relay://relay.example:22067", "relay://relay.example:22067/?id="]) {
       assert.notEqual(addressProblem(address), null, address);
     }
-    assert.match(deviceChangeProblem({ addresses: [] }) ?? "", /at least one address/);
+    assert.match(addressProblem("relay://relay.example:22067") ?? "", /needs \?id=/);
+    assert.match(deviceChangeProblem({ addresses: [] }) ?? "", /^Addresses needs at least one address/);
     await assert.rejects(editDevice(pc(), peerId, { addresses: ["tcp://ok:22000", "ftp://bad"] }), (error: Error & { status?: number }) => error.status === 400 && /ftp:\/\/bad/.test(error.message));
     assert.deepEqual(writes, []);
   });
 
-  it("the device ID, a field the form does not show and a wrong type are refused", () => {
-    assert.match(deviceChangeProblem({ deviceId: peerId }) ?? "", /deviceId cannot be changed/);
-    assert.match(deviceChangeProblem({ ignoredFolders: [] }) ?? "", /ignoredFolders is not a device setting/);
-    assert.match(deviceChangeProblem({ compression: "sometimes" }) ?? "", /compression/);
-    assert.match(deviceChangeProblem({ maxSendKbps: -1 }) ?? "", /maxSendKbps/);
-    assert.match(deviceChangeProblem({ paused: "yes" }) ?? "", /paused/);
+  it("the device ID, a field the form does not show and a wrong type are refused, named by the form's labels", () => {
+    assert.equal(deviceChangeProblem({ deviceId: peerId }), "the device ID cannot be changed");
+    assert.equal(deviceChangeProblem({ ignoredFolders: [] }), "ignoredFolders is not a device setting");
+    assert.equal(deviceChangeProblem({ compression: "sometimes" }), "Compression must be metadata, always, never");
+    assert.equal(deviceChangeProblem({ maxSendKbps: -1 }), "Send limit must be a whole number, 0 or more");
+    assert.equal(deviceChangeProblem(JSON.parse(JSON.stringify({ maxRecvKbps: Number.NaN }))), "Receive limit must be a whole number, 0 or more", "a cleared number field arrives as null");
+    assert.equal(deviceChangeProblem({ paused: "yes" }), "Paused must be on or off");
     assert.match(deviceChangeProblem({}) ?? "", /nothing to change/);
     assert.match(deviceChangeProblem([]) ?? "", /nothing to change/);
     assert.equal(deviceChangeProblem({ name: "", allowedNetworks: ["192.168.0.0/16"], numConnections: 2, introducer: true }), null);
@@ -157,29 +163,73 @@ describe("a node's devices", () => {
     await assert.rejects(editDevice(pc(deadUrl), peerId, { name: "x" }), (error: Error & { status?: number }) => error.status === 503 && error.message === "pc's Syncthing is not answering");
   });
 
-  it("the route reads and edits a device of the node in its path and returns the edit's note", async () => {
-    const routes = deviceRoutes({ resolve: async (nodeId) => (nodeId === "fb98" ? pc() : Promise.reject(new RequestError(404, `no node ${nodeId}`))) });
-    const notes: (WriteNote | void)[] = [];
-    const dashboard = createServer(async (request, response) => {
-      const path = new URL(request.url ?? "/", "http://dashboard").pathname;
-      const route = routes.find((candidate) => candidate.method === request.method && candidate.pattern.test(path));
-      try {
-        notes.push(await route!.handle({ request, response, url: new URL(path, "http://dashboard"), params: path.match(route!.pattern)!.slice(1) }));
-      } catch (error) {
-        reply(response, { error: (error as Error).message }, (error as RequestError).status ?? 500);
-      }
-    });
-    const dashboardUrl = await listen(dashboard);
+  function recordingEffects(): WriteEffects & { notes: WriteNote[]; invalidations: number } {
+    const effects = { notes: [] as WriteNote[], invalidations: 0, invalidate: () => void (effects.invalidations += 1), record: (note: WriteNote) => void effects.notes.push(note) };
+    return effects;
+  }
+
+  async function dashboardWith(effects: WriteEffects): Promise<{ url: string; close: () => void }> {
+    const handle = requestHandler(deviceRoutes({ resolve: async (nodeId) => (nodeId === "fb98" ? pc() : Promise.reject(new RequestError(404, `no node ${nodeId}`))) }), effects);
+    const dashboard = createServer((request, response) => void handle(request, response));
+    return { url: await listen(dashboard), close: () => dashboard.close() };
+  }
+
+  function patch(url: string, body: unknown): Promise<Response> {
+    return fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  }
+
+  it("a device PATCH through the router enters its note in Activity and drops the shared build", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
     try {
-      const devicePath = `${dashboardUrl}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`;
+      const devicePath = `${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`;
       assert.equal(((await (await fetch(devicePath)).json()) as { name: string }).name, "dashboard-test-peer");
-      const patched = await fetch(devicePath, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ compression: "always" }) });
+      assert.equal(effects.invalidations, 0, "a read drops nothing");
+
+      const patched = await patch(devicePath, { compression: "always" });
       assert.equal(patched.status, 200);
       assert.equal(((await patched.json()) as { compression: string }).compression, "always");
       assert.deepEqual(writes.map((write) => write.body), [{ compression: "always" }]);
-      assert.deepEqual(notes.at(-1), { nodeId: "fb98", folderId: null, text: "pc: changed device dashboard-test-peer; compression always" });
-      const unknown = await fetch(`${dashboardUrl}/api/nodes/zzzz/devices/${encodeURIComponent(peerId)}`, { method: "PATCH", body: "{}" });
-      assert.equal(unknown.status, 404);
+      assert.deepEqual(effects.notes, [{ nodeId: "fb98", nodeName: "pc", folderId: null, text: "pc: changed device dashboard-test-peer; compression always" }]);
+      assert.equal(effects.invalidations, 1);
+
+      assert.equal((await patch(devicePath, { maxSendKbps: null })).status, 400);
+      assert.equal((await patch(`${dashboard.url}/api/nodes/zzzz/devices/${encodeURIComponent(peerId)}`, { name: "x" })).status, 404);
+      assert.equal(effects.notes.length, 1, "a refused write enters nothing");
+      assert.equal(effects.invalidations, 1);
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("a Syncthing that stops answering between the read and the PATCH is 503 and nothing is written or entered", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      dropAfter = 1;
+      const answer = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`, { name: "dashboard-test-renamed" });
+      assert.equal(answer.status, 503);
+      assert.deepEqual(await answer.json(), { error: "pc's Syncthing is not answering" });
+      assert.deepEqual(writes, []);
+      assert.deepEqual(effects.notes, []);
+      assert.equal(effects.invalidations, 0);
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("a Syncthing that stops answering after the PATCH still reports the edit saved and enters it", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      dropAfter = 2;
+      const answer = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`, { name: "dashboard-test-renamed", maxSendKbps: 100 });
+      assert.equal(answer.status, 200);
+      const settings = (await answer.json()) as { name: string; maxSendKbps: number; addresses: string[] };
+      assert.deepEqual([settings.name, settings.maxSendKbps, settings.addresses], ["dashboard-test-renamed", 100, ["dynamic"]]);
+      assert.equal(writes.length, 1);
+      assert.deepEqual(effects.notes.map((note) => note.text), ["pc: renamed device dashboard-test-peer to dashboard-test-renamed; send limit 100 KiB/s"]);
+      assert.equal(effects.invalidations, 1);
     } finally {
       dashboard.close();
     }
@@ -187,7 +237,7 @@ describe("a node's devices", () => {
 
   it("an edit's activity entry names the node, the device and what changed", async () => {
     const result = await editDevice(pc(), peerId, { name: "dashboard-test-renamed" });
-    assert.deepEqual(result.note, { nodeId: "fb98", folderId: null, text: "pc: renamed device dashboard-test-peer to dashboard-test-renamed" });
+    assert.deepEqual(result.note, { nodeId: "fb98", nodeName: "pc", folderId: null, text: "pc: renamed device dashboard-test-peer to dashboard-test-renamed" });
 
     assert.equal(deviceEditText("pc", "dashboard-test-peer", { paused: true }), "pc: paused device dashboard-test-peer");
     assert.equal(

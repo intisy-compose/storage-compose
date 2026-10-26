@@ -1,8 +1,8 @@
-import { deviceDisplayName, shortDeviceId } from "../api/deviceText.js";
+import { deviceDisplayName, deviceSettingLabels, shortDeviceId } from "../api/deviceText.js";
 import type { DeviceSettings, DeviceSettingsChange } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, forwardRead, requireLocal, resolveInstance } from "../instanceResolver.js";
-import type { Route, WriteNote } from "../routes.js";
+import type { AnyRoute, WriteNote } from "../routes.js";
 import { deviceChangeProblem, deviceSettings, redactConfig } from "../syncthingConfig.js";
 
 type SyncthingObject = Record<string, unknown>;
@@ -27,19 +27,16 @@ export async function readDeviceSettings(instance: ResolvedInstance, deviceId: s
   return deviceSettings(await configuredDevice(instance, deviceId));
 }
 
-const fieldWords: Record<Exclude<keyof DeviceSettingsChange, "name" | "paused">, string> = {
-  addresses: "addresses",
-  compression: "compression",
-  introducer: "introducer",
-  autoAcceptFolders: "auto accept folders",
-  untrusted: "untrusted",
-  allowedNetworks: "allowed networks",
-  maxSendKbps: "send limit",
-  maxRecvKbps: "receive limit",
-  numConnections: "connections",
-};
+type WordedField = Exclude<keyof DeviceSettingsChange, "name" | "paused">;
 
-function valueWords(key: keyof typeof fieldWords, value: unknown): string {
+const wordedFields = (Object.keys(deviceSettingLabels) as (keyof DeviceSettingsChange)[]).filter((key): key is WordedField => key !== "name" && key !== "paused");
+
+function fieldWords(key: WordedField): string {
+  const label = deviceSettingLabels[key];
+  return label.charAt(0).toLowerCase() + label.slice(1);
+}
+
+function valueWords(key: WordedField, value: unknown): string {
   if (typeof value === "boolean") return value ? "on" : "off";
   if (Array.isArray(value)) return value.length ? value.join(", ") : "none";
   if (value === 0 && (key === "maxSendKbps" || key === "maxRecvKbps")) return "unlimited";
@@ -54,7 +51,7 @@ function renameWords(deviceName: string, name: string): string {
 
 /** What a device edit changed, in words: `pc: renamed device dashboard-test-peer to backup; compression always`. */
 export function deviceEditText(nodeName: string, deviceName: string, change: DeviceSettingsChange): string {
-  const fields = (Object.keys(fieldWords) as (keyof typeof fieldWords)[]).filter((key) => key in change).map((key) => `${fieldWords[key]} ${valueWords(key, change[key])}`);
+  const fields = wordedFields.filter((key) => key in change).map((key) => `${fieldWords(key)} ${valueWords(key, change[key])}`);
   const lead = change.name !== undefined ? renameWords(deviceName, change.name) : change.paused !== undefined ? `${change.paused ? "paused" : "resumed"} device ${deviceName}` : `changed device ${deviceName}`;
   const pausedToo = change.name !== undefined && change.paused !== undefined ? [change.paused ? "paused" : "resumed"] : [];
   const details = [...pausedToo, ...fields];
@@ -76,12 +73,23 @@ export async function editDevice(instance: ResolvedInstance, deviceId: string, c
   if (problem) throw new RequestError(400, problem);
   const valid = change as DeviceSettingsChange;
   const before = await configuredDevice(local, deviceId);
-  await callSyncthing(local, (client) => client.request("PATCH", `/config/devices/${encodeURIComponent(deviceId)}`, valid));
   const deviceName = deviceDisplayName(typeof before.name === "string" ? before.name : "", deviceId);
-  return {
-    settings: deviceSettings(await configuredDevice(local, deviceId)),
-    note: { nodeId: local.nodeId, folderId: null, text: deviceEditText(local.name, deviceName, valid) },
-  };
+  const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: deviceEditText(local.name, deviceName, valid) };
+  await callSyncthing(local, (client) => client.request("PATCH", `/config/devices/${encodeURIComponent(deviceId)}`, valid));
+  return { settings: await settingsAfter(local, deviceId, { ...before, ...valid }), note };
+}
+
+/**
+ * The device as it now stands.
+ * @implNote The change is already written; a node that stops answering now (Syncthing restarts after
+ * some changes) must not turn it into "not saved", so the answer is then the change laid over the device as read before.
+ */
+async function settingsAfter(instance: LocalInstance, deviceId: string, expected: SyncthingObject): Promise<DeviceSettings> {
+  try {
+    return deviceSettings(await configuredDevice(instance, deviceId));
+  } catch {
+    return deviceSettings(expected);
+  }
 }
 
 function decodedSegment(segment: string, what: string): string {
@@ -98,7 +106,7 @@ export interface DeviceRouteSources {
 
 const liveSources: DeviceRouteSources = { resolve: (nodeId) => resolveInstance(nodeId) };
 
-export function deviceRoutes(sources: DeviceRouteSources = liveSources): Route[] {
+export function deviceRoutes(sources: DeviceRouteSources = liveSources): AnyRoute[] {
   const pattern = /^\/api\/nodes\/([^/]+)\/devices\/([^/]+)$/;
   const target = async ([nodeId, deviceId]: string[]) => ({ instance: await sources.resolve(decodedSegment(nodeId, "node ID")), deviceId: decodedSegment(deviceId, "device ID") });
   return [
@@ -113,7 +121,7 @@ export function deviceRoutes(sources: DeviceRouteSources = liveSources): Route[]
     {
       method: "PATCH",
       pattern,
-      handle: async ({ request, response, params }) => {
+      write: async ({ request, response, params }) => {
         const { instance, deviceId } = await target(params);
         const edit = await editDevice(instance, deviceId, await readBody(request));
         sendJson(response, 200, edit.settings);

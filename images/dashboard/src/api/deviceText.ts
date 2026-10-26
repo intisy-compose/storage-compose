@@ -1,4 +1,4 @@
-import type { ConnectionKind, DeviceSummary, DriveSummary, StorageNode } from "./types.js";
+import type { ConnectionKind, DeviceSettingsChange, DeviceSummary, DriveSummary, StorageNode } from "./types.js";
 
 export type ReachTone = "ok" | "muted";
 
@@ -34,6 +34,21 @@ function addressParts(address: string): AddressParts {
 export function addressHost(address: string): string {
   return addressParts(address).host;
 }
+
+/** The device form's label of each setting; refusals and Activity entries name a setting the same way. */
+export const deviceSettingLabels: Record<keyof DeviceSettingsChange, string> = {
+  name: "Name",
+  addresses: "Addresses",
+  compression: "Compression",
+  introducer: "Introducer",
+  autoAcceptFolders: "Accept folders automatically",
+  paused: "Paused",
+  untrusted: "Untrusted",
+  allowedNetworks: "Allowed networks",
+  maxSendKbps: "Send limit",
+  maxRecvKbps: "Receive limit",
+  numConnections: "Connections",
+};
 
 /** The first group of a device ID, as Syncthing's own page shortens it. */
 export function shortDeviceId(deviceId: string): string {
