@@ -89,7 +89,7 @@ export { diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, f
 
 export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
-export { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, isKeptBySyncthing, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versioningWords, versionsPathLabel } from "../../src/api/versioningText.js";
+export { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, isKeptBySyncthing, offeredVersioningTypes, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versioningWords, versionsPathLabel } from "../../src/api/versioningText.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 
 export interface ActionResult {

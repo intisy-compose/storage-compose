@@ -1,6 +1,6 @@
 import { deviceSettingLabels, shareFoldersLabel } from "./api/deviceText.js";
 import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type DiskFreeUnit, type FolderSettingsChange, type FolderSharingChange, type FolderType, type InstanceGui, type InstanceOptions, type PullOrder, type VersioningType, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "./api/types.js";
-import { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versionsPathLabel } from "./api/versioningText.js";
+import { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, offeredVersioningTypes, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versionsPathLabel } from "./api/versioningText.js";
 
 type SyncthingObject = Record<string, unknown>;
 
@@ -232,13 +232,17 @@ export function sharedDevices(current: readonly FolderDeviceEntry[], sharing: Fo
 }
 
 const versioningKeys = ["cleanupIntervalS", "fsPath", "params", "type"];
-const offeredVersioningTypes: readonly VersioningType[] = (Object.keys(versioningTypeTexts) as VersioningType[]).filter((type) => type !== "external");
-const paramMinimums: Record<Exclude<VersioningParam, "command">, number> = { cleanoutDays: 0, keep: 1, maxAge: 0 };
+/** Each numeric param as Syncthing keeps it, named with its unit there: the form shows maximum age in days, the API takes seconds. */
+const numericParams: Record<Exclude<VersioningParam, "command">, { name: string; minimum: number }> = {
+  cleanoutDays: { name: "Clean out after, in days,", minimum: 0 },
+  keep: { name: "Versions kept", minimum: 1 },
+  maxAge: { name: "Maximum age, in seconds,", minimum: 0 },
+};
 
 function paramProblem(key: VersioningParam, value: unknown): string | null {
-  const minimum = paramMinimums[key as Exclude<VersioningParam, "command">];
+  const { name, minimum } = numericParams[key as Exclude<VersioningParam, "command">];
   const isWholeNumberText = typeof value === "string" && /^\d+$/.test(value) && Number(value) >= minimum;
-  return isWholeNumberText ? null : `${versioningParamLabels[key]} must be a whole number, ${minimum} or more`;
+  return isWholeNumberText ? null : `${name} must be a whole number, ${minimum} or more`;
 }
 
 function paramsProblem(type: VersioningType, params: Record<string, unknown>): string | null {

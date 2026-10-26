@@ -10,6 +10,9 @@ export const versioningTypeTexts: Record<VersioningType, string> = {
   external: "external",
 };
 
+/** The types a folder can be given here; external only ever comes from the node's own configuration. */
+export const offeredVersioningTypes: readonly VersioningType[] = ["", "trashcan", "simple", "staggered"];
+
 /** The params Syncthing reads for each type, by its own names; any other key a folder's `params` holds is left over from an earlier type. */
 export const versioningParamKeys: Record<VersioningType, readonly VersioningParam[]> = {
   "": [],

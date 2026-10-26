@@ -1,4 +1,4 @@
-import { type FolderSettings, type VersioningParam, type VersioningType, cleanupIntervalLabel, externalVersioningRefusal, folderSettingLabels, isKeptBySyncthing, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versionsPathLabel } from "./api.js";
+import { type FolderSettings, type VersioningParam, type VersioningType, cleanupIntervalLabel, externalVersioningRefusal, folderSettingLabels, isKeptBySyncthing, offeredVersioningTypes, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versionsPathLabel } from "./api.js";
 import { controlId } from "./deviceForm.js";
 import { element, section } from "./dom.js";
 import { versioningOfType } from "./folderDraft.js";
@@ -70,13 +70,12 @@ function versionsPathField(form: EditFolderFormState, formId: string): HTMLEleme
   input.value = draft.versioning.fsPath;
   input.disabled = form.saving;
   input.addEventListener("input", () => (draft.versioning = { ...draft.versioning, fsPath: input.value }));
-  return fieldLabel(formId, "versioning-path", versionsPathLabel, input, "Empty keeps them in .stversions inside the folder. Inside the node's root; a relative path is read from the folder's path and saved in full.");
+  return fieldLabel(formId, "versioning-path", versionsPathLabel, input, "Empty keeps them in the folder's own .stversions. Otherwise a directory inside the node's root and outside every folder, so versions never sync as files; a relative path is read from the folder's path and saved in full.");
 }
 
 /** @implNote External is offered only to a folder that already has it, to leave it: the dashboard never sets a command. */
 function typeChoices(saved: FolderSettings): VersioningType[] {
-  const offered = (Object.keys(versioningTypeTexts) as VersioningType[]).filter((type) => type !== "external");
-  return saved.versioning.type === "external" ? [...offered, "external"] : offered;
+  return saved.versioning.type === "external" ? [...offeredVersioningTypes, "external"] : [...offeredVersioningTypes];
 }
 
 function typeField(form: EditFolderFormState, formId: string): HTMLElement {

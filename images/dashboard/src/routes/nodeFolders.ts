@@ -123,6 +123,7 @@ export interface FolderAddition {
  * Adds a folder to the node's Syncthing, every setting the person left out taken from Syncthing's own defaults.
  * @implNote The path is judged against the node's root and the other nodes' roots before any Syncthing call,
  * as adding a folder makes Syncthing create and scan its directory; the path sent is the one judged.
+ * The node's own default versioning is copied unjudged: its admin set it in the node's configuration.
  */
 export async function addFolder(instance: ResolvedInstance, body: unknown, nodes: NodeRoot[]): Promise<FolderAddition> {
   const problem = newFolderProblem(body);
@@ -211,6 +212,22 @@ function guardedVersioning(instance: LocalInstance, versioning: Versioning, fold
   const problem = folderPathProblem(path, node, nodes);
   if (problem) throw new RequestError(400, `${versionsPathLabel}: ${problem}`);
   return { ...versioning, fsPath: checkedPath(path, node) };
+}
+
+/**
+ * Why the versions path cannot be used beside the node's folders, or null: one equal to, inside or holding a folder's path
+ * (this folder's at its new path included) would sync versioned files as that folder's content.
+ */
+function versionsPathFolderProblem(fsPath: string, folders: SyncthingFolderSettings[], folderId: string, folderPath: string, node: NodeRoot): string | null {
+  if (!fsPath) return null;
+  for (const folder of folders) {
+    const path = folder.id === folderId ? folderPath : folder.path;
+    const named = `folder ${folderName(folder)} (${path})`;
+    if (isSamePath(fsPath, path, node)) return `${versionsPathLabel}: ${fsPath} is the path of ${named}, so its versions would sync as that folder's files`;
+    if (isStrictlyBelow(fsPath, path, node.os)) return `${versionsPathLabel}: ${fsPath} is inside ${named}, so its versions would sync as that folder's files`;
+    if (isStrictlyBelow(path, fsPath, node.os)) return `${versionsPathLabel}: ${fsPath} holds ${named}, so that folder's files would mix with versions`;
+  }
+  return null;
 }
 
 function isSameVersionsPath(current: string, sent: string, node: NodeRoot): boolean {
@@ -333,7 +350,10 @@ export async function editFolder(instance: ResolvedInstance, folderId: string, c
   const folders = await configuredFolders(local);
   const listed = folders.find((folder) => folder.id === folderId);
   if (!listed) throw new RequestError(404, `${local.name} has no folder ${folderId}`);
-  const settings: SettingsChange = moved.versioning === undefined ? moved : { ...moved, versioning: guardedVersioning(local, moved.versioning, moved.path ?? listed.path, nodes) };
+  const folderPath = moved.path ?? listed.path;
+  const settings: SettingsChange = moved.versioning === undefined ? moved : { ...moved, versioning: guardedVersioning(local, moved.versioning, folderPath, nodes) };
+  const versionsProblem = settings.versioning ? versionsPathFolderProblem(settings.versioning.fsPath, folders, folderId, folderPath, rooted(local).node) : null;
+  if (versionsProblem) throw new RequestError(400, versionsProblem);
   const typeProblem = typeChangeProblem(listed, settings);
   if (typeProblem) throw new RequestError(400, typeProblem);
   const samePath = settings.path === undefined ? null : otherFolderAtPath(local, folders, folderId, settings.path);

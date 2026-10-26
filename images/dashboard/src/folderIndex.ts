@@ -135,7 +135,10 @@ function oneOf<Value extends string>(value: string | undefined, allowed: readonl
 const orders = Object.keys(pullOrderTexts) as PullOrder[];
 const versioningTypes = Object.keys(versioningTypeTexts) as VersioningType[];
 
-/** @implNote Only the type's own params: Syncthing keeps the keys of every type a folder had, as a PATCH merges `params`. */
+/**
+ * @implNote Only the type's own params: Syncthing keeps the keys of every type a folder had, as a PATCH merges `params`.
+ * An external command is shown to every dashboard viewer as written, including any token it embeds.
+ */
 function versioning(config: SyncthingFolderSettings["versioning"]): Versioning {
   const type = oneOf(config?.type, versioningTypes, "");
   const params = config?.params ?? {};

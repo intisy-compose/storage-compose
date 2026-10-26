@@ -652,14 +652,54 @@ describe("adding a folder to a node", () => {
     assert.deepEqual(patchedBodies(), []);
   });
 
-  it("a versions path inside the root is sent as checked, a relative one in full below the folder's path", async () => {
+  it("a versions path inside the root is sent as checked, a relative one in full read from the folder's path", async () => {
     await editFolder(pc(), "documents", { versioning: { ...staggered, fsPath: "f:/versions/./documents/" } }, roots);
-    await editFolder(peer(), "dashboard-test-e", { versioning: { ...staggered, fsPath: "versions/../old-versions" } }, roots);
-    await editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/moved", versioning: { ...staggered, fsPath: "old-versions" } }, roots);
+    await editFolder(peer(), "dashboard-test-e", { versioning: { ...staggered, fsPath: "../versions/../old-versions" } }, roots);
+    await editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/moved", versioning: { ...staggered, fsPath: "../moved-versions" } }, roots);
     assert.deepEqual(
       patchedBodies().map((body) => (body as { versioning: Versioning }).versioning.fsPath),
-      ["F:\\versions\\documents", "/var/syncthing/data/dashboard-test-e/old-versions", "/var/syncthing/data/moved/old-versions"],
+      ["F:\\versions\\documents", "/var/syncthing/data/old-versions", "/var/syncthing/data/moved-versions"],
     );
+  });
+
+  function refusedVersionsPath(message: string) {
+    return (error: Error & { status?: number }) => error.status === 400 && error.message === message;
+  }
+
+  it("a versions path equal to another folder's path is refused before anything is written", async () => {
+    await assert.rejects(
+      editFolder(pc(), "dashboard-test-e", { versioning: { ...staggered, fsPath: "f:/documents" } }, roots),
+      refusedVersionsPath("Versions path: F:\\documents is the path of folder Documents (F:\\Documents), so its versions would sync as that folder's files"),
+    );
+    assert.deepEqual(patchedBodies(), []);
+  });
+
+  it("a versions path inside another folder is refused before anything is written", async () => {
+    await assert.rejects(
+      editFolder(pc(), "dashboard-test-e", { versioning: { ...staggered, fsPath: "F:\\Documents\\versions" } }, roots),
+      refusedVersionsPath("Versions path: F:\\Documents\\versions is inside folder Documents (F:\\Documents), so its versions would sync as that folder's files"),
+    );
+    assert.deepEqual(patchedBodies(), []);
+  });
+
+  it("a versions path holding another folder is refused before anything is written", async () => {
+    folders = [...folders, { ...syncthingDefaults, id: "dashboard-test-f", label: "", path: "/var/syncthing/data/archive/dashboard-test-f" }];
+    await assert.rejects(
+      editFolder(peer(), "dashboard-test-e", { versioning: { ...staggered, fsPath: "/var/syncthing/data/archive" } }, roots),
+      refusedVersionsPath("Versions path: /var/syncthing/data/archive holds folder dashboard-test-f (/var/syncthing/data/archive/dashboard-test-f), so that folder's files would mix with versions"),
+    );
+    assert.deepEqual(patchedBodies(), []);
+  });
+
+  it("a versions path at or inside the folder itself is refused, judged at its new path when the edit moves it", async () => {
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { versioning: { ...staggered, fsPath: "/var/syncthing/data/dashboard-test-e" } }, roots), refusedVersionsPath("Versions path: /var/syncthing/data/dashboard-test-e is the path of folder Test A (/var/syncthing/data/dashboard-test-e), so its versions would sync as that folder's files"));
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { versioning: { ...staggered, fsPath: "versions" } }, roots), refusedVersionsPath("Versions path: /var/syncthing/data/dashboard-test-e/versions is inside folder Test A (/var/syncthing/data/dashboard-test-e), so its versions would sync as that folder's files"));
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/moved", versioning: { ...staggered, fsPath: "/var/syncthing/data/moved/v" } }, roots), refusedVersionsPath("Versions path: /var/syncthing/data/moved/v is inside folder Test A (/var/syncthing/data/moved), so its versions would sync as that folder's files"));
+    assert.deepEqual(patchedBodies(), []);
+    await editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/moved", versioning: { ...staggered, fsPath: "/var/syncthing/data/dashboard-test-e/v" } }, roots);
+    assert.equal(patchedBodies().length, 1, "the folder's old path is free once the edit moves it");
+    await editFolder(peer(), "dashboard-test-e", { versioning: staggered }, roots);
+    assert.equal(patchedBodies().length, 2, "the empty path, the folder's own .stversions, is always allowed");
   });
 
   it("external versioning is refused before anything is read, and a folder that has it can leave it", async () => {

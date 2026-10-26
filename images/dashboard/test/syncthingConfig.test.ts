@@ -113,8 +113,8 @@ describe("file versioning", () => {
 
   it("a versioning change is refused unless it is whole and in syncthing's shape", () => {
     const refusals: [unknown, string][] = [
-      [{ type: "staggered", params: { maxAge: 31536000 }, cleanupIntervalS: 3600, fsPath: "" }, "Maximum age (days) must be a whole number, 0 or more"],
-      [{ type: "staggered", params: { maxAge: "-1" }, cleanupIntervalS: 3600, fsPath: "" }, "Maximum age (days) must be a whole number, 0 or more"],
+      [{ type: "staggered", params: { maxAge: 31536000 }, cleanupIntervalS: 3600, fsPath: "" }, "Maximum age, in seconds, must be a whole number, 0 or more"],
+      [{ type: "staggered", params: { maxAge: "-1" }, cleanupIntervalS: 3600, fsPath: "" }, "Maximum age, in seconds, must be a whole number, 0 or more"],
       [{ type: "simple", params: { keep: "0", cleanoutDays: "0" }, cleanupIntervalS: 3600, fsPath: "" }, "Versions kept must be a whole number, 1 or more"],
       [{ type: "simple", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "" }, "simple versioning takes Versions kept, Clean out after (days)"],
       [{ type: "trashcan", params: { cleanoutDays: "0", maxAge: "1" }, cleanupIntervalS: 3600, fsPath: "" }, "trash can versioning takes Clean out after (days)"],
