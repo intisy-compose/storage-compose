@@ -30,6 +30,12 @@ export interface DeviceFormState {
   loadError: string | null;
   saving: boolean;
   result: Notice | null;
+  /** The device's name as typed to confirm its removal. */
+  removeConfirm: string;
+  removing: boolean;
+  removeResult: Notice | null;
+  /** Set once the node no longer has the device. */
+  removed: boolean;
 }
 
 /** The form of `#/nodes/<nodeId>/devices/new`: a device to add to one node's Syncthing. */
@@ -163,7 +169,7 @@ function readExplorerLocation(query: URLSearchParams): void {
 }
 
 function emptyDeviceForm(nodeId: string, deviceId: string): DeviceFormState {
-  return { nodeId, deviceId, saved: null, draft: null, loadError: null, saving: false, result: null };
+  return { nodeId, deviceId, saved: null, draft: null, loadError: null, saving: false, result: null, removeConfirm: "", removing: false, removeResult: null, removed: false };
 }
 
 /** The device segment of the add form's address; a device ID is upper case, so no device is called this. */

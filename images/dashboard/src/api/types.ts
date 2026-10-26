@@ -533,6 +533,14 @@ export interface AddedDevice {
   notShared: { folderId: string; problem: string }[];
 }
 
+/**
+ * `DELETE /api/nodes/<nodeId>/devices/<deviceId>`: the device's name as the dashboard shows it, typed to confirm.
+ * The answer is the device as it was configured. The node's own device cannot be removed (409).
+ */
+export interface RemoveDeviceBody {
+  confirm: string;
+}
+
 /** `GET /api/nodes/<nodeId>/nearby`: a device the node's Syncthing found by discovery and has not configured. */
 export interface NearbyDevice {
   deviceId: string;

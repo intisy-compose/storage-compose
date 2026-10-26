@@ -1,6 +1,6 @@
 import type { ServerResponse } from "node:http";
 import { deviceDisplayName, deviceSettingLabels, shortDeviceId } from "../api/deviceText.js";
-import type { AddedDevice, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, NearbyDevice, NewDevice } from "../api/types.js";
+import type { AddedDevice, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, NearbyDevice, NewDevice, RemoveDeviceBody } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, forwardRead, requireLocal, resolveInstance } from "../instanceResolver.js";
 import type { AnyRoute, WriteNote } from "../routes.js";
@@ -237,6 +237,76 @@ export async function addDevice(instance: ResolvedInstance, body: unknown): Prom
   return { added: { device: await settingsAfter(local, plan.deviceId, plan.config), ...sharing }, note };
 }
 
+function nameOf(device: SyncthingObject, deviceId: string): string {
+  return deviceDisplayName(typeof device.name === "string" ? device.name : "", deviceId);
+}
+
+interface OtherDevice {
+  device: SyncthingObject;
+  name: string;
+}
+
+/** The configured device an action is for; the node's own device cannot be paused or removed, as Syncthing has no connection to it. */
+async function otherDevice(instance: LocalInstance, deviceId: string, done: string): Promise<OtherDevice> {
+  const [device, ownId] = await Promise.all([configuredDevice(instance, deviceId), callSyncthing(instance, (client) => client.myId())]);
+  const name = nameOf(device, deviceId);
+  if (deviceId === ownId) throw new RequestError(409, `${name} is ${instance.name}'s own device; it cannot be ${done}`);
+  return { device, name };
+}
+
+function pauseVerb(paused: boolean): string {
+  return paused ? "pause" : "resume";
+}
+
+function pausedWord(paused: boolean): string {
+  return paused ? "paused" : "resumed";
+}
+
+/** Pauses or resumes one device through Syncthing's own pause, as its page does. */
+export async function pauseDevice(instance: ResolvedInstance, deviceId: string, paused: boolean): Promise<DeviceEdit> {
+  const local = requireLocal(instance);
+  const { device, name } = await otherDevice(local, deviceId, pausedWord(paused));
+  await callSyncthing(local, (client) => client.request("POST", `/system/${pauseVerb(paused)}?device=${encodeURIComponent(deviceId)}`));
+  const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: deviceEditText(local.name, name, { paused }) };
+  return { settings: await settingsAfter(local, deviceId, { ...device, paused }), note };
+}
+
+export interface NodePause {
+  /** Every device of the node but its own, as it now stands. */
+  devices: DeviceSettings[];
+  note: WriteNote;
+}
+
+async function otherDevices(instance: LocalInstance): Promise<SyncthingObject[]> {
+  const [devices, ownId] = await Promise.all([configuredDevices(instance), callSyncthing(instance, (client) => client.myId())]);
+  return devices.filter((device) => device.deviceID !== ownId);
+}
+
+/**
+ * Pauses or resumes every device of the node at once, Syncthing's pause without a device.
+ * @implNote The devices are read before the write so a node that stops answering after it still reports what it paused.
+ */
+export async function pauseNode(instance: ResolvedInstance, paused: boolean): Promise<NodePause> {
+  const local = requireLocal(instance);
+  const before = await otherDevices(local);
+  await callSyncthing(local, (client) => client.request("POST", `/system/${pauseVerb(paused)}`));
+  const after = await otherDevices(local).catch(() => before.map((device) => ({ ...device, paused })));
+  const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: `${local.name}: ${pausedWord(paused)} every device` };
+  return { devices: after.map(deviceSettings), note };
+}
+
+/**
+ * Removes a device from the node's Syncthing once its name, as the dashboard shows it, is typed.
+ * @implNote The typed name is the confirmation, as a destructive array action repeats the drive's role: a stray click cannot stop a node syncing with a device.
+ */
+export async function removeDevice(instance: ResolvedInstance, deviceId: string, body: unknown): Promise<DeviceEdit> {
+  const local = requireLocal(instance);
+  const { device, name } = await otherDevice(local, deviceId, "removed");
+  if ((asObject(body) as Partial<RemoveDeviceBody>).confirm !== name) throw new RequestError(400, `type ${name} to confirm`);
+  await callSyncthing(local, (client) => client.request("DELETE", `/config/devices/${encodeURIComponent(deviceId)}`));
+  return { settings: deviceSettings(device), note: { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: `${local.name}: removed device ${name}` } };
+}
+
 const maxQrTextLength = 256;
 
 /**
@@ -317,6 +387,35 @@ export function deviceRoutes(sources: DeviceRouteSources = liveSources): AnyRout
         const edit = await editDevice(instance, deviceId, await readBody(request));
         sendJson(response, 200, edit.settings);
         return edit.note;
+      },
+    },
+    {
+      method: "DELETE",
+      pattern: devicePattern,
+      write: async ({ request, response, params }) => {
+        const { instance, deviceId } = await target(params);
+        const removal = await removeDevice(instance, deviceId, await readBody(request));
+        sendJson(response, 200, removal.settings);
+        return removal.note;
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/nodes\/([^/]+)\/devices\/([^/]+)\/(pause|resume)$/,
+      write: async ({ response, params: [nodeId, deviceSegment, verb] }) => {
+        const { instance, deviceId } = await target([nodeId, deviceSegment]);
+        const edit = await pauseDevice(instance, deviceId, verb === "pause");
+        sendJson(response, 200, edit.settings);
+        return edit.note;
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/api\/nodes\/([^/]+)\/(pause|resume)$/,
+      write: async ({ response, params: [nodeId, verb] }) => {
+        const pause = await pauseNode(await node(nodeId), verb === "pause");
+        sendJson(response, 200, pause.devices);
+        return pause.note;
       },
     },
   ];

@@ -54,6 +54,7 @@ export type {
   PriorityInfo,
   Peer,
   RemoteState,
+  RemoveDeviceBody,
   RequestsResponse,
   Space,
   StorageNode,
@@ -68,7 +69,7 @@ export type {
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
-import type { ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, NearbyDevice, NewDevice, FolderDetailResponse, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, NearbyDevice, NewDevice, FolderDetailResponse, RemoveDeviceBody, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
@@ -120,15 +121,38 @@ export function fetchDeviceSettings(nodeId: string, deviceId: string): Promise<D
 
 export type SaveResult<T> = { ok: true; value: T } | { ok: false; message: string };
 
-/** Sends only `change`; the node's answer is the device as it now stands. */
-export async function saveDeviceSettings(nodeId: string, deviceId: string, change: DeviceSettingsChange): Promise<SaveResult<DeviceSettings>> {
+let savedWrites = 0;
+
+/** How many writes have been saved; a read that started before one was saved may not show it. */
+export function savedWriteCount(): number {
+  return savedWrites;
+}
+
+/** A write to the dashboard: its answer, or the refusal's reason. */
+async function sendWrite<T>(path: string, method: string, body?: unknown): Promise<SaveResult<T>> {
   try {
-    const response = await fetch(devicePath(nodeId, deviceId), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
-    const payload = (await response.json().catch(() => ({}))) as DeviceSettings & { error?: string };
+    const response = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const payload = (await response.json().catch(() => ({}))) as T & { error?: string };
+    if (response.ok) savedWrites += 1;
     return response.ok ? { ok: true, value: payload } : { ok: false, message: payload.error ?? `HTTP ${response.status}` };
   } catch {
     return { ok: false, message: "The dashboard is not answering." };
   }
+}
+
+/** Sends only `change`; the node's answer is the device as it now stands. */
+export function saveDeviceSettings(nodeId: string, deviceId: string, change: DeviceSettingsChange): Promise<SaveResult<DeviceSettings>> {
+  return sendWrite(devicePath(nodeId, deviceId), "PATCH", change);
+}
+
+export function pauseDevice(nodeId: string, deviceId: string, paused: boolean): Promise<SaveResult<DeviceSettings>> {
+  return sendWrite(`${devicePath(nodeId, deviceId)}/${paused ? "pause" : "resume"}`, "POST");
+}
+
+/** `confirm` is the device's name as the dashboard shows it. */
+export function removeDevice(nodeId: string, deviceId: string, confirm: string): Promise<SaveResult<DeviceSettings>> {
+  const body: RemoveDeviceBody = { confirm };
+  return sendWrite(devicePath(nodeId, deviceId), "DELETE", body);
 }
 
 function nodeApiPath(nodeId: string, rest: string): string {
@@ -154,14 +178,13 @@ export function qrCodeUrl(nodeId: string, text: string): string {
 }
 
 /** Sends the new device's ID and only the settings that differ from the node's defaults. */
-export async function addDevice(nodeId: string, device: NewDevice): Promise<SaveResult<AddedDevice>> {
-  try {
-    const response = await fetch(nodeApiPath(nodeId, "devices"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(device) });
-    const payload = (await response.json().catch(() => ({}))) as AddedDevice & { error?: string };
-    return response.ok ? { ok: true, value: payload } : { ok: false, message: payload.error ?? `HTTP ${response.status}` };
-  } catch {
-    return { ok: false, message: "The dashboard is not answering." };
-  }
+export function addDevice(nodeId: string, device: NewDevice): Promise<SaveResult<AddedDevice>> {
+  return sendWrite(nodeApiPath(nodeId, "devices"), "POST", device);
+}
+
+/** Pauses or resumes every device of the node; the answer is each of them, the node's own left out, as it now stands. */
+export function pauseNode(nodeId: string, paused: boolean): Promise<SaveResult<DeviceSettings[]>> {
+  return sendWrite(nodeApiPath(nodeId, paused ? "pause" : "resume"), "POST");
 }
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {

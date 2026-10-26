@@ -1,6 +1,6 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
 import type { NodesResponse } from "./api.js";
-import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests } from "./api.js";
+import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests, savedWriteCount } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
 import { loadAddDeviceForm, renderAddDeviceForm } from "./addDeviceForm.js";
@@ -131,9 +131,13 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** @implNote An answer that started before a write was saved is dropped, so a row the write changed does not flick back until the next poll. */
 async function loadNodes(): Promise<void> {
   try {
-    appState.data = await fetchNodes();
+    const writesBefore = savedWriteCount();
+    const data = await fetchNodes();
+    if (savedWriteCount() !== writesBefore) return;
+    appState.data = data;
     appState.lastLoaded = Date.now();
     appState.loadError = null;
   } catch (error) {

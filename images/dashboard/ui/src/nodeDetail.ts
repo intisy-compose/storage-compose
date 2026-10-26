@@ -1,14 +1,14 @@
 import { type NodesResponse, type StorageNode, type SyncthingDevice, type SyncthingInstance, addressLabel, reachTone } from "./api.js";
 import { arraySections } from "./arraySection.js";
 import { layoutRows, storageNodes } from "./devicePlacement.js";
-import { button, element, keyValueList, progressBar, section } from "./dom.js";
+import { element, keyValueList, progressBar, section } from "./dom.js";
 import { formatAge, formatBytes, formatDate, formatDuration, formatPercent, formatRate, normaliseCompletion, usedFraction } from "./format.js";
 import { icon } from "./icons.js";
 import { warningBanner } from "./nodesPage.js";
 import { arrayStateLabel, countRoles, isArrayAbsent, isOffline, shortSyncState, spaceTone, warningsFor } from "./nodeStatus.js";
 import { peersSection } from "./peersSection.js";
 import { requestRender } from "./renderRequest.js";
-import { appState, locationFor } from "./state.js";
+import { appState, deviceFormLocation, locationFor } from "./state.js";
 
 function kindText(node: StorageNode): string {
   if (node.kind === "device") return "a Syncthing device; no dashboard or join record says what it holds";
@@ -72,6 +72,13 @@ function addressList(device: SyncthingDevice): HTMLElement | string {
   return element("span", { className: "address-list" }, ...device.addresses.map((address) => element("code", { title: address }, addressLabel(address))));
 }
 
+/** Opens the device form on the node's own device, which shows only its name. */
+function renameLink(node: StorageNode, device: SyncthingDevice): HTMLElement | null {
+  if (!node.local) return null;
+  const link = element("a", { className: "button", title: "The name other devices are offered for this node", attributes: { href: deviceFormLocation(node.id, device.deviceId) } }, "Rename");
+  return element("div", { className: "button-row" }, link);
+}
+
 function syncthingSection(node: StorageNode): HTMLElement | null {
   const device = node.syncthing;
   if (!device) return null;
@@ -81,6 +88,7 @@ function syncthingSection(node: StorageNode): HTMLElement | null {
       ["Device ID", [element("code", { className: "device-id", title: device.deviceId }, device.deviceId), copyButton(device.deviceId)]],
       ["Addresses", addressList(device)],
     ]),
+    renameLink(node, device),
   );
 }
 
@@ -155,18 +163,6 @@ function foldersSection(node: StorageNode): HTMLElement {
   return section(
     `Folders on this node (${node.folders.length})`,
     node.folders.length ? element("div", { className: "folder-list" }, ...node.folders.map(folderRow)) : element("p", { className: "muted" }, "No folders shared with this node."),
-    node.local
-      ? element(
-          "div",
-          { className: "button-row" },
-          ...["Pause node", "Rename", "Remove node…"].map((label) => {
-            const disabled = button(label, () => {}, "button");
-            disabled.disabled = true;
-            disabled.title = "Comes with the layered sync";
-            return disabled;
-          }),
-        )
-      : null,
   );
 }
 

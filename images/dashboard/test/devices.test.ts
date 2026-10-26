@@ -6,7 +6,7 @@ import { deviceDisplayName } from "../src/api/deviceText.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance } from "../src/instanceResolver.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
-import { addDevice, checkDeviceId, deviceEditText, deviceRoutes, editDevice, nearbyDevices, readDeviceDefaults, readDeviceSettings } from "../src/routes/devices.js";
+import { addDevice, checkDeviceId, deviceEditText, deviceRoutes, editDevice, nearbyDevices, pauseDevice, pauseNode, readDeviceDefaults, readDeviceSettings, removeDevice } from "../src/routes/devices.js";
 import { SyncthingClient } from "../src/syncthing.js";
 import { addressProblem, changedFields, deviceChangeProblem, deviceSettings } from "../src/syncthingConfig.js";
 
@@ -107,6 +107,15 @@ describe("a node's devices", () => {
     if (request.method === "GET" && path === "/rest/svc/deviceid") return reply(response, syncthingDeviceIdAnswer(query.get("id") ?? ""));
     if (request.method === "GET" && path === "/rest/system/discovery") return reply(response, discovered);
     if (request.method === "GET" && path === "/rest/config/folders") return reply(response, folders);
+    if (request.method === "GET" && path === "/rest/system/status") return reply(response, { myID: ownId });
+    const pausePath = path.match(/^\/rest\/system\/(pause|resume)$/);
+    if (request.method === "POST" && pausePath) {
+      const device = query.get("device");
+      writes.push({ method: "POST", path: device ? `${path}?device=${device}` : path, body: null });
+      const paused = pausePath[1] === "pause";
+      configured = configured.map((entry) => (!device || entry.deviceID === device ? { ...entry, paused } : entry));
+      return reply(response, null);
+    }
     if (request.method === "GET" && path === "/qr/") {
       writes.push({ method: "GET", path: `/qr/?text=${query.get("text")}`, body: null });
       response.writeHead(200, { "Content-Type": "image/png" });
@@ -125,6 +134,11 @@ describe("a node's devices", () => {
       return reply(response, null);
     }
     const devicePath = path.match(/^\/rest\/config\/devices\/(.+)$/);
+    if (request.method === "DELETE" && devicePath) {
+      writes.push({ method: "DELETE", path, body: null });
+      configured = configured.filter((device) => device.deviceID !== decodeURIComponent(devicePath[1]));
+      return reply(response, null);
+    }
     if (request.method === "PATCH" && devicePath) {
       const body = await bodyOf(request);
       writes.push({ method: "PATCH", path, body });
@@ -388,6 +402,133 @@ describe("a node's devices", () => {
     } finally {
       server.close();
     }
+  });
+
+  function send(url: string, method: string, body?: unknown): Promise<Response> {
+    return fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  }
+
+  it("removing a device needs its name typed", async () => {
+    const refusedUnlessTyped = (error: Error & { status?: number }) => error.status === 400 && error.message === "type dashboard-test-peer to confirm";
+    await assert.rejects(removeDevice(pc(), peerId, {}), refusedUnlessTyped);
+    await assert.rejects(removeDevice(pc(), peerId, { confirm: "dashboard-test" }), refusedUnlessTyped);
+    await assert.rejects(removeDevice(pc(), peerId, { confirm: peerId }), refusedUnlessTyped);
+    assert.deepEqual(writes, []);
+
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      const devicePath = `${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`;
+      const unconfirmed = await send(devicePath, "DELETE");
+      assert.equal(unconfirmed.status, 400);
+      assert.deepEqual(await unconfirmed.json(), { error: "type dashboard-test-peer to confirm" });
+      assert.deepEqual(effects.notes, []);
+
+      const removed = await send(devicePath, "DELETE", { confirm: "dashboard-test-peer" });
+      assert.equal(removed.status, 200);
+      assert.equal(((await removed.json()) as { deviceId: string }).deviceId, peerId);
+      assert.deepEqual(writes, [{ method: "DELETE", path: `/rest/config/devices/${peerId}`, body: null }]);
+      assert.deepEqual(effects.notes, [{ nodeId: "fb98", nodeName: "pc", folderId: null, text: "pc: removed device dashboard-test-peer" }]);
+      assert.equal(effects.invalidations, 1);
+
+      assert.equal((await send(devicePath, "DELETE", { confirm: "dashboard-test-peer" })).status, 404, "a removed device is gone");
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("a device without a name is removed by typing its short ID", async () => {
+    configured = [...configured, { ...syncthingPeer, deviceID: newId, name: "" }];
+    await assert.rejects(removeDevice(pc(), newId, { confirm: "" }), (error: Error & { status?: number }) => error.status === 400 && error.message === "type NEWAAAA to confirm");
+    const removal = await removeDevice(pc(), newId, { confirm: "NEWAAAA" });
+    assert.equal(removal.note.text, "pc: removed device NEWAAAA");
+  });
+
+  it("removing the node's own device is refused", async () => {
+    await assert.rejects(removeDevice(pc(), ownId, { confirm: "pc" }), (error: Error & { status?: number }) => error.status === 409 && error.message === "pc is pc's own device; it cannot be removed");
+    await assert.rejects(pauseDevice(pc(), ownId, true), (error: Error & { status?: number }) => error.status === 409 && error.message === "pc is pc's own device; it cannot be paused");
+    assert.deepEqual(writes, []);
+  });
+
+  it("pausing and resuming a device goes through syncthing's pause and enters it", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      const devicePath = `${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`;
+      const paused = await send(`${devicePath}/pause`, "POST");
+      assert.equal(paused.status, 200);
+      assert.equal(((await paused.json()) as { paused: boolean }).paused, true);
+      const resumed = await send(`${devicePath}/resume`, "POST");
+      assert.equal(((await resumed.json()) as { paused: boolean }).paused, false);
+      assert.deepEqual(writes.map((write) => write.path), [`/rest/system/pause?device=${peerId}`, `/rest/system/resume?device=${peerId}`]);
+      assert.deepEqual(effects.notes.map((note) => note.text), ["pc: paused device dashboard-test-peer", "pc: resumed device dashboard-test-peer"]);
+      assert.equal(effects.invalidations, 2);
+
+      assert.equal((await send(`${dashboard.url}/api/nodes/fb98/devices/UNKNOWN-AAAAAAA/pause`, "POST")).status, 404);
+      assert.equal(writes.length, 2, "an unknown device is not paused");
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("pausing a node pauses every device", async () => {
+    configured = [...configured, { ...syncthingPeer, deviceID: newId, name: "dashboard-test-device" }];
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      const paused = await send(`${dashboard.url}/api/nodes/fb98/pause`, "POST");
+      assert.equal(paused.status, 200);
+      const devices = (await paused.json()) as { deviceId: string; paused: boolean }[];
+      assert.deepEqual(devices.map((device) => [device.deviceId, device.paused]), [[peerId, true], [newId, true]], "every device but the node's own");
+      assert.deepEqual(writes, [{ method: "POST", path: "/rest/system/pause", body: null }]);
+
+      const resumed = await send(`${dashboard.url}/api/nodes/fb98/resume`, "POST");
+      assert.deepEqual(((await resumed.json()) as { paused: boolean }[]).map((device) => device.paused), [false, false]);
+      assert.deepEqual(effects.notes.map((note) => note.text), ["pc: paused every device", "pc: resumed every device"]);
+      assert.equal(effects.invalidations, 2);
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("a node that stops answering after it paused still reports every device paused and enters it", async () => {
+    dropAfter = 3;
+    const pause = await pauseNode(pc(), true);
+    assert.deepEqual(writes, [{ method: "POST", path: "/rest/system/pause", body: null }]);
+    assert.deepEqual(pause.devices.map((device) => [device.deviceId, device.paused]), [[peerId, true]]);
+    assert.equal(pause.note.text, "pc: paused every device");
+  });
+
+  it("pausing, resuming and removing on another host's node is 409 and sends nothing", async () => {
+    const remote: RemoteInstance = { kind: "remote", nodeId: "a1b2", name: "p53-data", host: "p53", dashboardUrl: "http://127.0.0.1:1" };
+    const refusedForRemote = (error: Error & { status?: number }) => error.status === 409 && error.message === "act on p53's dashboard";
+    await assert.rejects(pauseDevice(remote, peerId, true), refusedForRemote);
+    await assert.rejects(pauseNode(remote, false), refusedForRemote);
+    await assert.rejects(removeDevice(remote, peerId, { confirm: "dashboard-test-peer" }), refusedForRemote);
+    const effects = recordingEffects();
+    const dashboard = requestHandler(deviceRoutes({ resolve: async () => remote }), effects);
+    const server = createServer((request, response) => void dashboard(request, response));
+    const url = await listen(server);
+    try {
+      const devicePath = `${url}/api/nodes/a1b2/devices/${encodeURIComponent(peerId)}`;
+      const attempts: [string, string, unknown][] = [
+        [`${devicePath}/pause`, "POST", undefined],
+        [`${devicePath}/resume`, "POST", undefined],
+        [devicePath, "DELETE", { confirm: "dashboard-test-peer" }],
+        [`${url}/api/nodes/a1b2/pause`, "POST", undefined],
+        [`${url}/api/nodes/a1b2/resume`, "POST", undefined],
+      ];
+      for (const [path, method, body] of attempts) {
+        const answer = await send(path, method, body);
+        assert.equal(answer.status, 409, `${method} ${path}`);
+        assert.deepEqual(await answer.json(), { error: "act on p53's dashboard" });
+      }
+      assert.deepEqual(effects.notes, []);
+      assert.equal(effects.invalidations, 0);
+    } finally {
+      server.close();
+    }
+    assert.deepEqual(writes, []);
   });
 
   it("nearby lists the devices discovery found that the node has not configured", async () => {

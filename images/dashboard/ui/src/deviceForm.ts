@@ -1,12 +1,14 @@
-import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type StorageNode, changedFields, deviceDisplayName, deviceSettingLabels, saveDeviceSettings } from "./api.js";
+import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type StorageNode, changedFields, deviceDisplayName, deviceSettingLabels, removeDevice, saveDeviceSettings } from "./api.js";
 import { button, element, section } from "./dom.js";
 import { registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
-import { type DeviceFormState, locationFor } from "./state.js";
+import { type DeviceFormState, appState, locationFor } from "./state.js";
 
 const formId = "device-form";
 registerForm(formId);
+const removeFormId = "device-remove-form";
+registerForm(removeFormId);
 
 type TextField = "name";
 type ListField = "addresses" | "allowedNetworks";
@@ -124,6 +126,15 @@ export function settingFields(context: SettingsContext): HTMLElement {
   );
 }
 
+/** The node's own device: only its name can be changed, the name other devices are offered for the node. */
+function ownNameField(context: SettingsContext): HTMLElement {
+  return element("div", { className: "form-fields device-fields" }, labelled(context, "name", textInput(context, "name"), "Empty shows the short device ID."));
+}
+
+function isOwnDevice(node: StorageNode, form: DeviceFormState): boolean {
+  return node.syncthing?.deviceId === form.deviceId;
+}
+
 /** @implNote Measured against `saved`, the answer the form opened with, so a field the person did not touch is never sent. */
 async function save(form: DeviceFormState): Promise<void> {
   if (!form.saved || !form.draft) return;
@@ -162,10 +173,11 @@ function formBody(node: StorageNode, form: DeviceFormState): HTMLElement {
     return element("p", { className: form.loadError ? "tone-text-bad" : "muted" }, form.loadError ? `Could not read the device: ${form.loadError}` : "Reading the device…");
   }
   if (!node.local) return element("p", { className: "read-only-note" }, `Read-only. ${node.name}'s devices are edited on ${node.host}'s own dashboard.`);
+  const context: SettingsContext = { formId, saving: form.saving, saved: form.saved, draft: form.draft };
   return element(
     "div",
     { className: "device-form", attributes: { id: formId } },
-    settingFields({ formId, saving: form.saving, saved: form.saved, draft: form.draft }),
+    isOwnDevice(node, form) ? ownNameField(context) : settingFields(context),
     resultLine(form.result),
     element(
       "div",
@@ -187,12 +199,75 @@ export function nodeFormHeader(node: StorageNode, title: string, status: string)
   );
 }
 
+/** @implNote Looked up again: the form is not rebuilt while it holds typed input, so the node it was drawn with may be an earlier poll's. */
+function dropFromCurrentNode(form: DeviceFormState): void {
+  const node = appState.data?.nodes.find((candidate) => candidate.id === form.nodeId);
+  if (node) node.peers = node.peers.filter((peer) => peer.deviceId !== form.deviceId);
+}
+
+async function remove(form: DeviceFormState): Promise<void> {
+  form.removing = true;
+  form.removeResult = null;
+  requestRender();
+  const result = await removeDevice(form.nodeId, form.deviceId, form.removeConfirm);
+  form.removing = false;
+  if (result.ok) {
+    form.removed = true;
+    dropFromCurrentNode(form);
+  } else {
+    form.removeResult = { text: `Not removed: ${result.message}`, tone: "bad" };
+  }
+  requestRender();
+}
+
+/** @implNote The device's name, typed, is the confirmation the server asks for; the button waits for it so a stray click cannot remove a device. */
+function removeForm(node: StorageNode, form: DeviceFormState, name: string): HTMLElement {
+  const confirmInput = element("input", { attributes: { id: controlId(removeFormId, "confirm"), autocomplete: "off", placeholder: `type ${name} to confirm` } });
+  confirmInput.defaultValue = "";
+  confirmInput.value = form.removeConfirm;
+  confirmInput.disabled = form.removing;
+  const removeButton = button(form.removing ? "Removing…" : `Remove ${name}`, () => void remove(form), "button danger");
+  removeButton.disabled = form.removing || form.removeConfirm !== name;
+  confirmInput.addEventListener("input", () => {
+    form.removeConfirm = confirmInput.value;
+    removeButton.disabled = form.removeConfirm !== name;
+  });
+  return element(
+    "div",
+    { className: "action-form destructive", attributes: { id: removeFormId } },
+    element("p", {}, `${node.name} stops syncing with ${name}, and every folder it shares with ${name} stops sharing. Type ${name} to confirm.`),
+    element("div", { className: "form-fields" }, confirmInput),
+    resultLine(form.removeResult),
+    element("div", { className: "button-row" }, removeButton),
+  );
+}
+
+function removedBody(node: StorageNode, name: string): HTMLElement {
+  return element(
+    "div",
+    {},
+    element("p", { className: "notice tone-text-ok", attributes: { role: "status" } }, `Removed ${name} from ${node.name}.`),
+    element("div", { className: "button-row" }, element("a", { className: "button", attributes: { href: locationFor("nodes", node.id) } }, `Back to ${node.name}`)),
+  );
+}
+
+function deviceSections(node: StorageNode, form: DeviceFormState, name: string): HTMLElement[] {
+  if (form.removed) return [section("Removed", removedBody(node, name))];
+  const removable = node.local && form.saved !== null && !isOwnDevice(node, form);
+  return [
+    section("Device ID", element("code", { className: "device-id" }, form.deviceId)),
+    section("Settings", formBody(node, form)),
+    ...(removable ? [section("Remove device", removeForm(node, form, name))] : []),
+  ];
+}
+
 export function renderDeviceForm(node: StorageNode, form: DeviceFormState): HTMLElement {
+  const name = deviceDisplayName(form.saved?.name, form.deviceId);
+  const own = isOwnDevice(node, form);
   return element(
     "div",
     { className: "detail-inner" },
-    nodeFormHeader(node, deviceDisplayName(form.saved?.name, form.deviceId), `A device as ${node.name} has it configured`),
-    section("Device ID", element("code", { className: "device-id" }, form.deviceId)),
-    section("Settings", formBody(node, form)),
+    nodeFormHeader(node, own ? `Rename ${node.name}` : name, own ? `The device name other devices see for ${node.name}` : `A device as ${node.name} has it configured`),
+    ...deviceSections(node, form, name),
   );
 }
