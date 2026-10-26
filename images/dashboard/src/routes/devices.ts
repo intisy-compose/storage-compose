@@ -120,20 +120,16 @@ function knownProblem(instance: LocalInstance, devices: SyncthingObject[], devic
   return known ? `${instance.name} already has device ${deviceDisplayName(typeof known.name === "string" ? known.name : "", deviceId)}` : null;
 }
 
-function nullableText(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-/** Whether `typed` can be added to the node: the ID as Syncthing reads it, or Syncthing's reason, or that the node has it already. */
+/**
+ * Whether `typed` can be added to the node: the ID as Syncthing reads it, or Syncthing's reason, or that the node has it already.
+ * @implNote The add form's reads, like the add, are this host's nodes' only: another host's node gets its devices on that host's dashboard.
+ */
 export async function checkDeviceId(instance: ResolvedInstance, typed: string): Promise<DeviceIdCheck> {
-  if (instance.kind === "remote") {
-    const answer = asObject(await forwardRead(instance, `${nodePath(instance.nodeId, "device-id-check")}?id=${encodeURIComponent(typed)}`));
-    return { deviceId: nullableText(answer.deviceId), problem: nullableText(answer.problem) };
-  }
+  const local = requireLocal(instance);
   if (!typed.trim()) return { deviceId: null, problem: "the device ID is missing" };
-  const reading = await readTypedDeviceId(instance, typed.trim());
+  const reading = await readTypedDeviceId(local, typed.trim());
   if (!reading.deviceId) return reading;
-  return { deviceId: reading.deviceId, problem: knownProblem(instance, await configuredDevices(instance), reading.deviceId) };
+  return { deviceId: reading.deviceId, problem: knownProblem(local, await configuredDevices(local), reading.deviceId) };
 }
 
 async function syncthingDefaults(instance: LocalInstance): Promise<SyncthingObject> {
@@ -142,8 +138,7 @@ async function syncthingDefaults(instance: LocalInstance): Promise<SyncthingObje
 
 /** A new device's settings as the node's Syncthing fills them in. */
 export async function readDeviceDefaults(instance: ResolvedInstance): Promise<DeviceSettings> {
-  if (instance.kind === "remote") return deviceSettings(asObject(redactConfig(await forwardRead(instance, nodePath(instance.nodeId, "device-defaults")))));
-  return deviceSettings(await syncthingDefaults(instance));
+  return deviceSettings(await syncthingDefaults(requireLocal(instance)));
 }
 
 function addressList(value: unknown): string[] {
@@ -159,15 +154,10 @@ function byDeviceId(first: NearbyDevice, second: NearbyDevice): number {
   return first.deviceId.localeCompare(second.deviceId);
 }
 
-function nearbyFromDashboard(answer: unknown): NearbyDevice[] {
-  const listed = Array.isArray(answer) ? answer.map(asObject) : [];
-  return listed.filter((device) => typeof device.deviceId === "string").map((device) => ({ deviceId: device.deviceId as string, addresses: addressList(device.addresses) }));
-}
-
 /** Devices the node's Syncthing found by discovery and has not configured, to offer as the new device. */
 export async function nearbyDevices(instance: ResolvedInstance): Promise<NearbyDevice[]> {
-  if (instance.kind === "remote") return nearbyFromDashboard(await forwardRead(instance, nodePath(instance.nodeId, "nearby"))).sort(byDeviceId);
-  const [discovered, configured] = await Promise.all([callSyncthing(instance, (client) => client.request<unknown>("GET", "/system/discovery")), configuredDevices(instance)]);
+  const local = requireLocal(instance);
+  const [discovered, configured] = await Promise.all([callSyncthing(local, (client) => client.request<unknown>("GET", "/system/discovery")), configuredDevices(local)]);
   const known = new Set(configured.map((device) => device.deviceID));
   return Object.entries(asObject(discovered))
     .filter(([deviceId]) => !known.has(deviceId))

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { type NodeWriteRoute, type Route, type WriteNote, dashboardRoutes, hostWritePattern, settleWrite } from "../src/routes.js";
+import { type NodeWriteRoute, type Route, type WriteNote, dashboardRoutes, hostWritePattern, isNodePattern, settleWrite } from "../src/routes.js";
 
 function recorder() {
   const recorded: WriteNote[] = [];
@@ -64,11 +64,15 @@ describe("a write through the dashboard", () => {
     assert.equal(misdeclared.method, "POST");
     assert.throws(() => hostWritePattern(/^\/api\/nodes\/([^/]+)\/devices$/), /is a node's path/);
     assert.throws(() => hostWritePattern(/^\/api\/nodes\/x$/), /is a node's path/);
+    assert.throws(() => hostWritePattern(/^\/api\/nodes\/.*/), /is a node's path/);
+    assert.throws(() => hostWritePattern(/^\/api\/nodes\/(fb98|d7e5)\/devices$/), /is a node's path/);
     assert.ok(hostWritePattern(/^\/api\/arrays\/x\/sync$/).test("/api/arrays/x/sync"));
+    assert.ok(hostWritePattern(/^\/api\/join$/));
+    assert.equal(isNodePattern(/^\/api\/nodes$/), false, "the nodes list itself is no node's path");
   });
 
   it("every write route under /api/nodes/ in the dashboard is a node write", () => {
-    const nodeWrites = dashboardRoutes.filter((route) => route.method !== "GET" && route.pattern.source.replaceAll("\\/", "/").startsWith("^/api/nodes/"));
+    const nodeWrites = dashboardRoutes.filter((route) => route.method !== "GET" && isNodePattern(route.pattern));
     assert.ok(nodeWrites.length >= 2, "the device edit and the device add");
     for (const route of nodeWrites) assert.ok("write" in route, `${route.method} ${route.pattern} is not a NodeWriteRoute`);
   });

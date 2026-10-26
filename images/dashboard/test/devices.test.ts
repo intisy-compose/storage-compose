@@ -372,6 +372,24 @@ describe("a node's devices", () => {
     assert.equal(result.note.text, "pc: added device dashboard-test-device; not shared dashboard-test-a (pc's Syncthing is not answering)");
   });
 
+  it("the add form's reads of another host's node are 409, like the add", async () => {
+    const remote: RemoteInstance = { kind: "remote", nodeId: "a1b2", name: "p53-data", host: "p53", dashboardUrl: "http://127.0.0.1:1" };
+    const refusedForRemote = (error: Error & { status?: number }) => error.status === 409 && error.message === "act on p53's dashboard";
+    await assert.rejects(readDeviceDefaults(remote), refusedForRemote);
+    await assert.rejects(nearbyDevices(remote), refusedForRemote);
+    await assert.rejects(checkDeviceId(remote, newId), refusedForRemote);
+    const dashboard = requestHandler(deviceRoutes({ resolve: async () => remote }), recordingEffects());
+    const server = createServer((request, response) => void dashboard(request, response));
+    const url = await listen(server);
+    try {
+      const qr = await fetch(`${url}/api/nodes/a1b2/qr?text=${encodeURIComponent(ownId)}`);
+      assert.equal(qr.status, 409);
+      assert.deepEqual(await qr.json(), { error: "act on p53's dashboard" });
+    } finally {
+      server.close();
+    }
+  });
+
   it("nearby lists the devices discovery found that the node has not configured", async () => {
     assert.deepEqual(await nearbyDevices(pc()), [{ deviceId: nearbyId, addresses: ["tcp://192.0.2.7:22000", "quic://192.0.2.7:22000"] }]);
     discovered = { [nearbyId]: ["tcp://192.0.2.7:22000"] };

@@ -165,6 +165,14 @@ async function loadDeviceForm(): Promise<void> {
   }
 }
 
+/** @implNote Waits for the nodes, as they say whether the form's node is this host's. */
+async function loadAddDevice(nodesLoaded: Promise<void>): Promise<void> {
+  const form = appState.addDeviceForm;
+  if (!form) return;
+  await nodesLoaded;
+  await loadAddDeviceForm(form, appState.data?.nodes.find((node) => node.id === form.nodeId));
+}
+
 async function loadFolderDetail(): Promise<void> {
   const folderId = appState.selectedFolderId;
   if (!folderId) return;
@@ -230,7 +238,7 @@ async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
 
 /** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */
 async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Promise<void> {
-  if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm(), appState.addDeviceForm ? loadAddDeviceForm(appState.addDeviceForm) : undefined]);
+  if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm(), loadAddDevice(nodesLoaded)]);
   if (appState.page === "folders") await loadFolders();
   if (appState.page === "activity") await loadActivity();
   if (appState.page === "requests") await loadRequests();

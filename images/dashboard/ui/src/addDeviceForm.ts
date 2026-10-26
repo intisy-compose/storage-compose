@@ -21,8 +21,12 @@ export async function loadNearby(form: AddDeviceFormState): Promise<void> {
   }
 }
 
-/** Reads the node's defaults once per opening, so what the form sends is always measured against the same answer. */
-export async function loadAddDeviceForm(form: AddDeviceFormState): Promise<void> {
+/**
+ * Reads the node's defaults once per opening, so what the form sends is always measured against the same answer.
+ * @implNote Another host's node, or one the nodes list does not show yet, is read nothing: its devices are added on its own dashboard.
+ */
+export async function loadAddDeviceForm(form: AddDeviceFormState, node: StorageNode | undefined): Promise<void> {
+  if (!node?.local) return;
   const reads: Promise<void>[] = [];
   if (!form.defaults) {
     reads.push(

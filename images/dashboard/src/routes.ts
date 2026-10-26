@@ -43,8 +43,16 @@ declare const hostWriteBrand: unique symbol;
 /** The pattern of a write that is no node's, made only by `hostWritePattern`. */
 export type HostWritePattern = RegExp & { readonly [hostWriteBrand]: true };
 
-function isNodePath(pattern: RegExp): boolean {
-  return pattern.source.replaceAll("\\/", "/").startsWith("^/api/nodes/");
+const nodeProbePath = "/api/nodes/x/y";
+
+/** The path a pattern stands for with each group filled by one segment: `/api/nodes/x/devices` for `^\/api\/nodes\/([^/]+)\/devices$`. */
+function samplePath(pattern: RegExp): string {
+  return pattern.source.replace(/^\^/, "").replace(/\$$/, "").replaceAll("\\/", "/").replace(/\((?:[^()]|\([^()]*\))*\)/g, "x");
+}
+
+/** Whether a route pattern answers paths under /api/nodes/: it takes the probe path, or the path it stands for is one. */
+export function isNodePattern(pattern: RegExp): boolean {
+  return pattern.test(nodeProbePath) || samplePath(pattern).startsWith("/api/nodes/");
 }
 
 /**
@@ -52,7 +60,7 @@ function isNodePath(pattern: RegExp): boolean {
  * @implNote It refuses a path under /api/nodes/, so the only way to declare a write there is a `NodeWriteRoute`, which has to name its change for Activity.
  */
 export function hostWritePattern(pattern: RegExp): HostWritePattern {
-  if (isNodePath(pattern)) throw new Error(`${pattern} is a node's path: declare its write as a NodeWriteRoute`);
+  if (isNodePattern(pattern)) throw new Error(`${pattern} is a node's path: declare its write as a NodeWriteRoute`);
   return pattern as HostWritePattern;
 }
 

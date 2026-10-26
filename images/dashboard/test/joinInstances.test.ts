@@ -4,10 +4,12 @@ import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, describe, it } from "node:test";
+import { after, before, beforeEach, describe, it } from "node:test";
 import type { ResolverSources } from "../src/instanceResolver.js";
+import type { JoinDependencies, JoinedDevice } from "../src/join.js";
 
 const clusterId = "CLUSTER-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+const joiningId = "JOINING-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 
 function listen(server: Server): Promise<number> {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port)));
@@ -17,11 +19,20 @@ describe("the instances a joining device is added to", () => {
   let directory: string;
   let fakeSyncthing: Server;
   let sources: ResolverSources;
+  let clusterStatusPath: string;
+  const writes: string[] = [];
   let joinInstances: typeof import("../src/joinInstances.js").joinInstances;
+  let handleJoin: typeof import("../src/join.js").handleJoin;
+
+  async function writeClusterStatus(present: boolean): Promise<void> {
+    const updated = new Date().toISOString();
+    await writeFile(clusterStatusPath, JSON.stringify({ id: "storage", name: "storage", present, state: "healthy", complete: true, updated, since: updated, drives: [] }));
+  }
 
   before(async () => {
     directory = await mkdtemp(join(tmpdir(), "join-instances-"));
     fakeSyncthing = createServer((request, response) => {
+      if (request.method !== "GET") writes.push(`${request.method} ${request.url}`);
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(request.url === "/rest/system/status" ? JSON.stringify({ myID: clusterId }) : "[]");
     });
@@ -37,16 +48,20 @@ describe("the instances a joining device is added to", () => {
     process.env.STORAGE_PEERS = "";
     process.env.TAILNET_PROXY = "";
     ({ joinInstances } = await import("../src/joinInstances.js"));
+    ({ handleJoin } = await import("../src/join.js"));
 
     await mkdir(join(directory, "storage-data1", ".storage", "syncthing"), { recursive: true });
     await writeFile(join(directory, "storage-data1", ".storage", "syncthing", "config.xml"), "<configuration><gui><apikey>cluster-key</apikey></gui></configuration>");
     const registry = join(directory, "status", "nodes");
     await mkdir(registry, { recursive: true });
-    const privateArray = join(directory, "status", "arrays", "5784");
-    await mkdir(privateArray, { recursive: true });
+    const clusterStatus = join(directory, "status", "arrays", "storage");
+    await mkdir(clusterStatus, { recursive: true });
+    clusterStatusPath = join(clusterStatus, "status.json");
+    const otherArray = join(directory, "status", "arrays", "beef");
+    await mkdir(otherArray, { recursive: true });
     const updated = new Date().toISOString();
-    await writeFile(join(privateArray, "status.json"), JSON.stringify({ id: "5784", name: "private-array", present: true, state: "healthy", complete: true, updated, since: updated, drives: [] }));
-    await writeFile(join(registry, "5784.syncthing.json"), JSON.stringify({ url: syncthingUrl, apiKey: "array-key" }));
+    await writeFile(join(otherArray, "status.json"), JSON.stringify({ id: "beef", name: "other-array", present: true, state: "healthy", complete: true, updated, since: updated, drives: [] }));
+    await writeFile(join(registry, "beef.syncthing.json"), JSON.stringify({ url: syncthingUrl, apiKey: "array-key" }));
     await writeFile(
       join(registry, "d7e5.json"),
       JSON.stringify({ id: "d7e5", name: "dashboard-test-peer", kind: "folder", threshold: 0, assigned: [], root: "/var/syncthing/data", present: true, space: { size: null, used: null }, syncthing: { url: syncthingUrl, apiKey: "peer-key" }, updated }),
@@ -72,10 +87,36 @@ describe("the instances a joining device is added to", () => {
     sources = { registryDirectory: registry, heartbeatPath, otherHostNodes: async () => [] };
   });
 
+  beforeEach(async () => {
+    writes.length = 0;
+    await writeClusterStatus(true);
+  });
+
   after(async () => {
     fakeSyncthing.close();
     await rm(directory, { recursive: true, force: true });
   });
+
+  function joinDependencies() {
+    const recorded: JoinedDevice[] = [];
+    const pushed: string[] = [];
+    const dependencies: JoinDependencies = {
+      whois: async () => ({ loginName: "owner@example.com", tags: [], nodeName: "laptop.example.ts.net", addresses: ["100.64.0.5/32"] }),
+      allowedUsers: async () => ["owner@example.com"],
+      requiredTag: "tag:storage",
+      instances: () => joinInstances(sources),
+      layout: async () => null,
+      records: { all: async () => ({}), put: async (device) => void recorded.push(device) },
+      recordInSetup: async (name) => {
+        pushed.push(name);
+        return { committed: true, pushed: true, message: "committed and pushed" };
+      },
+      now: () => new Date("2026-10-26T12:00:00Z"),
+    };
+    return { dependencies, recorded, pushed };
+  }
+
+  const laptopRequest = { name: "laptop", os: "linux", syncthingDeviceId: joiningId, nodes: [{ kind: "folder", path: "/home/laptop", threshold: 50 }] };
 
   it("are the cluster, then the registry's and the host agent's attached nodes, each at its sync port, and never another array", async () => {
     const instances = await joinInstances(sources);
@@ -88,5 +129,23 @@ describe("the instances a joining device is added to", () => {
       ],
     );
     assert.equal(await instances[0].myId(), clusterId);
+  });
+
+  it("a cluster that is not connected refuses the join with 503 and nothing is written, recorded or pushed", async () => {
+    await writeClusterStatus(false);
+    const { dependencies, recorded, pushed } = joinDependencies();
+    await assert.rejects(handleJoin(dependencies, ["100.64.0.5"], laptopRequest), { status: 503, message: "storage is not connected, so the device cannot join yet" });
+    assert.deepEqual(writes, []);
+    assert.deepEqual(recorded, []);
+    assert.deepEqual(pushed, []);
+  });
+
+  it("a connected cluster joins as before: the device is added to every instance, recorded and pushed", async () => {
+    const { dependencies, recorded, pushed } = joinDependencies();
+    const { response } = await handleJoin(dependencies, ["100.64.0.5"], laptopRequest);
+    assert.deepEqual(response.devices.map((device) => device.name), ["storage", "dashboard-test-peer", "pc"]);
+    assert.deepEqual(writes, ["POST /rest/config/devices", "POST /rest/config/devices", "POST /rest/config/devices"]);
+    assert.deepEqual(recorded.map((device) => device.name), ["laptop"]);
+    assert.deepEqual(pushed, ["laptop"]);
   });
 });
