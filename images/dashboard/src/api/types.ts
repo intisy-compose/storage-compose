@@ -491,6 +491,30 @@ export interface NodeOptionsResponse {
   gui: InstanceGui;
 }
 
+export type DeviceCompression = "metadata" | "always" | "never";
+
+/** `GET /api/nodes/<nodeId>/devices/<deviceId>`: one device as that node's Syncthing has it configured. */
+export interface DeviceSettings {
+  deviceId: string;
+  name: string;
+  /** `dynamic`, or `tcp://`, `quic://` and `relay://` addresses. */
+  addresses: string[];
+  compression: DeviceCompression;
+  introducer: boolean;
+  autoAcceptFolders: boolean;
+  paused: boolean;
+  untrusted: boolean;
+  allowedNetworks: string[];
+  /** 0 is unlimited. */
+  maxSendKbps: number;
+  maxRecvKbps: number;
+  /** 0 lets Syncthing choose. */
+  numConnections: number;
+}
+
+/** `PATCH /api/nodes/<nodeId>/devices/<deviceId>`: only the fields the person changed. */
+export type DeviceSettingsChange = Partial<Omit<DeviceSettings, "deviceId">>;
+
 /** A priority band of the layout: priorities from `from` up to the next band belong to `name`. */
 export interface PriorityBand {
   name: string;

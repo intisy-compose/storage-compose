@@ -1,4 +1,4 @@
-import { type ArrayMember, type MemberSmart, type NodesResponse, type StorageNode, type Warning, isReachable } from "./api.js";
+import { type ArrayMember, type MemberSmart, type NodesResponse, type StorageNode, type Warning, deviceDisplayName, isReachable } from "./api.js";
 import { formatAge, formatPercent, normaliseCompletion, usedFraction } from "./format.js";
 
 export type Tone = "ok" | "warn" | "bad" | "muted" | "accent";
@@ -40,7 +40,7 @@ export function failedItems(node: StorageNode): number {
 export function waitingForNames(response: NodesResponse, node: StorageNode): string[] {
   const names = (node.sync.waitingFor ?? []).map((deviceId) => {
     const known = response.nodes.find((candidate) => candidate.syncthing?.deviceId === deviceId);
-    return known?.name ?? node.peers.find((peer) => peer.deviceId === deviceId)?.name ?? deviceId.slice(0, 7);
+    return known?.name ?? deviceDisplayName(node.peers.find((peer) => peer.deviceId === deviceId)?.name, deviceId);
   });
   return [...new Set(names)];
 }

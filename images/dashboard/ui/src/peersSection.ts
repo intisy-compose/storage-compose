@@ -1,6 +1,7 @@
-import { type NodesResponse, type Peer, type RemoteState, type StorageNode, connectionKindText } from "./api.js";
+import { type NodesResponse, type Peer, type RemoteState, type StorageNode, connectionKindText, deviceDisplayName } from "./api.js";
 import { element, section } from "./dom.js";
 import { formatAge, formatPercent, formatRate, normaliseCompletion } from "./format.js";
+import { deviceFormLocation } from "./state.js";
 
 const remoteStateText: Record<RemoteState, string | null> = {
   valid: null,
@@ -35,11 +36,13 @@ function completionTone(peer: Peer): string {
   return peer.completion >= 100 ? "ok" : "accent";
 }
 
-function peerRow(peer: Peer, displayName: string): HTMLElement {
+/** A local node's row opens the device's form; another host's node is edited on its own dashboard. */
+function peerRow(node: StorageNode, peer: Peer, displayName: string): HTMLElement {
   const note = remoteStateText[peer.remoteState];
+  const link = node.local ? { className: "peer-row peer-link", title: `Edit ${displayName}`, attributes: { href: deviceFormLocation(node.id, peer.deviceId) } } : null;
   return element(
-    "div",
-    { className: "peer-row", title: peer.deviceId },
+    link ? "a" : "div",
+    link ?? { className: "peer-row", title: peer.deviceId },
     element("span", { className: `dot tone-${peerTone(peer)}`, title: peer.connected ? "connected" : "not connected" }),
     element(
       "span",
@@ -55,13 +58,13 @@ function peerRow(peer: Peer, displayName: string): HTMLElement {
 
 function nameOf(response: NodesResponse, peer: Peer): string {
   const node = response.nodes.find((candidate) => candidate.syncthing?.deviceId === peer.deviceId);
-  return node ? node.name : peer.name || peer.deviceId.slice(0, 7);
+  return node ? node.name : deviceDisplayName(peer.name, peer.deviceId);
 }
 
 export function peersSection(response: NodesResponse, node: StorageNode): HTMLElement | null {
   if (!node.peers.length) return null;
   return section(
     `Devices (${node.peers.length})`,
-    element("div", { className: "peer-list" }, ...node.peers.map((peer) => peerRow(peer, nameOf(response, peer)))),
+    element("div", { className: "peer-list" }, ...node.peers.map((peer) => peerRow(node, peer, nameOf(response, peer)))),
   );
 }

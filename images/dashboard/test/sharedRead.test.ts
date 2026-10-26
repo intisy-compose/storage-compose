@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { SharedRead } from "../src/sharedRead.js";
+import { ScopedShare, SharedRead } from "../src/sharedRead.js";
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {
   let resolve!: (value: T) => void;
@@ -56,5 +56,31 @@ describe("a shared read", () => {
     shared.offer(Promise.reject(new Error("build failed")));
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(await shared.read(async () => 5), 5);
+  });
+});
+
+describe("a share by scope", () => {
+  it("a local-scope read never waits on a running full build", async () => {
+    const share = new ScopedShare<string>(4_000);
+    share.offer("all", new Promise<string>(() => {}));
+    assert.equal(await share.read("local", async () => "a local build"), "a local build");
+  });
+
+  it("a full read shares a running local-scope build", async () => {
+    const share = new ScopedShare<string>(4_000);
+    share.offer("local", Promise.resolve("from the local build"));
+    assert.equal(await share.read("all", async () => "a read of its own"), "from the local build");
+  });
+
+  it("after a write the next read of either scope starts a new build", async () => {
+    const share = new ScopedShare<number>(4_000);
+    let builds = 0;
+    const start = async () => ++builds;
+    assert.equal(await share.read("local", start), 1);
+    assert.equal(await share.read("all", start), 1);
+    share.invalidate();
+    assert.equal(await share.read("local", start), 2);
+    share.invalidate();
+    assert.equal(await share.read("all", start), 3);
   });
 });

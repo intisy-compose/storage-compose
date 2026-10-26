@@ -41,7 +41,7 @@ export class PeerDevicesCache {
 export interface DevicesRouteSources {
   host: string;
   peerDashboards: string[];
-  ownNodes(): Promise<StorageNode[]>;
+  ownNodes(scope: "all" | "local"): Promise<StorageNode[]>;
   /** Other hosts' nodes and those no dashboard reported: built when stale for the full answer, as cached for local scope. */
   otherHostNodes(scope: "all" | "local"): Promise<StorageNode[]>;
   peerAnswers: PeerDevicesCache;
@@ -67,7 +67,7 @@ async function otherHostViews(reported: StorageNode[], sources: DevicesRouteSour
 /** @implNote A local-scope answer reads nothing from another host, so two hosts reading each other never wait on each other. */
 export async function devicesResponse(scope: "all" | "local", sources: DevicesRouteSources): Promise<DevicesResponse> {
   const others = await sources.otherHostNodes(scope);
-  const ownNodes = await sources.ownNodes();
+  const ownNodes = await sources.ownNodes(scope);
   const reported = others.filter((node) => node.dashboardUrl);
   return deviceIndex({
     host: sources.host,
@@ -86,7 +86,7 @@ function liveSources(records: JoinRecords): DevicesRouteSources {
   return {
     host: hostName,
     peerDashboards,
-    ownNodes: () => sharedLocalNodes(records),
+    ownNodes: (scope) => sharedLocalNodes(records, scope),
     otherHostNodes: async (scope) => (scope === "all" ? otherHostNodes(records) : cachedOtherHostNodes()),
     peerAnswers: new PeerDevicesCache(peerAnswerMaxAgeMs),
     seen: () => deviceSeenStore.load(),

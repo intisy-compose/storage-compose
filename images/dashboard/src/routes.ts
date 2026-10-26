@@ -6,10 +6,11 @@ import { isReplacementCandidate, listBlockDevices } from "./blockDevices.js";
 import { recordDashboardActivity, refreshEventFeeds } from "./eventFeed.js";
 import { RequestError, readBody, sendJson } from "./http.js";
 import { fileJoinRecords } from "./join.js";
-import { nodesResponse } from "./nodes.js";
+import { invalidateLocalNodes, nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
 import { activityRoutes } from "./routes/activity.js";
 import { deviceIndexRoutes } from "./routes/deviceIndex.js";
+import { deviceRoutes } from "./routes/devices.js";
 import { folderRoutes } from "./routes/folders.js";
 import { optionsRoutes } from "./routes/options.js";
 import { pendingRoutes } from "./routes/pending.js";
@@ -27,11 +28,19 @@ export interface RouteContext {
   params: string[];
 }
 
+/** What a write changed, in words, for Activity: `pc: renamed device dashboard-test-peer to backup`. */
+export interface WriteNote {
+  nodeId: string | null;
+  folderId: string | null;
+  text: string;
+}
+
 export interface Route {
   /** Any method when absent. */
   method?: string;
   pattern: RegExp;
-  handle: (context: RouteContext) => Promise<void>;
+  /** A write to a node returns the note Activity records for it. */
+  handle: (context: RouteContext) => Promise<WriteNote | void>;
 }
 
 async function knownArray(arrayId: string): Promise<ArrayStatus> {
@@ -143,26 +152,25 @@ const routes: Route[] = [
   ...deviceIndexRoutes(joinRecords),
   ...pendingRoutes(joinRecords),
   ...optionsRoutes,
+  ...deviceRoutes(),
   { pattern: /^\/api\/join$/, handle: async () => joinElsewhere() },
 ];
 
-const writeVerbs: Record<string, string> = { POST: "added", PUT: "set", PATCH: "changed", DELETE: "removed" };
-
-function decoded(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
+export interface WriteEffects {
+  invalidate(): void;
+  record(note: WriteNote): void;
 }
 
-/** Enters a successful write to a node in Activity, e.g. `pc: changed devices/ABCDEFG`. */
-function recordNodeWrite(method: string, path: string, response: ServerResponse): void {
-  const match = path.match(/^\/api\/nodes\/([^/]+)\/(.+)$/);
-  if (!match || method === "GET" || response.statusCode >= 400) return;
-  const [, nodeId, rest] = match;
-  const folderId = rest.match(/^folders\/([^/]+)/)?.[1];
-  recordDashboardActivity(decoded(nodeId), folderId ? decoded(folderId) : null, `${decoded(nodeId)}: ${writeVerbs[method] ?? method} ${decoded(rest)}`);
+const liveWriteEffects: WriteEffects = {
+  invalidate: invalidateLocalNodes,
+  record: (note) => recordDashboardActivity(note.nodeId, note.folderId, note.text),
+};
+
+/** After a successful write: the shared local nodes build is dropped so the next read shows it, and its note enters Activity. */
+export function settleWrite(method: string, statusCode: number, note: WriteNote | void, effects: WriteEffects = liveWriteEffects): void {
+  if (method === "GET" || method === "HEAD" || statusCode >= 400) return;
+  effects.invalidate();
+  if (note) effects.record(note);
 }
 
 async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -171,8 +179,8 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     if (candidate.method && candidate.method !== request.method) continue;
     const match = url.pathname.match(candidate.pattern);
     if (!match) continue;
-    await candidate.handle({ request, response, url, params: match.slice(1) });
-    return recordNodeWrite(request.method ?? "GET", url.pathname, response);
+    const note = await candidate.handle({ request, response, url, params: match.slice(1) });
+    return settleWrite(request.method ?? "GET", response.statusCode, note);
   }
   throw new RequestError(404, "not found");
 }

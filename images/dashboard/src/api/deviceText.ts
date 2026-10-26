@@ -35,6 +35,16 @@ export function addressHost(address: string): string {
   return addressParts(address).host;
 }
 
+/** The first group of a device ID, as Syncthing's own page shortens it. */
+export function shortDeviceId(deviceId: string): string {
+  return deviceId.slice(0, 7);
+}
+
+/** A device's name, or its short ID while the name is empty, so a nameless device never shows blank. */
+export function deviceDisplayName(name: string | null | undefined, deviceId: string): string {
+  return name?.trim() ? name : shortDeviceId(deviceId);
+}
+
 export function connectionKindText(kind: ConnectionKind): string {
   return connectionKindLabels[kind];
 }

@@ -1,6 +1,6 @@
-import type { JoinEntry, PendingDevice, PendingFolderOffer, RequestsResponse } from "./api.js";
+import { type JoinEntry, type PendingDevice, type PendingFolderOffer, type RequestsResponse, deviceDisplayName, shortDeviceId } from "./api.js";
 import { element } from "./dom.js";
-import { formatAge, formatDate, shortDeviceId } from "./format.js";
+import { formatAge, formatDate } from "./format.js";
 import { appState, locationFor } from "./state.js";
 
 function since(time: string): HTMLElement {
@@ -18,7 +18,7 @@ function deviceEntry(device: PendingDevice): HTMLElement {
     element(
       "span",
       { className: "request-text" },
-      element("strong", {}, device.name || shortDeviceId(device.deviceId)),
+      element("strong", {}, deviceDisplayName(device.name, device.deviceId)),
       ` (${shortDeviceId(device.deviceId)}) asks to connect to `,
       nodeLink(device.nodeId, device.nodeName),
       device.address ? element("small", { className: "request-detail" }, `from ${device.address}`) : null,

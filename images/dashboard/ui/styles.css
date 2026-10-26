@@ -430,6 +430,19 @@ a.warning:hover { filter: brightness(0.98); text-decoration: underline; text-und
   padding: 7px 0; border-top: 1px solid var(--line); font-size: 13px;
 }
 .peer-row:first-child { border-top: 0; }
+.peer-link { color: inherit; text-decoration: none; border-radius: 6px; }
+.peer-link:hover { background: var(--surface-sunken); }
+.device-fields textarea {
+  padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--surface);
+  font: 12.5px/1.4 var(--mono); color: inherit; resize: vertical; min-width: 0; width: 100%;
+}
+.device-fields textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.device-fields .setting small { font-size: 11.5px; }
+.device-fields .toggles { display: flex; flex-direction: column; gap: 6px; }
+.device-fields .toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.device-fields .toggle input { width: auto; height: auto; }
+.device-fields .number-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; align-items: start; }
+.device-form .button-row { margin-top: 12px; }
 .peer-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
 .peer-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .peer-name small { color: var(--text-faint); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,3 +1,4 @@
+import { deviceDisplayName } from "./api/deviceText.js";
 import type { NodeArray, NodeRegistryEntry, NodesResponse, StorageNode, Warning } from "./api/types.js";
 import { type ArrayStatus, arrayIds, arrayStatus, listedArrayIds } from "./arrayStatus.js";
 import { folderErrorWarnings, fromOtherHost, fullWarnings, hostWarnings, offlineWarnings, pendingWarnings, pruneFirstSeen, systemErrorWarnings, warning, withoutDuplicates } from "./attention.js";
@@ -10,7 +11,7 @@ import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { parityState } from "./parity.js";
 import { attentionSettings, hostName, peerDashboards, poolPath, registryDirectory } from "./settings.js";
 import { deviceSeenStore, localDeviceIds, recordDevices, rememberable, rememberedLocalNodes } from "./seenStore.js";
-import { SharedRead } from "./sharedRead.js";
+import { ScopedShare, SharedRead } from "./sharedRead.js";
 import { type InstanceView, classifyConnections, instanceView, peerSync } from "./syncthing.js";
 import { fetchTailnetJson } from "./tailnet.js";
 import { readdir, statfs } from "node:fs/promises";
@@ -197,7 +198,7 @@ export async function syncthingOnlyNodes(known: StorageNode[], views: InstanceVi
       const node = record?.nodes[0];
       nodes.set(peer.deviceId, {
         id: `device-${peer.deviceId.slice(0, 7).toLowerCase()}`,
-        name: record?.name ?? (peer.name || peer.deviceId.slice(0, 7)),
+        name: record?.name ?? deviceDisplayName(peer.name, peer.deviceId),
         kind: node?.kind ?? "device",
         threshold: node?.threshold ?? 0,
         assigned: [],
@@ -222,7 +223,7 @@ let lastOtherHostNodes: { at: number; nodes: StorageNode[] } | null = null;
 const otherHostNodesMaxAgeMilliseconds = 60_000;
 /** @implNote Under the page's 5 s poll, so the devices read of one poll shares the nodes read it came with, never an older one. */
 const localNodesShareMilliseconds = 4_000;
-const localNodesBuild = new SharedRead<StorageNode[]>(localNodesShareMilliseconds);
+const localNodesBuild = new ScopedShare<StorageNode[]>(localNodesShareMilliseconds);
 const otherHostNodesBuild = new SharedRead<StorageNode[]>(0);
 
 async function rememberDevices(views: InstanceView[], running: ReadonlyMap<string, string>): Promise<void> {
@@ -251,13 +252,18 @@ export function withRememberedDevice(node: StorageNode, remembered: ReadonlyMap<
 /** A nodes answer; its local part is shared with the devices read for a few seconds. */
 export function nodesResponse(scope: "all" | "local", records: JoinRecords): Promise<NodesResponse> {
   const build = buildNodesResponse(scope, records);
-  localNodesBuild.offer(build.then((response) => response.nodes.filter((node) => node.local)));
+  localNodesBuild.offer(scope, build.then((response) => response.nodes.filter((node) => node.local)));
   return build;
 }
 
-/** This host's own nodes, from any build that started in the last few seconds or is still running. */
-export function sharedLocalNodes(records: JoinRecords): Promise<StorageNode[]> {
-  return localNodesBuild.read(async () => (await buildNodesResponse("local", records)).nodes);
+/** This host's own nodes from a build of that scope or, for the full scope, of either, that started in the last few seconds or is still running. */
+export function sharedLocalNodes(records: JoinRecords, scope: "all" | "local"): Promise<StorageNode[]> {
+  return localNodesBuild.read(scope, async () => (await buildNodesResponse("local", records)).nodes);
+}
+
+/** After a write through the dashboard, so the next read shows it. */
+export function invalidateLocalNodes(): void {
+  localNodesBuild.invalidate();
 }
 
 /**

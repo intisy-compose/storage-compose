@@ -1,8 +1,9 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
 import type { NodesResponse } from "./api.js";
-import { fetchActivity, fetchDevices, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests } from "./api.js";
+import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
+import { renderDeviceForm } from "./deviceForm.js";
 import { element } from "./dom.js";
 import { renderDriveDetail } from "./driveDetail.js";
 import { folderRootPriority, renderExplorerDetail } from "./explorerDetail.js";
@@ -88,6 +89,7 @@ function renderDetail(): HTMLElement | null {
   const devicePanel = renderDevicesPanel(data);
   if (devicePanel) return devicePanel;
   const node = data.nodes.find((candidate) => candidate.id === appState.selectedNodeId);
+  if (node && appState.deviceForm) return renderDeviceForm(node, appState.deviceForm);
   return node ? renderNodeDetail(data, node) : renderEmptyDetail(data);
 }
 
@@ -143,6 +145,21 @@ async function loadDevices(): Promise<void> {
     appState.devicesError = null;
   } catch (error) {
     appState.devicesError = messageOf(error);
+  }
+}
+
+/** Reads the device once per opening, so a later read never moves what the form's changes are measured against. */
+async function loadDeviceForm(): Promise<void> {
+  const form = appState.deviceForm;
+  if (!form || form.saved) return;
+  try {
+    const settings = await fetchDeviceSettings(form.nodeId, form.deviceId);
+    if (form !== appState.deviceForm || form.saved) return;
+    form.saved = settings;
+    form.draft = structuredClone(settings);
+    form.loadError = null;
+  } catch (error) {
+    form.loadError = messageOf(error);
   }
 }
 
@@ -211,7 +228,7 @@ async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
 
 /** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */
 async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Promise<void> {
-  if (appState.page === "nodes") await loadDevices();
+  if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm()]);
   if (appState.page === "folders") await loadFolders();
   if (appState.page === "activity") await loadActivity();
   if (appState.page === "requests") await loadRequests();

@@ -1,3 +1,4 @@
+import { deviceDisplayName } from "./api/deviceText.js";
 import type { FolderCopy, FolderDetailResponse, FolderSettings, FolderSummary, FoldersResponse, PendingFolderOffer } from "./api/types.js";
 import { RequestError } from "./http.js";
 import type { SetupLayout } from "./setupRepo.js";
@@ -29,7 +30,7 @@ interface InstanceFolders {
 }
 
 function deviceName(devices: SyncthingDeviceConfig[], deviceId: string): string {
-  return devices.find((device) => device.deviceID === deviceId)?.name || deviceId.slice(0, 7);
+  return deviceDisplayName(devices.find((device) => device.deviceID === deviceId)?.name, deviceId);
 }
 
 export function offersOf(instance: Pick<FolderInstance, "nodeId" | "nodeName">, devices: SyncthingDeviceConfig[], pending: PendingFolders): PendingFolderOffer[] {

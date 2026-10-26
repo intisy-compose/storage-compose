@@ -1,4 +1,4 @@
-import type { ActivityFilters, ActivityResponse, DevicesResponse, FolderDetailResponse, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, DeviceSettings, DevicesResponse, FolderDetailResponse, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -18,6 +18,19 @@ export interface Notice {
 }
 
 export const allNodesView = "all";
+
+/** The form of `#/nodes/<nodeId>/devices/<deviceId>`: one device as one node's Syncthing has it. */
+export interface DeviceFormState {
+  nodeId: string;
+  deviceId: string;
+  /** As the node answered when the form opened or last saved; changes are measured against it, never against a later read. */
+  saved: DeviceSettings | null;
+  /** What the form holds, typed or not. */
+  draft: DeviceSettings | null;
+  loadError: string | null;
+  saving: boolean;
+  result: Notice | null;
+}
 
 /** The Folders page's file explorer: which node's view, which directory, and what the person opened in it. */
 export interface ExplorerState {
@@ -45,6 +58,7 @@ export interface AppState {
   selectedNodeId: string | null;
   selectedDeviceKey: string | null;
   selectedDriveKey: string | null;
+  deviceForm: DeviceFormState | null;
   data: NodesResponse | null;
   devices: DevicesResponse | null;
   devicesError: string | null;
@@ -86,6 +100,7 @@ export const appState: AppState = {
   selectedNodeId: null,
   selectedDeviceKey: null,
   selectedDriveKey: null,
+  deviceForm: null,
   data: null,
   devices: null,
   devicesError: null,
@@ -125,13 +140,25 @@ function readExplorerLocation(query: URLSearchParams): void {
   appState.explorer.placeAtFolder = appState.selectedFolderId !== null && !query.has("path");
 }
 
-/** `nodes/<nodeId>`, `nodes/device/<key>` or `nodes/drive/<key>`. */
-function readNodesSelection(itemId: string | null, subItemId: string | null): void {
+function emptyDeviceForm(nodeId: string, deviceId: string): DeviceFormState {
+  return { nodeId, deviceId, saved: null, draft: null, loadError: null, saving: false, result: null };
+}
+
+/** Keeps the open form, and what was typed into it, while the address names the same device. */
+function readDeviceForm(nodeId: string | null, deviceId: string | null): void {
+  const open = appState.deviceForm;
+  if (!nodeId || !deviceId) appState.deviceForm = null;
+  else if (open?.nodeId !== nodeId || open.deviceId !== deviceId) appState.deviceForm = emptyDeviceForm(nodeId, deviceId);
+}
+
+/** `nodes/<nodeId>`, `nodes/<nodeId>/devices/<deviceId>`, `nodes/device/<key>` or `nodes/drive/<key>`. */
+function readNodesSelection(itemId: string | null, subItemId: string | null, deviceId: string | null): void {
   const isDevice = itemId === "device" && subItemId !== null;
   const isDrive = itemId === "drive" && subItemId !== null;
   appState.selectedDeviceKey = isDevice ? subItemId : null;
   appState.selectedDriveKey = isDrive ? subItemId : null;
   appState.selectedNodeId = isDevice || isDrive ? null : itemId;
+  readDeviceForm(appState.selectedNodeId, subItemId === "devices" ? deviceId : null);
 }
 
 export function readLocation(): void {
@@ -139,10 +166,10 @@ export function readLocation(): void {
   const queryStart = hash.indexOf("?");
   const route = queryStart < 0 ? hash : hash.slice(0, queryStart);
   const query = new URLSearchParams(queryStart < 0 ? "" : hash.slice(queryStart + 1));
-  const [page, itemId, subItemId] = route.split("/");
+  const [page, itemId, subItemId, deviceId] = route.split("/");
   appState.page = pages.includes(page as PageId) ? (page as PageId) : "nodes";
   const selected = itemId ? decodeURIComponent(itemId) : null;
-  readNodesSelection(appState.page === "nodes" ? selected : null, subItemId ? decodeURIComponent(subItemId) : null);
+  readNodesSelection(appState.page === "nodes" ? selected : null, subItemId ? decodeURIComponent(subItemId) : null, deviceId ? decodeURIComponent(deviceId) : null);
   appState.selectedFolderId = appState.page === "folders" ? selected : null;
   if (appState.page === "folders") readExplorerLocation(query);
 }
@@ -170,6 +197,11 @@ export function deviceLocation(key: string): string {
   return `#/nodes/device/${encodeURIComponent(key)}`;
 }
 
+/** The form of one device as the node `nodeId` has it configured. */
+export function deviceFormLocation(nodeId: string, deviceId: string): string {
+  return `#/nodes/${encodeURIComponent(nodeId)}/devices/${encodeURIComponent(deviceId)}`;
+}
+
 export function driveLocation(key: string): string {
   return `#/nodes/drive/${encodeURIComponent(key)}`;
 }
@@ -177,5 +209,6 @@ export function driveLocation(key: string): string {
 export function selectedItemId(): string | null {
   if (appState.selectedDeviceKey !== null) return `device/${appState.selectedDeviceKey}`;
   if (appState.selectedDriveKey !== null) return `drive/${appState.selectedDriveKey}`;
+  if (appState.deviceForm) return `${appState.deviceForm.nodeId}/devices/${appState.deviceForm.deviceId}`;
   return appState.selectedNodeId ?? appState.selectedFolderId ?? (appState.page === "folders" ? appState.explorer.selectedPath : null);
 }

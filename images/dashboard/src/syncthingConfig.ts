@@ -1,4 +1,4 @@
-import type { InstanceGui, InstanceOptions } from "./api/types.js";
+import type { DeviceCompression, DeviceSettings, DeviceSettingsChange, InstanceGui, InstanceOptions } from "./api/types.js";
 
 type SyncthingObject = Record<string, unknown>;
 
@@ -55,4 +55,87 @@ export function instanceOptions(options: SyncthingObject, deviceName: string): I
 
 export function instanceGui(gui: SyncthingObject): InstanceGui {
   return { address: text(gui.address), useTLS: bool(gui.useTLS), authMode: text(gui.authMode), user: text(gui.user), managedBy: "stack" };
+}
+
+const compressions: readonly DeviceCompression[] = ["metadata", "always", "never"];
+
+function compression(value: unknown): DeviceCompression {
+  return compressions.includes(value as DeviceCompression) ? (value as DeviceCompression) : "metadata";
+}
+
+/** One entry of `/rest/config/devices`, field by field, so nothing Syncthing adds later reaches the page. */
+export function deviceSettings(device: SyncthingObject): DeviceSettings {
+  return {
+    deviceId: text(device.deviceID),
+    name: text(device.name),
+    addresses: strings(device.addresses),
+    compression: compression(device.compression),
+    introducer: bool(device.introducer),
+    autoAcceptFolders: bool(device.autoAcceptFolders),
+    paused: bool(device.paused),
+    untrusted: bool(device.untrusted),
+    allowedNetworks: strings(device.allowedNetworks),
+    maxSendKbps: count(device.maxSendKbps),
+    maxRecvKbps: count(device.maxRecvKbps),
+    numConnections: count(device.numConnections),
+  };
+}
+
+function isSame(first: unknown, second: unknown): boolean {
+  return JSON.stringify(first) === JSON.stringify(second);
+}
+
+/** The fields of `after` that differ from `before`; lists compare by content. */
+export function changedFields<T extends object>(before: T, after: T): Partial<T> {
+  return Object.fromEntries(Object.entries(after).filter(([key, value]) => !isSame(before[key as keyof T], value))) as Partial<T>;
+}
+
+const addressSchemes = new Set(["tcp", "tcp4", "tcp6", "quic", "quic4", "quic6", "relay"]);
+
+/** Why Syncthing could not dial this device address, or null when it can. */
+export function addressProblem(address: string): string | null {
+  if (address === "dynamic") return null;
+  const parsed = /^([a-z0-9]+):\/\/([^/?#\s]+)[^\s]*$/i.exec(address);
+  if (!parsed || !addressSchemes.has(parsed[1].toLowerCase())) return `${address || "an empty address"} is not dynamic or a tcp://, quic:// or relay:// address`;
+  return null;
+}
+
+/** Why `value` cannot be sent as the field `key`, as a sentence, or null when it can. */
+type FieldCheck = (value: unknown, key: string) => string | null;
+
+const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((entry) => typeof entry === "string");
+const booleanField: FieldCheck = (value, key) => (typeof value === "boolean" ? null : `${key} must be true or false`);
+const wholeNumberField: FieldCheck = (value, key) => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? null : `${key} must be a whole number, 0 or more`);
+
+function addressesCheck(value: unknown): string | null {
+  if (!isStringList(value)) return "addresses must be a list of addresses";
+  if (value.length === 0) return "a device needs at least one address, or dynamic";
+  return value.map(addressProblem).find((problem) => problem !== null) ?? null;
+}
+
+const deviceFieldChecks: Record<keyof DeviceSettingsChange, FieldCheck> = {
+  name: (value) => (typeof value === "string" ? null : "name must be text"),
+  addresses: addressesCheck,
+  compression: (value) => (compressions.includes(value as DeviceCompression) ? null : `compression must be ${compressions.join(", ")}`),
+  introducer: booleanField,
+  autoAcceptFolders: booleanField,
+  paused: booleanField,
+  untrusted: booleanField,
+  allowedNetworks: (value) => (isStringList(value) && value.every((entry) => entry.trim() !== "") ? null : "allowedNetworks must be a list of networks"),
+  maxSendKbps: wholeNumberField,
+  maxRecvKbps: wholeNumberField,
+  numConnections: wholeNumberField,
+};
+
+/** Why a device change cannot be sent to Syncthing as it is, or null when it can. */
+export function deviceChangeProblem(change: unknown): string | null {
+  if (typeof change !== "object" || change === null || Array.isArray(change) || Object.keys(change).length === 0) return "nothing to change";
+  for (const [key, value] of Object.entries(change)) {
+    if (key === "deviceId") return "deviceId cannot be changed";
+    const check = Object.hasOwn(deviceFieldChecks, key) ? deviceFieldChecks[key as keyof DeviceSettingsChange] : null;
+    if (!check) return `${key} is not a device setting`;
+    const problem = check(value, key);
+    if (problem) return problem;
+  }
+  return null;
 }

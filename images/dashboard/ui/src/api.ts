@@ -8,6 +8,9 @@ export type {
   ArrayMember,
   ArrayState,
   ConnectionKind,
+  DeviceCompression,
+  DeviceSettings,
+  DeviceSettingsChange,
   DeviceSource,
   DeviceSummary,
   DevicesResponse,
@@ -61,11 +64,12 @@ export type {
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
-import type { ActivityResponse, ArrayAction, ArrayActionBody, DevicesResponse, FolderDetailResponse, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { ActivityResponse, ArrayAction, ArrayActionBody, DeviceSettings, DeviceSettingsChange, DevicesResponse, FolderDetailResponse, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
-export { addressLabel, connectionKindText, deviceStateText, driveLastSeenHereText, driveWhereText, isReachable, reachTone, seenTimeText } from "../../src/api/deviceText.js";
+export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, isReachable, reachTone, seenTimeText, shortDeviceId } from "../../src/api/deviceText.js";
+export { changedFields } from "../../src/syncthingConfig.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 
 export interface ActionResult {
@@ -100,6 +104,27 @@ export function fetchHostSettings(): Promise<HostSettings> {
 
 export function fetchNodeOptions(nodeId: string): Promise<NodeOptionsResponse> {
   return getJson(`api/nodes/${encodeURIComponent(nodeId)}/options`);
+}
+
+function devicePath(nodeId: string, deviceId: string): string {
+  return `api/nodes/${encodeURIComponent(nodeId)}/devices/${encodeURIComponent(deviceId)}`;
+}
+
+export function fetchDeviceSettings(nodeId: string, deviceId: string): Promise<DeviceSettings> {
+  return getJson(devicePath(nodeId, deviceId));
+}
+
+export type SaveResult<T> = { ok: true; value: T } | { ok: false; message: string };
+
+/** Sends only `change`; the node's answer is the device as it now stands. */
+export async function saveDeviceSettings(nodeId: string, deviceId: string, change: DeviceSettingsChange): Promise<SaveResult<DeviceSettings>> {
+  try {
+    const response = await fetch(devicePath(nodeId, deviceId), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
+    const payload = (await response.json().catch(() => ({}))) as DeviceSettings & { error?: string };
+    return response.ok ? { ok: true, value: payload } : { ok: false, message: payload.error ?? `HTTP ${response.status}` };
+  } catch {
+    return { ok: false, message: "The dashboard is not answering." };
+  }
 }
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {
