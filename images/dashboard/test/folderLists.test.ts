@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { PathSet, browseFor, listsFor, listsWithStatus } from "../src/folderLists.js";
 import { type FolderStatus, SyncthingClient } from "../src/syncthing.js";
+import { until } from "./until.js";
 
 const fixtures = new URL("../../test/fixtures/syncthing-tree/", import.meta.url);
 
@@ -35,6 +36,8 @@ describe("folder lists", () => {
   let browsed: { name: string; modTime: string; size: number; type: string }[];
   let delayMs = 0;
   const hits: Record<string, number> = {};
+  const inFlight: Record<string, number> = {};
+  const mostInFlight: Record<string, number> = {};
   const perPages: number[] = [];
   let instanceCount = 0;
 
@@ -44,7 +47,10 @@ describe("folder lists", () => {
     server = createServer(async (request, response) => {
       const url = new URL(request.url ?? "/", "http://fake");
       hits[url.pathname] = (hits[url.pathname] ?? 0) + 1;
+      inFlight[url.pathname] = (inFlight[url.pathname] ?? 0) + 1;
+      mostInFlight[url.pathname] = Math.max(mostInFlight[url.pathname] ?? 0, inFlight[url.pathname]);
       if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      inFlight[url.pathname] -= 1;
       if (url.searchParams.has("perpage")) perPages.push(Number(url.searchParams.get("perpage")));
       switch (url.pathname) {
         case "/rest/db/status":
@@ -77,7 +83,7 @@ describe("folder lists", () => {
     changed = [];
     browsed = [];
     delayMs = 0;
-    for (const key of Object.keys(hits)) delete hits[key];
+    for (const counts of [hits, inFlight, mostInFlight]) for (const key of Object.keys(counts)) delete counts[key];
     perPages.length = 0;
     instanceCount += 1;
   });
@@ -148,7 +154,7 @@ describe("folder lists", () => {
     assert.equal(hits["/rest/db/browse"], 1);
     browsed = [...browsed, { name: "Taxes", modTime: "2026-10-21T10:00:00Z", size: 0, type: "FILE_INFO_TYPE_DIRECTORY" }];
     assert.deepEqual(await browseFor(key, client, "documents", "", "6"), first);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await until(async () => (await browseFor(key, client, "documents", "", "6")).length === 2, "the browse of the new sequence");
     assert.deepEqual((await browseFor(key, client, "documents", "", "6")).map((entry) => entry.name), ["Recipes", "Taxes"]);
     assert.equal(hits["/rest/db/browse"], 2);
   });
@@ -161,13 +167,11 @@ describe("folder lists", () => {
     browsed = [{ name: "Taxes", modTime: "2026-10-21T10:00:00Z", size: 0, type: "FILE_INFO_TYPE_DIRECTORY" }];
     const answers = await Promise.all(["b", "c", "d"].map((fingerprint) => browseFor(key, client, "documents", "", fingerprint)));
     assert.ok(answers.every((answer) => answer === first));
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal(hits["/rest/db/browse"], 2);
-    await new Promise((resolve) => setTimeout(resolve, 450));
-    assert.equal(hits["/rest/db/browse"], 3);
+    await until(() => hits["/rest/db/browse"] === 3 && inFlight["/rest/db/browse"] === 0, "the in-flight browse and the one for the newest change");
     delayMs = 0;
-    assert.deepEqual((await browseFor(key, client, "documents", "", "d")).map((entry) => entry.name), ["Taxes"]);
+    await until(async () => (await browseFor(key, client, "documents", "", "d"))[0]?.name === "Taxes", "the newest change served");
     assert.equal(hits["/rest/db/browse"], 3);
+    assert.equal(mostInFlight["/rest/db/browse"], 1);
   });
 
   it("keeps one list read in flight while a folder changes", async () => {
@@ -180,11 +184,11 @@ describe("folder lists", () => {
       status = { ...status, sequence };
       assert.equal(await listsWithStatus(key, client, "documents", status as unknown as FolderStatus), first);
     }
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await until(() => hits["/rest/db/need"] === 3 && inFlight["/rest/db/need"] === 0, "the in-flight read and the one for the newest change");
     delayMs = 0;
-    const newest = await listsFor(key, client, "documents");
-    assert.equal(newest.sequence, 13);
+    await until(async () => (await listsFor(key, client, "documents")).sequence === 13, "the newest change served");
     assert.equal(hits["/rest/db/need"], 3);
+    assert.equal(mostInFlight["/rest/db/need"], 1);
   });
 
   it("above the limit the folder is too many to place", async () => {

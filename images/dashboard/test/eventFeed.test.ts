@@ -5,6 +5,7 @@ import { after, describe, it } from "node:test";
 import type { ParityJob } from "../src/api/types.js";
 import { ActivityLog, EventFeeds, type FeedInstance, ParityWatcher, failedItemsPerFolder } from "../src/eventFeed.js";
 import { SyncthingClient, type SyncthingEvent } from "../src/syncthing.js";
+import { until } from "./until.js";
 
 const pcDevice = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 const arrayDevice = "ARRAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
@@ -33,11 +34,15 @@ class FakeSyncthing {
       this.sinceSeen.push(since);
       const answer = () => this.events.filter((event) => event.id > since);
       if (answer().length) return reply(answer());
-      const timer = setTimeout(() => reply(answer()), 30);
-      this.waiting.push(() => {
+      let answered = false;
+      const answerOnce = () => {
+        if (answered) return;
+        answered = true;
         clearTimeout(timer);
         reply(answer());
-      });
+      };
+      const timer = setTimeout(answerOnce, 30);
+      this.waiting.push(answerOnce);
     });
   }
 
@@ -66,13 +71,6 @@ class FakeSyncthing {
   }
 }
 
-async function until(condition: () => boolean, what: string): Promise<void> {
-  const deadline = Date.now() + 3000;
-  while (!condition()) {
-    if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}`);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
 
 const fakes: FakeSyncthing[] = [];
 const feedSets: EventFeeds[] = [];
@@ -163,7 +161,8 @@ describe("event feeds", () => {
     feeds.reconcile([feed]);
     fake.emit(scanned("documents", "syncing"));
     await until(() => log.query({}).entries.length >= 3, "the next event");
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const pollsAfter = (since: number) => fake.sinceSeen.filter((seen) => seen >= since).length;
+    await until(() => pollsAfter(3) >= 3, "every running feed to have asked again after the next event");
     assert.deepEqual(texts(log), ["pc: Documents is syncing", "pc: Documents is idle", "pc: Documents is scanning"]);
   });
 
