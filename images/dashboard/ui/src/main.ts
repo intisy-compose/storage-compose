@@ -13,6 +13,7 @@ import { renderItemNotFound } from "./itemNotFound.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
 import { renderNodesPage } from "./nodesPage.js";
 import { applyTheme } from "./preferences.js";
+import { skipWhileRunning } from "./pollGuard.js";
 import { onRenderRequested } from "./renderRequest.js";
 import { renderRequestsPage } from "./requestsPage.js";
 import { readableLocalNodes, renderSettingsPage } from "./settingsPage.js";
@@ -217,11 +218,11 @@ async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Pro
   if (appState.page === "settings") await loadSettings(nodesLoaded);
 }
 
-async function poll(): Promise<void> {
+const poll = skipWhileRunning(async () => {
   const nodesLoaded = loadNodes();
   await Promise.all([nodesLoaded, loadPageData(nodesLoaded)]);
   if (!isInUse()) render();
-}
+});
 
 async function refreshPage(): Promise<void> {
   await loadPageData();
