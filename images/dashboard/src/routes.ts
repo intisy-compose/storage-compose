@@ -43,16 +43,16 @@ declare const hostWriteBrand: unique symbol;
 /** The pattern of a write that is no node's, made only by `hostWritePattern`. */
 export type HostWritePattern = RegExp & { readonly [hostWriteBrand]: true };
 
-const nodeProbePath = "/api/nodes/x/y";
+const nodeProbePaths = ["/api/nodes/x", "/api/nodes/x/y", "/api/nodes/x/y/z"];
 
 /** The path a pattern stands for with each group filled by one segment: `/api/nodes/x/devices` for `^\/api\/nodes\/([^/]+)\/devices$`. */
 function samplePath(pattern: RegExp): string {
   return pattern.source.replace(/^\^/, "").replace(/\$$/, "").replaceAll("\\/", "/").replace(/\((?:[^()]|\([^()]*\))*\)/g, "x");
 }
 
-/** Whether a route pattern answers paths under /api/nodes/: it takes the probe path, or the path it stands for is one. */
+/** Whether a route pattern answers paths under /api/nodes/: it takes a probe path, such as through an alternation, or the path it stands for is one. */
 export function isNodePattern(pattern: RegExp): boolean {
-  return pattern.test(nodeProbePath) || samplePath(pattern).startsWith("/api/nodes/");
+  return nodeProbePaths.some((probe) => pattern.test(probe)) || samplePath(pattern).startsWith("/api/nodes/");
 }
 
 /**

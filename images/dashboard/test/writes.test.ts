@@ -68,6 +68,8 @@ describe("a write through the dashboard", () => {
     assert.throws(() => hostWritePattern(/^\/api\/nodes\/(fb98|d7e5)\/devices$/), /is a node's path/);
     assert.ok(hostWritePattern(/^\/api\/arrays\/x\/sync$/).test("/api/arrays/x/sync"));
     assert.ok(hostWritePattern(/^\/api\/join$/));
+    assert.throws(() => hostWritePattern(/^\/api\/(arrays|nodes)\/([^/]+)$/), /is a node's path/, "an alternation that can name nodes");
+    assert.throws(() => hostWritePattern(/^\/api\/(arrays|nodes)\/([^/]+)\/([^/]+)$/), /is a node's path/);
     assert.equal(isNodePattern(/^\/api\/nodes$/), false, "the nodes list itself is no node's path");
   });
 

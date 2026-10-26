@@ -10,13 +10,13 @@ import { discoveryPollSecondsOf } from "../src/settings.js";
 const now = Date.parse("2026-10-26T13:30:00Z");
 
 function drive(role: string, overrides: Partial<DriveStatus> = {}): DriveStatus {
-  return { label: `5784-${role}`, role, condition: "present", detail: "", asset: null, mounted: true, size: 1000, used: 500, serial: null, ...overrides };
+  return { label: `beef-${role}`, role, condition: "present", detail: "", asset: null, mounted: true, size: 1000, used: 500, serial: null, ...overrides };
 }
 
 function status(overrides: Partial<ArrayStatus>): ArrayStatus {
   return {
-    id: "5784",
-    name: "private-array",
+    id: "beef",
+    name: "other-array",
     node: "finn",
     updated: "2026-10-26T13:29:55Z",
     state: "healthy",
@@ -43,7 +43,7 @@ describe("array status", () => {
 
   async function read(written: ArrayStatus): Promise<ArrayStatus> {
     await writeFile(join(directory, "status.json"), JSON.stringify(written));
-    return (await arrayStatus("5784", directory, now))!;
+    return (await arrayStatus("beef", directory, now))!;
   }
 
   it("an array whose mounter stopped reporting has every member absent and reads not connected", async () => {
@@ -71,8 +71,8 @@ describe("array status", () => {
 
   it("an arrays directory that cannot be listed reads as unknown, not empty", async () => {
     assert.equal(await listedArrayIds(join(directory, "missing")), null);
-    await mkdir(join(directory, "arrays", "5784"), { recursive: true });
-    assert.deepEqual(await listedArrayIds(join(directory, "arrays")), ["5784"]);
+    await mkdir(join(directory, "arrays", "beef"), { recursive: true });
+    assert.deepEqual(await listedArrayIds(join(directory, "arrays")), ["beef"]);
   });
 
   it("an array whose members are all absent is not connected, not healthy or frozen", async () => {
@@ -93,9 +93,9 @@ describe("array status", () => {
     const slow = await read(status({ updated: new Date(now - 6 * 60_000).toISOString() }));
     assert.equal(slow.present, true);
     assert.equal(slow.drives[0].condition, "present");
-    const silent = await read(status({ updated: new Date(now - 8 * 60_000).toISOString(), reasons: ["5784-data3 is missing"] }));
+    const silent = await read(status({ updated: new Date(now - 8 * 60_000).toISOString(), reasons: ["beef-data3 is missing"] }));
     assert.equal(silent.present, false);
-    assert.deepEqual(silent.reasons, ["5784-data3 is missing"]);
+    assert.deepEqual(silent.reasons, ["beef-data3 is missing"]);
   });
 
   it("an array the mounter reports in time keeps its state", async () => {

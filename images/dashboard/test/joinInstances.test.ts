@@ -20,6 +20,7 @@ describe("the instances a joining device is added to", () => {
   let fakeSyncthing: Server;
   let sources: ResolverSources;
   let clusterStatusPath: string;
+  let clusterConfigPath: string;
   const writes: string[] = [];
   let joinInstances: typeof import("../src/joinInstances.js").joinInstances;
   let handleJoin: typeof import("../src/join.js").handleJoin;
@@ -51,7 +52,7 @@ describe("the instances a joining device is added to", () => {
     ({ handleJoin } = await import("../src/join.js"));
 
     await mkdir(join(directory, "storage-data1", ".storage", "syncthing"), { recursive: true });
-    await writeFile(join(directory, "storage-data1", ".storage", "syncthing", "config.xml"), "<configuration><gui><apikey>cluster-key</apikey></gui></configuration>");
+    clusterConfigPath = join(directory, "storage-data1", ".storage", "syncthing", "config.xml");
     const registry = join(directory, "status", "nodes");
     await mkdir(registry, { recursive: true });
     const clusterStatus = join(directory, "status", "arrays", "storage");
@@ -90,6 +91,7 @@ describe("the instances a joining device is added to", () => {
   beforeEach(async () => {
     writes.length = 0;
     await writeClusterStatus(true);
+    await writeFile(clusterConfigPath, "<configuration><gui><apikey>cluster-key</apikey></gui></configuration>");
   });
 
   after(async () => {
@@ -138,6 +140,25 @@ describe("the instances a joining device is added to", () => {
     assert.deepEqual(writes, []);
     assert.deepEqual(recorded, []);
     assert.deepEqual(pushed, []);
+  });
+
+  async function assertRefusedWithoutWrites(message: string): Promise<void> {
+    const { dependencies, recorded, pushed } = joinDependencies();
+    await assert.rejects(handleJoin(dependencies, ["100.64.0.5"], laptopRequest), { status: 503, message });
+    assert.deepEqual(writes, []);
+    assert.deepEqual(recorded, []);
+    assert.deepEqual(pushed, []);
+  }
+
+  it("a connected cluster whose Syncthing cannot be addressed refuses the join with 503 and nothing is written, recorded or pushed", async () => {
+    await rm(clusterConfigPath);
+    await assertRefusedWithoutWrites("storage's Syncthing is not answering, so the device cannot join yet");
+  });
+
+  it("a cluster with neither a status nor an addressable Syncthing refuses the join with 503 and nothing is written, recorded or pushed", async () => {
+    await rm(clusterConfigPath);
+    await rm(clusterStatusPath);
+    await assertRefusedWithoutWrites("storage is not connected, so the device cannot join yet");
   });
 
   it("a connected cluster joins as before: the device is added to every instance, recorded and pushed", async () => {

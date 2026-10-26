@@ -24,11 +24,11 @@ describe("array actions", () => {
   before(async () => {
     directory = await mkdtemp(join(tmpdir(), "array-routes-"));
     process.env.STATUS_DIRECTORY = directory;
-    const arrayDirectory = join(directory, "arrays", "5784");
+    const arrayDirectory = join(directory, "arrays", "beef");
     await mkdir(arrayDirectory, { recursive: true });
-    const drive = (role: string) => ({ label: `5784-${role}`, role, condition: "present", detail: "", asset: null, mounted: true, size: 1000, used: 10, serial: null });
+    const drive = (role: string) => ({ label: `beef-${role}`, role, condition: "present", detail: "", asset: null, mounted: true, size: 1000, used: 10, serial: null });
     const silentForDays = {
-      id: "5784", name: "private-array", node: "finn", updated: "2026-10-21T12:35:32Z", state: "healthy", since: "2026-10-21T00:43:49Z",
+      id: "beef", name: "other-array", node: "finn", updated: "2026-10-21T12:35:32Z", state: "healthy", since: "2026-10-21T00:43:49Z",
       complete: true, present: true, reasons: [], drives: [drive("data1"), drive("data2"), drive("parity1")], splitFolders: [], pausedFolders: [], description: null,
     };
     await writeFile(join(arrayDirectory, "status.json"), JSON.stringify(silentForDays));
@@ -45,13 +45,13 @@ describe("array actions", () => {
 
   for (const [action, body] of actions) {
     it(`${action} on an array that is not connected is 409 and names it`, async () => {
-      const answer = await fetch(`${base}/api/arrays/5784/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const answer = await fetch(`${base}/api/arrays/beef/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       assert.equal(answer.status, 409);
-      assert.deepEqual(await answer.json(), { error: "private-array is not connected" });
+      assert.deepEqual(await answer.json(), { error: "other-array is not connected" });
     });
   }
 
   it("leaves no request for the mounter behind", () => {
-    assert.equal(existsSync(join(directory, "arrays", "5784", "accept-smart.request")), false);
+    assert.equal(existsSync(join(directory, "arrays", "beef", "accept-smart.request")), false);
   });
 });
