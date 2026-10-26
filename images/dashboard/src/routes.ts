@@ -4,7 +4,7 @@ import type { ArrayAction, ArrayActionBody } from "./api/types.js";
 import { type ArrayStatus, arrayStatus } from "./arrayStatus.js";
 import { isReplacementCandidate, listBlockDevices } from "./blockDevices.js";
 import { recordDashboardActivity, refreshEventFeeds } from "./eventFeed.js";
-import { RequestError, readBody, refuseCrossSiteWrite, sendJson } from "./http.js";
+import { type HostAllowlist, RequestError, hostAllowlist, hostRefusal, readBody, refuseCrossSiteWrite, sendJson } from "./http.js";
 import { fileJoinRecords } from "./join.js";
 import { invalidateLocalNodes, nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
@@ -15,7 +15,7 @@ import { folderRoutes } from "./routes/folders.js";
 import { optionsRoutes } from "./routes/options.js";
 import { pendingRoutes } from "./routes/pending.js";
 import { treeRoutes } from "./routes/tree.js";
-import { arrayStatusDirectory, clusterArrayId, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
+import { arrayStatusDirectory, clusterArrayId, dashboardHosts, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
 import { SyncthingError, SyncthingUnavailable } from "./syncthing.js";
 
 export const joinRecords = fileJoinRecords(joinsFile);
@@ -235,7 +235,9 @@ async function runRoute(candidate: AnyRoute, context: RouteContext): Promise<Wri
   return null;
 }
 
-async function route(routeList: AnyRoute[], effects: WriteEffects, request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function route(routeList: AnyRoute[], effects: WriteEffects, hosts: HostAllowlist, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const misdirected = hostRefusal(request, hosts);
+  if (misdirected) throw misdirected;
   refuseCrossSiteWrite(request);
   const url = new URL(request.url ?? "/", "http://dashboard");
   for (const candidate of routeList) {
@@ -256,10 +258,14 @@ function errorStatus(error: unknown): number {
 }
 
 /** Answers a request from `routeList`; a refusal or failure becomes `{ error }` with its status. */
-export function requestHandler(routeList: AnyRoute[], effects: WriteEffects = liveWriteEffects): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
+export function requestHandler(
+  routeList: AnyRoute[],
+  effects: WriteEffects = liveWriteEffects,
+  hosts: HostAllowlist = hostAllowlist(dashboardHosts),
+): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
   return async (request, response) => {
     try {
-      await route(routeList, effects, request, response);
+      await route(routeList, effects, hosts, request, response);
     } catch (error) {
       const status = errorStatus(error);
       if (status === 500) console.error(error);

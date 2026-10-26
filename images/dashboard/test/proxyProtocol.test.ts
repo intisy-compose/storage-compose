@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { connect } from "node:net";
 import type { AddressInfo, Server } from "node:net";
 import { after, before, describe, it } from "node:test";
+import { hostAllowlist } from "../src/http.js";
 import { createJoinListener } from "../src/joinListener.js";
 import { parseProxyV2 } from "../src/proxyProtocol.js";
 
+const storageHost = hostAllowlist(["storage"]);
 const signature = [0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a];
 
 /** The header tailscale's serve writes (go-proxyproto, v1.102.4) for a caller on 100.75.76.90:51234. */
@@ -90,7 +92,7 @@ describe("the join listener", () => {
     seen.push(`${caller.address} ${Buffer.concat(chunks).toString("utf8")}`);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ caller: caller.address }));
-  }, async () => ["127.0.0.1"]);
+  }, async () => ["127.0.0.1"], storageHost);
 
   before(() => new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)));
   after(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -152,6 +154,7 @@ describe("the join listener's source check", () => {
       resolutions++;
       return gatewayAddresses;
     },
+    storageHost,
   );
   const validJoin = () => Buffer.concat([ipv4Header(), httpRequest("POST", "/api/join", "{}")]);
 

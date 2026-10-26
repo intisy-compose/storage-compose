@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { type Server, createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
+import { hostAllowlist } from "../src/http.js";
 import { type AnyRoute, type WriteNote, hostWritePattern, requestHandler } from "../src/routes.js";
 
 const pauseNote: WriteNote = { nodeId: "d7e5", nodeName: "peer", folderId: null, text: "peer: paused every device" };
@@ -35,7 +36,8 @@ describe("a write from another site", () => {
   let port: number;
 
   before(async () => {
-    const handler = requestHandler(routes, { invalidate: () => {}, record: (note) => void notes.push(note.text) });
+    const hosts = hostAllowlist(["localhost", "127.0.0.1", "storage.tail1234.ts.net"]);
+    const handler = requestHandler(routes, { invalidate: () => {}, record: (note) => void notes.push(note.text) }, hosts);
     server = createServer((request, response) => void handler(request, response));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     port = (server.address() as AddressInfo).port;

@@ -93,6 +93,7 @@ services:
       STORAGE_NODE: ${STORAGE_NODE:?run init-config}
       STORAGE_HOST: ${STORAGE_HOST:-}
       STORAGE_PEERS: ${STORAGE_PEERS:-}
+      DASHBOARD_EXTRA_HOSTS: ${DASHBOARD_EXTRA_HOSTS:-}
       TAILNET_PROXY: http://gateway:1055
       JOIN_ALLOWED_USERS: ${JOIN_ALLOWED_USERS:-}
       NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
