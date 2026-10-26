@@ -1,4 +1,4 @@
-import type { ConnectionKind, StorageNode } from "./types.js";
+import type { ConnectionKind, DeviceSummary, DriveSummary, StorageNode } from "./types.js";
 
 export type ReachTone = "ok" | "muted";
 
@@ -35,8 +35,50 @@ export function addressHost(address: string): string {
   return addressParts(address).host;
 }
 
-export function connectionKindLabel(kind: ConnectionKind): string {
+export function connectionKindText(kind: ConnectionKind): string {
   return connectionKindLabels[kind];
+}
+
+const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function twoDigits(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+/** `3 Oct, 18:20` in local time, with the year when it is not `now`'s. */
+export function seenTimeText(at: string, now: Date): string {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return "at an unknown time";
+  const year = date.getFullYear() === now.getFullYear() ? "" : ` ${date.getFullYear()}`;
+  return `${date.getDate()} ${monthNames[date.getMonth()]}${year}, ${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`;
+}
+
+export function deviceStateText(device: DeviceSummary, now: Date): string {
+  if (device.thisHost) return "this device";
+  if (device.connection) return `connected over ${connectionKindText(device.connection.kind)}`;
+  if (device.online) return "dashboard answering, no Syncthing connection";
+  const seen = device.lastSeen ?? device.lastConnection?.at ?? null;
+  if (!seen) return "never connected";
+  const over = device.lastConnection ? ` over ${connectionKindText(device.lastConnection.kind)}` : "";
+  return `last seen ${seenTimeText(seen, now)}${over}`;
+}
+
+function openStay(drive: DriveSummary): DriveSummary["attachments"][number] | undefined {
+  return drive.attachments.find((stay) => stay.endedAt === null && stay.host === drive.currentHost);
+}
+
+export function driveWhereText(drive: DriveSummary, now: Date): string {
+  if (drive.present && drive.currentHost) {
+    const stay = openStay(drive);
+    return stay ? `on ${drive.currentHost} since ${seenTimeText(stay.since, now)}` : `on ${drive.currentHost}`;
+  }
+  if (!drive.lastHost || !drive.lastAt) return "never seen attached";
+  return `not attached; last on ${drive.lastHost} ${seenTimeText(drive.lastAt, now)}`;
+}
+
+/** For a drive listed under the device it was last on, which the row already names. */
+export function driveLastSeenHereText(drive: DriveSummary, now: Date): string {
+  return drive.lastAt ? `last seen here ${seenTimeText(drive.lastAt, now)}` : "never seen attached";
 }
 
 export function isReachable(node: Pick<StorageNode, "online" | "sync">): boolean {

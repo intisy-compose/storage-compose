@@ -1,7 +1,8 @@
-import { type NodesResponse, type StorageNode, type Warning, reachTone } from "./api.js";
+import { type DeviceSummary, type DevicesResponse, type DriveSummary, type NodesResponse, type StorageNode, type Warning, reachTone } from "./api.js";
 import { warningHref } from "./attentionPage.js";
+import { type DevicePlacement, arrayMembers, deviceLine, looseDriveRow, matchesDeviceSearch, matchesDriveSearch, memberDrive, placeOnDevices } from "./deviceList.js";
 import { element, progressBar } from "./dom.js";
-import { formatBytes, usedFraction } from "./format.js";
+import { formatBytes, plural, usedFraction } from "./format.js";
 import { icon } from "./icons.js";
 import { actionableWarnings, isArrayAbsent, isOffline, kindChipText, needsAttention, shortSyncState, spaceTone, thresholdChipText } from "./nodeStatus.js";
 import { requestRender } from "./renderRequest.js";
@@ -24,6 +25,10 @@ const kindFilters: [KindFilter, string][] = [
   ["folder", "Folders"],
 ];
 
+function searchText(): string {
+  return appState.search.trim();
+}
+
 function matchesSearch(node: StorageNode, search: string): boolean {
   if (!search) return true;
   const haystack = [node.name, node.host, node.kind, ...node.folders.map((folder) => folder.id)].join(" ").toLowerCase();
@@ -37,13 +42,26 @@ function matchesReach(response: NodesResponse, node: StorageNode, filter: ReachF
   return true;
 }
 
-function visibleNodes(response: NodesResponse): StorageNode[] {
-  return response.nodes.filter(
-    (node) =>
-      matchesSearch(node, appState.search.trim()) &&
-      matchesReach(response, node, appState.reachFilter) &&
-      (appState.kindFilter === "all" || node.kind === appState.kindFilter),
-  );
+function passesNodeFilters(response: NodesResponse, node: StorageNode): boolean {
+  return matchesReach(response, node, appState.reachFilter) && (appState.kindFilter === "all" || node.kind === appState.kindFilter);
+}
+
+function visibleNodes(response: NodesResponse, nodes: StorageNode[]): StorageNode[] {
+  return nodes.filter((node) => matchesSearch(node, searchText()) && passesNodeFilters(response, node));
+}
+
+function passesDriveFilters(drive: DriveSummary): boolean {
+  if (appState.kindFilter !== "all" && appState.kindFilter !== "drive") return false;
+  if (appState.reachFilter === "online") return drive.present;
+  if (appState.reachFilter === "offline") return !drive.present;
+  return appState.reachFilter !== "attention";
+}
+
+function passesDeviceFilters(device: DeviceSummary): boolean {
+  if (appState.kindFilter !== "all") return false;
+  if (appState.reachFilter === "online") return device.online;
+  if (appState.reachFilter === "offline") return !device.online;
+  return appState.reachFilter !== "attention";
 }
 
 /** Online nodes first, then by name, so a long remote list leads with what can be acted on. */
@@ -126,6 +144,65 @@ function nodeGroup(response: NodesResponse, title: string, nodes: StorageNode[],
   );
 }
 
+function matchingMembers(node: StorageNode, drives: DriveSummary[], search: string): boolean {
+  return (node.array?.members ?? []).some((member) => {
+    const drive = memberDrive(node, member, drives);
+    return drive ? matchesDriveSearch(drive, search) : `${member.label} ${member.role} ${member.serial ?? ""}`.toLowerCase().includes(search.toLowerCase());
+  });
+}
+
+interface DeviceRows {
+  nodes: StorageNode[];
+  drives: DriveSummary[];
+}
+
+/** What of a device the search and filters leave; a device that matches the search keeps every row that passes the filters. */
+function deviceRows(response: NodesResponse, placement: DevicePlacement, drives: DriveSummary[]): DeviceRows {
+  const search = searchText();
+  const isDeviceMatch = matchesDeviceSearch(placement.device, search);
+  const nodes = placement.nodes.filter(
+    (node) => passesNodeFilters(response, node) && (isDeviceMatch || matchesSearch(node, search) || matchingMembers(node, drives, search)),
+  );
+  const looseDrives = placement.looseDrives.filter((drive) => passesDriveFilters(drive) && (isDeviceMatch || matchesDriveSearch(drive, search)));
+  return { nodes, drives: looseDrives };
+}
+
+function isDeviceShown(placement: DevicePlacement, rows: DeviceRows): boolean {
+  if (rows.nodes.length || rows.drives.length) return true;
+  return passesDeviceFilters(placement.device) && matchesDeviceSearch(placement.device, searchText());
+}
+
+function memberCount(placement: DevicePlacement): number {
+  return placement.nodes.reduce((sum, node) => sum + (node.array?.members.length ?? 0), 0);
+}
+
+function deviceBlock(response: NodesResponse, devices: DevicesResponse, placement: DevicePlacement, now: Date): HTMLElement | null {
+  const rows = deviceRows(response, placement, devices.drives);
+  if (!isDeviceShown(placement, rows)) return null;
+  const nodeRows = [...rows.nodes].sort(byReachThenName).flatMap((node) => [nodeRow(response, node), arrayMembers(node, devices.drives, placement.device, now)]);
+  const driveRows = rows.drives.map((drive) => looseDriveRow(drive, placement.device, now));
+  const listed = [...nodeRows, ...driveRows].filter((row) => row !== null);
+  return element(
+    "section",
+    { className: "device-block", attributes: { "aria-label": placement.device.name } },
+    deviceLine(placement, memberCount(placement), now),
+    listed.length ? element("div", { className: "node-list" }, ...listed) : null,
+  );
+}
+
+function deviceBlocks(response: NodesResponse, devices: DevicesResponse | null): HTMLElement[] {
+  if (!devices) return [];
+  const now = new Date();
+  const { placements } = placeOnDevices(response.nodes, devices);
+  return placements.map((placement) => deviceBlock(response, devices, placement, now)).filter((block) => block !== null);
+}
+
+function devicesStatus(devices: DevicesResponse | null): HTMLElement | null {
+  if (devices && !appState.devicesError) return null;
+  const text = appState.devicesError ? `Devices could not be read: ${appState.devicesError}` : "Reading devices…";
+  return element("p", { className: "muted small devices-status" }, text);
+}
+
 export function warningBanner(warning: Warning): HTMLElement {
   const href = warningHref(warning);
   const banner = element(href ? "a" : "div", { className: `warning level-${warning.level}` }, element("span", { className: "warning-text" }, warning.text));
@@ -164,7 +241,7 @@ function filterButtons<Value extends string>(options: [Value, string][], current
 function searchBox(): HTMLElement {
   const input = element("input", {
     className: "search-input",
-    attributes: { type: "search", placeholder: "Search nodes", "aria-label": "Search nodes", id: "node-search" },
+    attributes: { type: "search", placeholder: "Search devices, nodes and drives", "aria-label": "Search devices, nodes and drives", id: "node-search" },
   });
   input.value = appState.search;
   input.addEventListener("input", () => {
@@ -174,8 +251,9 @@ function searchBox(): HTMLElement {
   return element("label", { className: "search" }, icon("search"), input);
 }
 
-function filterBar(response: NodesResponse): HTMLElement | null {
-  if (response.nodes.length < filtersShownFrom) return null;
+function filterBar(response: NodesResponse, devices: DevicesResponse | null): HTMLElement | null {
+  const rowCount = response.nodes.length + (devices ? devices.devices.length + devices.drives.length : 0);
+  if (rowCount < filtersShownFrom) return null;
   return element(
     "div",
     { className: "filter-bar" },
@@ -185,22 +263,27 @@ function filterBar(response: NodesResponse): HTMLElement | null {
   );
 }
 
-export function renderNodesPage(response: NodesResponse): HTMLElement {
-  const visible = visibleNodes(response);
-  const local = response.nodes.filter((node) => node.local);
-  const remote = response.nodes.filter((node) => !node.local);
+export function renderNodesPage(response: NodesResponse, devices: DevicesResponse | null): HTMLElement {
+  const { unplacedNodes } = placeOnDevices(response.nodes, devices);
+  const blocks = deviceBlocks(response, devices);
+  const unplacedShown = visibleNodes(response, unplacedNodes);
+  const isEverythingFiltered = devices !== null && blocks.length === 0 && unplacedShown.length === 0;
   return element(
     "div",
     { className: "page nodes-page" },
-    element("header", { className: "page-header" }, element("h1", {}, "Nodes"), element("p", { className: "page-summary" }, summaryText(response))),
+    element("header", { className: "page-header" }, element("h1", {}, "Nodes"), element("p", { className: "page-summary" }, summaryText(response, devices))),
     warningsArea(response),
-    filterBar(response),
-    nodeGroup(response, "This PC", visible.filter((node) => node.local), local.length),
-    nodeGroup(response, "Remote", visible.filter((node) => !node.local), remote.length),
+    filterBar(response, devices),
+    devicesStatus(devices),
+    ...blocks,
+    nodeGroup(response, devices ? "Other nodes" : "Nodes", unplacedShown, unplacedNodes.length),
+    isEverythingFiltered ? element("p", { className: "empty-line" }, "Nothing matches the filters.") : null,
   );
 }
 
-function summaryText(response: NodesResponse): string {
+function summaryText(response: NodesResponse, devices: DevicesResponse | null): string {
   const online = response.nodes.filter((node) => !isOffline(node)).length;
-  return `${response.nodes.length} nodes, ${online} online`;
+  const nodes = `${plural(response.nodes.length, "node")}, ${online} online`;
+  if (!devices) return nodes;
+  return `${plural(devices.devices.length, "device")}, ${nodes}, ${plural(devices.drives.length, "drive")}`;
 }

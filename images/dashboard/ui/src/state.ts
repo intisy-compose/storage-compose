@@ -1,4 +1,4 @@
-import type { ActivityFilters, ActivityResponse, FolderDetailResponse, NodeKind, NodesResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, DevicesResponse, FolderDetailResponse, NodeKind, NodesResponse, TreeListing } from "./api.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
 export type PageId = "nodes" | "folders" | "attention" | "activity" | "requests" | "settings";
@@ -44,7 +44,13 @@ export function emptyExplorer(node: string, path: string): ExplorerState {
 export interface AppState {
   page: PageId;
   selectedNodeId: string | null;
+  selectedDeviceKey: string | null;
+  selectedDriveKey: string | null;
   data: NodesResponse | null;
+  devices: DevicesResponse | null;
+  devicesError: string | null;
+  /** IDs of the arrays whose member drives a person folded away on the Nodes page. */
+  foldedArrays: Set<string>;
   lastLoaded: number | null;
   loadError: string | null;
   search: string;
@@ -73,7 +79,12 @@ export const activityPageSize = 300;
 export const appState: AppState = {
   page: "nodes",
   selectedNodeId: null,
+  selectedDeviceKey: null,
+  selectedDriveKey: null,
   data: null,
+  devices: null,
+  devicesError: null,
+  foldedArrays: new Set(),
   lastLoaded: null,
   loadError: null,
   search: "",
@@ -104,15 +115,24 @@ function readExplorerLocation(query: URLSearchParams): void {
   appState.explorer.placeAtFolder = appState.selectedFolderId !== null && !query.has("path");
 }
 
+/** `nodes/<nodeId>`, `nodes/device/<key>` or `nodes/drive/<key>`. */
+function readNodesSelection(itemId: string | null, subItemId: string | null): void {
+  const isDevice = itemId === "device" && subItemId !== null;
+  const isDrive = itemId === "drive" && subItemId !== null;
+  appState.selectedDeviceKey = isDevice ? subItemId : null;
+  appState.selectedDriveKey = isDrive ? subItemId : null;
+  appState.selectedNodeId = isDevice || isDrive ? null : itemId;
+}
+
 export function readLocation(): void {
   const hash = location.hash.replace(/^#\/?/, "");
   const queryStart = hash.indexOf("?");
   const route = queryStart < 0 ? hash : hash.slice(0, queryStart);
   const query = new URLSearchParams(queryStart < 0 ? "" : hash.slice(queryStart + 1));
-  const [page, itemId] = route.split("/");
+  const [page, itemId, subItemId] = route.split("/");
   appState.page = pages.includes(page as PageId) ? (page as PageId) : "nodes";
   const selected = itemId ? decodeURIComponent(itemId) : null;
-  appState.selectedNodeId = appState.page === "nodes" ? selected : null;
+  readNodesSelection(appState.page === "nodes" ? selected : null, subItemId ? decodeURIComponent(subItemId) : null);
   appState.selectedFolderId = appState.page === "folders" ? selected : null;
   if (appState.page === "folders") readExplorerLocation(query);
 }
@@ -136,6 +156,16 @@ export function locationFor(page: PageId, itemId: string | null = null): string 
   return itemId ? `#/${page}/${encodeURIComponent(itemId)}` : `#/${page}`;
 }
 
+export function deviceLocation(key: string): string {
+  return `#/nodes/device/${encodeURIComponent(key)}`;
+}
+
+export function driveLocation(key: string): string {
+  return `#/nodes/drive/${encodeURIComponent(key)}`;
+}
+
 export function selectedItemId(): string | null {
+  if (appState.selectedDeviceKey !== null) return `device/${appState.selectedDeviceKey}`;
+  if (appState.selectedDriveKey !== null) return `drive/${appState.selectedDriveKey}`;
   return appState.selectedNodeId ?? appState.selectedFolderId ?? (appState.page === "folders" ? appState.explorer.selectedPath : null);
 }

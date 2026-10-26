@@ -217,7 +217,7 @@ export function renderEmptyDetail(response: NodesResponse): HTMLElement {
   return element(
     "div",
     { className: "detail-inner detail-empty" },
-    element("p", {}, "Select a node to see its drives, parity, connection and folders."),
+    element("p", {}, "Select a device to see how it is connected, a node for its drives, parity and folders, or a drive for where it has been."),
     element("p", { className: "muted small" }, `${local} on this PC, ${response.nodes.length - local} remote.`),
   );
 }

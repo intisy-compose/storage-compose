@@ -57,7 +57,7 @@ import type { ActivityResponse, ArrayAction, ArrayActionBody, DevicesResponse, F
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
-export { addressLabel, connectionKindLabel, isReachable, reachTone } from "../../src/api/deviceText.js";
+export { addressLabel, connectionKindText, deviceStateText, driveLastSeenHereText, driveWhereText, isReachable, reachTone, seenTimeText } from "../../src/api/deviceText.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 
 export interface ActionResult {

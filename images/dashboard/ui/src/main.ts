@@ -1,7 +1,10 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
-import { fetchActivity, fetchFolderDetail, fetchNodes } from "./api.js";
+import type { NodesResponse } from "./api.js";
+import { fetchActivity, fetchDevices, fetchFolderDetail, fetchNodes } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
+import { renderDeviceDetail, renderItemNotFound } from "./deviceDetail.js";
 import { element } from "./dom.js";
+import { renderDriveDetail } from "./driveDetail.js";
 import { folderRootPriority, renderExplorerDetail } from "./explorerDetail.js";
 import { isNodeSelectorOpen, loadExplorer, placeAtFolder, renderExplorerPage } from "./explorerPage.js";
 import { renderFolderDetail, renderFolderLoading, renderFolderNotFound } from "./folderDetail.js";
@@ -48,7 +51,7 @@ function renderPage(): HTMLElement {
   if (appState.page === "folders") return renderExplorerPage();
   if (appState.page === "activity") return renderActivityPage(activityActions);
   if (!data) return element("div", { className: "page loading" }, appState.loadError ? "" : "Loading nodes…");
-  if (appState.page === "nodes") return renderNodesPage(data);
+  if (appState.page === "nodes") return renderNodesPage(data, appState.devices);
   if (appState.page === "attention") return renderAttentionPage(data);
   return renderUpcomingPage(appState.page);
 }
@@ -61,10 +64,26 @@ function renderFolderPanel(): HTMLElement {
   return appState.folderDetailError ? renderFolderNotFound(folderId, appState.folderDetailError) : renderFolderLoading(folderId);
 }
 
+function renderDevicesPanel(data: NodesResponse): HTMLElement | null {
+  const devices = appState.devices;
+  const isLoading = devices === null && appState.devicesError === null;
+  if (appState.selectedDeviceKey !== null) {
+    const device = devices?.devices.find((candidate) => candidate.key === appState.selectedDeviceKey);
+    return devices && device ? renderDeviceDetail(data, devices, device) : renderItemNotFound("device", appState.selectedDeviceKey, isLoading);
+  }
+  if (appState.selectedDriveKey !== null) {
+    const drive = devices?.drives.find((candidate) => candidate.key === appState.selectedDriveKey);
+    return devices && drive ? renderDriveDetail(data, devices, drive) : renderItemNotFound("drive", appState.selectedDriveKey, isLoading);
+  }
+  return null;
+}
+
 function renderDetail(): HTMLElement | null {
   if (appState.page === "folders") return renderFolderPanel();
   const data = appState.data;
   if (appState.page !== "nodes" || !data) return null;
+  const devicePanel = renderDevicesPanel(data);
+  if (devicePanel) return devicePanel;
   const node = data.nodes.find((candidate) => candidate.id === appState.selectedNodeId);
   return node ? renderNodeDetail(data, node) : renderEmptyDetail(data);
 }
@@ -81,7 +100,7 @@ function render(): void {
   const hasSelection = hasDetail && selectedItemId() !== null && detail !== null;
   root.className = `app page-${appState.page}${hasDetail ? " with-detail" : ""}${hasSelection ? " has-selection" : ""}`;
   const regions: HTMLElement[] = [renderMenu(), element("main", { className: "main" }, connectionBanner(), renderPage())];
-  if (detail) regions.push(element("aside", { className: "detail", attributes: { "aria-label": appState.page === "folders" ? "Directory detail" : "Node detail" } }, detail));
+  if (detail) regions.push(element("aside", { className: "detail", attributes: { "aria-label": appState.page === "folders" ? "Directory detail" : "Detail" } }, detail));
   root.replaceChildren(...regions);
   const newDetail = document.querySelector(".detail");
   if (newDetail) newDetail.scrollTop = detailScroll;
@@ -112,6 +131,15 @@ async function loadNodes(): Promise<void> {
     appState.loadError = null;
   } catch (error) {
     appState.loadError = messageOf(error);
+  }
+}
+
+async function loadDevices(): Promise<void> {
+  try {
+    appState.devices = await fetchDevices();
+    appState.devicesError = null;
+  } catch (error) {
+    appState.devicesError = messageOf(error);
   }
 }
 
@@ -149,6 +177,7 @@ async function loadActivity(): Promise<void> {
 
 /** The current page's own data besides the nodes every page shows in its menu. */
 async function loadPageData(): Promise<void> {
+  if (appState.page === "nodes") await loadDevices();
   if (appState.page === "folders") await loadFolders();
   if (appState.page === "activity") await loadActivity();
 }

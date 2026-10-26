@@ -1,4 +1,4 @@
-import { type NodesResponse, type Peer, type RemoteState, type StorageNode, connectionKindLabel } from "./api.js";
+import { type NodesResponse, type Peer, type RemoteState, type StorageNode, connectionKindText } from "./api.js";
 import { element, section } from "./dom.js";
 import { formatAge, formatPercent, formatRate, normaliseCompletion } from "./format.js";
 
@@ -22,7 +22,7 @@ function connectionText(peer: Peer): string {
 
 function kindChip(peer: Peer): HTMLElement | null {
   if (!peer.connectionKind) return null;
-  return element("span", { className: "chip", title: connectionText(peer) }, connectionKindLabel(peer.connectionKind));
+  return element("span", { className: "chip", title: connectionText(peer) }, connectionKindText(peer.connectionKind));
 }
 
 function completionText(peer: Peer): string {
