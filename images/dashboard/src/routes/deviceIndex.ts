@@ -52,7 +52,7 @@ export interface DevicesRouteSources {
 
 /** One view per other host's dashboard: its nodes from the cache and, for the full answer, its own devices and drives. */
 async function otherHostViews(reported: StorageNode[], sources: DevicesRouteSources, readAnswers: boolean): Promise<OtherHostView[]> {
-  const dashboards = [...new Set([...sources.peerDashboards.map((peer) => peer.replace(/\/$/, "")), ...reported.map((node) => node.dashboardUrl!)])];
+  const dashboards = [...new Set([...sources.peerDashboards, ...reported.map((node) => node.dashboardUrl!)])];
   const views = await Promise.all(
     dashboards.map(async (dashboardUrl) => {
       const nodes = reported.filter((node) => node.dashboardUrl === dashboardUrl);

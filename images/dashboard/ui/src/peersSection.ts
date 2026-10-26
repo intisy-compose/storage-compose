@@ -1,7 +1,7 @@
 import { type NodesResponse, type Peer, type RemoteState, type StorageNode, connectionKindText, deviceDisplayName } from "./api.js";
 import { element, section } from "./dom.js";
 import { formatAge, formatPercent, formatRate, normaliseCompletion } from "./format.js";
-import { deviceFormLocation } from "./state.js";
+import { addDeviceLocation, deviceFormLocation } from "./state.js";
 
 const remoteStateText: Record<RemoteState, string | null> = {
   valid: null,
@@ -61,10 +61,17 @@ function nameOf(response: NodesResponse, peer: Peer): string {
   return node ? node.name : deviceDisplayName(peer.name, peer.deviceId);
 }
 
+function addDeviceLink(node: StorageNode): HTMLElement | null {
+  return node.local && node.syncthing ? element("a", { className: "button add-device", attributes: { href: addDeviceLocation(node.id) } }, "Add a device") : null;
+}
+
+/** A local node shows the section even without devices, as the way to add its first one. */
 export function peersSection(response: NodesResponse, node: StorageNode): HTMLElement | null {
-  if (!node.peers.length) return null;
+  const addLink = addDeviceLink(node);
+  if (!node.peers.length && !addLink) return null;
   return section(
     `Devices (${node.peers.length})`,
-    element("div", { className: "peer-list" }, ...node.peers.map((peer) => peerRow(node, peer, nameOf(response, peer)))),
+    node.peers.length ? element("div", { className: "peer-list" }, ...node.peers.map((peer) => peerRow(node, peer, nameOf(response, peer)))) : null,
+    addLink,
   );
 }

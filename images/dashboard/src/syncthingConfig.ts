@@ -1,4 +1,4 @@
-import { deviceSettingLabels } from "./api/deviceText.js";
+import { deviceSettingLabels, shareFoldersLabel } from "./api/deviceText.js";
 import type { DeviceCompression, DeviceSettings, DeviceSettingsChange, InstanceGui, InstanceOptions } from "./api/types.js";
 
 type SyncthingObject = Record<string, unknown>;
@@ -129,15 +129,36 @@ const deviceFieldChecks: Record<keyof DeviceSettingsChange, FieldCheck> = {
   numConnections: wholeNumberField,
 };
 
-/** Why a device change cannot be sent to Syncthing as it is, or null when it can; a setting is named by its label in the form. */
-export function deviceChangeProblem(change: unknown): string | null {
-  if (typeof change !== "object" || change === null || Array.isArray(change) || Object.keys(change).length === 0) return "nothing to change";
-  for (const [key, value] of Object.entries(change)) {
-    if (key === "deviceId") return "the device ID cannot be changed";
-    if (!Object.hasOwn(deviceFieldChecks, key)) return `${key} is not a device setting`;
-    const field = key as keyof DeviceSettingsChange;
-    const problem = deviceFieldChecks[field](value, deviceSettingLabels[field]);
+function settingProblem(key: string, value: unknown): string | null {
+  if (key === "deviceId") return "the device ID cannot be changed";
+  if (!Object.hasOwn(deviceFieldChecks, key)) return `${key} is not a device setting`;
+  const field = key as keyof DeviceSettingsChange;
+  return deviceFieldChecks[field](value, deviceSettingLabels[field]);
+}
+
+function firstSettingProblem(settings: object): string | null {
+  for (const [key, value] of Object.entries(settings)) {
+    const problem = settingProblem(key, value);
     if (problem) return problem;
   }
   return null;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Why a device change cannot be sent to Syncthing as it is, or null when it can; a setting is named by its label in the form. */
+export function deviceChangeProblem(change: unknown): string | null {
+  if (!isPlainObject(change) || Object.keys(change).length === 0) return "nothing to change";
+  return firstSettingProblem(change);
+}
+
+/** Why a new device cannot be added as it is, or null when it can; whether the ID is one is Syncthing's to say. */
+export function newDeviceProblem(body: unknown): string | null {
+  if (!isPlainObject(body)) return "the request is not a device";
+  const { deviceId, shareFolders, ...settings } = body;
+  if (typeof deviceId !== "string" || !deviceId.trim()) return "the device ID is missing";
+  if (shareFolders !== undefined && !isStringList(shareFolders)) return `${shareFoldersLabel} must be a list of folder IDs`;
+  return firstSettingProblem(settings);
 }

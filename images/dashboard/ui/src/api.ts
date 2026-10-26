@@ -3,12 +3,14 @@ export type {
   ActivityLevel,
   ActivityResponse,
   ActivitySource,
+  AddedDevice,
   ArrayAction,
   ArrayActionBody,
   ArrayMember,
   ArrayState,
   ConnectionKind,
   DeviceCompression,
+  DeviceIdCheck,
   DeviceSettings,
   DeviceSettingsChange,
   DeviceSource,
@@ -34,6 +36,8 @@ export type {
   InstanceOptions,
   JoinEntry,
   MemberSmart,
+  NearbyDevice,
+  NewDevice,
   NodeArray,
   NodeEntryState,
   NodeFolder,
@@ -64,11 +68,11 @@ export type {
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
-import type { ActivityResponse, ArrayAction, ArrayActionBody, DeviceSettings, DeviceSettingsChange, DevicesResponse, FolderDetailResponse, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, NearbyDevice, NewDevice, FolderDetailResponse, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { topDirectoryDefault } from "../../src/api/types.js";
 
-export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isReachable, reachTone, seenTimeText, shortDeviceId } from "../../src/api/deviceText.js";
+export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 
@@ -121,6 +125,39 @@ export async function saveDeviceSettings(nodeId: string, deviceId: string, chang
   try {
     const response = await fetch(devicePath(nodeId, deviceId), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
     const payload = (await response.json().catch(() => ({}))) as DeviceSettings & { error?: string };
+    return response.ok ? { ok: true, value: payload } : { ok: false, message: payload.error ?? `HTTP ${response.status}` };
+  } catch {
+    return { ok: false, message: "The dashboard is not answering." };
+  }
+}
+
+function nodeApiPath(nodeId: string, rest: string): string {
+  return `api/nodes/${encodeURIComponent(nodeId)}/${rest}`;
+}
+
+/** A new device's settings as the node's Syncthing fills them in. */
+export function fetchDeviceDefaults(nodeId: string): Promise<DeviceSettings> {
+  return getJson(nodeApiPath(nodeId, "device-defaults"));
+}
+
+export function fetchNearbyDevices(nodeId: string): Promise<NearbyDevice[]> {
+  return getJson(nodeApiPath(nodeId, "nearby"));
+}
+
+export function checkDeviceId(nodeId: string, typed: string): Promise<DeviceIdCheck> {
+  return getJson(`${nodeApiPath(nodeId, "device-id-check")}?id=${encodeURIComponent(typed)}`);
+}
+
+/** The node's Syncthing's QR code of `text`, as an image address. */
+export function qrCodeUrl(nodeId: string, text: string): string {
+  return `${nodeApiPath(nodeId, "qr")}?text=${encodeURIComponent(text)}`;
+}
+
+/** Sends the new device's ID and only the settings that differ from the node's defaults. */
+export async function addDevice(nodeId: string, device: NewDevice): Promise<SaveResult<AddedDevice>> {
+  try {
+    const response = await fetch(nodeApiPath(nodeId, "devices"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(device) });
+    const payload = (await response.json().catch(() => ({}))) as AddedDevice & { error?: string };
     return response.ok ? { ok: true, value: payload } : { ok: false, message: payload.error ?? `HTTP ${response.status}` };
   } catch {
     return { ok: false, message: "The dashboard is not answering." };

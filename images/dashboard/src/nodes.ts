@@ -165,15 +165,14 @@ async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes
 
 async function remoteNodes(warnings: Warning[]): Promise<StorageNode[]> {
   const answers = await Promise.all(
-    peerDashboards.map(async (peer) => {
+    peerDashboards.map(async (dashboardUrl) => {
       try {
-        const dashboardUrl = peer.replace(/\/$/, "");
         const answer = await fetchTailnetJson<NodesResponse>(`${dashboardUrl}/api/nodes?scope=local`);
         warnings.push(...answer.warnings.map((entry) => fromOtherHost(entry, answer.host.name)));
         return answer.nodes.map((node) => ({ ...node, offersWaiting: node.offersWaiting ?? 0, local: false, host: node.host || answer.host.name, dashboardUrl }));
       } catch (error) {
-        const text = `${peer} could not be reached (${(error as Error).message}); its nodes show Syncthing's view`;
-        warnings.push(warning({ id: `peer:${peer}`, level: "warning", kind: "peer", text, nodeId: null }));
+        const text = `${dashboardUrl} could not be reached (${(error as Error).message}); its nodes show Syncthing's view`;
+        warnings.push(warning({ id: `peer:${dashboardUrl}`, level: "warning", kind: "peer", text, nodeId: null }));
         return [];
       }
     }),

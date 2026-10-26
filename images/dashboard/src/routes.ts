@@ -36,16 +36,44 @@ export interface WriteNote {
   text: string;
 }
 
-export interface Route {
-  /** Any method when absent. */
-  method?: string;
+type WriteMethod = "POST" | "PUT" | "PATCH" | "DELETE";
+
+declare const hostWriteBrand: unique symbol;
+
+/** The pattern of a write that is no node's, made only by `hostWritePattern`. */
+export type HostWritePattern = RegExp & { readonly [hostWriteBrand]: true };
+
+function isNodePath(pattern: RegExp): boolean {
+  return pattern.source.replaceAll("\\/", "/").startsWith("^/api/nodes/");
+}
+
+/**
+ * Marks a write route's pattern as no node's.
+ * @implNote It refuses a path under /api/nodes/, so the only way to declare a write there is a `NodeWriteRoute`, which has to name its change for Activity.
+ */
+export function hostWritePattern(pattern: RegExp): HostWritePattern {
+  if (isNodePath(pattern)) throw new Error(`${pattern} is a node's path: declare its write as a NodeWriteRoute`);
+  return pattern as HostWritePattern;
+}
+
+interface ReadRoute {
+  method: "GET";
   pattern: RegExp;
   handle: (context: RouteContext) => Promise<void>;
 }
 
+/** A write that is no node's, such as an array action; any method when `method` is absent. */
+interface HostWriteRoute {
+  method?: WriteMethod;
+  pattern: HostWritePattern;
+  handle: (context: RouteContext) => Promise<void>;
+}
+
+export type Route = ReadRoute | HostWriteRoute;
+
 /** A write to a node: it must answer with the note Activity records, so a write that names nothing does not compile. */
 export interface NodeWriteRoute {
-  method: "POST" | "PUT" | "PATCH" | "DELETE";
+  method: WriteMethod;
   pattern: RegExp;
   write: (context: RouteContext) => Promise<WriteNote>;
 }
@@ -126,7 +154,8 @@ async function legacyState(): Promise<unknown> {
   return { array: await arrayStatus(clusterArrayId), parity: await parityState(clusterArrayId), log: await recentLog(clusterArrayId) };
 }
 
-const routes: AnyRoute[] = [
+/** Every route the dashboard answers, in the order they are tried. */
+export const dashboardRoutes: AnyRoute[] = [
   { method: "GET", pattern: /^\/$/, handle: ({ response }) => serveIndex(response) },
   {
     method: "GET",
@@ -147,12 +176,12 @@ const routes: AnyRoute[] = [
   },
   {
     method: "POST",
-    pattern: /^\/api\/arrays\/([^/]+)\/(sync|scrub|add|rebuild|remove|accept-smart)$/,
+    pattern: hostWritePattern(/^\/api\/arrays\/([^/]+)\/(sync|scrub|add|rebuild|remove|accept-smart)$/),
     handle: ({ request, response, params: [arrayId, action] }) => handleArrayAction(arrayId, action as ArrayAction, request, response),
   },
   {
     method: "POST",
-    pattern: /^\/api\/(sync|scrub|rebuild|remove)$/,
+    pattern: hostWritePattern(/^\/api\/(sync|scrub|rebuild|remove)$/),
     handle: ({ request, response, params: [action] }) => handleArrayAction(clusterArrayId, action as ArrayAction, request, response),
   },
   ...folderRoutes,
@@ -162,7 +191,7 @@ const routes: AnyRoute[] = [
   ...pendingRoutes(joinRecords),
   ...optionsRoutes,
   ...deviceRoutes(),
-  { pattern: /^\/api\/join$/, handle: async () => joinElsewhere() },
+  { pattern: hostWritePattern(/^\/api\/join$/), handle: async () => joinElsewhere() },
 ];
 
 export interface WriteEffects {
@@ -224,4 +253,4 @@ export function requestHandler(routeList: AnyRoute[], effects: WriteEffects = li
   };
 }
 
-export const handleRequest = requestHandler(routes);
+export const handleRequest = requestHandler(dashboardRoutes);

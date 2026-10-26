@@ -3,6 +3,7 @@ import type { NodesResponse } from "./api.js";
 import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
+import { loadAddDeviceForm, renderAddDeviceForm } from "./addDeviceForm.js";
 import { renderDeviceForm } from "./deviceForm.js";
 import { element } from "./dom.js";
 import { renderDriveDetail } from "./driveDetail.js";
@@ -90,6 +91,7 @@ function renderDetail(): HTMLElement | null {
   if (devicePanel) return devicePanel;
   const node = data.nodes.find((candidate) => candidate.id === appState.selectedNodeId);
   if (node && appState.deviceForm) return renderDeviceForm(node, appState.deviceForm);
+  if (node && appState.addDeviceForm) return renderAddDeviceForm(node, appState.addDeviceForm);
   return node ? renderNodeDetail(data, node) : renderEmptyDetail(data);
 }
 
@@ -228,7 +230,7 @@ async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
 
 /** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */
 async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Promise<void> {
-  if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm()]);
+  if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm(), appState.addDeviceForm ? loadAddDeviceForm(appState.addDeviceForm) : undefined]);
   if (appState.page === "folders") await loadFolders();
   if (appState.page === "activity") await loadActivity();
   if (appState.page === "requests") await loadRequests();

@@ -515,6 +515,37 @@ export interface DeviceSettings {
 /** `PATCH /api/nodes/<nodeId>/devices/<deviceId>`: only the fields the person changed. */
 export type DeviceSettingsChange = Partial<Omit<DeviceSettings, "deviceId">>;
 
+/**
+ * `POST /api/nodes/<nodeId>/devices`: the new device's ID and only the settings that differ from the
+ * node's Syncthing defaults (`GET /api/nodes/<nodeId>/device-defaults`), which fill the rest.
+ */
+export interface NewDevice extends DeviceSettingsChange {
+  deviceId: string;
+  /** The node's folders to share with the device; none by default. */
+  shareFolders?: string[];
+}
+
+/** The answer to `POST /api/nodes/<nodeId>/devices`: the device as now configured and which folders were shared with it. */
+export interface AddedDevice {
+  device: DeviceSettings;
+  shared: string[];
+  /** A folder whose share failed after the device was added, with why. */
+  notShared: { folderId: string; problem: string }[];
+}
+
+/** `GET /api/nodes/<nodeId>/nearby`: a device the node's Syncthing found by discovery and has not configured. */
+export interface NearbyDevice {
+  deviceId: string;
+  addresses: string[];
+}
+
+/** `GET /api/nodes/<nodeId>/device-id-check?id=`: the ID as Syncthing reads it, or why it cannot be added to the node. */
+export interface DeviceIdCheck {
+  /** Null when Syncthing does not read it as a device ID. */
+  deviceId: string | null;
+  problem: string | null;
+}
+
 /** A priority band of the layout: priorities from `from` up to the next band belong to `name`. */
 export interface PriorityBand {
   name: string;

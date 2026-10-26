@@ -62,10 +62,9 @@ function hostOf(dashboardUrl: string): string | null {
   }
 }
 
-async function readPeer(peer: string): Promise<RequestsResponse> {
-  const dashboardUrl = peer.replace(/\/$/, "");
+async function readPeer(dashboardUrl: string): Promise<RequestsResponse> {
   const host = hostOf(dashboardUrl);
-  if (!host) return unreadable(peer, "not a dashboard address in STORAGE_PEERS");
+  if (!host) return unreadable(dashboardUrl, "not a dashboard address in STORAGE_PEERS");
   try {
     const answer = await readDashboard(dashboardUrl, host, "/api/requests");
     return isRequestsResponse(answer) ? { ...answer, unreadable: answer.unreadable ?? [] } : unreadable(host, "its dashboard does not list requests yet");

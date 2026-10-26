@@ -50,6 +50,9 @@ export const deviceSettingLabels: Record<keyof DeviceSettingsChange, string> = {
   numConnections: "Connections",
 };
 
+/** The add form's choice of the node's folders to share with the new device. */
+export const shareFoldersLabel = "Share these folders";
+
 /** The first group of a device ID, as Syncthing's own page shortens it. */
 export function shortDeviceId(deviceId: string): string {
   return deviceId.slice(0, 7);

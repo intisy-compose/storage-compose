@@ -13,14 +13,23 @@ type ListField = "addresses" | "allowedNetworks";
 type ToggleField = "introducer" | "autoAcceptFolders" | "paused" | "untrusted";
 type NumberField = "maxSendKbps" | "maxRecvKbps" | "numConnections";
 
+/** What a device form's setting controls work on: the form they belong to, the values it opened with and what it holds now. */
+export interface SettingsContext {
+  formId: string;
+  saving: boolean;
+  /** Each control's default, so the poll can tell typed input from what the form opened with. */
+  saved: DeviceSettings;
+  draft: DeviceSettings;
+}
+
 const compressionChoices: [DeviceCompression, string][] = [
   ["metadata", "Metadata only"],
   ["always", "All data"],
   ["never", "Off"],
 ];
 
-function controlId(field: keyof DeviceSettings): string {
-  return `${formId}-${field}`;
+export function controlId(owner: string, field: string): string {
+  return `${owner}-${field}`;
 }
 
 /** One entry per line or comma, as a person pastes them. */
@@ -28,48 +37,54 @@ function listOf(text: string): string[] {
   return text.split(/[\n,]/).map((entry) => entry.trim()).filter(Boolean);
 }
 
-function labelled(field: keyof DeviceSettingsChange, control: HTMLElement, hint?: string): HTMLElement {
-  return element("label", { className: "setting", attributes: { for: controlId(field) } }, element("span", {}, deviceSettingLabels[field]), control, hint ? element("small", { className: "muted" }, hint) : null);
+function labelled(context: SettingsContext, field: keyof DeviceSettingsChange, control: HTMLElement, hint?: string): HTMLElement {
+  return element("label", { className: "setting", attributes: { for: controlId(context.formId, field) } }, element("span", {}, deviceSettingLabels[field]), control, hint ? element("small", { className: "muted" }, hint) : null);
 }
 
-function textInput(form: DeviceFormState, field: TextField, saved: DeviceSettings, draft: DeviceSettings): HTMLInputElement {
-  const input = element("input", { attributes: { id: controlId(field), autocomplete: "off" } });
+function textInput(context: SettingsContext, field: TextField): HTMLInputElement {
+  const { saved, draft } = context;
+  const input = element("input", { attributes: { id: controlId(context.formId, field), autocomplete: "off" } });
   input.defaultValue = saved[field];
   input.value = draft[field];
   input.addEventListener("input", () => (draft[field] = input.value));
-  input.disabled = form.saving;
+  input.disabled = context.saving;
   return input;
 }
 
-function listInput(form: DeviceFormState, field: ListField, saved: DeviceSettings, draft: DeviceSettings): HTMLTextAreaElement {
-  const area = element("textarea", { attributes: { id: controlId(field), rows: "3", spellcheck: "false" } });
+function listInput(context: SettingsContext, field: ListField): HTMLTextAreaElement {
+  const { saved, draft } = context;
+  const area = element("textarea", { attributes: { id: controlId(context.formId, field), rows: "3", spellcheck: "false" } });
   area.defaultValue = saved[field].join("\n");
   area.value = draft[field].join("\n");
   area.addEventListener("input", () => (draft[field] = listOf(area.value)));
-  area.disabled = form.saving;
+  area.disabled = context.saving;
   return area;
 }
 
-function numberInput(form: DeviceFormState, field: NumberField, saved: DeviceSettings, draft: DeviceSettings): HTMLInputElement {
-  const input = element("input", { attributes: { id: controlId(field), type: "number", min: "0", step: "1" } });
+function numberInput(context: SettingsContext, field: NumberField): HTMLInputElement {
+  const { saved, draft } = context;
+  const input = element("input", { attributes: { id: controlId(context.formId, field), type: "number", min: "0", step: "1" } });
   input.defaultValue = String(saved[field]);
   input.value = String(draft[field]);
   input.addEventListener("input", () => (draft[field] = input.value === "" ? Number.NaN : Number(input.value)));
-  input.disabled = form.saving;
+  input.disabled = context.saving;
   return input;
 }
 
-function toggle(form: DeviceFormState, field: ToggleField, hint: string, saved: DeviceSettings, draft: DeviceSettings): HTMLElement {
-  const box = element("input", { attributes: { id: controlId(field), type: "checkbox" } });
+function toggle(context: SettingsContext, field: ToggleField, hint: string): HTMLElement {
+  const { saved, draft } = context;
+  const id = controlId(context.formId, field);
+  const box = element("input", { attributes: { id, type: "checkbox" } });
   box.defaultChecked = saved[field];
   box.checked = draft[field];
   box.addEventListener("change", () => (draft[field] = box.checked));
-  box.disabled = form.saving;
-  return element("label", { className: "toggle", attributes: { for: controlId(field) } }, box, element("span", {}, deviceSettingLabels[field], hint ? element("small", { className: "muted" }, ` ${hint}`) : null));
+  box.disabled = context.saving;
+  return element("label", { className: "toggle", attributes: { for: id } }, box, element("span", {}, deviceSettingLabels[field], hint ? element("small", { className: "muted" }, ` ${hint}`) : null));
 }
 
-function compressionSelect(form: DeviceFormState, saved: DeviceSettings, draft: DeviceSettings): HTMLSelectElement {
-  const select = element("select", { attributes: { id: controlId("compression") } });
+function compressionSelect(context: SettingsContext): HTMLSelectElement {
+  const { saved, draft } = context;
+  const select = element("select", { attributes: { id: controlId(context.formId, "compression") } });
   for (const [value, label] of compressionChoices) {
     const option = element("option", {}, label);
     option.value = value;
@@ -78,8 +93,35 @@ function compressionSelect(form: DeviceFormState, saved: DeviceSettings, draft: 
   }
   select.value = draft.compression;
   select.addEventListener("change", () => (draft.compression = select.value as DeviceCompression));
-  select.disabled = form.saving;
+  select.disabled = context.saving;
   return select;
+}
+
+/** A device's settings, the same controls and labels whether the device is being edited or added. */
+export function settingFields(context: SettingsContext): HTMLElement {
+  return element(
+    "div",
+    { className: "form-fields device-fields" },
+    labelled(context, "name", textInput(context, "name"), "Empty shows the short device ID."),
+    labelled(context, "addresses", listInput(context, "addresses"), "One per line: dynamic, tcp://host:port, quic://host:port or relay://host:port?id=…"),
+    labelled(context, "compression", compressionSelect(context)),
+    element(
+      "div",
+      { className: "toggles" },
+      toggle(context, "introducer", "adds the devices it shares folders with"),
+      toggle(context, "autoAcceptFolders", "accepts the folders it offers"),
+      toggle(context, "untrusted", "shares only encrypted folders with it"),
+      toggle(context, "paused", ""),
+    ),
+    labelled(context, "allowedNetworks", listInput(context, "allowedNetworks"), "One network per line, such as 192.168.0.0/16; empty allows any."),
+    element(
+      "div",
+      { className: "number-fields" },
+      labelled(context, "maxSendKbps", numberInput(context, "maxSendKbps"), "KiB/s, 0 is unlimited."),
+      labelled(context, "maxRecvKbps", numberInput(context, "maxRecvKbps"), "KiB/s, 0 is unlimited."),
+      labelled(context, "numConnections", numberInput(context, "numConnections"), "0 lets Syncthing choose."),
+    ),
+  );
 }
 
 /** @implNote Measured against `saved`, the answer the form opened with, so a field the person did not touch is never sent. */
@@ -111,34 +153,7 @@ function revert(form: DeviceFormState): void {
   requestRender();
 }
 
-function fields(form: DeviceFormState, saved: DeviceSettings, draft: DeviceSettings): HTMLElement {
-  return element(
-    "div",
-    { className: "form-fields device-fields" },
-    labelled("name", textInput(form, "name", saved, draft), "Empty shows the short device ID."),
-    labelled("addresses", listInput(form, "addresses", saved, draft), "One per line: dynamic, tcp://host:port, quic://host:port or relay://host:port?id=…"),
-    labelled("compression", compressionSelect(form, saved, draft)),
-    element(
-      "div",
-      { className: "toggles" },
-      toggle(form, "introducer", "adds the devices it shares folders with", saved, draft),
-      toggle(form, "autoAcceptFolders", "accepts the folders it offers", saved, draft),
-      toggle(form, "untrusted", "shares only encrypted folders with it", saved, draft),
-      toggle(form, "paused", "", saved, draft),
-    ),
-    labelled("allowedNetworks", listInput(form, "allowedNetworks", saved, draft), "One network per line, such as 192.168.0.0/16; empty allows any."),
-    element(
-      "div",
-      { className: "number-fields" },
-      labelled("maxSendKbps", numberInput(form, "maxSendKbps", saved, draft), "KiB/s, 0 is unlimited."),
-      labelled("maxRecvKbps", numberInput(form, "maxRecvKbps", saved, draft), "KiB/s, 0 is unlimited."),
-      labelled("numConnections", numberInput(form, "numConnections", saved, draft), "0 lets Syncthing choose."),
-    ),
-  );
-}
-
-function resultLine(form: DeviceFormState): HTMLElement | null {
-  const result = form.result;
+export function resultLine(result: DeviceFormState["result"]): HTMLElement | null {
   return result ? element("p", { className: `notice tone-text-${result.tone}`, attributes: { role: "status" } }, result.text) : null;
 }
 
@@ -150,8 +165,8 @@ function formBody(node: StorageNode, form: DeviceFormState): HTMLElement {
   return element(
     "div",
     { className: "device-form", attributes: { id: formId } },
-    fields(form, form.saved, form.draft),
-    resultLine(form),
+    settingFields({ formId, saving: form.saving, saved: form.saved, draft: form.draft }),
+    resultLine(form.result),
     element(
       "div",
       { className: "button-row" },
@@ -161,18 +176,22 @@ function formBody(node: StorageNode, form: DeviceFormState): HTMLElement {
   );
 }
 
+/** The panel's header with a way back to the node's detail. */
+export function nodeFormHeader(node: StorageNode, title: string, status: string): HTMLElement {
+  return element(
+    "header",
+    { className: "detail-header" },
+    element("a", { className: "icon-button close-detail", title: `Back to ${node.name}`, attributes: { href: locationFor("nodes", node.id), "aria-label": `Back to ${node.name}` } }, icon("close")),
+    element("h2", {}, title),
+    element("p", { className: "detail-status" }, status),
+  );
+}
+
 export function renderDeviceForm(node: StorageNode, form: DeviceFormState): HTMLElement {
-  const title = deviceDisplayName(form.saved?.name, form.deviceId);
   return element(
     "div",
     { className: "detail-inner" },
-    element(
-      "header",
-      { className: "detail-header" },
-      element("a", { className: "icon-button close-detail", title: `Back to ${node.name}`, attributes: { href: locationFor("nodes", node.id), "aria-label": `Back to ${node.name}` } }, icon("close")),
-      element("h2", {}, title),
-      element("p", { className: "detail-status" }, `A device as ${node.name} has it configured`),
-    ),
+    nodeFormHeader(node, deviceDisplayName(form.saved?.name, form.deviceId), `A device as ${node.name} has it configured`),
     section("Device ID", element("code", { className: "device-id" }, form.deviceId)),
     section("Settings", formBody(node, form)),
   );

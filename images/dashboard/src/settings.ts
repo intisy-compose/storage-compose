@@ -31,8 +31,13 @@ export const joinPort = Number(process.env.JOIN_PORT ?? 8447);
 export const joinGatewayHost = process.env.JOIN_GATEWAY_HOST ?? "gateway";
 export const candidateTransports = list(process.env.CANDIDATE_TRANSPORTS ?? "usb");
 export const anyArrayLabelPattern = new RegExp(`^([0-9a-f]{4}|${clusterArrayId})-((data|parity)\\d+)$`);
+/** A dashboard's address without a trailing slash, so a path can be appended to it. */
+export function dashboardBaseUrl(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
 /** Other hosts' dashboards, read for their nodes, e.g. https://storage-p53.tailnet.ts.net. */
-export const peerDashboards = list(process.env.STORAGE_PEERS);
+export const peerDashboards = list(process.env.STORAGE_PEERS).map(dashboardBaseUrl);
 /** Where the mounter sends notifications; the dashboard shows it on Settings. */
 export const ntfyUrl = process.env.NTFY_URL ?? "";
 /** @implNote Only whether a topic is set: the topic itself lets anyone read the notifications. */

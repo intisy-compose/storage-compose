@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { type NodeWriteRoute, type WriteNote, settleWrite } from "../src/routes.js";
+import { type NodeWriteRoute, type Route, type WriteNote, dashboardRoutes, hostWritePattern, settleWrite } from "../src/routes.js";
 
 function recorder() {
   const recorded: WriteNote[] = [];
@@ -52,5 +52,24 @@ describe("a write through the dashboard", () => {
     settleWrite("PATCH", 409, note, effects.effects);
     assert.equal(effects.invalidations(), 0);
     assert.deepEqual(effects.recorded, []);
+  });
+
+  it("a write under /api/nodes/ declared as a plain route does not compile", () => {
+    // @ts-expect-error only a node write may carry a write method under /api/nodes/: a plain route's write pattern must come from hostWritePattern
+    const misdeclared: Route = {
+      method: "POST",
+      pattern: /^\/api\/nodes\/([^/]+)\/devices$/,
+      handle: async () => {},
+    };
+    assert.equal(misdeclared.method, "POST");
+    assert.throws(() => hostWritePattern(/^\/api\/nodes\/([^/]+)\/devices$/), /is a node's path/);
+    assert.throws(() => hostWritePattern(/^\/api\/nodes\/x$/), /is a node's path/);
+    assert.ok(hostWritePattern(/^\/api\/arrays\/x\/sync$/).test("/api/arrays/x/sync"));
+  });
+
+  it("every write route under /api/nodes/ in the dashboard is a node write", () => {
+    const nodeWrites = dashboardRoutes.filter((route) => route.method !== "GET" && route.pattern.source.replaceAll("\\/", "/").startsWith("^/api/nodes/"));
+    assert.ok(nodeWrites.length >= 2, "the device edit and the device add");
+    for (const route of nodeWrites) assert.ok("write" in route, `${route.method} ${route.pattern} is not a NodeWriteRoute`);
   });
 });

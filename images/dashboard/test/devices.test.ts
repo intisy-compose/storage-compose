@@ -6,13 +6,45 @@ import { deviceDisplayName } from "../src/api/deviceText.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance } from "../src/instanceResolver.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
-import { deviceEditText, deviceRoutes, editDevice, readDeviceSettings } from "../src/routes/devices.js";
+import { addDevice, checkDeviceId, deviceEditText, deviceRoutes, editDevice, nearbyDevices, readDeviceDefaults, readDeviceSettings } from "../src/routes/devices.js";
 import { SyncthingClient } from "../src/syncthing.js";
 import { addressProblem, changedFields, deviceChangeProblem, deviceSettings } from "../src/syncthingConfig.js";
 
 const apiKey = "devices-test-key";
 const ownId = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 const peerId = "D7E5AAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+const newId = "NEWAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+const nearbyId = "NEARBYA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** Syncthing's own defaults for a new device, as `/rest/config/defaults/device` answers; deliberately not the dashboard's. */
+const syncthingDefaults = {
+  deviceID: "",
+  name: "",
+  addresses: ["dynamic"],
+  compression: "always",
+  certName: "",
+  introducer: false,
+  skipIntroductionRemovals: false,
+  introducedBy: "",
+  paused: false,
+  allowedNetworks: [],
+  autoAcceptFolders: true,
+  maxSendKbps: 0,
+  maxRecvKbps: 0,
+  ignoredFolders: [],
+  maxRequestKiB: 0,
+  untrusted: false,
+  remoteGUIPort: 0,
+  numConnections: 0,
+};
+
+/** As Syncthing 2.1.6 reads a typed ID: case and separators do not matter, the length does, and its reason quotes the ID. */
+function syncthingDeviceIdAnswer(typed: string): { id: string } | { error: string } {
+  const letters = typed.toUpperCase().replace(/[^A-Z2-7]/g, "");
+  if (letters.length !== 56) return { error: `"${typed}": device ID invalid: incorrect length` };
+  return { id: letters.match(/.{7}/g)!.join("-") };
+}
 
 const syncthingPeer = {
   deviceID: peerId,
@@ -59,6 +91,8 @@ async function bodyOf(request: IncomingMessage): Promise<unknown> {
 describe("a node's devices", () => {
   const writes: Received[] = [];
   let configured: Record<string, unknown>[] = [];
+  let folders: Record<string, unknown>[] = [];
+  let discovered: Record<string, unknown> = {};
   /** Drops the connection of the request this many requests from now, as a Syncthing that stops answering mid-edit; null keeps answering. */
   let dropAfter: number | null = null;
   let syncthingUrl = "";
@@ -67,7 +101,29 @@ describe("a node's devices", () => {
     if (dropAfter !== null && dropAfter-- === 0) return request.socket.destroy();
     if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
     const path = new URL(request.url ?? "/", "http://fake").pathname;
+    const query = new URL(request.url ?? "/", "http://fake").searchParams;
     if (request.method === "GET" && path === "/rest/config/devices") return reply(response, configured);
+    if (request.method === "GET" && path === "/rest/config/defaults/device") return reply(response, syncthingDefaults);
+    if (request.method === "GET" && path === "/rest/svc/deviceid") return reply(response, syncthingDeviceIdAnswer(query.get("id") ?? ""));
+    if (request.method === "GET" && path === "/rest/system/discovery") return reply(response, discovered);
+    if (request.method === "GET" && path === "/rest/config/folders") return reply(response, folders);
+    if (request.method === "GET" && path === "/qr/") {
+      writes.push({ method: "GET", path: `/qr/?text=${query.get("text")}`, body: null });
+      response.writeHead(200, { "Content-Type": "image/png" });
+      return response.end(pngBytes);
+    }
+    if (request.method === "POST" && path === "/rest/config/devices") {
+      const body = (await bodyOf(request)) as Record<string, unknown>;
+      writes.push({ method: "POST", path, body });
+      configured = [...configured, body];
+      return reply(response, null);
+    }
+    const folderPath = path.match(/^\/rest\/config\/folders\/(.+)$/);
+    if (request.method === "PATCH" && folderPath) {
+      const body = await bodyOf(request);
+      writes.push({ method: "PATCH", path, body });
+      return reply(response, null);
+    }
     const devicePath = path.match(/^\/rest\/config\/devices\/(.+)$/);
     if (request.method === "PATCH" && devicePath) {
       const body = await bodyOf(request);
@@ -93,6 +149,15 @@ describe("a node's devices", () => {
     writes.length = 0;
     dropAfter = null;
     configured = [{ deviceID: ownId, name: "pc", addresses: ["dynamic"] }, { ...syncthingPeer }];
+    folders = [
+      { id: "dashboard-test-a", label: "dashboard-test-a", path: "F:/dashboard-test-a", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }] },
+      { id: "dashboard-test-b", label: "dashboard-test-b", path: "F:/dashboard-test-b", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }, { deviceID: peerId }] },
+    ];
+    discovered = {
+      [nearbyId]: { addresses: ["tcp://192.0.2.7:22000", "quic://192.0.2.7:22000"] },
+      [peerId]: { addresses: ["tcp://192.0.2.8:22000"] },
+      [ownId]: { addresses: ["tcp://192.0.2.9:22000"] },
+    };
   });
 
   after(() => {
@@ -245,6 +310,103 @@ describe("a node's devices", () => {
       "pc: renamed device dashboard-test-peer to new; addresses tcp://a:1, dynamic; introducer on; send limit unlimited",
     );
     assert.equal(deviceEditText("pc", "D7E5AAA", { name: "" }), "pc: removed the name of device D7E5AAA");
+  });
+
+  it("adding a device fills defaults from syncthing's defaults", async () => {
+    const result = await addDevice(pc(), { deviceId: newId, name: "dashboard-test-device", introducer: true });
+
+    assert.deepEqual(writes, [{ method: "POST", path: "/rest/config/devices", body: { ...syncthingDefaults, deviceID: newId, name: "dashboard-test-device", introducer: true } }]);
+    assert.equal(result.added.device.compression, "always", "Syncthing's default, not the dashboard's");
+    assert.equal(result.added.device.autoAcceptFolders, true);
+    assert.deepEqual(result.added.shared, []);
+    assert.deepEqual(result.note, { nodeId: "fb98", nodeName: "pc", folderId: null, text: "pc: added device dashboard-test-device; introducer on" });
+    assert.deepEqual(await readDeviceDefaults(pc()), deviceSettings(syncthingDefaults));
+  });
+
+  it("an invalid device id is refused with syncthing's reason", async () => {
+    await assert.rejects(addDevice(pc(), { deviceId: "NOT-A-DEVICE" }), (error: Error & { status?: number }) => error.status === 400 && error.message === '"NOT-A-DEVICE": device ID invalid: incorrect length');
+    await assert.rejects(addDevice(pc(), { name: "no id" }), (error: Error & { status?: number }) => error.status === 400 && error.message === "the device ID is missing");
+    assert.deepEqual(writes, []);
+    assert.deepEqual(await checkDeviceId(pc(), "NOT-A-DEVICE"), { deviceId: null, problem: '"NOT-A-DEVICE": device ID invalid: incorrect length' });
+  });
+
+  it("a device id is taken as syncthing reads it, whatever its case and separators", async () => {
+    const typed = newId.toLowerCase().replaceAll("-", " ");
+    assert.deepEqual(await checkDeviceId(pc(), typed), { deviceId: newId, problem: null });
+    await addDevice(pc(), { deviceId: typed });
+    assert.equal((writes[0].body as { deviceID: string }).deviceID, newId);
+  });
+
+  it("adding a known device is 409", async () => {
+    await assert.rejects(addDevice(pc(), { deviceId: peerId.toLowerCase(), name: "again" }), (error: Error & { status?: number }) => error.status === 409 && error.message === "pc already has device dashboard-test-peer");
+    await assert.rejects(addDevice(pc(), { deviceId: ownId }), (error: Error & { status?: number }) => error.status === 409 && error.message === "pc already has device pc");
+    assert.deepEqual(writes, []);
+    assert.deepEqual(await checkDeviceId(pc(), peerId), { deviceId: peerId, problem: "pc already has device dashboard-test-peer" });
+  });
+
+  it("the ticked folders are shared with the new device, and a folder the node lacks is refused before anything is written", async () => {
+    await assert.rejects(addDevice(pc(), { deviceId: newId, shareFolders: ["dashboard-test-a", "documents-nowhere"] }), (error: Error & { status?: number }) => error.status === 400 && error.message === "pc has no folder documents-nowhere");
+    assert.equal(writes.length, 0);
+
+    const result = await addDevice(pc(), { deviceId: newId, name: "dashboard-test-device", shareFolders: ["dashboard-test-a"] });
+    assert.deepEqual(writes.map((write) => `${write.method} ${write.path}`), ["POST /rest/config/devices", "PATCH /rest/config/folders/dashboard-test-a"]);
+    assert.deepEqual(writes[1].body, { devices: [{ deviceID: ownId }, { deviceID: newId }] });
+    assert.deepEqual(result.added.shared, ["dashboard-test-a"]);
+    assert.equal(result.note.text, "pc: added device dashboard-test-device; shared dashboard-test-a");
+  });
+
+  it("settings and folders are checked like an edit's, and a remote node's add is 409", async () => {
+    await assert.rejects(addDevice(pc(), { deviceId: newId, addresses: ["ftp://bad"] }), (error: Error & { status?: number }) => error.status === 400 && /ftp:\/\/bad/.test(error.message));
+    await assert.rejects(addDevice(pc(), { deviceId: newId, shareFolders: "dashboard-test-a" }), (error: Error & { status?: number }) => error.status === 400 && error.message === "Share these folders must be a list of folder IDs");
+    await assert.rejects(addDevice(pc(), { deviceId: newId, ignoredFolders: [] }), (error: Error & { status?: number }) => error.status === 400 && error.message === "ignoredFolders is not a device setting");
+    const remote: RemoteInstance = { kind: "remote", nodeId: "a1b2", name: "p53-data", host: "p53", dashboardUrl: "http://127.0.0.1:1" };
+    await assert.rejects(addDevice(remote, { deviceId: newId }), (error: Error & { status?: number }) => error.status === 409 && error.message === "act on p53's dashboard");
+    assert.deepEqual(writes, []);
+  });
+
+  it("a share that fails after the device is added still reports and enters the add", async () => {
+    dropAfter = 5;
+    const result = await addDevice(pc(), { deviceId: newId, name: "dashboard-test-device", shareFolders: ["dashboard-test-a"] });
+    assert.deepEqual(result.added.shared, []);
+    assert.deepEqual(result.added.notShared, [{ folderId: "dashboard-test-a", problem: "pc's Syncthing is not answering" }]);
+    assert.equal(result.note.text, "pc: added device dashboard-test-device; not shared dashboard-test-a (pc's Syncthing is not answering)");
+  });
+
+  it("nearby lists the devices discovery found that the node has not configured", async () => {
+    assert.deepEqual(await nearbyDevices(pc()), [{ deviceId: nearbyId, addresses: ["tcp://192.0.2.7:22000", "quic://192.0.2.7:22000"] }]);
+    discovered = { [nearbyId]: ["tcp://192.0.2.7:22000"] };
+    assert.deepEqual(await nearbyDevices(pc()), [{ deviceId: nearbyId, addresses: ["tcp://192.0.2.7:22000"] }], "an older Syncthing lists the addresses bare");
+  });
+
+  it("the add, the checks and the QR code go through the router, and only the add enters Activity", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      const nodePath = `${dashboard.url}/api/nodes/fb98`;
+      assert.equal(((await (await fetch(`${nodePath}/device-defaults`)).json()) as { compression: string }).compression, "always");
+      assert.deepEqual(await (await fetch(`${nodePath}/nearby`)).json(), [{ deviceId: nearbyId, addresses: ["tcp://192.0.2.7:22000", "quic://192.0.2.7:22000"] }]);
+      assert.deepEqual(await (await fetch(`${nodePath}/device-id-check?id=${encodeURIComponent(peerId)}`)).json(), { deviceId: peerId, problem: "pc already has device dashboard-test-peer" });
+
+      const qr = await fetch(`${nodePath}/qr?text=${encodeURIComponent(ownId)}`);
+      assert.equal(qr.status, 200);
+      assert.equal(qr.headers.get("content-type"), "image/png");
+      assert.deepEqual(Buffer.from(await qr.arrayBuffer()), pngBytes);
+      assert.equal(writes.at(-1)?.path, `/qr/?text=${ownId}`);
+      assert.equal((await fetch(`${nodePath}/qr?text=`)).status, 400);
+      assert.equal(effects.invalidations, 0, "reads drop nothing");
+
+      const added = await fetch(`${nodePath}/devices`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deviceId: newId, name: "dashboard-test-device" }) });
+      assert.equal(added.status, 201);
+      assert.equal(((await added.json()) as { device: { deviceId: string } }).device.deviceId, newId);
+      assert.deepEqual(effects.notes.map((note) => note.text), ["pc: added device dashboard-test-device"]);
+      assert.equal(effects.invalidations, 1);
+
+      const again = await fetch(`${nodePath}/devices`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deviceId: newId }) });
+      assert.equal(again.status, 409);
+      assert.equal(effects.notes.length, 1, "a refused add enters nothing");
+    } finally {
+      dashboard.close();
+    }
   });
 });
 
