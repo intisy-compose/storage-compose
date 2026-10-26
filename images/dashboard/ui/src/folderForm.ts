@@ -1,7 +1,7 @@
 import { type FolderType, type StorageNode, addFolder, browseFolderPaths, checkFolderPath, fetchFolderDefaults, folderTypeTexts } from "./api.js";
 import { controlId, resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
-import { draftOf, newFolderBody } from "./folderDraft.js";
+import { draftOf, newFolderBody, treePathOf } from "./folderDraft.js";
 import { registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
@@ -209,7 +209,7 @@ function parentOf(path: string): string {
 function actions(form: AddFolderFormState): HTMLElement {
   const added = form.added;
   if (added) {
-    return element("div", { className: "button-row" }, element("a", { className: "button primary", attributes: { href: explorerLocation(added.id, form.nodeId ?? appState.explorer.node, parentOf(form.under)) } }, `Open ${added.label || added.id}`));
+    return element("div", { className: "button-row" }, element("a", { className: "button primary", attributes: { href: explorerLocation(added.id, form.nodeId ?? appState.explorer.node, parentOf(treePathOf(added.path, form.defaults?.root ?? "") ?? form.under)) } }, `Open ${added.label || added.id}`));
   }
   return element("div", { className: "button-row" }, Object.assign(button(form.saving ? "Adding…" : "Add", () => void submit(form), "button primary"), { disabled: form.saving }));
 }
@@ -241,6 +241,7 @@ function formHeader(form: AddFolderFormState): HTMLElement {
     element("a", { className: "icon-button close-detail", title: "Close", attributes: { href: explorerLocation(null), "aria-label": "Close detail" } }, icon("close")),
     element("h2", {}, "Add a folder"),
     element("p", { className: "detail-status muted" }, form.under ? element("code", {}, form.under) : "At the top directory"),
+    form.defaults?.placementProblem ? element("p", { className: "notice tone-text-warn", attributes: { role: "status" } }, `${form.defaults.placementProblem}. The root is offered instead.`) : null,
   );
 }
 

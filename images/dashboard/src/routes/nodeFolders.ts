@@ -152,22 +152,31 @@ async function randomFolderId(instance: LocalInstance): Promise<string> {
 }
 
 /** Where a tree path lies on the node: below its root, or the root itself for a group no directory stands for. */
-function placedPath(under: string, node: NodeRoot): { path: string; name: string } {
+interface Placement {
+  path: string;
+  name: string;
+  problem: string | null;
+}
+
+/** Where a tree path lies on the node: below its root, or the root itself, with the reason, when the guard refuses the directory. */
+function placedPath(under: string, node: NodeRoot, nodes: NodeRoot[]): Placement {
   const segments = under.split("/").filter(Boolean);
-  if (!segments.length || segments[0] === otherFoldersGroup) return { path: node.root, name: "" };
+  if (!segments.length || segments[0] === otherFoldersGroup) return { path: node.root, name: "", problem: null };
   const path = pathUnderRoot(node.root, segments.join("/"), node.os);
-  return isInsideRoot(path, node.root, node.os) ? { path: checkedPath(path, node), name: segments.at(-1) as string } : { path: node.root, name: "" };
+  const problem = folderPathProblem(path, node, nodes);
+  if (problem) return { path: node.root, name: "", problem: `${under} cannot be a folder of ${node.name}: ${problem}` };
+  return { path: checkedPath(path, node), name: segments.at(-1) as string, problem: null };
 }
 
 /** A new folder as the node's Syncthing would make it, at the tree path `under`, named and identified after that directory. */
-export async function newFolderDefaults(instance: ResolvedInstance, under: string): Promise<NewFolderDefaults> {
+export async function newFolderDefaults(instance: ResolvedInstance, under: string, nodes: NodeRoot[]): Promise<NewFolderDefaults> {
   const { instance: local, node } = rooted(instance);
   const [defaults, folders] = await Promise.all([syncthingDefaults(local), configuredFolders(local)]);
-  const placed = placedPath(under, node);
+  const placed = placedPath(under, node, nodes);
   const derived = folderIdFromLabel(placed.name);
   const id = derived && !folders.some((folder) => folder.id === derived) ? derived : await randomFolderId(local);
   const devices = Array.isArray(defaults.devices) ? defaults.devices : [];
-  return { settings: folderSettings({ ...defaults, devices, id, label: placed.name, path: placed.path } as unknown as SyncthingFolderSettings), root: node.root };
+  return { settings: folderSettings({ ...defaults, devices, id, label: placed.name, path: placed.path } as unknown as SyncthingFolderSettings), root: node.root, placementProblem: placed.problem };
 }
 
 /** The root with its separator, which Syncthing's browse lists the inside of rather than completing it as a name. */
@@ -205,7 +214,7 @@ export function nodeFolderRoutes(sources: NodeFolderSources = liveSources): AnyR
     {
       method: "GET",
       pattern: /^\/api\/nodes\/([^/]+)\/folder-defaults$/,
-      handle: async ({ response, url, params: [nodeId] }) => sendJson(response, 200, await newFolderDefaults(await node(nodeId), url.searchParams.get("under") ?? "")),
+      handle: async ({ response, url, params: [nodeId] }) => sendJson(response, 200, await newFolderDefaults(await node(nodeId), url.searchParams.get("under") ?? "", await sources.nodeRoots())),
     },
     {
       method: "GET",

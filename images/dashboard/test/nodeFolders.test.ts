@@ -9,7 +9,7 @@ import type { NodeRoot } from "../src/pathGuard.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
 import { addFolder, browseDirectories, checkFolderPath, folderIdFromLabel, newFolderDefaults, nodeFolderRoutes } from "../src/routes/nodeFolders.js";
 import { SyncthingClient } from "../src/syncthing.js";
-import { draftOf, newFolderBody } from "../ui/src/folderDraft.js";
+import { draftOf, newFolderBody, treePathOf } from "../ui/src/folderDraft.js";
 import { until } from "./until.js";
 
 const apiKey = "node-folders-test-key";
@@ -190,25 +190,46 @@ describe("adding a folder to a node", () => {
   });
 
   it("a new folder's defaults are placed at the directory the person is looking at", async () => {
-    const projects = await newFolderDefaults(pc(), "Projects/Dashboard Test C");
+    const projects = await newFolderDefaults(pc(), "Projects/Dashboard Test C", roots);
     assert.equal(projects.root, "F:\\");
     assert.equal(projects.settings.path, "F:\\Projects\\Dashboard Test C");
     assert.equal(projects.settings.label, "Dashboard Test C");
     assert.equal(projects.settings.id, "dashboard-test-c");
     assert.equal(projects.settings.rescanIntervalS, 7200);
 
-    const top = await newFolderDefaults(peer(), "");
+    const top = await newFolderDefaults(peer(), "", roots);
     assert.equal(top.settings.path, "/var/syncthing/data");
     assert.equal(top.settings.label, "");
     assert.equal(top.settings.id, "abcde-fghij", "no directory name gives Syncthing's random ID");
 
-    const taken = await newFolderDefaults(pc(), "Documents");
+    const taken = await newFolderDefaults(pc(), "Documents", roots);
     assert.equal(taken.settings.id, "abcde-fghij", "an ID the node has gives Syncthing's random ID");
 
-    for (const under of ["Other folders/stray", "../../Windows"]) {
-      const placed: NewFolderDefaults = await newFolderDefaults(pc(), under);
-      assert.equal(placed.settings.path, "F:\\", under);
-    }
+    const stray: NewFolderDefaults = await newFolderDefaults(pc(), "Other folders/stray", roots);
+    assert.equal(stray.settings.path, "F:\\");
+    assert.equal(stray.placementProblem, null, "a group no directory stands for is no refusal");
+    assert.equal(projects.placementProblem, null);
+  });
+
+  it("a directory the guard refuses says why instead of silently offering the root", async () => {
+    const shortName = await newFolderDefaults(pc(), "Photos~2024", roots);
+    assert.equal(shortName.settings.path, "F:\\");
+    assert.equal(shortName.settings.label, "");
+    assert.match(shortName.placementProblem ?? "", /^Photos~2024 cannot be a folder of pc: F:\\Photos~2024 names Photos~2024, which Windows may read as another name/);
+
+    const nested = await newFolderDefaults(pc(), ".storage/stick/photos", roots);
+    assert.match(nested.placementProblem ?? "", /inside stick's root/);
+    const escaping = await newFolderDefaults(pc(), "../../Windows", roots);
+    assert.equal(escaping.settings.path, "F:\\");
+    assert.match(escaping.placementProblem ?? "", /outside pc's root/);
+  });
+
+  it("open after an add lands on the parent of the folder's actual path", () => {
+    assert.equal(treePathOf("F:\\Projects\\Edited Name", "F:\\"), "Projects/Edited Name");
+    assert.equal(treePathOf("F:\\", "F:\\"), "");
+    assert.equal(treePathOf("/var/syncthing/data/dashboard-test-a", "/var/syncthing/data"), "dashboard-test-a");
+    assert.equal(treePathOf("/var/syncthing/database", "/var/syncthing/data"), null);
+    assert.equal(treePathOf("/srv/x", "/"), "srv/x");
   });
 
   it("checking a typed path gives the guard's refusal without a Syncthing call, then the node's overlaps", async () => {
@@ -223,7 +244,7 @@ describe("adding a folder to a node", () => {
   });
 
   it("an add from under=Projects/Dashboard Test C sends and stores the label", async () => {
-    const offered = await newFolderDefaults(pc(), "Projects/Dashboard Test C");
+    const offered = await newFolderDefaults(pc(), "Projects/Dashboard Test C", roots);
     const body = newFolderBody(offered.settings, draftOf(offered.settings));
     assert.deepEqual(body, { id: "dashboard-test-c", label: "Dashboard Test C", path: "F:\\Projects\\Dashboard Test C" });
 

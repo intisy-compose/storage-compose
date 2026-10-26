@@ -65,6 +65,14 @@ describe("the folder path guard", () => {
     }
   });
 
+  it("a nested node whose root has a name the alias check refuses is still protected", () => {
+    const disk: NodeRoot = { nodeId: "e5f6", name: "disk", root: "F:\\.storage\\disk~1", os: "windows" };
+    assert.match(folderPathProblem("F:\\.storage", pc, [pc, disk]) ?? "", /holds disk's root F:\\\.storage\\disk~1/);
+    assert.match(folderPathProblem("F:\\", pc, [pc, disk]) ?? "", /holds disk's root/);
+    const dotted: NodeRoot = { nodeId: "a7b8", name: "dotted", root: "F:\\.storage\\old.", os: "windows" };
+    assert.match(folderPathProblem("F:\\.storage", pc, [pc, dotted]) ?? "", /holds dotted's root/);
+  });
+
   it("linux names are taken as written", () => {
     assert.equal(isInsideRoot("/var/syncthing/data/a~1/b. /c:d", "/var/syncthing/data", "linux"), true);
   });

@@ -723,6 +723,8 @@ export interface NewFolderDefaults {
   settings: FolderSettings;
   /** The node's root, inside which the path must stay. */
   root: string;
+  /** Why the directory the form was opened at cannot be the folder, so the root is offered instead; null when it can. */
+  placementProblem: string | null;
 }
 
 /** `GET /api/nodes/<nodeId>/folder-path-check?path=`: how the add would judge a typed path. */

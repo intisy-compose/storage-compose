@@ -48,11 +48,12 @@ export function isStrictlyBelow(path: string, root: string, os: NodeOs): boolean
 
 /** The other node of this host whose root holds `path`, or null. */
 export function isInsideOtherNode(path: string, node: NodeRoot, nodes: NodeRoot[]): NodeRoot | null {
-  return nestedNodes(node, nodes).find((other) => isInsideRoot(path, other.root, other.os)) ?? null;
+  return nestedNodes(node, nodes).find((other) => relativeToRoot(path, other.root, node.os) !== null) ?? null;
 }
 
+/** @implNote Compares the other root by its segments only: the alias check is for typed paths, and a root named `disk~1` must stay protected. */
 function holdsOtherNode(path: string, node: NodeRoot, nodes: NodeRoot[]): NodeRoot | null {
-  return nestedNodes(node, nodes).find((other) => isInsideRoot(other.root, path, node.os)) ?? null;
+  return nestedNodes(node, nodes).find((other) => relativeToRoot(other.root, path, node.os) !== null) ?? null;
 }
 
 /** Why `path` cannot be a folder of `node`, or null: outside its root, inside another node's root, or holding one. */

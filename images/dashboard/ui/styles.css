@@ -530,9 +530,9 @@ a.button { display: inline-block; text-decoration: none; color: inherit; }
 .explorer-chevron:hover { background: var(--line); color: var(--text); }
 .explorer-chevron .icon { width: 15px; height: 15px; transition: transform 0.12s; }
 .explorer-chevron.open .icon { transform: rotate(90deg); }
-.explorer-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.explorer-name > a, .explorer-name > span:not(.chip) { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.explorer-folder-chip { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-name { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
+.explorer-name > a, .explorer-name > span:not(.chip) { flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-folder-chip { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .explorer-open { font-weight: 500; }
 .explorer-open:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .explorer-icon { color: var(--text-faint); width: 17px; height: 17px; }
