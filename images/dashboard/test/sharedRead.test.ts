@@ -1,0 +1,60 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { SharedRead } from "../src/sharedRead.js";
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((settle, fail) => {
+    resolve = settle;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+describe("a shared read", () => {
+  it("callers while a read runs share it", async () => {
+    const shared = new SharedRead<number>(0);
+    const pending = deferred<number>();
+    let starts = 0;
+    const start = () => {
+      starts += 1;
+      return pending.promise;
+    };
+    const reads = [shared.read(start), shared.read(start)];
+    pending.resolve(7);
+    assert.deepEqual(await Promise.all(reads), [7, 7]);
+    assert.equal(starts, 1);
+  });
+
+  it("a settled read is shared until its age passes, then a new one starts", async () => {
+    let now = 1_000;
+    const shared = new SharedRead<number>(4_000, () => now);
+    let starts = 0;
+    const start = async () => ++starts;
+    assert.equal(await shared.read(start), 1);
+    now += 3_999;
+    assert.equal(await shared.read(start), 1);
+    now += 1;
+    assert.equal(await shared.read(start), 2);
+  });
+
+  it("a read someone else started is shared too", async () => {
+    const shared = new SharedRead<string>(4_000);
+    shared.offer(Promise.resolve("from the full build"));
+    assert.equal(await shared.read(async () => "a read of its own"), "from the full build");
+  });
+
+  it("a failed read is not shared with the next caller", async () => {
+    const shared = new SharedRead<number>(4_000);
+    await assert.rejects(shared.read(async () => Promise.reject(new Error("refused"))), /refused/);
+    assert.equal(await shared.read(async () => 3), 3);
+  });
+
+  it("a failed read someone else started does not leave an unhandled rejection", async () => {
+    const shared = new SharedRead<number>(4_000);
+    shared.offer(Promise.reject(new Error("build failed")));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(await shared.read(async () => 5), 5);
+  });
+});

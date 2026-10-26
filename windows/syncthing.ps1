@@ -375,10 +375,25 @@ function Stop-AllNodeInstances([string]$Reason) {
     Remove-SyncthingFirewallRules
 }
 
+<#
+.NOTES
+A node's root can be a folder, so the volume is the root's drive; null when it cannot be read (a
+drive pulled mid-round must not fail the heartbeat).
+#>
+function Get-NodeSpace([string]$Root) {
+    try {
+        $drive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($Root))
+        if (-not $drive.IsReady) { return $null }
+        return [ordered]@{ size = [int64]$drive.TotalSize; free = [int64]$drive.AvailableFreeSpace }
+    } catch {
+        return $null
+    }
+}
+
 function Get-PublishedInstance($Instance) {
     $published = [ordered]@{
         id = $Instance.node.id; name = $Instance.node.name; kind = $Instance.node.kind; threshold = $Instance.node.threshold
-        assigned = @($Instance.node.assigned); root = $Instance.node.root
+        assigned = @($Instance.node.assigned); root = $Instance.node.root; space = Get-NodeSpace $Instance.node.root
         syncthing = [ordered]@{
             state = $Instance.state; processId = $Instance.processId; deviceId = $Instance.deviceId; startedAt = $Instance.startedAt
             guiPort = $null; listenPort = $null; listenAddress = $Instance.listenAddress; apiKey = $Instance.apiKey

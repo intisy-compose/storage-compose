@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { devicesFixture } from "./devices.mjs";
 import { nodesFixture } from "./nodes.mjs";
+import { treeFixture } from "./tree.mjs";
 
 /** Serves the built page with made-up nodes, so the UI is tested without the storage stack. */
 const port = Number(process.env.PORT ?? 8099);
@@ -30,12 +32,15 @@ async function handleAction(nodeId, action, request, response) {
 }
 
 async function route(request, response) {
-  const path = new URL(request.url ?? "/", "http://fixture").pathname;
+  const url = new URL(request.url ?? "/", "http://fixture");
+  const path = url.pathname;
   if (request.method === "GET" && path === "/") {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     return response.end(await readFile(pageFile));
   }
   if (request.method === "GET" && path === "/api/nodes") return sendJson(response, 200, nodesFixture(startedAt));
+  if (request.method === "GET" && path === "/api/devices") return sendJson(response, 200, devicesFixture(startedAt));
+  if (request.method === "GET" && path === "/api/tree") return sendJson(response, 200, treeFixture(url.searchParams.get("node") ?? "all", url.searchParams.get("path") ?? ""));
   if (request.method === "GET" && path === "/api/fixture/actions") return sendJson(response, 200, actionLog);
   const scoped = path.match(/^\/api\/arrays\/([^/]+)\/(sync|scrub|add|rebuild|remove|accept-smart)$/);
   if (request.method === "POST" && scoped) return handleAction(decodeURIComponent(scoped[1]), scoped[2], request, response);

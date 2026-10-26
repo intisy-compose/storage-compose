@@ -2,18 +2,15 @@ import type { ArrayMember, NodeArray, Parity, StorageNode } from "./api.js";
 import { arrayActionArea } from "./arrayActions.js";
 import { element, keyValueList, progressBar, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, normaliseCompletion } from "./format.js";
-import { arrayStateMeaning, memberSpaceTone, smartVerdict } from "./nodeStatus.js";
-import { inventoryLink } from "./preferences.js";
+import { type SmartVerdict, arrayStateLabel, arrayStateMeaning, memberSpaceTone, smartVerdict } from "./nodeStatus.js";
 import { requestRender } from "./renderRequest.js";
-import { appState, effectiveInventoryItemUrl } from "./state.js";
+import { appState } from "./state.js";
 
 const stateTone: Record<string, string> = { healthy: "ok", degraded: "warn", frozen: "bad" };
 
 function assetElement(member: ArrayMember): HTMLElement | null {
   if (!member.asset) return null;
-  const url = member.assetUrl ?? inventoryLink(effectiveInventoryItemUrl(), member.asset);
-  if (!url) return element("span", { className: "chip" }, member.asset);
-  return element("a", { className: "chip chip-link", attributes: { href: url, target: "_blank", rel: "noopener" } }, member.asset);
+  return element("small", { className: "muted" }, `note: ${member.asset}`);
 }
 
 function memberSpace(member: ArrayMember): HTMLElement {
@@ -23,8 +20,12 @@ function memberSpace(member: ArrayMember): HTMLElement {
   return element("span", { className: "member-space", title: label }, progressBar(fraction, memberSpaceTone(member), label), element("small", {}, label));
 }
 
-function memberRow(member: ArrayMember): HTMLElement {
-  const verdict = smartVerdict(member);
+function memberVerdict(array: NodeArray, member: ArrayMember): SmartVerdict {
+  return array.state === "absent" ? { label: "offline", tone: "muted" } : smartVerdict(member);
+}
+
+function memberRow(array: NodeArray, member: ArrayMember): HTMLElement {
+  const verdict = memberVerdict(array, member);
   const temperature = member.present && member.temperature !== null ? `${member.temperature}°C` : "";
   return element(
     "div",
@@ -101,11 +102,11 @@ function paritySection(node: StorageNode, array: NodeArray): HTMLElement {
 
 function stateBanner(array: NodeArray): HTMLElement {
   const missing = array.members.filter((member) => !member.present).map((member) => member.role);
-  const missingText = missing.length ? ` Missing: ${missing.join(", ")}.` : "";
+  const missingText = missing.length && array.state !== "absent" ? ` Missing: ${missing.join(", ")}.` : "";
   return element(
     "div",
     { className: `state-banner tone-border-${stateTone[array.state] ?? "muted"}` },
-    element("strong", { className: `tone-text-${stateTone[array.state] ?? "muted"}` }, `Array ${array.state}.`),
+    element("strong", { className: `tone-text-${stateTone[array.state] ?? "muted"}` }, `Array ${arrayStateLabel[array.state] ?? array.state}.`),
     ` ${arrayStateMeaning[array.state] ?? ""}${missingText}`,
   );
 }
@@ -115,7 +116,7 @@ export function arraySections(node: StorageNode, array: NodeArray): HTMLElement[
     section(
       "Drives",
       array.state === "healthy" ? null : stateBanner(array),
-      element("div", { className: "member-list" }, ...array.members.map(memberRow)),
+      element("div", { className: "member-list" }, ...array.members.map((member) => memberRow(array, member))),
       node.local ? candidatesToggle(array) : null,
     ),
     paritySection(node, array),

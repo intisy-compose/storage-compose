@@ -233,4 +233,10 @@ describe("admitted folders", () => {
   it("admits nothing without a setup repo", () => {
     assert.deepEqual(admittedFolders(null, p53Request as never), []);
   });
+
+  it("never admits the top directory's entry as a folder", () => {
+    const withTop = parseLayout(`[folders."."]\npriority = 20\n${layoutText}`);
+    const folders = admittedFolders(withTop, { ...p53Request, os: "linux", nodes: [{ kind: "drive", path: "/data", threshold: 0 }] } as never);
+    assert.deepEqual(folders.map((folder) => folder.id).sort(), ["documents", "documents-github", "projects", "videos"]);
+  });
 });

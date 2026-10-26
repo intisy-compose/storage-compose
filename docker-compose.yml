@@ -94,14 +94,21 @@ services:
       STORAGE_HOST: ${STORAGE_HOST:-}
       STORAGE_PEERS: ${STORAGE_PEERS:-}
       TAILNET_PROXY: http://gateway:1055
-      INVENTORY_ASSET_URL: ${INVENTORY_ASSET_URL:-}
       JOIN_ALLOWED_USERS: ${JOIN_ALLOWED_USERS:-}
+      NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
       SETUP_REPO_DIR: ${SETUP_REPO_DIR:-./data}
       SETUP_LAYOUT: ${SETUP_LAYOUT:-drive-sync.toml}
       GIT_CONFIG_COUNT: 1
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: /setup
       HOST_AGENT_EXPECTED: ${HOST_AGENT_EXPECTED:-}
+      ATTENTION_OFFLINE_HOURS: ${ATTENTION_OFFLINE_HOURS:-24}
+      ATTENTION_FULL_PERCENT: ${ATTENTION_FULL_PERCENT:-90}
+      ACTIVITY_BUFFER: ${ACTIVITY_BUFFER:-2000}
+      EXPLORER_NEED_LIMIT: ${EXPLORER_NEED_LIMIT:-20000}
+      SEEN_WRITE_INTERVAL_S: ${SEEN_WRITE_INTERVAL_S:-60}
+      DISCOVERY_POLL_SECONDS: ${DISCOVERY_POLL_SECONDS:-300}
       GIT_CONFIG_GLOBAL: /setup-home/.gitconfig
       GIT_SSH_COMMAND: ssh -o IdentityFile=/setup-home/.ssh/id_ed25519 -o IdentityFile=/setup-home/.ssh/id_rsa -o UserKnownHostsFile=/setup-home/.ssh/known_hosts
     volumes:

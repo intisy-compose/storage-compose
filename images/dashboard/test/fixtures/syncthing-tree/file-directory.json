@@ -1,0 +1,43 @@
+{
+  "availability": null,
+  "global": {
+    "blocksHash": null,
+    "deleted": false,
+    "ignored": false,
+    "invalid": false,
+    "localFlags": 0,
+    "modified": "2026-10-16T06:55:40.1487875+02:00",
+    "modifiedBy": "QWERTYU",
+    "mustRescan": false,
+    "name": "Garden Plans",
+    "noPermissions": false,
+    "numBlocks": 0,
+    "permissions": "0755",
+    "platform": { "Unix": null, "Windows": null, "Linux": null, "Darwin": null, "FreeBSD": null, "NetBSD": null },
+    "previousBlocksHash": null,
+    "sequence": 1,
+    "size": 0,
+    "type": "FILE_INFO_TYPE_DIRECTORY",
+    "version": ["QWERTYU:1792546686"]
+  },
+  "local": {
+    "blocksHash": null,
+    "deleted": false,
+    "ignored": false,
+    "invalid": false,
+    "localFlags": 0,
+    "modified": "2026-10-16T06:55:40.1487875+02:00",
+    "modifiedBy": "QWERTYU",
+    "mustRescan": false,
+    "name": "Garden Plans",
+    "noPermissions": false,
+    "numBlocks": 0,
+    "permissions": "0755",
+    "platform": { "Unix": null, "Windows": null, "Linux": null, "Darwin": null, "FreeBSD": null, "NetBSD": null },
+    "previousBlocksHash": null,
+    "sequence": 1,
+    "size": 0,
+    "type": "FILE_INFO_TYPE_DIRECTORY",
+    "version": ["QWERTYU:1792546686"]
+  }
+}

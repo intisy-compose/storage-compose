@@ -1,12 +1,24 @@
-import { fetchNodes } from "./api.js";
+import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
+import type { NodesResponse } from "./api.js";
+import { fetchActivity, fetchDevices, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests } from "./api.js";
+import { renderAttentionPage } from "./attentionPage.js";
+import { renderDeviceDetail } from "./deviceDetail.js";
 import { element } from "./dom.js";
+import { renderDriveDetail } from "./driveDetail.js";
+import { folderRootPriority, renderExplorerDetail } from "./explorerDetail.js";
+import { isNodeSelectorOpen, loadExplorer, placeAtFolder, renderExplorerPage } from "./explorerPage.js";
+import { renderFolderDetail, renderFolderLoading, renderFolderNotFound } from "./folderDetail.js";
+import { isFormOpen } from "./forms.js";
+import { renderItemNotFound } from "./itemNotFound.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
 import { renderNodesPage } from "./nodesPage.js";
-import { renderAttentionPage, renderSettingsPage, renderUpcomingPage } from "./otherPages.js";
 import { applyTheme } from "./preferences.js";
+import { skipWhileRunning } from "./pollGuard.js";
 import { onRenderRequested } from "./renderRequest.js";
+import { renderRequestsPage } from "./requestsPage.js";
+import { readableLocalNodes, renderSettingsPage } from "./settingsPage.js";
 import { renderMenu } from "./shell.js";
-import { appState, locationFor, readLocation } from "./state.js";
+import { activityPageSize, appState, explorerLocation, locationFor, readLocation, selectedItemId } from "./state.js";
 
 const pollMilliseconds = 5000;
 
@@ -39,15 +51,42 @@ function connectionBanner(): HTMLElement | null {
 function renderPage(): HTMLElement {
   const data = appState.data;
   if (appState.page === "settings") return renderSettingsPage();
+  if (appState.page === "folders") return renderExplorerPage();
+  if (appState.page === "activity") return renderActivityPage(activityActions);
+  if (appState.page === "requests") return renderRequestsPage();
   if (!data) return element("div", { className: "page loading" }, appState.loadError ? "" : "Loading nodes…");
-  if (appState.page === "nodes") return renderNodesPage(data);
-  if (appState.page === "attention") return renderAttentionPage(data);
-  return renderUpcomingPage(appState.page);
+  if (appState.page === "nodes") return renderNodesPage(data, appState.devices);
+  return renderAttentionPage(data);
+}
+
+function renderFolderPanel(): HTMLElement {
+  const folderId = appState.selectedFolderId;
+  if (!folderId) return renderExplorerDetail();
+  const detail = appState.folderDetail?.summary.id === folderId ? appState.folderDetail : null;
+  if (detail) return renderFolderDetail(detail.summary, detail, folderRootPriority(folderId));
+  return appState.folderDetailError ? renderFolderNotFound(folderId, appState.folderDetailError) : renderFolderLoading(folderId);
+}
+
+function renderDevicesPanel(data: NodesResponse): HTMLElement | null {
+  const devices = appState.devices;
+  const readError = devices === null ? appState.devicesError : null;
+  if (appState.selectedDeviceKey !== null) {
+    const device = devices?.devices.find((candidate) => candidate.key === appState.selectedDeviceKey);
+    return devices && device ? renderDeviceDetail(data, devices, device) : renderItemNotFound("device", appState.selectedDeviceKey, devices !== null, readError);
+  }
+  if (appState.selectedDriveKey !== null) {
+    const drive = devices?.drives.find((candidate) => candidate.key === appState.selectedDriveKey);
+    return devices && drive ? renderDriveDetail(data, devices, drive) : renderItemNotFound("drive", appState.selectedDriveKey, devices !== null, readError);
+  }
+  return null;
 }
 
 function renderDetail(): HTMLElement | null {
+  if (appState.page === "folders") return renderFolderPanel();
   const data = appState.data;
   if (appState.page !== "nodes" || !data) return null;
+  const devicePanel = renderDevicesPanel(data);
+  if (devicePanel) return devicePanel;
   const node = data.nodes.find((candidate) => candidate.id === appState.selectedNodeId);
   return node ? renderNodeDetail(data, node) : renderEmptyDetail(data);
 }
@@ -56,16 +95,21 @@ function render(): void {
   const focus = rememberFocus();
   const root = document.getElementById("app") as HTMLElement;
   const detailScroll = document.querySelector(".detail")?.scrollTop ?? 0;
-  const mainScroll = document.querySelector(".main")?.scrollTop ?? 0;
+  const oldMain = document.querySelector<HTMLElement>(".main");
+  const mainScroll = oldMain?.scrollTop ?? 0;
+  const activityAnchor = oldMain && appState.page === "activity" ? activityScrollAnchor(oldMain) : null;
   const detail = renderDetail();
-  const hasSelection = appState.page === "nodes" && appState.selectedNodeId !== null && detail !== null;
-  root.className = `app page-${appState.page}${hasSelection ? " has-selection" : ""}`;
+  const hasDetail = appState.page === "nodes" || appState.page === "folders";
+  const hasSelection = hasDetail && selectedItemId() !== null && detail !== null;
+  root.className = `app page-${appState.page}${hasDetail ? " with-detail" : ""}${hasSelection ? " has-selection" : ""}`;
   const regions: HTMLElement[] = [renderMenu(), element("main", { className: "main" }, connectionBanner(), renderPage())];
-  if (detail) regions.push(element("aside", { className: "detail", attributes: { "aria-label": "Node detail" } }, detail));
+  if (detail) regions.push(element("aside", { className: "detail", attributes: { "aria-label": appState.page === "folders" ? "Directory detail" : "Detail" } }, detail));
   root.replaceChildren(...regions);
   const newDetail = document.querySelector(".detail");
   if (newDetail) newDetail.scrollTop = detailScroll;
-  (document.querySelector(".main") as HTMLElement).scrollTop = mainScroll;
+  const main = document.querySelector(".main") as HTMLElement;
+  main.scrollTop = mainScroll;
+  restoreActivityScroll(main, activityAnchor);
   restoreFocus(focus);
 }
 
@@ -75,32 +119,158 @@ function isEditingDetail(): boolean {
   return active instanceof HTMLElement && active.closest(".detail, .settings-card") !== null && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName);
 }
 
-async function poll(): Promise<void> {
+function isInUse(): boolean {
+  return isEditingDetail() || isFormOpen() || isNodeSelectorOpen();
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function loadNodes(): Promise<void> {
   try {
     appState.data = await fetchNodes();
     appState.lastLoaded = Date.now();
     appState.loadError = null;
   } catch (error) {
-    appState.loadError = error instanceof Error ? error.message : String(error);
+    appState.loadError = messageOf(error);
   }
-  if (!isEditingDetail()) render();
 }
 
+async function loadDevices(): Promise<void> {
+  try {
+    appState.devices = await fetchDevices();
+    appState.devicesError = null;
+  } catch (error) {
+    appState.devicesError = messageOf(error);
+  }
+}
+
+async function loadFolderDetail(): Promise<void> {
+  const folderId = appState.selectedFolderId;
+  if (!folderId) return;
+  try {
+    const detail = await fetchFolderDetail(folderId);
+    if (folderId !== appState.selectedFolderId) return;
+    appState.folderDetail = detail;
+    appState.folderDetailError = null;
+  } catch (error) {
+    if (folderId === appState.selectedFolderId) appState.folderDetailError = messageOf(error);
+  }
+}
+
+async function loadFolders(): Promise<void> {
+  await Promise.all([loadExplorer(), loadFolderDetail()]);
+  const detail = appState.folderDetail;
+  if (detail?.summary.id === appState.selectedFolderId && placeAtFolder(detail.summary)) await loadExplorer();
+}
+
+async function loadActivity(): Promise<void> {
+  const filters = appState.activityFilters;
+  const limit = appState.activityLimit;
+  try {
+    const activity = await fetchActivity(filters, limit);
+    if (filters !== appState.activityFilters || limit !== appState.activityLimit) return;
+    appState.activity = activity;
+    appState.activityError = null;
+  } catch (error) {
+    appState.activityError = messageOf(error);
+  }
+}
+
+async function loadRequests(): Promise<void> {
+  try {
+    appState.requests = await fetchRequests();
+    appState.requestsError = null;
+  } catch (error) {
+    appState.requestsError = messageOf(error);
+  }
+}
+
+async function loadHostSettings(): Promise<void> {
+  try {
+    appState.hostSettings = await fetchHostSettings();
+    appState.hostSettingsError = null;
+  } catch (error) {
+    appState.hostSettingsError = messageOf(error);
+  }
+}
+
+async function loadNodeOptions(nodeId: string): Promise<void> {
+  try {
+    appState.nodeOptions.set(nodeId, await fetchNodeOptions(nodeId));
+  } catch (error) {
+    appState.nodeOptions.set(nodeId, { error: messageOf(error) });
+  }
+}
+
+/** @implNote Waits for the nodes, as they say which nodes are this host's. */
+async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
+  await Promise.all([loadHostSettings(), nodesLoaded.then(() => Promise.all(readableLocalNodes().map((node) => loadNodeOptions(node.id))))]);
+}
+
+/** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */
+async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Promise<void> {
+  if (appState.page === "nodes") await loadDevices();
+  if (appState.page === "folders") await loadFolders();
+  if (appState.page === "activity") await loadActivity();
+  if (appState.page === "requests") await loadRequests();
+  if (appState.page === "settings") await loadSettings(nodesLoaded);
+}
+
+const poll = skipWhileRunning(async () => {
+  const nodesLoaded = loadNodes();
+  await Promise.all([nodesLoaded, loadPageData(nodesLoaded)]);
+  if (!isInUse()) render();
+});
+
+async function refreshPage(): Promise<void> {
+  await loadPageData();
+  if (!isInUse()) render();
+}
+
+const activityActions = {
+  /** @implNote Renders even while the chosen filter keeps focus, which the poll waits out, so the new answer shows at once. */
+  onFiltersChanged: () => {
+    appState.activityLimit = activityPageSize;
+    render();
+    void loadPageData().then(render);
+  },
+  onMore: () => {
+    appState.activityLimit += activityPageSize;
+    void refreshPage();
+  },
+};
+
 function onLocationChange(): void {
-  const previousNode = appState.selectedNodeId;
+  const previousItem = selectedItemId();
   const previousPage = appState.page;
   readLocation();
-  if (previousNode !== appState.selectedNodeId || previousPage !== appState.page) {
+  const isNewItem = previousItem !== selectedItemId() || previousPage !== appState.page;
+  if (isNewItem) {
     appState.openForm = null;
     appState.notice = null;
     appState.showCandidates = false;
+    appState.folderDetailError = null;
   }
   render();
-  if (previousNode !== appState.selectedNodeId) document.querySelector(".detail")?.scrollTo(0, 0);
+  if (previousItem !== selectedItemId()) document.querySelector(".detail")?.scrollTo(0, 0);
+  if (appState.page === "folders") void loadPageData().then(render);
+  else if (isNewItem) void refreshPage();
+}
+
+function closeSelection(): void {
+  if (appState.page !== "folders") {
+    location.hash = locationFor(appState.page);
+    return;
+  }
+  appState.explorer.selectedPath = null;
+  if (appState.selectedFolderId) location.hash = explorerLocation(null);
+  else render();
 }
 
 function onKey(event: KeyboardEvent): void {
-  if (event.key === "Escape" && appState.selectedNodeId && !isEditingDetail()) location.hash = locationFor("nodes");
+  if (event.key === "Escape" && selectedItemId() && !isInUse()) closeSelection();
 }
 
 applyTheme(appState.theme);

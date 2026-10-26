@@ -1,0 +1,18 @@
+# Merged over the stack's docker-compose.yml by peer.ps1, so relative paths below are relative to the repo root.
+name: storage-compose
+
+services:
+  dashboard-test-peer:
+    image: ghcr.io/syncthing/syncthing:2.1.6
+    container_name: storage-dashboard-test-peer
+    network_mode: "service:gateway"
+    entrypoint: ["/bin/sh", "/registry-entry.sh"]
+    environment:
+      STGUIADDRESS: 0.0.0.0:8389
+      STHOMEDIR: /var/syncthing/config
+      STNOUPGRADE: "1"
+      STNODEFAULTFOLDER: "1"
+    volumes:
+      - ./tests/dashboard/registry-entry.sh:/registry-entry.sh:ro
+      - storage-status:/status
+      - /var/syncthing

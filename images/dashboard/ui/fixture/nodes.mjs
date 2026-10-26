@@ -25,11 +25,26 @@ function syncthing(seed, overrides = {}) {
   return { deviceId: deviceId(seed), addresses: ["dynamic"], connectionType: "LAN", inRate: 0, outRate: 0, version: "v2.0.10", ...overrides };
 }
 
+function connectedPeer(seed, name, connectionKind, address, connectionType = "tcp-client") {
+  return {
+    deviceId: deviceId(seed), name, connected: true, paused: false, connectionType, connectionKind, address, version: "v2.0.10",
+    inRate: 1.2e5, outRate: 3e4, lastSeen: ago(0), completion: 100, needBytes: 0, remoteState: "valid", folders: ["documents"],
+  };
+}
+
+const onePeerPerConnectionKind = [
+  connectedPeer("b71c", "cold-backup", "this-device", "100.75.83.74:22000"),
+  connectedPeer("17aa", "finn-pc-disk", "local-network", "192.168.0.101:22000", "quic-client"),
+  connectedPeer("2b90", "p53", "tailscale", "100.64.0.12:22000"),
+  connectedPeer("d3e8", "phone", "internet", "203.0.113.40:22000"),
+  connectedPeer("c204", "spisor-cluster", "relay", "relay://relay.example:22067", "relay-client"),
+];
+
 function member(role, label, size, used, asset, overrides = {}) {
   return {
     role, label, serial: `ZA${label.length}${role.toUpperCase()}${size}`.slice(0, 12), size, used, asset, present: true,
     smart: { state: "ok", detail: "passed", reallocatedSectors: 0, pendingSectors: 0, powerOnHours: 21000 }, temperature: 36,
-    condition: "present", detail: "", assetUrl: null, ...overrides,
+    condition: "present", detail: "", lastPresent: null, ...overrides,
   };
 }
 
@@ -44,6 +59,7 @@ function privateArray() {
     id: "a3f9", name: "private-array", kind: "array", threshold: 0, assigned: [], local: true, online: true, host: "finn-pc",
     space: { size: 10 * terabyte, used: 7.6 * terabyte },
     sync: { state: "idle", completion: 100, lastSeen: ago(0) },
+    offersWaiting: 7,
     array: {
       state: "healthy",
       members: [
@@ -57,6 +73,7 @@ function privateArray() {
       candidates: [],
     },
     syncthing: syncthing("a3f9", { addresses: ["tcp://192.168.0.100:22000", "quic://192.168.0.100:22000"], inRate: 4.2e6, outRate: 3e5 }),
+    peers: onePeerPerConnectionKind,
     folders: commonFolders,
   };
 }
@@ -68,6 +85,7 @@ function backupArray(startedAt) {
     id: "b71c", name: "cold-backup", kind: "array", threshold: 20, assigned: ["Archive"], local: true, online: true, host: "finn-pc",
     space: { size: 6 * terabyte, used: 4.1 * terabyte },
     sync: { state: "syncing", completion: 82, lastSeen: ago(0) },
+    offersWaiting: 0,
     array: {
       state: "degraded",
       members: [
@@ -94,6 +112,7 @@ function simpleNode(id, name, kind, overrides) {
     id, name, kind, threshold: 50, assigned: [], local: false, online: true, host: name,
     space: { size: 1 * terabyte, used: 0.4 * terabyte },
     sync: { state: "idle", completion: 100, lastSeen: ago(0) },
+    offersWaiting: 0,
     syncthing: syncthing(id), folders: commonFolders.slice(0, 2),
     ...overrides,
   };
@@ -119,8 +138,28 @@ function remoteArray() {
   });
 }
 
-export function nodesFixture(startedAt) {
+function folderDetail(folder) {
+  return { label: "", errors: 0, needItems: 0, needBytes: 0, globalBytes: 0, globalFiles: 0, globalDirectories: 0, lastScan: ago(hour), lastFile: null, localChanged: 0, sharedWith: [], ...folder };
+}
+
+function ownInstance() {
   return {
+    uptime: 3 * 86_400, cpuPercent: 0.8, memoryBytes: 90_000_000, inTotal: 4e9, outTotal: 9e9, discoveryErrors: [],
+    listeners: [{ address: "tcp://0.0.0.0:22000", error: null }, { address: "quic://0.0.0.0:22000", error: null }],
+  };
+}
+
+function withNodeDetail(response) {
+  return { ...response, nodes: response.nodes.map(withDetail) };
+}
+
+function withDetail(node) {
+  const instance = node.instance ?? (node.local && node.syncthing ? ownInstance() : null);
+  return { ...node, instance, peers: node.peers ?? [], folders: node.folders.map(folderDetail) };
+}
+
+export function nodesFixture(startedAt) {
+  return withNodeDetail({
     host: { name: "finn-pc" },
     nodes: [
       privateArray(),
@@ -157,11 +196,12 @@ export function nodesFixture(startedAt) {
       simpleNode("d3e8", "phone", "folder", { host: "phone", threshold: 90, space: { size: 0.5 * terabyte, used: 0.31 * terabyte }, syncthing: syncthing("d3e8", { version: "v1.29.2" }) }),
     ],
     warnings: [
-      { level: "error", text: "cold-backup is degraded: data2 (SAM-0072) is missing", nodeId: "b71c" },
-      { level: "error", text: "office-pc: 3 files failed to sync (permission denied)", nodeId: "44c2" },
-      { level: "warning", text: "private-array: data1 is 92% full and has 8 reallocated sectors", nodeId: "a3f9" },
-      { level: "warning", text: "attic-nas is 94% full", nodeId: "6d07" },
-      { level: "warning", text: "old-laptop has been offline for 9 days", nodeId: "0c5b" },
+      { id: "array:b71c:data2", at: ago(3 * hour), level: "error", kind: "array", text: "cold-backup: data2 (SAM-0072) is missing", nodeId: "b71c", folderId: null },
+      { id: "folder-errors:44c2:documents", at: ago(20 * 60_000), level: "warning", kind: "folder-errors", text: "documents on office-pc: 3 failed items", nodeId: "44c2", folderId: "documents" },
+      { id: "full:a3f9:a3f9-data1", at: ago(2 * day), level: "warning", kind: "full", text: "a3f9-data1 in private-array is 92% full", nodeId: "a3f9", folderId: null },
+      { id: "full:6d07", at: ago(day), level: "warning", kind: "full", text: "attic-nas is 94% full", nodeId: "6d07", folderId: null },
+      { id: "offline:node:0c5b", at: ago(9 * day), level: "warning", kind: "offline", text: "old-laptop has been offline for 9 days", nodeId: "0c5b", folderId: null },
+      { id: "pending-folder:a3f9:music:44c2", at: ago(5 * hour), level: "info", kind: "pending-folder", text: 'office-pc offers the folder "music" to private-array', nodeId: "a3f9", folderId: null },
     ],
-  };
+  });
 }

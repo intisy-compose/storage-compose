@@ -136,7 +136,8 @@ function actionButton(label: string, onClick: () => void, disabledReason: string
 }
 
 export function arrayActionArea(node: StorageNode, array: NodeArray): HTMLElement {
-  const busy = array.parity.job ? `a ${array.parity.job.kind} is running` : null;
+  const unavailable = array.state === "absent" ? "the array is not connected" : null;
+  const busy = unavailable ?? (array.parity.job ? `a ${array.parity.job.kind} is running` : null);
   const missing = missingMembers(array);
   const form = appState.openForm?.nodeId === node.id ? appState.openForm : null;
   const buttons = element(
@@ -147,7 +148,7 @@ export function arrayActionArea(node: StorageNode, array: NodeArray): HTMLElemen
     actionButton("Add drive…", () => openForm(node, "add", "add"), busy ?? (array.candidates.length ? null : "no unused drive is attached")),
     actionButton("Rebuild…", () => openForm(node, "rebuild", missing[0] ?? ""), busy ?? (missing.length ? null : "every drive is present")),
     actionButton("Remove…", () => openForm(node, "remove", removableRoles(array)[0] ?? ""), busy ?? (removableRoles(array).length ? null : "only a missing data drive other than data1 can be removed")),
-    actionButton("Accept SMART…", () => openForm(node, "accept-smart", smartWarningRoles(array)[0] ?? ""), smartWarningRoles(array).length ? null : "no drive has a SMART warning"),
+    actionButton("Accept SMART…", () => openForm(node, "accept-smart", smartWarningRoles(array)[0] ?? ""), unavailable ?? (smartWarningRoles(array).length ? null : "no drive has a SMART warning")),
     array.parity.refused ? actionButton("Sync anyway…", () => openForm(node, "sync-anyway"), busy, "button danger") : null,
   );
   return element("div", { className: "array-actions" }, buttons, form ? actionForm(node, array, form) : null);

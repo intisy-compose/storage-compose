@@ -20,14 +20,15 @@ export interface HostAgentNode {
   threshold: number;
   assigned: string[];
   root: string;
+  space?: { size: number; free: number } | null;
   syncthing: { state: string; deviceId: string | null; guiPort: number | null; listenPort: number | null; apiKey: string | null; problem: string | null } | null;
 }
 
 const staleAfterSeconds = 30;
 
-export async function readHeartbeat(): Promise<HostAgentHeartbeat | null> {
+export async function readHeartbeat(path = hostAgentHeartbeatFile): Promise<HostAgentHeartbeat | null> {
   try {
-    return JSON.parse((await readFile(hostAgentHeartbeatFile, "utf8")).replace(/^﻿/, "")) as HostAgentHeartbeat;
+    return JSON.parse((await readFile(path, "utf8")).replace(/^﻿/, "")) as HostAgentHeartbeat;
   } catch {
     return null;
   }
@@ -61,7 +62,7 @@ export function agentEntries(heartbeat: HostAgentHeartbeat | null, now = Date.no
       assigned: node.assigned ?? [],
       root: node.root,
       present: alive,
-      space: { size: null, used: null },
+      space: node.space ? { size: node.space.size, used: node.space.size - node.space.free } : { size: null, used: null },
       syncthing: reachable ? { url: `http://${hostAgentSyncthingHost}:${syncthing.guiPort}`, apiKey: syncthing.apiKey! } : null,
       updated: heartbeat.heartbeat,
     };

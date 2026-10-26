@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type { NodesResponse } from "../src/api/types.js";
+import type { ArrayStatus } from "../src/arrayStatus.js";
+import { arrayMembers } from "../src/members.js";
 import { formatNodeFile, newestDescription, parseNodeFile } from "../src/nodeFile.js";
 import { folderId, parseLayout, upsertDevice } from "../src/setupRepo.js";
 import { parseToml } from "../src/toml.js";
@@ -100,5 +103,20 @@ category = "synced"
   it("changes nothing for a device already recorded", () => {
     const once = upsertDevice(layout, "p53", "NEW-ID", "/data");
     assert.equal(upsertDevice(once, "p53", "NEW-ID", "/data"), once);
+  });
+});
+
+type NodesResponseHasSettings = "settings" extends keyof NodesResponse ? true : false;
+const nodesResponseHasSettings: NodesResponseHasSettings = false;
+
+describe("array members", () => {
+  it("a member's asset is a note and nodes carry no inventory link", async () => {
+    const description = parseNodeFile(arrayFile);
+    const status = { drives: [], description } as unknown as ArrayStatus;
+    const members = await arrayMembers(status, [], new Map());
+    const data1 = members.find((entry) => entry.role === "data1");
+    assert.equal(data1?.asset, "SAM-0056");
+    assert.equal("assetUrl" in (data1 ?? {}), false);
+    assert.equal(nodesResponseHasSettings, false);
   });
 });

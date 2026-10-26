@@ -25,9 +25,9 @@ export function usedFraction(space: { size: number; used: number } | null | unde
   return Math.min(1, Math.max(0, space.used / space.size));
 }
 
-/** Completion arrives either as 0 to 1 or as 0 to 100 depending on the source (Syncthing uses percent). */
+/** A percentage of the API (0 to 100) as a fraction. */
 export function normaliseCompletion(completion: number): number {
-  return completion > 1 ? completion / 100 : completion;
+  return Math.min(1, Math.max(0, completion / 100));
 }
 
 const timeUnits: [number, string][] = [
@@ -64,4 +64,12 @@ export function formatDate(timestamp: string | null | undefined): string {
 
 export function shortDeviceId(deviceId: string): string {
   return deviceId.split("-")[0] ?? deviceId;
+}
+
+export function formatCount(count: number): string {
+  return count.toLocaleString("en-US");
+}
+
+export function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${formatCount(count)} ${count === 1 ? singular : pluralForm}`;
 }

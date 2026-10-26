@@ -11,10 +11,18 @@ export const clusterArrayId = process.env.ARRAY_PREFIX ?? "storage";
 export const hostName = process.env.STORAGE_NODE || "this host";
 /** The tailnet name of this host's dashboard and cluster, as `up` wrote it into config.env. */
 export const tailnetHost = process.env.STORAGE_HOST ?? "";
-export const statusDirectory = "/status";
+export const statusDirectory = process.env.STATUS_DIRECTORY ?? "/status";
+/** DISCOVERY_POLL_SECONDS from config.env: how often the mounter rescans every device; a missing or unusable value takes 300. */
+export function discoveryPollSecondsOf(environment: Record<string, string | undefined>): number {
+  return positiveNumber(environment.DISCOVERY_POLL_SECONDS, 300);
+}
+
+export const discoveryPollSeconds = discoveryPollSecondsOf(process.env);
 export const arraysStatusDirectory = `${statusDirectory}/arrays`;
 export const registryDirectory = `${statusDirectory}/nodes`;
 export const joinsFile = `${statusDirectory}/joins.json`;
+/** The dashboard's own memory of devices and drives; a cache in the `rebuilt` status volume. */
+export const seenDirectory = `${statusDirectory}/seen`;
 export const publicDirectory = new URL("../public/", import.meta.url).pathname;
 export const port = Number(process.env.PORT ?? 8080);
 /** The join port inside the stack: the gateway forwards /api/join on 443 here with a PROXY protocol header. */
@@ -25,10 +33,12 @@ export const candidateTransports = list(process.env.CANDIDATE_TRANSPORTS ?? "usb
 export const anyArrayLabelPattern = new RegExp(`^([0-9a-f]{4}|${clusterArrayId})-((data|parity)\\d+)$`);
 /** Other hosts' dashboards, read for their nodes, e.g. https://storage-p53.tailnet.ts.net. */
 export const peerDashboards = list(process.env.STORAGE_PEERS);
+/** Where the mounter sends notifications; the dashboard shows it on Settings. */
+export const ntfyUrl = process.env.NTFY_URL ?? "";
+/** @implNote Only whether a topic is set: the topic itself lets anyone read the notifications. */
+export const ntfyTopicSet = Boolean(process.env.NTFY_TOPIC);
 /** An HTTP proxy into the tailnet: tailscale runs in userspace, so only it reaches tailnet addresses. */
 export const tailnetProxy = process.env.TAILNET_PROXY ?? "";
-/** e.g. https://inventree.tailnet.ts.net/web/stock/item/?search={asset} */
-export const inventoryAssetUrl = process.env.INVENTORY_ASSET_URL ?? "";
 export const tailscaleSocket = process.env.TAILSCALE_SOCKET ?? "/var/run/tailscale/tailscaled.sock";
 /** Tailnet logins whose devices may join besides this node's owner's and `tag:storage`. */
 export const joinAllowedUsers = list(process.env.JOIN_ALLOWED_USERS);
@@ -55,3 +65,42 @@ export function poolPath(arrayId: string): string {
 export const hostAgentExpected = process.env.HOST_AGENT_EXPECTED === "yes";
 export const hostAgentHeartbeatFile = "/host-agent/heartbeat.json";
 export const hostAgentSyncthingHost = process.env.HOST_AGENT_SYNCTHING_HOST ?? "host.docker.internal";
+
+export interface AttentionThresholds {
+  offlineHours: number;
+  fullPercent: number;
+}
+
+function positiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return value && Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** ATTENTION_OFFLINE_HOURS and ATTENTION_FULL_PERCENT from config.env; a missing or unusable value takes the default. */
+export function attentionThresholds(environment: Record<string, string | undefined>): AttentionThresholds {
+  return {
+    offlineHours: positiveNumber(environment.ATTENTION_OFFLINE_HOURS, 24),
+    fullPercent: positiveNumber(environment.ATTENTION_FULL_PERCENT, 90),
+  };
+}
+
+export const attentionSettings = attentionThresholds(process.env);
+
+/** ACTIVITY_BUFFER from config.env: how many Activity entries each Syncthing instance, array and the dashboard keep. */
+export function activityBufferSize(environment: Record<string, string | undefined>): number {
+  return Math.max(1, Math.floor(positiveNumber(environment.ACTIVITY_BUFFER, 2000)));
+}
+
+export const activitySettings = { bufferSize: activityBufferSize(process.env) };
+
+/** EXPLORER_NEED_LIMIT from config.env: above this many outstanding or failed items a folder's list is not placed in the tree. */
+export function explorerNeedLimit(environment: Record<string, string | undefined>): number {
+  return Math.max(1, Math.floor(positiveNumber(environment.EXPLORER_NEED_LIMIT, 20_000)));
+}
+
+export const explorerSettings = { needLimit: explorerNeedLimit(process.env) };
+
+/** SEEN_WRITE_INTERVAL_S from config.env: the devices and drives seen files are rewritten at most this often. */
+export function seenWriteIntervalSeconds(environment: Record<string, string | undefined>): number {
+  return positiveNumber(environment.SEEN_WRITE_INTERVAL_S, 60);
+}

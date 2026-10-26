@@ -161,6 +161,22 @@ Describe "the heartbeat" {
         $heartbeat.foundNodes[0].id | Should Be "b7c2"
     }
 
+    It "carries the node volume's size and free space" {
+        Reset-World @("running")
+        $script:syncthingInstances = @{ b7c2 = [pscustomobject]@{ node = $global:nodes[0]; state = "running"; processId = 1; deviceId = "D"; startedAt = $null; listenAddress = $null; apiKey = "k"; problem = $null; ports = $null } }
+        $global:nodes[0].root = $scratch
+        Invoke-AgentRound $null $true
+        $space = (Read-Heartbeat).nodes[0].space
+        $drive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($scratch))
+        $space.size | Should Be $drive.TotalSize
+        ($space.free -gt 0 -and $space.free -le $space.size) | Should Be $true
+        $script:syncthingInstances = @{}
+    }
+
+    It "carries no space for a root that is not on a readable volume" {
+        (Get-NodeSpace "") | Should BeNullOrEmpty
+    }
+
     It "says when the agent will remove itself" {
         Reset-World @("exited")
         Invoke-AgentRound $null $true

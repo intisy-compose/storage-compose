@@ -1,10 +1,7 @@
 # The description of an array still on the old labels (storage-data1, ...). It lives on the array, in
 # storage-data1/.storage/array.toml (mirrored to data2 with the rest of the stack state), not in this
-# repo, and names each role's inventory asset in notifications. `migrate-labels` moves the assets and
+# repo, and names each role's asset note in notifications. `migrate-labels` moves the assets and
 # serials into .storage/node.toml on every member and keeps this file as array.toml.before-migration.
-
-# The inventory's page for a stock item; the role's `item` is appended.
-inventory_item_url = "https://inventree.example.ts.net/web/stock/item/"
 
 [parity1]
 asset = "SAM-0001"

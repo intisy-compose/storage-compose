@@ -61,6 +61,14 @@ describe("host agent", () => {
     assert.equal(drive.syncthing, null);
   });
 
+  it("agentEntries maps the agent's space", () => {
+    const withSpace = heartbeat();
+    withSpace.nodes[1].space = { size: 1000, free: 400 };
+    const [folder, drive] = agent.agentEntries(withSpace, now);
+    assert.deepEqual(drive.space, { size: 1000, used: 600 });
+    assert.deepEqual(folder.space, { size: null, used: null });
+  });
+
   it("shows its nodes absent while it is not alive", () => {
     assert.deepEqual(agent.agentEntries(heartbeat({ heartbeatEpoch: now / 1000 - 120 }), now).map((entry) => [entry.present, entry.syncthing]), [
       [false, null],

@@ -1,10 +1,14 @@
-import type { NodesResponse, StorageNode, Warning } from "./api.js";
-import { element, progressBar } from "./dom.js";
-import { formatBytes, usedFraction } from "./format.js";
+import type { DevicesResponse, NodesResponse, StorageNode, Warning } from "./api.js";
+import { warningHref } from "./attentionPage.js";
+import { deviceBlocks } from "./deviceList.js";
+import { type KindFilter, type NodeFilters, type ReachFilter, byReachThenName, placeOnDevices, storageNodes, visibleUnplacedNodes } from "./devicePlacement.js";
+import { element } from "./dom.js";
+import { plural } from "./format.js";
 import { icon } from "./icons.js";
-import { isOffline, kindChipText, needsAttention, nodeTone, shortSyncState, spaceTone, thresholdChipText } from "./nodeStatus.js";
+import { nodeRow } from "./nodeRow.js";
+import { isOffline } from "./nodeStatus.js";
 import { requestRender } from "./renderRequest.js";
-import { type KindFilter, type ReachFilter, appState, locationFor } from "./state.js";
+import { appState, locationFor } from "./state.js";
 
 const filtersShownFrom = 7;
 const warningsShownAbove = 3;
@@ -22,76 +26,6 @@ const kindFilters: [KindFilter, string][] = [
   ["drive", "Drives"],
   ["folder", "Folders"],
 ];
-
-function matchesSearch(node: StorageNode, search: string): boolean {
-  if (!search) return true;
-  const haystack = [node.name, node.host, node.kind, ...node.folders.map((folder) => folder.id)].join(" ").toLowerCase();
-  return search.toLowerCase().split(/\s+/).every((term) => haystack.includes(term));
-}
-
-function matchesReach(response: NodesResponse, node: StorageNode, filter: ReachFilter): boolean {
-  if (filter === "online") return !isOffline(node);
-  if (filter === "offline") return isOffline(node);
-  if (filter === "attention") return needsAttention(response, node);
-  return true;
-}
-
-function visibleNodes(response: NodesResponse): StorageNode[] {
-  return response.nodes.filter(
-    (node) =>
-      matchesSearch(node, appState.search.trim()) &&
-      matchesReach(response, node, appState.reachFilter) &&
-      (appState.kindFilter === "all" || node.kind === appState.kindFilter),
-  );
-}
-
-/** Online nodes first, then by name, so a long remote list leads with what can be acted on. */
-function byReachThenName(left: StorageNode, right: StorageNode): number {
-  const reach = Number(isOffline(left)) - Number(isOffline(right));
-  return reach !== 0 ? reach : left.name.localeCompare(right.name, undefined, { numeric: true });
-}
-
-function chip(label: string, className = "chip"): HTMLElement {
-  return element("span", { className }, label);
-}
-
-function remoteChip(node: StorageNode): HTMLElement | null {
-  if (node.local) return null;
-  if (isOffline(node)) return chip("offline", "chip chip-muted");
-  return node.syncthing?.connectionType ? chip(node.syncthing.connectionType) : null;
-}
-
-function nodeRow(response: NodesResponse, node: StorageNode): HTMLElement {
-  const tone = nodeTone(response, node);
-  const state = shortSyncState(node);
-  const fraction = usedFraction(node.space);
-  const spaceTitle = node.space ? `${formatBytes(node.space.used)} of ${formatBytes(node.space.size)} used` : "space unknown";
-  const isSelected = appState.selectedNodeId === node.id;
-  const row = element(
-    "a",
-    {
-      className: `node-row${isSelected ? " selected" : ""}${isOffline(node) ? " offline" : ""}`,
-      attributes: { href: locationFor("nodes", node.id), "data-node": node.id },
-    },
-    element("span", { className: `dot tone-${tone}`, title: isOffline(node) ? "offline" : "online" }),
-    element(
-      "span",
-      { className: "node-name" },
-      element("strong", {}, node.name),
-      node.local || node.host === node.name ? null : element("small", {}, `on ${node.host}`),
-    ),
-    element("span", { className: "node-chips" }, chip(kindChipText(node)), chip(thresholdChipText(node.threshold)), remoteChip(node)),
-    element(
-      "span",
-      { className: "node-space", title: spaceTitle },
-      progressBar(fraction, spaceTone(node), spaceTitle),
-      element("small", {}, fraction === null ? "" : `${Math.round(fraction * 100)}%`),
-    ),
-    element("span", { className: `node-sync tone-text-${state.tone}` }, state.symbol ? `${state.symbol} ${state.label}` : state.label),
-  );
-  if (isSelected) row.setAttribute("aria-current", "true");
-  return row;
-}
 
 function groupHeading(title: string, count: number, extra?: string): HTMLElement {
   return element("h2", { className: "group-heading" }, title, element("span", { className: "group-count" }, String(count)), extra ? element("small", {}, extra) : null);
@@ -111,13 +45,16 @@ function nodeGroup(response: NodesResponse, title: string, nodes: StorageNode[],
   );
 }
 
+function devicesStatus(devices: DevicesResponse | null): HTMLElement | null {
+  if (devices && !appState.devicesError) return null;
+  const text = appState.devicesError ? `Devices could not be read: ${appState.devicesError}` : "Reading devices…";
+  return element("p", { className: "muted small devices-status" }, text);
+}
+
 export function warningBanner(warning: Warning): HTMLElement {
-  const banner = element(
-    warning.nodeId ? "a" : "div",
-    { className: `warning level-${warning.level}` },
-    element("span", { className: "warning-text" }, warning.text),
-  );
-  if (warning.nodeId) banner.setAttribute("href", locationFor("nodes", warning.nodeId));
+  const href = warningHref(warning);
+  const banner = element(href ? "a" : "div", { className: `warning level-${warning.level}` }, element("span", { className: "warning-text" }, warning.text));
+  if (href) banner.setAttribute("href", href);
   return banner;
 }
 
@@ -152,7 +89,7 @@ function filterButtons<Value extends string>(options: [Value, string][], current
 function searchBox(): HTMLElement {
   const input = element("input", {
     className: "search-input",
-    attributes: { type: "search", placeholder: "Search nodes", "aria-label": "Search nodes", id: "node-search" },
+    attributes: { type: "search", placeholder: "Search devices, nodes and drives", "aria-label": "Search devices, nodes and drives", id: "node-search" },
   });
   input.value = appState.search;
   input.addEventListener("input", () => {
@@ -162,8 +99,9 @@ function searchBox(): HTMLElement {
   return element("label", { className: "search" }, icon("search"), input);
 }
 
-function filterBar(response: NodesResponse): HTMLElement | null {
-  if (response.nodes.length < filtersShownFrom) return null;
+function filterBar(response: NodesResponse, devices: DevicesResponse | null): HTMLElement | null {
+  const rowCount = response.nodes.length + (devices ? devices.devices.length + devices.drives.length : 0);
+  if (rowCount < filtersShownFrom) return null;
   return element(
     "div",
     { className: "filter-bar" },
@@ -173,22 +111,33 @@ function filterBar(response: NodesResponse): HTMLElement | null {
   );
 }
 
-export function renderNodesPage(response: NodesResponse): HTMLElement {
-  const visible = visibleNodes(response);
-  const local = response.nodes.filter((node) => node.local);
-  const remote = response.nodes.filter((node) => !node.local);
+function currentFilters(): NodeFilters {
+  return { search: appState.search.trim(), reach: appState.reachFilter, kind: appState.kindFilter };
+}
+
+export function renderNodesPage(response: NodesResponse, devices: DevicesResponse | null): HTMLElement {
+  const filters = currentFilters();
+  const { placements, unplacedNodes } = placeOnDevices(response.nodes, devices);
+  const blocks = devices ? deviceBlocks(response, devices, placements, filters) : [];
+  const unplacedShown = visibleUnplacedNodes(response, unplacedNodes, filters);
+  const isEverythingFiltered = devices !== null && blocks.length === 0 && unplacedNodes.length === 0;
   return element(
     "div",
     { className: "page nodes-page" },
-    element("header", { className: "page-header" }, element("h1", {}, "Nodes"), element("p", { className: "page-summary" }, summaryText(response))),
+    element("header", { className: "page-header" }, element("h1", {}, "Nodes"), element("p", { className: "page-summary" }, summaryText(response, devices))),
     warningsArea(response),
-    filterBar(response),
-    nodeGroup(response, "This PC", visible.filter((node) => node.local), local.length),
-    nodeGroup(response, "Remote", visible.filter((node) => !node.local), remote.length),
+    filterBar(response, devices),
+    devicesStatus(devices),
+    ...blocks,
+    nodeGroup(response, devices ? "Other nodes" : "Nodes", unplacedShown, unplacedNodes.length),
+    isEverythingFiltered ? element("p", { className: "empty-line" }, "Nothing matches the filters.") : null,
   );
 }
 
-function summaryText(response: NodesResponse): string {
-  const online = response.nodes.filter((node) => !isOffline(node)).length;
-  return `${response.nodes.length} nodes, ${online} online`;
+function summaryText(response: NodesResponse, devices: DevicesResponse | null): string {
+  const nodes = storageNodes(response.nodes);
+  const online = nodes.filter((node) => !isOffline(node)).length;
+  const nodeText = `${plural(nodes.length, "node")}, ${online} online`;
+  if (!devices) return nodeText;
+  return `${plural(devices.devices.length, "device")}, ${nodeText}, ${plural(devices.drives.length, "drive")}`;
 }

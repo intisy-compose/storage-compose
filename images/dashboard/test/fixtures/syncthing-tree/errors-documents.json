@@ -1,0 +1,15 @@
+{
+  "errors": [
+    {
+      "path": "Taxes\\2025\\locked.xlsx",
+      "error": "hashing: open \\\\?\\X:\\Documents\\Taxes\\2025\\locked.xlsx: The process cannot access the file because it is being used by another process."
+    },
+    {
+      "path": "Recipes\\cake\\session.lock",
+      "error": "hashing: read \\\\?\\X:\\Documents\\Recipes\\cake\\session.lock: The process cannot access the file because another process has locked a portion of the file."
+    }
+  ],
+  "folder": "documents",
+  "page": 1,
+  "perpage": 100
+}

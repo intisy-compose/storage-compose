@@ -3,7 +3,7 @@ import type { ArrayMember, MemberSmart } from "./api/types.js";
 import type { ArrayStatus, DriveStatus } from "./arrayStatus.js";
 import { type BlockDevice, wholeDeviceOf } from "./blockDevices.js";
 import type { MemberDescription } from "./nodeFile.js";
-import { inventoryAssetUrl, storageRoot } from "./settings.js";
+import { storageRoot } from "./settings.js";
 import { type SmartSummary, smartSummary } from "./smart.js";
 
 /** Mount point to mount source, from the container's own mount table. */
@@ -40,10 +40,6 @@ export function memberSmart(condition: DriveStatus["condition"], detail: string,
   return { state: "ok", detail: "passed", ...counts };
 }
 
-export function assetUrl(asset: string | null): string | null {
-  return asset && inventoryAssetUrl ? inventoryAssetUrl.replace("{asset}", encodeURIComponent(asset)) : null;
-}
-
 function roleOrder(role: string): [number, number] {
   return [role.startsWith("parity") ? 1 : 0, Number(role.replace(/^\D+/, "")) || 0];
 }
@@ -67,12 +63,12 @@ async function member(
     size: drive?.size ?? description?.size ?? null,
     used: drive?.used ?? null,
     asset,
-    assetUrl: assetUrl(asset),
     present: condition === "present" || condition === "failing",
     smart: memberSmart(condition, drive?.detail ?? "", summary),
     temperature: summary?.temperatureCelsius ?? null,
     condition,
     detail: drive?.detail ?? (drive ? "" : "named by the array's description, never seen on this host"),
+    lastPresent: drive?.lastPresent ?? null,
   };
 }
 

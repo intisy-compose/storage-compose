@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import type { PriorityBand } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { setupLayoutPath, setupRepoDirectory } from "./settings.js";
 import { type TomlTable, parseToml } from "./toml.js";
@@ -18,6 +19,8 @@ export interface LayoutDevice {
 export interface SetupLayout {
   devices: LayoutDevice[];
   folders: LayoutFolder[];
+  /** The layout's `[bands]` table, highest first; empty while the layered sync sets none. */
+  bands: PriorityBand[];
 }
 
 export interface SetupRecordResult {
@@ -34,6 +37,15 @@ export function folderId(relativePath: string): string {
   return relativePath.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
+/** The layout's spelling of the tree root, which `[folders."."]` gives a priority. */
+export const topDirectoryPath = ".";
+
+/** Separators as `/`, no leading, trailing or `.` segments; the tree root is `.`. */
+export function normaliseRelativePath(relativePath: string): string {
+  const segments = relativePath.split(/[\\/]+/).filter((segment) => segment !== "" && segment !== ".");
+  return segments.length ? segments.join("/") : topDirectoryPath;
+}
+
 function asTable(value: unknown): TomlTable {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as TomlTable) : {};
 }
@@ -44,12 +56,16 @@ export function parseLayout(text: string): SetupLayout {
     const entry = asTable(value);
     return { name, id: typeof entry.id === "string" ? entry.id : "", joined: entry.joined !== false };
   });
-  const folders = Object.entries(asTable(toml.folders)).map(([relativePath, value]) => {
+  const folders = Object.entries(asTable(toml.folders)).map(([key, value]) => {
     const entry = asTable(value);
+    const relativePath = normaliseRelativePath(key);
     const priority = typeof entry.priority === "number" ? entry.priority : (categoryPriority[String(entry.category)] ?? 0);
     return { relativePath, id: folderId(relativePath), priority };
   });
-  return { devices, folders };
+  const bands = Object.entries(asTable(toml.bands))
+    .flatMap(([name, from]) => (typeof from === "number" ? [{ name, from }] : []))
+    .sort((left, right) => right.from - left.from);
+  return { devices, folders, bands };
 }
 
 function tomlString(value: string): string {

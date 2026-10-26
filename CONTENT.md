@@ -32,8 +32,8 @@ storage, so it stays the same node on whichever host it is attached to:
 - **array**: several drives with SnapRAID parity. Each drive is ext4 with a label naming its array's
   4 hex digit id and its role: `a3f9-data1`, `a3f9-data2`, ..., `a3f9-parity1`. The USB port, the
   device order and the host never matter, and any number of arrays run side by side. Every member
-  carries the whole array's description (its members' roles, labels, serials, sizes and inventory
-  assets), the copy with the highest `revision` winning, so any one drive names the members that
+  carries the whole array's description (its members' roles, labels, serials, sizes and asset
+  notes), the copy with the highest `revision` winning, so any one drive names the members that
   are missing.
 - **drive**: one volume whose root holds `.storage/node.toml`.
 - **folder**: a folder on any volume, listed in `.storage/nodes.toml` at that volume's root
