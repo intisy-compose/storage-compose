@@ -98,9 +98,14 @@ function settingsRows(settings: FolderSettings, names: Map<string, string>): [st
   ];
 }
 
+/** Each copy's node names its own device, which no `sharedWith` lists. */
 function deviceNames(summary: FolderSummary): Map<string, string> {
   const names = new Map<string, string>();
   for (const copy of summary.copies) for (const peer of copy.sharedWith) names.set(peer.deviceId, peer.name);
+  for (const copy of summary.copies) {
+    const ownId = appState.data?.nodes.find((node) => node.id === copy.nodeId)?.syncthing?.deviceId;
+    if (ownId) names.set(ownId, copy.nodeName);
+  }
   for (const offer of summary.offers) names.set(offer.offeredBy, offer.offeredByName);
   return names;
 }

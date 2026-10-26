@@ -259,7 +259,7 @@ function sharingSection(form: EditFolderFormState): HTMLElement {
   return section(
     "Sharing",
     choices.length
-      ? sharingList(formId, "Shared with", form.sharing, choices, form.saving)
+      ? sharingList(formId, "Shared with", form.sharing, choices, form.saving, () => (form.result = null))
       : element("p", { className: "muted" }, "This node has no other device yet; add one on its Nodes page to share the folder with it."),
   );
 }

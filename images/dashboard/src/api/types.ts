@@ -735,9 +735,22 @@ export interface FolderShare {
   encryptionPassword?: string;
 }
 
+/** A share's encryption password as it is sent, trimmed; a blank one is no password, so whitespace is never sent as one. */
+export function sharePassword(password: string | undefined): string | null {
+  const trimmed = password?.trim() ?? "";
+  return trimmed === "" ? null : trimmed;
+}
+
+/** A share of a folder with `deviceId`, carrying the password only when there is one. */
+export function folderShare(deviceId: string, password: string | undefined): FolderShare {
+  const kept = sharePassword(password);
+  return kept === null ? { deviceId } : { deviceId, encryptionPassword: kept };
+}
+
 /**
  * The `devices` field of a folder edit: the devices to start and to stop sharing the folder with. Every other device
- * keeps its share as it is, and a device already shared (or already not shared) changes nothing, its password included.
+ * keeps its share as it is, and a device already shared (or already not shared) changes nothing. Sharing an already
+ * shared device with another password is refused: a password changes only by stopping sharing and sharing again.
  */
 export interface FolderSharingChange {
   share?: FolderShare[];

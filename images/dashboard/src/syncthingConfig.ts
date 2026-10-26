@@ -1,5 +1,5 @@
 import { deviceSettingLabels, shareFoldersLabel } from "./api/deviceText.js";
-import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type DiskFreeUnit, type FolderSettingsChange, type FolderSharingChange, type FolderType, type InstanceGui, type InstanceOptions, type PullOrder, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts } from "./api/types.js";
+import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type DiskFreeUnit, type FolderSettingsChange, type FolderSharingChange, type FolderType, type InstanceGui, type InstanceOptions, type PullOrder, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "./api/types.js";
 
 type SyncthingObject = Record<string, unknown>;
 
@@ -223,7 +223,10 @@ export function effectiveSharing(current: readonly FolderDeviceEntry[], change: 
 /** The folder's device list after `sharing`: every other entry exactly as Syncthing has it, its password included, as Syncthing replaces the whole list. */
 export function sharedDevices(current: readonly FolderDeviceEntry[], sharing: FolderSharingChange): FolderDeviceEntry[] {
   const unshared = new Set(sharing.unshare ?? []);
-  const added = (sharing.share ?? []).map((entry) => ({ deviceID: entry.deviceId, ...(entry.encryptionPassword ? { encryptionPassword: entry.encryptionPassword } : {}) }));
+  const added = (sharing.share ?? []).map((entry) => {
+    const password = sharePassword(entry.encryptionPassword);
+    return password === null ? { deviceID: entry.deviceId } : { deviceID: entry.deviceId, encryptionPassword: password };
+  });
   return [...current.filter((entry) => !unshared.has(entry.deviceID)), ...added];
 }
 

@@ -1,4 +1,4 @@
-import type { FolderSharingChange } from "./api.js";
+import { type FolderSharingChange, folderShare } from "./api.js";
 import { button, element } from "./dom.js";
 import { requestRender } from "./renderRequest.js";
 import type { SharingDraft } from "./state.js";
@@ -20,7 +20,8 @@ export function isTicked(draft: SharingDraft, choice: SharingChoice): boolean {
   return choice.isShared ? !draft.unshare.has(choice.key) : draft.share.has(choice.key);
 }
 
-function tick(draft: SharingDraft, choice: SharingChoice, ticked: boolean): void {
+/** Records a tick or untick; `onEdit` lets the form drop a result line that no longer describes what it holds. */
+export function tick(draft: SharingDraft, choice: SharingChoice, ticked: boolean, onEdit: () => void = () => {}): void {
   if (choice.isShared) {
     if (ticked) draft.unshare.delete(choice.key);
     else draft.unshare.add(choice.key);
@@ -30,6 +31,7 @@ function tick(draft: SharingDraft, choice: SharingChoice, ticked: boolean): void
     draft.share.delete(choice.key);
     draft.revealed.delete(choice.key);
   }
+  onEdit();
   requestRender();
 }
 
@@ -42,13 +44,17 @@ function revealWords(revealed: boolean): string {
 }
 
 /** @implNote Masked until the person reveals it; the page never gets a saved password back, so only a new share has this field. */
-function passwordField(formId: string, draft: SharingDraft, choice: SharingChoice, disabled: boolean): HTMLElement {
+function passwordField(formId: string, draft: SharingDraft, choice: SharingChoice, disabled: boolean, onEdit: () => void): HTMLElement {
   const id = `${formId}-password-${idPart(choice.key)}`;
   const input = element("input", { attributes: { id, type: draft.revealed.has(choice.key) ? "text" : "password", autocomplete: "new-password", spellcheck: "false" } });
   input.defaultValue = "";
   input.value = draft.share.get(choice.key) ?? "";
   input.disabled = disabled;
-  input.addEventListener("input", () => draft.share.set(choice.key, input.value));
+  input.addEventListener("input", () => {
+    draft.share.set(choice.key, input.value);
+    onEdit();
+    document.getElementById(formId)?.querySelector(":scope > .notice")?.remove();
+  });
   const reveal = button(revealWords(draft.revealed.has(choice.key)), () => {
     const revealed = !draft.revealed.has(choice.key);
     if (revealed) draft.revealed.add(choice.key);
@@ -66,37 +72,37 @@ function passwordField(formId: string, draft: SharingDraft, choice: SharingChoic
   return element("label", { className: "setting share-password", attributes: { for: id } }, element("span", {}, "Encryption password"), element("span", { className: "setting-input" }, input, reveal), hint);
 }
 
-function choiceRow(formId: string, draft: SharingDraft, choice: SharingChoice, disabled: boolean): HTMLElement {
+function choiceRow(formId: string, draft: SharingDraft, choice: SharingChoice, disabled: boolean, onEdit: () => void): HTMLElement {
   const id = `${formId}-share-${idPart(choice.key)}`;
   const box = element("input", { attributes: { id, type: "checkbox" } });
   box.defaultChecked = choice.isShared;
   box.checked = isTicked(draft, choice);
   box.disabled = disabled;
-  box.addEventListener("change", () => tick(draft, choice, box.checked));
+  box.addEventListener("change", () => tick(draft, choice, box.checked, onEdit));
   const ticked = isTicked(draft, choice);
   const stopping = choice.isShared && !ticked ? element("small", { className: "tone-text-warn" }, `Stops sharing once saved: ${choice.receiver} gets no more changes of it.`) : null;
   return element(
     "div",
     { className: "share-choice" },
     element("label", { className: "toggle", attributes: { for: id } }, box, element("span", {}, choice.label, choice.detail ? element("small", { className: "muted" }, ` ${choice.detail}`) : null)),
-    !choice.isShared && ticked ? passwordField(formId, draft, choice, disabled) : null,
+    !choice.isShared && ticked ? passwordField(formId, draft, choice, disabled, onEdit) : null,
     stopping,
   );
 }
 
 /** A tick per choice; ticking one not yet shared asks for its encryption password. */
-export function sharingList(formId: string, legend: string, draft: SharingDraft, choices: SharingChoice[], disabled: boolean): HTMLElement {
-  return element("fieldset", { className: "share-folders" }, element("legend", {}, legend), ...choices.map((choice) => choiceRow(formId, draft, choice, disabled)));
+export function sharingList(formId: string, legend: string, draft: SharingDraft, choices: SharingChoice[], disabled: boolean, onEdit: () => void): HTMLElement {
+  return element("fieldset", { className: "share-folders" }, element("legend", {}, legend), ...choices.map((choice) => choiceRow(formId, draft, choice, disabled, onEdit)));
 }
 
 export function hasSharingChanges(draft: SharingDraft): boolean {
   return draft.share.size + draft.unshare.size > 0;
 }
 
-/** A folder form's draft as the edit's `devices` field; an empty password is no password. */
+/** A folder form's draft as the edit's `devices` field; a blank password is no password. */
 export function folderSharingChange(draft: SharingDraft): FolderSharingChange {
   return {
-    share: [...draft.share].map(([deviceId, password]) => ({ deviceId, ...(password ? { encryptionPassword: password } : {}) })),
+    share: [...draft.share].map(([deviceId, password]) => folderShare(deviceId, password)),
     unshare: [...draft.unshare],
   };
 }

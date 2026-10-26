@@ -8,6 +8,7 @@ import {
   type StorageNode,
   changedFields,
   deviceDisplayName,
+  folderShare,
   deviceSettingLabels,
   removeDevice,
   saveDeviceSettings,
@@ -291,7 +292,7 @@ interface FolderShareWrite {
 }
 
 function folderShareWrites(form: DeviceFormState): FolderShareWrite[] {
-  const shares = [...form.sharing.share].map(([folderId, password]) => ({ folderId, change: { devices: { share: [{ deviceId: form.deviceId, ...(password ? { encryptionPassword: password } : {}) }] } } }));
+  const shares = [...form.sharing.share].map(([folderId, password]) => ({ folderId, change: { devices: { share: [folderShare(form.deviceId, password)] } } }));
   const unshares = [...form.sharing.unshare].map((folderId) => ({ folderId, change: { devices: { unshare: [form.deviceId] } } }));
   return [...shares, ...unshares];
 }
@@ -310,9 +311,11 @@ function forgetSaved(form: DeviceFormState, folderId: string): void {
   form.sharing.revealed.delete(folderId);
 }
 
+/** Failed folders and ones that may have been saved are both named, so a person sees every folder still to check. */
 function sharingNotice(failures: string[], unsure: string[]): Notice {
-  if (failures.length) return { text: `Not saved for ${failures.join("; ")}`, tone: "bad" };
-  return unsure.length ? { text: `${unsure.join("; ")}.`, tone: "warn" } : { text: "Saved.", tone: "ok" };
+  const parts = [...(failures.length ? [`Not saved for ${failures.join("; ")}.`] : []), ...(unsure.length ? [`${unsure.join("; ")}.`] : [])];
+  if (parts.length === 0) return { text: "Saved.", tone: "ok" };
+  return { text: parts.join(" "), tone: failures.length ? "bad" : "warn" };
 }
 
 /** Each ticked or unticked folder is its own edit of that folder's sharing; one that fails stays ticked to try again. */
@@ -355,7 +358,7 @@ function foldersForm(node: StorageNode, form: DeviceFormState, name: string): HT
   return element(
     "div",
     { className: "device-form", attributes: { id: foldersFormId } },
-    sharingList(foldersFormId, `${node.name}'s folders shared with ${name}`, form.sharing, choices, form.sharingSaving),
+    sharingList(foldersFormId, `${node.name}'s folders shared with ${name}`, form.sharing, choices, form.sharingSaving, () => (form.sharingResult = null)),
     resultLine(form.sharingResult),
     element(
       "div",
