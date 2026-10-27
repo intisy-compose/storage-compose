@@ -85,8 +85,8 @@ function overlapWarning(folders: SyncthingFolderSettings[], path: string, node: 
 
 /**
  * How an add, or the edit of `editedFolderId`, would judge `typed` on this node: the guard's refusal first, without a
- * Syncthing call, then the node's other folders and, for a move, their versions paths as the save judges them when the
- * edit does or does not also change the folder's versioning (`editsVersioning`).
+ * Syncthing call, then the node's other folders and, for a new folder or a move, their versions paths as the save judges
+ * them when the edit does or does not also change the folder's versioning (`editsVersioning`).
  */
 export async function checkFolderPath(instance: ResolvedInstance, typed: string, nodes: NodeRoot[], editedFolderId: string | null = null, editsVersioning = false): Promise<FolderPathCheck> {
   const { instance: local, node } = rooted(instance);
@@ -96,8 +96,8 @@ export async function checkFolderPath(instance: ResolvedInstance, typed: string,
   const configured = await configuredFolders(local);
   const edited = configured.find((folder) => folder.id === editedFolderId);
   const folders = configured.filter((folder) => folder !== edited);
-  const isMoved = edited !== undefined && !isSamePath(edited.path, path, node);
-  const conflict = samePathProblem(local, folders, path, node) ?? (isMoved ? movedFolderVersionsProblem(path, configured, edited.id, editsVersioning, node) : null);
+  const isNewOrMoved = edited === undefined || !isSamePath(edited.path, path, node);
+  const conflict = samePathProblem(local, folders, path, node) ?? (isNewOrMoved ? movedFolderVersionsProblem(path, configured, edited?.id ?? "", editsVersioning, node) : null);
   return { path, problem: conflict, warning: overlapWarning(folders, path, node) };
 }
 
@@ -201,6 +201,30 @@ function newFolderVersionsProblem(folder: NewFolder, versioning: Versioning | nu
   return versionsProblem ?? movedFolderVersionsProblem(folder.path, folders, folder.id, true, node);
 }
 
+/** Why a new folder cannot be at its path beside the node's folders, or null: a path in use (409), or files and versions mixing (400). */
+function newFolderPathConflict(instance: LocalInstance, folder: NewFolder, versioning: Versioning | null, folders: SyncthingFolderSettings[], node: NodeRoot): RequestError | null {
+  const samePath = samePathProblem(instance, folders, folder.path, node);
+  if (samePath) return new RequestError(409, samePath);
+  const versionsProblem = newFolderVersionsProblem(folder, versioning, folders, node);
+  return versionsProblem ? new RequestError(400, versionsProblem) : null;
+}
+
+/** Why a new folder could not be placed as given, as `createFolder` judges its path and versions path, or null; for a form's defaults. */
+export async function newFolderPlacementProblem(instance: ResolvedInstance, request: NewFolder, versioning: Versioning | null, nodes: NodeRoot[]): Promise<string | null> {
+  const { instance: local, node } = rooted(instance);
+  const guard = folderPathProblem(request.path.trim(), node, nodes);
+  if (guard) return guard;
+  const folder: NewFolder = { ...request, path: checkedPath(request.path.trim(), node) };
+  let checked: Versioning | null;
+  try {
+    checked = versioning ? guardedVersioning(local, versioning, folder.path, nodes) : null;
+  } catch (error) {
+    if (error instanceof RequestError) return error.message;
+    throw error;
+  }
+  return newFolderPathConflict(local, folder, checked, await configuredFolders(local), node)?.message ?? null;
+}
+
 /**
  * Adds a folder to the node's Syncthing, every setting the request leaves out taken from Syncthing's own defaults;
  * an accepted offer also shares it with the offering device and sets the chosen versioning.
@@ -224,10 +248,8 @@ export async function createFolder(instance: ResolvedInstance, request: NewFolde
     typedIgnores ?? defaultIgnoreLines(local),
   ]);
   if (folders.some((existing) => existing.id === folder.id)) throw new RequestError(409, `${local.name} already has folder ${folder.id}`);
-  const samePath = samePathProblem(local, folders, folder.path, node);
-  if (samePath) throw new RequestError(409, samePath);
-  const versionsProblem = newFolderVersionsProblem(folder, versioning, folders, node);
-  if (versionsProblem) throw new RequestError(400, versionsProblem);
+  const conflict = newFolderPathConflict(local, folder, versioning, folders, node);
+  if (conflict) throw conflict;
   const holdsIgnores = ignores.length > 0;
   const chosenVersioning = versioning ? { versioning: { ...asObject(defaults.versioning), ...versioning } } : {};
   const devices = withDevices(defaults.devices, offered ? [ownId, offered.offeredBy] : [ownId]);

@@ -4,13 +4,13 @@ import { versioningWords } from "../api/versioningText.js";
 import { folderSettings, offersOf } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, arrayConfirmProblem, callSyncthing, defaultReadBackDelaysMs, isArrayInstance, requireLocal } from "../instanceResolver.js";
-import { type NodeRoot, folderPathProblem, pathUnderRoot } from "../pathGuard.js";
+import { type NodeRoot, pathUnderRoot } from "../pathGuard.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import type { SyncthingFolderSettings } from "../syncthing.js";
 import { folderChangeProblem } from "../syncthingConfig.js";
 import { type SyncthingConfig, changeWholeConfig } from "../wholeConfig.js";
 import { decodedSegment } from "./devices.js";
-import { type NodeFolderSources, createFolder, guardNewFolderPath, nodeFolderSources } from "./nodeFolders.js";
+import { type NodeFolderSources, createFolder, guardNewFolderPath, newFolderPlacementProblem, nodeFolderSources } from "./nodeFolders.js";
 
 type SyncthingObject = Record<string, unknown>;
 
@@ -93,8 +93,8 @@ export async function acceptFolderDefaults(instance: ResolvedInstance, folderId:
   const devices = [{ deviceID: ownId, encryptionPassword: "" }, { deviceID: offer.offeredBy, encryptionPassword: "" }];
   const base = folderSettings({ ...nodeDefaults, id: folderId, label: offer.label, path, devices } as unknown as SyncthingFolderSettings);
   const settings: FolderSettings = { ...base, type: defaultType(local, offer, nodeDefaults.type), versioning: defaultVersioning(local, base.versioning) };
-  const node: NodeRoot = { nodeId: local.nodeId, name: local.name, root, os: local.os };
-  return { offer, settings, root, confirmRequired: isArrayInstance(local), placementProblem: folderPathProblem(path, node, nodes) };
+  const placementProblem = await newFolderPlacementProblem(local, { id: folderId, label: offer.label, path }, settings.versioning, nodes);
+  return { offer, settings, root, confirmRequired: isArrayInstance(local), placementProblem };
 }
 
 export interface FolderAcceptance {

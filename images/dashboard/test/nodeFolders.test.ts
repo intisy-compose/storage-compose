@@ -341,6 +341,31 @@ describe("adding a folder to a node", () => {
     await assert.rejects(addFolder(peer(), { id: "dashboard-test-b", path: "/var/syncthing/data/dashboard-test-b" }, roots, fastReadBacks), { status: 503, message: "dashboard-test-peer's Syncthing is not answering" });
   });
 
+  it("a new folder at, holding or inside another folder's versions path is refused alike by the path check and the add", async () => {
+    folders = [...folders, { ...syncthingDefaults, id: "kept", label: "Kept", path: "/var/syncthing/data/kept", versioning: { type: "simple", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "/var/syncthing/data/kept-versions", fsType: "basic" } }];
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects, async () => peer());
+    try {
+      const nodePath = `${dashboard.url}/api/nodes/d7e5`;
+      const cases = [
+        ["/var/syncthing/data/kept-versions/a", "Path: /var/syncthing/data/kept-versions/a is inside the versions path /var/syncthing/data/kept-versions of folder Kept, so its files would mix with versions"],
+        ["/var/syncthing/data/kept-versions", "Path: /var/syncthing/data/kept-versions is the versions path /var/syncthing/data/kept-versions of folder Kept, so versions and files would mix"],
+        ["/var/syncthing/data", "Path: /var/syncthing/data would hold the versions path /var/syncthing/data/kept-versions of folder Kept, so those versions would sync as its files"],
+      ];
+      for (const [path, message] of cases) {
+        const check = (await (await fetch(`${nodePath}/folder-path-check?path=${encodeURIComponent(path)}`)).json()) as FolderPathCheck;
+        assert.equal(check.problem, message, path);
+        const refused = await post(`${nodePath}/folders`, { id: "dashboard-test-a", path });
+        assert.equal(refused.status, 400, path);
+        assert.equal(((await refused.json()) as { error: string }).error, message);
+      }
+      assert.equal(received.filter((entry) => entry.method !== "GET").length, 0);
+      assert.equal(effects.notes.length, 0);
+    } finally {
+      dashboard.close();
+    }
+  });
+
   it("an ID or a path the node already has is 409 and nothing is added", async () => {
     await assert.rejects(addFolder(pc(), { id: "documents", path: "F:\\New" }, roots), (error: Error & { status?: number }) => error.status === 409 && error.message === "pc already has folder documents");
     await assert.rejects(addFolder(pc(), { id: "dashboard-test-a", path: "f:/documents/" }, roots), (error: Error & { status?: number }) => error.status === 409 && error.message === "pc's folder Documents already uses F:\\Documents");
@@ -823,7 +848,7 @@ describe("adding a folder to a node", () => {
       await assert.rejects(editFolder(peer(), "dashboard-test-e", { path }, roots), refusedVersionsPath(message), path);
       assert.equal((await checkFolderPath(peer(), path, roots, "dashboard-test-e")).problem, message, `the live check agrees for ${path}`);
     }
-    assert.equal((await checkFolderPath(peer(), "/var/syncthing/data/archive", roots)).problem, null, "a new folder is not judged by the rule for moves");
+    assert.equal((await checkFolderPath(peer(), "/var/syncthing/data/archive", roots)).problem, refusals[1][1], "a new folder is judged as the add judges it");
     assert.equal((await checkFolderPath(peer(), "/var/syncthing/data/e-versions/inner", roots, "dashboard-test-e", true)).problem, null, "an edit that also changes versioning leaves the folder's own versions path to the save's versioning check, as the save does");
     versionedAs("dashboard-test-e", { type: "simple", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "versions" });
     await assert.rejects(editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/moved" }, roots), refusedVersionsPath("Path: /var/syncthing/data/moved would hold its own versions path /var/syncthing/data/moved/versions, so those versions would sync as its files"));

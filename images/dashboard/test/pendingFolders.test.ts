@@ -284,6 +284,19 @@ describe("answering a folder offered to a node", () => {
     assert.deepEqual(writesSent(), []);
   });
 
+  it("the accept form's placement is judged as the accept judges it: another folder's path or versions path is named before anything is typed", async () => {
+    const offered = (label: string) => ({ offeredBy: { [offererId]: { time: "2026-10-27T09:00:00Z", label, receiveEncrypted: false, remoteEncrypted: false } } });
+    pending["dashboard-test-v"] = offered("kept-versions");
+    pending["dashboard-test-k"] = offered("kept");
+    pending["dashboard-test-x"] = offered("stick");
+    assert.equal((await acceptFolderDefaults(peer(), "dashboard-test-v", offererId, nodes)).placementProblem, "Path: /var/syncthing/kept-versions is the versions path /var/syncthing/kept-versions of folder Kept, so versions and files would mix");
+    assert.equal((await acceptFolderDefaults(peer(), "dashboard-test-k", offererId, nodes)).placementProblem, "dashboard-test-peer's folder Kept already uses /var/syncthing/kept");
+    assert.equal((await acceptFolderDefaults(peer(), "dashboard-test-x", offererId, nodes)).placementProblem, "/var/syncthing/stick is inside nested-stick's root /var/syncthing/stick");
+    assert.equal((await acceptFolderDefaults(peer(), "dashboard-test-a", offererId, nodes)).placementProblem, null);
+    await assert.rejects(acceptPendingFolder(peer(), "dashboard-test-v", acceptBody({ path: "/var/syncthing/kept-versions" }), nodes), { status: 400, message: "Path: /var/syncthing/kept-versions is the versions path /var/syncthing/kept-versions of folder Kept, so versions and files would mix" });
+    assert.deepEqual(writesSent(), []);
+  });
+
   it("another node's form defaults to the node's own folder defaults, with nothing to type", async () => {
     const defaults = await acceptFolderDefaults(peer(), "dashboard-test-a", offererId, nodes);
 
