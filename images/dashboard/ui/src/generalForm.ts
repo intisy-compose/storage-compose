@@ -14,6 +14,7 @@ import {
   keeperManagedText,
   saveGeneralSettings,
 } from "./api.js";
+import { refreshAdvancedEditor } from "./advancedEditor.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element } from "./dom.js";
 import { type FieldForm, numberControl, selectControl, setting, textControl, toggleControl } from "./fieldKit.js";
@@ -32,6 +33,8 @@ interface GeneralValues {
 
 interface GeneralFormState extends FieldForm<GeneralValues> {
   result: Notice | null;
+  /** The read of the node's options the form last took, so only a newer one replaces what a save left. */
+  followed: InstanceOptions;
 }
 
 const forms = new Map<string, GeneralFormState>();
@@ -50,20 +53,21 @@ function hasUnsavedChange(form: GeneralFormState): boolean {
   return Object.keys(changedFields(form.saved, form.draft)).length > 0;
 }
 
-/** The node's form, following each read of its options while it holds nothing unsaved. */
-function formFor(nodeId: string, options: InstanceOptions): GeneralFormState {
+/** The node's form, following each new read of its options while it holds nothing unsaved. */
+export function generalFormFor(nodeId: string, options: InstanceOptions): GeneralFormState {
   const read = valuesOf(options);
   const form = forms.get(nodeId);
   if (!form) {
     const formId = `general-form-${nodeId}`;
     registerForm(formId);
-    const created: GeneralFormState = { formId, saved: read, draft: structuredClone(read), saving: false, result: null };
+    const created: GeneralFormState = { formId, saved: read, draft: structuredClone(read), saving: false, result: null, followed: options };
     forms.set(nodeId, created);
     return created;
   }
-  if (!form.saving && !hasUnsavedChange(form)) {
+  if (options !== form.followed && !form.saving && !hasUnsavedChange(form)) {
     form.saved = read;
     form.draft = structuredClone(read);
+    form.followed = options;
   }
   return form;
 }
@@ -79,14 +83,22 @@ function generalChangeOf(saved: GeneralValues, draft: GeneralValues): GeneralSet
   return change;
 }
 
+/** What a save left when the node's options could not be read again: what was sent, or only the rename when the rest was not saved. */
+function valuesAsSent(saved: GeneralValues, draft: GeneralValues, isRenameOnly: boolean): GeneralValues {
+  return isRenameOnly ? { ...saved, deviceName: draft.deviceName } : structuredClone(draft);
+}
+
 /**
  * Takes the node's answer; a rename that was saved while the other settings were not says both, and the draft keeps what was not saved.
  * @implNote The saved values follow the node's own answer, so the unsaved fields still differ from them and stay in the form.
  */
-function settle(nodeId: string, form: GeneralFormState, answer: GeneralEditResponse): void {
-  if (answer.settings) appState.nodeOptions.set(nodeId, answer.settings);
+export function settleGeneralSave(nodeId: string, form: GeneralFormState, answer: GeneralEditResponse): void {
   const draft = form.draft;
-  if (answer.settings) form.saved = valuesOf(answer.settings.options);
+  if (answer.settings) {
+    appState.nodeOptions.set(nodeId, answer.settings);
+    form.followed = answer.settings.options;
+  }
+  form.saved = answer.settings ? valuesOf(answer.settings.options) : valuesAsSent(form.saved, draft, answer.problem !== null);
   form.draft = answer.problem ? draft : structuredClone(form.saved);
   form.result = answer.problem ? { text: `Renamed; ${answer.problem}.`, tone: "warn" } : { text: "Saved.", tone: "ok" };
 }
@@ -102,8 +114,12 @@ async function save(nodeId: string, form: GeneralFormState): Promise<void> {
   requestRender();
   const result = await saveGeneralSettings(nodeId, change);
   form.saving = false;
-  if (result.ok) settle(nodeId, form, result.value);
-  else form.result = editFailureNotice(result);
+  if (result.ok) {
+    settleGeneralSave(nodeId, form, result.value);
+    refreshAdvancedEditor(nodeId, { kind: "options" });
+  } else {
+    form.result = editFailureNotice(result);
+  }
   requestRender();
 }
 
@@ -155,7 +171,7 @@ function generalFields(form: GeneralFormState, nodeName: string, keeper: Setting
 
 /** A local node's own device name, home disk reserve and the reports its Syncthing sends, as a form; what `keeper` rewrites at each start is read only. */
 export function generalSettingsForm(node: StorageNode, options: InstanceOptions, keeper: SettingsKeeper | null): HTMLElement {
-  const form = formFor(node.id, options);
+  const form = generalFormFor(node.id, options);
   return element(
     "div",
     { className: "device-form options-form", attributes: { id: form.formId } },

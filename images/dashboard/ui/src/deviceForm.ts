@@ -19,7 +19,8 @@ import {
 } from "./api.js";
 import { arrayAutomationText, arraySharesElsewhere } from "./arrayConfirm.js";
 import { button, element, section } from "./dom.js";
-import { advancedEditor } from "./advancedEditor.js";
+import { advancedEditor, refreshAdvancedEditor } from "./advancedEditor.js";
+import { followSavedConfig } from "./formFollow.js";
 import { controlId, registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
@@ -186,6 +187,7 @@ async function save(form: DeviceFormState): Promise<void> {
     form.saved = result.value;
     form.draft = structuredClone(result.value);
     form.result = { text: "Saved.", tone: "ok" };
+    refreshAdvancedEditor(form.nodeId, { kind: "device", id: form.deviceId });
   } else {
     form.result = editFailureNotice(result);
   }
@@ -382,17 +384,18 @@ function foldersForm(node: StorageNode, form: DeviceFormState, name: string): HT
   );
 }
 
-/** After an advanced save the form reads the device again, unless it holds a change the person made. */
-function followAdvancedSave(form: DeviceFormState): void {
-  if (form.saving || JSON.stringify(form.saved) !== JSON.stringify(form.draft)) return;
-  form.saved = null;
-  form.draft = null;
+/** After an advanced save the form takes the saved values; a field the person changed keeps what they typed. */
+function followAdvancedSave(form: DeviceFormState, config: Record<string, unknown>): void {
+  if (form.saving || !form.saved || !form.draft) return;
+  const followed = followSavedConfig(form.saved, form.draft, config);
+  form.saved = followed.saved;
+  form.draft = followed.draft;
 }
 
 function deviceSections(node: StorageNode, form: DeviceFormState, name: string): HTMLElement[] {
   if (form.removed) return [section("Removed", removedBody(node, name))];
   const isOtherLocalDevice = node.local && form.saved !== null && !isOwnDevice(node, form);
-  const advanced = node.local && form.saved !== null ? [advancedEditor(node.id, { kind: "device", id: form.deviceId }, () => followAdvancedSave(form))] : [];
+  const advanced = node.local && form.saved !== null ? [advancedEditor(node.id, { kind: "device", id: form.deviceId }, (config) => followAdvancedSave(form, config))] : [];
   return [
     section("Device ID", element("code", { className: "device-id" }, form.deviceId)),
     section("Settings", formBody(node, form)),
