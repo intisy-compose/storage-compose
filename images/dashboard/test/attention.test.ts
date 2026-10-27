@@ -37,6 +37,7 @@ function folder(overrides: Partial<NodeFolder>): NodeFolder {
     completion: 100,
     errors: 0,
     needItems: 0,
+    needTotalItems: 0,
     needBytes: 0,
     globalBytes: 0,
     globalFiles: 0,

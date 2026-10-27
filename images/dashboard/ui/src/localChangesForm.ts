@@ -1,4 +1,4 @@
-import { type FolderCopy, type FolderSettings, type LocalChangesAction, discardChanges, localChangesFolderType, overrideLossText, revertLossText } from "./api.js";
+import { type FolderCopy, type FolderSettings, type LocalChangesAction, discardChanges, discardedCount, fetchDiscardCounts, localChangesFolderType, overrideLossText, revertLossText } from "./api.js";
 import { button, element } from "./dom.js";
 import { closeItemList, isItemListOpen } from "./itemList.js";
 import { requestRender } from "./renderRequest.js";
@@ -20,12 +20,23 @@ function folderName(settings: FolderSettings): string {
   return settings.label || settings.id;
 }
 
+/** Reads Syncthing's counts once as the form opens, so the form names what would be discarded now rather than at the last poll. */
+async function readDiscardCounts(settings: FolderSettings, state: FolderActionState): Promise<void> {
+  state.discardCounts = null;
+  state.discardCountsReading = true;
+  const answer = await fetchDiscardCounts(state.nodeId, settings.id);
+  state.discardCounts = answer.ok ? answer.value : null;
+  state.discardCountsReading = false;
+  requestRender();
+}
+
 export function localChangesToggle(action: LocalChangesAction, settings: FolderSettings, state: FolderActionState): HTMLButtonElement {
   const control = button(
     state.discardOpen ? "Keep them" : buttonTexts[action].open,
     () => {
       state.discardOpen = !state.discardOpen;
       state.discardConfirm = "";
+      if (state.discardOpen) void readDiscardCounts(settings, state);
       requestRender();
     },
     state.discardOpen ? "button ghost" : "button danger",
@@ -35,14 +46,9 @@ export function localChangesToggle(action: LocalChangesAction, settings: FolderS
   return control;
 }
 
-/** The items the action discards as the folder's last read counts them: changed here for a revert, changed elsewhere for an override. */
-function discardedCount(action: LocalChangesAction, copy: FolderCopy): number {
-  return action === "revert" ? copy.localChanged : copy.needItems;
-}
-
-function lossLines(action: LocalChangesAction, copy: FolderCopy, settings: FolderSettings): string[] {
+function lossLines(action: LocalChangesAction, copy: FolderCopy, settings: FolderSettings, state: FolderActionState): string[] {
   const lines = action === "revert" ? revertLossText : overrideLossText;
-  return lines(copy.nodeName, folderName(settings), discardedCount(action, copy), settings.versioning);
+  return lines(copy.nodeName, folderName(settings), discardedCount(action, copy, state.discardCounts), settings.versioning);
 }
 
 /** @implNote Syncthing acts on a revert or override after answering, so the list of what it discards is closed rather than read again too early. */
@@ -78,17 +84,17 @@ export function localChangesForm(action: LocalChangesAction, copy: FolderCopy, s
     "button danger",
   );
   const isTyped = () => state.discardConfirm === settings.id;
-  go.disabled = state.busy || !isTyped();
+  go.disabled = state.busy || state.discardCountsReading || !isTyped();
   confirmInput.addEventListener("input", () => {
     state.discardConfirm = confirmInput.value;
-    go.disabled = state.busy || !isTyped();
+    go.disabled = state.busy || state.discardCountsReading || !isTyped();
   });
-  const [lost, kept] = lossLines(action, copy, settings);
+  const [lost, kept] = state.discardCountsReading ? ["Reading what Syncthing counts now…", ""] : lossLines(action, copy, settings, state);
   return element(
     "div",
     { className: "action-form destructive" },
     element("p", {}, element("strong", {}, lost)),
-    element("p", {}, kept),
+    kept ? element("p", {}, kept) : null,
     element("p", {}, "Type the folder ID ", element("code", {}, settings.id), " to confirm."),
     element("div", { className: "form-fields" }, confirmInput),
     element("div", { className: "button-row" }, go),

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { deviceDisplayName, listedAddresses } from "./api/deviceText.js";
 import { connectionKind } from "./connectionKind.js";
+import { needTotalOf } from "./folderLists.js";
 import { effectiveSharing, sharedDevices } from "./syncthingConfig.js";
 import type { FolderFile, FolderPeer, FolderType, NodeFolder, NodeSync, Peer, RemoteState, SyncthingDevice, SyncthingInstance } from "./api/types.js";
 
@@ -425,6 +426,7 @@ function emptyFolder(folder: SyncthingFolderConfig, sharedWith: FolderPeer[], st
     completion: 0,
     errors: 0,
     needItems: 0,
+    needTotalItems: 0,
     needBytes: 0,
     globalBytes: 0,
     globalFiles: 0,
@@ -449,6 +451,7 @@ async function folderView(client: SyncthingClient, folder: SyncthingFolderConfig
       completion: folderCompletion(status),
       errors: status.pullErrors ?? 0,
       needItems: status.needFiles ?? 0,
+      needTotalItems: needTotalOf(status),
       needBytes: status.needBytes ?? 0,
       globalBytes: status.globalBytes ?? 0,
       globalFiles: status.globalFiles ?? 0,

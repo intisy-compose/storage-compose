@@ -40,7 +40,7 @@ function requireFolderFor(action: LocalChangesAction, folder: SyncthingFolderSet
 /** Syncthing's count of what the action discards: the items changed here for a revert, the items other devices changed for an override. */
 function discardedCount(action: LocalChangesAction, status: FolderStatus | null): number | null {
   if (!status) return null;
-  const count = action === "revert" ? status.receiveOnlyTotalItems : (status.needTotalItems ?? status.needFiles);
+  const count = action === "revert" ? status.receiveOnlyTotalItems : status.needTotalItems;
   return typeof count === "number" ? count : null;
 }
 

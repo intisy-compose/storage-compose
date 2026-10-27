@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
-import { overrideLossText, revertLossText } from "../src/api/localChangesText.js";
-import type { FailedItem, ItemsPage, LocalChangedPage, LocalChangesDone, NeedItem, RemoteNeedPage } from "../src/api/types.js";
+import { discardedCount, overrideLossText, revertLossText } from "../src/api/localChangesText.js";
+import type { DiscardCounts, FailedItem, ItemsPage, LocalChangedPage, LocalChangesDone, NeedItem, RemoteNeedPage } from "../src/api/types.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
@@ -320,6 +320,7 @@ describe("item list pages", () => {
 describe("local changes: list, revert and override", () => {
   const asked: string[] = [];
   const notes: WriteNote[] = [];
+  let omitNeedTotal = false;
   let syncthingUrl = "";
   let dashboardUrl = "";
   const trashcan = { type: "trashcan", params: { cleanoutDays: "0" }, cleanupIntervalS: 3600, fsPath: "" };
@@ -342,7 +343,10 @@ describe("local changes: list, revert and override", () => {
       const folder = folders.find((candidate) => candidate.id === decodeURIComponent(url.pathname.split("/").at(-1) ?? ""));
       return folder ? reply(response, folder) : reply(response, { error: "no such folder" }, 404);
     }
-    if (url.pathname === "/rest/db/status") return reply(response, { receiveOnlyTotalItems: folderId === "test-ro" ? 2 : 0, needTotalItems: folderId === "test-so" ? 3 : 0, needFiles: 3 });
+    if (url.pathname === "/rest/db/status") {
+      const needTotal = omitNeedTotal ? {} : { needTotalItems: folderId === "test-so" ? 5 : 0 };
+      return reply(response, { receiveOnlyTotalItems: folderId === "test-ro" ? 2 : 0, needFiles: 3, ...needTotal });
+    }
     if (url.pathname === "/rest/db/localchanged") return reply(response, { page: 1, perpage: 50, files: [fileInfo("added-here.txt", { modifiedBy: "D7E5AAA" }), fileInfo("hello.txt", { deleted: true, modifiedBy: "D7E5AAA" })] });
     if (url.pathname === "/rest/db/revert" || url.pathname === "/rest/db/override") return reply(response, {});
     reply(response, { error: "not faked" }, 404);
@@ -424,10 +428,29 @@ describe("local changes: list, revert and override", () => {
     assert.deepEqual(answer.body, {
       folderId: "test-so",
       action: "override",
-      items: 3,
-      text: "dashboard-test-peer: overrode 3 items other devices changed in folder Test SO with dashboard-test-peer's versions; versioning off on dashboard-test-peer",
+      items: 5,
+      text: "dashboard-test-peer: overrode 5 items other devices changed in folder Test SO with dashboard-test-peer's versions; versioning off on dashboard-test-peer",
     });
     assert.deepEqual(notes.map((note) => [note.folderId, note.text]), [["test-so", answer.body.text]]);
+  });
+
+  it("an override whose need total syncthing does not give counts an unknown number, never the files alone", async () => {
+    omitNeedTotal = true;
+    try {
+      const answer = await post("/api/nodes/d7e5/folders/test-so/override", { confirm: "test-so" });
+      assert.equal(answer.status, 200);
+      assert.equal(answer.body.items, null);
+      assert.match(answer.body.text, /overrode an unknown number of items other devices changed/);
+    } finally {
+      omitNeedTotal = false;
+    }
+  });
+
+  it("the counts a revert or override form names are read from one folder status, now", async () => {
+    const response = await fetch(`${dashboardUrl}/api/nodes/d7e5/folders/test-so/discard-counts`);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()) as DiscardCounts, { localChanged: 0, needTotalItems: 5 });
+    assert.deepEqual(asked, ["GET /rest/db/status?folder=test-so"]);
   });
 
   it("revert with the id typed deletes or replaces the local changes and names the versioning", async () => {
@@ -465,7 +488,17 @@ describe("the words of a revert or override", () => {
     ]);
     assert.match(revertLossText("d7e5", "Test A", 1, staggered)[1], /^Versioning is on for Test A on d7e5 \(staggered, versions kept up to 365 days/);
     assert.match(overrideLossText("d7e5", "Test B", null, off)[0], /^an unknown number of items that other devices changed will be lost/);
-    assert.match(overrideLossText("d7e5", "Test B", 1, staggered)[1], /only if its own copy of Test B has versioning on; versioning on d7e5 \(staggered/);
+    assert.match(overrideLossText("d7e5", "Test B", 1, staggered)[1], /only if its own copy of Test B has versioning on\. Versioning on d7e5 \(staggered[^)]*\) does not keep them\.$/);
+    assert.equal(overrideLossText("d7e5", "Test B", 1, off)[1], "Each device keeps the versions it replaces only if its own copy of Test B has versioning on.", "with versioning off there is no setting of this node to name");
+  });
+
+  it("the override form counts every item other devices changed, read fresh when it can be", () => {
+    const polled = { localChanged: 0, needItems: 3, needTotalItems: 5 };
+    assert.equal(discardedCount("override", polled, null), 5);
+    assert.match(overrideLossText("d7e5", "Test B", discardedCount("override", polled, null), off)[0], /^5 items that other devices changed will be lost/);
+    assert.equal(discardedCount("override", polled, { localChanged: 0, needTotalItems: 7 }), 7, "the count read as the form opened wins over the last poll");
+    assert.equal(discardedCount("revert", { ...polled, localChanged: 2 }, { localChanged: 4, needTotalItems: 0 }), 4);
+    assert.equal(discardedCount("override", polled, { localChanged: 0, needTotalItems: null }), null);
   });
 });
 
@@ -473,8 +506,8 @@ describe("syncthing's error text, shown", () => {
   it("passes on nothing from an included file, with one policy for ignores and failed items", () => {
     const lock = "open x.lock: permission denied";
     assert.equal(shownSyncthingError(lock, ["*.tmp"]), lock);
-    assert.equal(shownSyncthingError(lock, ["*.tmp", "#include more.stignore"]), "Syncthing cannot read an included file", "in a folder with an include, an unrecognised shape is replaced whole");
-    assert.equal(shownSyncthingError(lock, null), "Syncthing cannot read an included file", "an unreadable .stignore counts as one with an include");
+    assert.equal(shownSyncthingError(lock, ["*.tmp", "#include more.stignore"]), "error hidden: this folder's ignore file has an #include", "in a folder with an include, an unrecognised shape is replaced whole");
+    assert.equal(shownSyncthingError(lock, null), "error hidden: the folder's ignore file could not be read", "an unreadable .stignore counts as one with an include");
     assert.equal(shownSyncthingError('invalid pattern "*.tmp[" in ignore file', ["*.tmp["]), 'invalid pattern "*.tmp[" in ignore file', "the folder's own pattern may be shown");
     assert.equal(shownSyncthingError('invalid pattern "secret/**" in ignore file', ["*.tmp[", "#include more.stignore"]), "invalid pattern in an included file");
     assert.equal(shownSyncthingError("failed to read #include ../x", []), "Syncthing cannot read an included file");

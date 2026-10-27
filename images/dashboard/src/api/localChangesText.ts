@@ -1,4 +1,4 @@
-import type { FolderType, Versioning } from "./types.js";
+import type { DiscardCounts, FolderType, NodeFolder, Versioning } from "./types.js";
 import { versioningWords } from "./versioningText.js";
 
 /** Revert undoes what was changed on a receive only node; override pushes a send only node's files over what other devices changed. */
@@ -6,6 +6,12 @@ export type LocalChangesAction = "revert" | "override";
 
 /** The folder type each action is for; Syncthing offers neither on any other. */
 export const localChangesFolderType: Record<LocalChangesAction, FolderType> = { revert: "receiveonly", override: "sendonly" };
+
+/** The count a revert or override form names: Syncthing's count read as the form opened, else the folder's last poll; null when not known. */
+export function discardedCount(action: LocalChangesAction, polled: Pick<NodeFolder, "localChanged" | "needTotalItems">, fresh: DiscardCounts | null): number | null {
+  if (fresh) return action === "revert" ? fresh.localChanged : fresh.needTotalItems;
+  return action === "revert" ? polled.localChanged : polled.needTotalItems;
+}
 
 function itemCount(count: number | null): string {
   if (count === null) return "an unknown number of items";
@@ -25,9 +31,10 @@ export function revertLossText(nodeName: string, folderName: string, changedHere
 
 /** What an override replaces on the other devices, and that this node's versioning does not keep it. */
 export function overrideLossText(nodeName: string, folderName: string, changedElsewhere: number | null, versioning: Versioning): string[] {
+  const kept = `Each device keeps the versions it replaces only if its own copy of ${folderName} has versioning on.`;
   return [
     `${itemCount(changedElsewhere)} that other devices changed will be lost: each device replaces its version with the one ${nodeName} has, and deletes what ${nodeName} does not have.`,
-    `Each device keeps the versions it replaces only if its own copy of ${folderName} has versioning on; versioning on ${nodeName} (${versioningWords(versioning)}) does not keep them.`,
+    versioning.type ? `${kept} Versioning on ${nodeName} (${versioningWords(versioning)}) does not keep them.` : kept,
   ];
 }
 

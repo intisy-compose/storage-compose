@@ -1,5 +1,5 @@
 import { type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type ReadResult, defaultItemsPerPage } from "./api.js";
-import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -158,6 +158,9 @@ export interface FolderActionState {
   discardOpen: boolean;
   /** The folder's ID as typed to confirm a revert or override. */
   discardConfirm: string;
+  /** Syncthing's counts read as the revert or override form opened; null until read, or when the read failed. */
+  discardCounts: DiscardCounts | null;
+  discardCountsReading: boolean;
   result: Notice | null;
 }
 

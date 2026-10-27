@@ -54,6 +54,7 @@ export type {
   InstanceGui,
   InstanceOptions,
   ItemsPage,
+  DiscardCounts,
   LocalChangedPage,
   LocalChangesBody,
   LocalChangesDone,
@@ -104,7 +105,7 @@ export type {
 } from "../../src/api/types.js";
 import type { LocalChangesAction } from "../../src/api/localChangesText.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
@@ -113,7 +114,7 @@ export { changedFields } from "../../src/syncthingConfig.js";
 export { ignoreLinesOf, ignoreLinesProblem } from "../../src/api/ignorePatterns.js";
 export { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, isKeptBySyncthing, offeredVersioningTypes, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versioningWords, versionsPathLabel } from "../../src/api/versioningText.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
-export { type LocalChangesAction, localChangesFolderType, overrideLossText, revertLossText } from "../../src/api/localChangesText.js";
+export { type LocalChangesAction, discardedCount, localChangesFolderType, overrideLossText, revertLossText } from "../../src/api/localChangesText.js";
 
 export interface ActionResult {
   ok: boolean;
@@ -375,6 +376,11 @@ export function fetchNeedItems(nodeId: string, folderId: string, page: number, p
 /** One page of the folder's failed items on the node. */
 export function fetchFailedItems(nodeId: string, folderId: string, page: number, perPage: number): Promise<ReadResult<FailedPage>> {
   return readJson(`${folderApiPath(nodeId, folderId, "/errors")}?${pageQuery(page, perPage)}`);
+}
+
+/** What a revert or override of the folder would discard, as Syncthing counts it now. */
+export function fetchDiscardCounts(nodeId: string, folderId: string): Promise<ReadResult<DiscardCounts>> {
+  return readJson(folderApiPath(nodeId, folderId, "/discard-counts"));
 }
 
 /** One page of what was changed on the node itself in a receive only folder. */

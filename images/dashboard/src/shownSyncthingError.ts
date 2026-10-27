@@ -20,7 +20,12 @@ export function ownPatternCores(lines: readonly string[]): Set<string> {
   return new Set(lines.filter(isPatternLine).map(patternCore));
 }
 
-export const includedFileErrorText = "Syncthing cannot read an included file";
+/** What is shown instead of an error that names an `#include`, or of one hidden for another reason. */
+export const hiddenErrorTexts = {
+  namesInclude: "Syncthing cannot read an included file",
+  folderHasInclude: "error hidden: this folder's ignore file has an #include",
+  ignoreFileUnread: "error hidden: the folder's ignore file could not be read",
+} as const;
 
 const includeMention = /#include/i;
 const invalidPatternError = /invalid pattern "/;
@@ -34,8 +39,11 @@ const quotedPattern = /invalid pattern "((?:[^"\\]|\\.)*)"(?: in ignore file)?/g
  * a quoted invalid pattern is shown only when it is one of the folder's own lines.
  */
 export function shownSyncthingError(error: string, ownLines: readonly string[] | null): string {
-  const hasInclude = ownLines === null || ownLines.some(isIncludeLine);
-  if (includeMention.test(error) || (hasInclude && !invalidPatternError.test(error))) return includedFileErrorText;
+  if (includeMention.test(error)) return hiddenErrorTexts.namesInclude;
+  if (!invalidPatternError.test(error)) {
+    if (ownLines === null) return hiddenErrorTexts.ignoreFileUnread;
+    if (ownLines.some(isIncludeLine)) return hiddenErrorTexts.folderHasInclude;
+  }
   const cores = ownPatternCores(ownLines ?? []);
   return error.replace(quotedPattern, (whole, pattern: string) => (cores.has(patternCore(pattern)) ? whole : "invalid pattern in an included file"));
 }

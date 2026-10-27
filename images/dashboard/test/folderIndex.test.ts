@@ -130,6 +130,7 @@ const remoteMusic: FolderSummary = {
       completion: 100,
       errors: 0,
       needItems: 0,
+      needTotalItems: 0,
       needBytes: 0,
       globalBytes: 2000,
       globalFiles: 10,

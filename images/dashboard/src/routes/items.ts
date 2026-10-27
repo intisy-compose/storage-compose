@@ -1,5 +1,5 @@
 import { deviceDisplayName } from "../api/deviceText.js";
-import { type FailedItem, type FailedPage, type FolderItem, type FolderPeer, type ItemsPage, type LocalChangedPage, type NeedItem, type NeedStage, type RemoteNeedPage, defaultItemsPerPage, maxItemsPerPage } from "../api/types.js";
+import { type DiscardCounts, type FailedItem, type FailedPage, type FolderItem, type FolderPeer, type ItemsPage, type LocalChangedPage, type NeedItem, type NeedStage, type RemoteNeedPage, defaultItemsPerPage, maxItemsPerPage } from "../api/types.js";
 import { errorTotalOf, needTotalOf } from "../folderLists.js";
 import { RequestError, sendJson } from "../http.js";
 import { type LocalInstance, type RemoteInstance, type ResolvedInstance, callSyncthing, forwardRead, forwardedListTimeoutMs, resolveInstance } from "../instanceResolver.js";
@@ -202,6 +202,21 @@ export async function localChangedItems(instance: ResolvedInstance, folderId: st
   return forwardedPage(answer, request, forwardedItem);
 }
 
+function countOf(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
+}
+
+/** What a revert or override would discard, read from one folder status just now. */
+export async function discardCounts(instance: ResolvedInstance, folderId: string): Promise<DiscardCounts> {
+  if (instance.kind === "local") {
+    const status = await callSyncthing(instance, (client) => client.folderStatus(folderId));
+    return { localChanged: countOf(status.receiveOnlyTotalItems), needTotalItems: countOf(status.needTotalItems) };
+  }
+  const path = `/api/nodes/${encodeURIComponent(instance.nodeId)}/folders/${encodeURIComponent(folderId)}/discard-counts`;
+  const fields = fieldsOf(await forwardRead(instance, path, forwardBudgetsMs.need));
+  return { localChanged: countOf(fields.localChanged), needTotalItems: countOf(fields.needTotalItems) };
+}
+
 /** What `deviceId` still needs of the node's folder, one page of it; a device the folder is not shared with is refused, naming it. */
 export async function remoteNeedItems(instance: ResolvedInstance, folderId: string, deviceId: string, request: PageRequest): Promise<RemoteNeedPage> {
   if (instance.kind === "local") return localRemoteNeed(instance, folderId, deviceId, request);
@@ -277,6 +292,14 @@ export function itemRoutes(sources: ItemRouteSources = liveSources): Route[] {
         const instance = await resolveFor(sources, url, nodeId);
         const key = ["local-changed", nodeId, folderId, request.page, request.perPage].join("\u0000");
         sendJson(response, 200, await shared(key, () => localChangedItems(instance, folderId, request)));
+      },
+    },
+    {
+      method: "GET",
+      pattern: /^\/api\/nodes\/([^/]+)\/folders\/([^/]+)\/discard-counts$/,
+      handle: async ({ response, url, params: [nodeSegment, folderSegment] }) => {
+        const instance = await resolveFor(sources, url, decodedSegment(nodeSegment, "node ID"));
+        sendJson(response, 200, await discardCounts(instance, decodedSegment(folderSegment, "folder ID")));
       },
     },
     {

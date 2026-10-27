@@ -215,7 +215,10 @@ export interface NodeFolder {
   completion: number;
   /** Items that failed to sync; Syncthing's `pullErrors`. */
   errors: number;
+  /** Files still to fetch; Syncthing's `needFiles`. */
   needItems: number;
+  /** Every item still to fetch, directories and deletes included; Syncthing's `needTotalItems`. */
+  needTotalItems: number;
   needBytes: number;
   globalBytes: number;
   globalFiles: number;
@@ -967,6 +970,14 @@ export interface RemoteNeedPage extends ItemsPage<FolderItem> {
 
 /** `GET /api/nodes/<nodeId>/folders/<folderId>/local-changed?page=&perPage=`: what was changed on the node itself in a receive only folder; `total` is Syncthing's count. */
 export type LocalChangedPage = ItemsPage<FolderItem>;
+
+/** `GET /api/nodes/<nodeId>/folders/<folderId>/discard-counts`: Syncthing's counts read now, what a revert or an override would discard; null when not given. */
+export interface DiscardCounts {
+  /** Items changed on the node in a receive only folder; Syncthing's `receiveOnlyTotalItems`. */
+  localChanged: number | null;
+  /** Items other devices changed that the node does not have; Syncthing's `needTotalItems`. */
+  needTotalItems: number | null;
+}
 
 /**
  * `POST /api/nodes/<nodeId>/folders/<folderId>/revert` (receive only) and `.../override` (send only) take the folder ID typed exactly as `confirm`.

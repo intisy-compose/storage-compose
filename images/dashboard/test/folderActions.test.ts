@@ -284,7 +284,7 @@ describe("a paused folder reads plainly as paused", () => {
 });
 
 describe("a folder action whose node misses its settings", () => {
-  const idle: FolderActionState = { folderId: "dashboard-test-c", nodeId: "d7e5", busy: false, sub: "", removeOpen: false, confirm: "", discardOpen: false, discardConfirm: "", result: { text: "Removed Test C from dashboard-test-peer's Syncthing.", tone: "ok" } };
+  const idle: FolderActionState = { folderId: "dashboard-test-c", nodeId: "d7e5", busy: false, sub: "", removeOpen: false, confirm: "", discardOpen: false, discardConfirm: "", discardCounts: null, discardCountsReading: false, result: { text: "Removed Test C from dashboard-test-peer's Syncthing.", tone: "ok" } };
 
   it("keeps a running action, an open removal and a typed subfolder for the next poll", () => {
     assert.equal(isOrphanedAction({ ...idle, busy: true }, []), false);

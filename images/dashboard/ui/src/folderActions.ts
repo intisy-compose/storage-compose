@@ -14,7 +14,7 @@ function actionState(folderId: string, nodeId: string): FolderActionState {
   const key = actionKey(folderId, nodeId);
   const existing = appState.folderActions.get(key);
   if (existing) return existing;
-  const created: FolderActionState = { folderId, nodeId, busy: false, sub: "", removeOpen: false, confirm: "", discardOpen: false, discardConfirm: "", result: null };
+  const created: FolderActionState = { folderId, nodeId, busy: false, sub: "", removeOpen: false, confirm: "", discardOpen: false, discardConfirm: "", discardCounts: null, discardCountsReading: false, result: null };
   appState.folderActions.set(key, created);
   return created;
 }
