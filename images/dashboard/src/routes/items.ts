@@ -1,5 +1,6 @@
 import { deviceDisplayName } from "../api/deviceText.js";
-import { type DiscardCounts, type FailedItem, type FailedPage, type FolderItem, type FolderPeer, type ItemsPage, type LocalChangedPage, type NeedItem, type NeedStage, type RemoteNeedPage, defaultItemsPerPage, maxItemsPerPage } from "../api/types.js";
+import { type ConflictFile, type ConflictsPage, type DiscardCounts, type FailedItem, type FailedPage, type FolderItem, type FolderPeer, type ItemsPage, type LocalChangedPage, type NeedItem, type NeedStage, type RemoteNeedPage, defaultItemsPerPage, maxItemsPerPage } from "../api/types.js";
+import { type ConflictIndexes, conflictFile, conflictIndexes } from "../conflicts.js";
 import { errorTotalOf, needTotalOf } from "../folderLists.js";
 import { RequestError, sendJson } from "../http.js";
 import { type LocalInstance, type RemoteInstance, type ResolvedInstance, callSyncthing, forwardRead, forwardedListTimeoutMs, resolveInstance } from "../instanceResolver.js";
@@ -224,6 +225,35 @@ export async function remoteNeedItems(instance: ResolvedInstance, folderId: stri
   return { ...forwardedPage(answer, request, forwardedItem), device: forwardedDevice(answer, deviceId) };
 }
 
+/** @implNote The list comes from the conflict index in memory; the node's Syncthing is asked only for its folders and device names. */
+async function localConflicts(instance: LocalInstance, folderId: string, request: PageRequest, indexes: ConflictIndexes): Promise<ConflictsPage> {
+  return callSyncthing(instance, async (client) => {
+    const { devices } = await folderContext(instance, client, folderId);
+    const listed = indexes.list(instance.nodeId, folderId) ?? { conflicts: [], complete: false };
+    const start = (request.page - 1) * request.perPage;
+    const items = listed.conflicts.slice(start, start + request.perPage).map((stored) => conflictFile(stored, devices));
+    return { items, page: request.page, perPage: request.perPage, total: listed.complete || listed.conflicts.length ? listed.conflicts.length : null, complete: listed.complete };
+  });
+}
+
+function forwardedConflict(value: unknown): ConflictFile {
+  const fields = fieldsOf(value);
+  return {
+    path: String(fields.path ?? ""),
+    original: String(fields.original ?? fields.path ?? ""),
+    size: typeof fields.size === "number" ? fields.size : 0,
+    modified: typeof fields.modified === "string" ? fields.modified : "",
+    device: typeof fields.device === "string" ? fields.device : null,
+  };
+}
+
+/** The conflict copies of the node's folder, one page of them, from this host's index or the node's own host's dashboard. */
+export async function conflictItems(instance: ResolvedInstance, folderId: string, request: PageRequest, indexes: ConflictIndexes = conflictIndexes): Promise<ConflictsPage> {
+  if (instance.kind === "local") return localConflicts(instance, folderId, request, indexes);
+  const answer = await forwardRead(instance, listPath(instance, folderId, "conflicts", pageQuery(request)), forwardBudgetsMs.need);
+  return { ...forwardedPage(answer, request, forwardedConflict), complete: fieldsOf(answer).complete === true };
+}
+
 const recentReadMs = 2_000;
 const sharedReadsKept = 100;
 
@@ -245,6 +275,7 @@ function shared<T>(key: string, read: () => Promise<T>): Promise<T> {
 
 export interface ItemRouteSources {
   resolve(nodeId: string): Promise<ResolvedInstance>;
+  conflicts?: ConflictIndexes;
 }
 
 const liveSources: ItemRouteSources = { resolve: (nodeId) => resolveInstance(nodeId) };
@@ -292,6 +323,14 @@ export function itemRoutes(sources: ItemRouteSources = liveSources): Route[] {
         const instance = await resolveFor(sources, url, nodeId);
         const key = ["local-changed", nodeId, folderId, request.page, request.perPage].join("\u0000");
         sendJson(response, 200, await shared(key, () => localChangedItems(instance, folderId, request)));
+      },
+    },
+    {
+      method: "GET",
+      pattern: /^\/api\/nodes\/([^/]+)\/folders\/([^/]+)\/conflicts$/,
+      handle: async ({ response, url, params: [nodeSegment, folderSegment] }) => {
+        const instance = await resolveFor(sources, url, decodedSegment(nodeSegment, "node ID"));
+        sendJson(response, 200, await conflictItems(instance, decodedSegment(folderSegment, "folder ID"), pageRequestOf(url), sources.conflicts));
       },
     },
     {

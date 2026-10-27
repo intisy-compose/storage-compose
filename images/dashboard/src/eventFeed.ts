@@ -1,6 +1,7 @@
 import { deviceDisplayName } from "./api/deviceText.js";
 import { type ActivityEntry, type ActivityLevel, type ActivityResponse, type ActivitySource, type ParityJob, routineActivityTypes } from "./api/types.js";
 import { arrayIds, arrayStatus } from "./arrayStatus.js";
+import { conflictIndexes } from "./conflicts.js";
 import { localInstances } from "./instanceResolver.js";
 import { recentLog, runningJob } from "./parity.js";
 import { activitySettings } from "./settings.js";
@@ -114,6 +115,15 @@ export interface FeedOptions {
   retryMs: number;
 }
 
+/** Hears every event a feed reads, besides Activity, and each restart of an instance; `conflicts.ts` keeps its index current from it. */
+export interface FeedListener {
+  event(nodeId: string, event: SyncthingEvent): void;
+  /** @implNote Syncthing keeps no events of a run from before the first request after it started, so whatever happened meanwhile is not in the feed. */
+  restarted(nodeId: string): void;
+}
+
+const quietListener: FeedListener = { event: () => {}, restarted: () => {} };
+
 export const defaultFeedOptions: FeedOptions = { waitSeconds: 50, requestTimeoutMs: 60_000, retryMs: 5_000 };
 
 export const followedEventTypes = [
@@ -123,6 +133,7 @@ export const followedEventTypes = [
   "FolderPaused",
   "FolderResumed",
   "ItemFinished",
+  "LocalIndexUpdated",
   "LocalChangeDetected",
   "RemoteChangeDetected",
   "DeviceConnected",
@@ -334,6 +345,7 @@ class InstanceFeed {
     private readonly position: FeedPosition,
     private readonly log: ActivityLog,
     private readonly options: FeedOptions,
+    private readonly listener: FeedListener,
   ) {
     this.context = { nodeName: instance.name, deviceNames: new Map(), folderLabels: new Map(), completions: position.completions };
   }
@@ -368,7 +380,7 @@ class InstanceFeed {
     const client = this.instance.client;
     const startTime = await client.startTime();
     const isNewRun = this.position.startTime !== startTime;
-    if (isNewRun && this.position.startTime !== null) this.forgetRun();
+    if (isNewRun && this.position.startTime !== null) this.forgetRun(true);
     this.position.startTime = startTime;
     if (!isNewRun && this.namesRead) return;
     this.namesRead = true;
@@ -377,15 +389,17 @@ class InstanceFeed {
     this.context.folderLabels = namesFrom(folders, "id", "label");
   }
 
-  private forgetRun(): void {
+  private forgetRun(isRestart = false): void {
+    if (isRestart) this.listener.restarted(this.instance.nodeId);
     this.position.since = 0;
     this.context.completions.clear();
   }
 
   private take(events: SyncthingEvent[]): void {
-    if (events.some((event) => event.id <= this.position.since)) this.forgetRun();
+    if (events.some((event) => event.id <= this.position.since)) this.forgetRun(true);
     for (const event of events) {
       if (event.type === "ConfigSaved") this.learnNames(event.data);
+      this.listener.event(this.instance.nodeId, event);
       const entry = eventEntry(event, this.instance.nodeId, this.context);
       if (entry && !this.isRepeat(entry)) this.enter(entry);
       this.position.since = Math.max(this.position.since, event.id);
@@ -417,6 +431,7 @@ export class EventFeeds {
   constructor(
     private readonly log: ActivityLog,
     private readonly options: FeedOptions = defaultFeedOptions,
+    private readonly listener: FeedListener = quietListener,
   ) {}
 
   reconcile(instances: FeedInstance[]): void {
@@ -434,7 +449,7 @@ export class EventFeeds {
       }
       const position = this.positions.get(instance.nodeId) ?? { since: 0, startTime: null, completions: new Map() };
       this.positions.set(instance.nodeId, position);
-      const feed = new InstanceFeed(instance, position, this.log, this.options);
+      const feed = new InstanceFeed(instance, position, this.log, this.options, this.listener);
       this.feeds.set(instance.nodeId, feed);
       void feed.run();
     }
@@ -557,16 +572,22 @@ export class ParityWatcher {
 }
 
 export const activityLog = new ActivityLog(activitySettings.bufferSize);
-const eventFeeds = new EventFeeds(activityLog);
+const eventFeeds = new EventFeeds(activityLog, defaultFeedOptions, {
+  event: (nodeId, event) => conflictIndexes.takeEvent(nodeId, event),
+  restarted: (nodeId) => conflictIndexes.instanceRestarted(nodeId),
+});
 const reconcileMilliseconds = 60_000;
 const parityTickMilliseconds = 15_000;
 
 let reconciling: Promise<void> | null = null;
 
-/** Starts a feed for each instance that appeared since the last call and stops the feed of each one gone. */
+/** Starts a feed for each instance that appeared since the last call and stops the feed of each one gone; the conflict index follows the same instances. */
 export function refreshEventFeeds(): Promise<void> {
   reconciling ??= localInstances()
-    .then((instances) => eventFeeds.reconcile(instances))
+    .then((instances) => {
+      eventFeeds.reconcile(instances);
+      void conflictIndexes.reconcile(instances).catch((error: Error) => console.error(`conflicts: the folders could not be followed: ${error.message}`));
+    })
     .catch((error: Error) => console.error(`activity: the instances could not be listed: ${error.message}`))
     .finally(() => {
       reconciling = null;

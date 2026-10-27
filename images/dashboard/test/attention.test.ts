@@ -45,6 +45,7 @@ function folder(overrides: Partial<NodeFolder>): NodeFolder {
     lastScan: null,
     lastFile: null,
     localChanged: 0,
+    conflicts: null,
     sharedWith: [],
     ...overrides,
   };

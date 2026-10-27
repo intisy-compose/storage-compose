@@ -227,6 +227,8 @@ export interface NodeFolder {
   lastFile: FolderFile | null;
   /** Items changed here that a receive-only folder will not send on. */
   localChanged: number;
+  /** Conflict copies Syncthing kept in the folder; null until the folder has been searched for them, or from a dashboard that does not count them. */
+  conflicts: number | null;
   sharedWith: FolderPeer[];
 }
 
@@ -970,6 +972,24 @@ export interface RemoteNeedPage extends ItemsPage<FolderItem> {
 
 /** `GET /api/nodes/<nodeId>/folders/<folderId>/local-changed?page=&perPage=`: what was changed on the node itself in a receive only folder; `total` is Syncthing's count. */
 export type LocalChangedPage = ItemsPage<FolderItem>;
+
+/** A copy Syncthing kept when two devices changed one file at once, named `<original>.sync-conflict-<date>-<time>-<short device ID><extension>`. */
+export interface ConflictFile {
+  path: string;
+  original: string;
+  size: number;
+  modified: string;
+  /** The device whose change lost, named as the node knows it, else by the short ID in the name; null when a forwarded answer does not say. */
+  device: string | null;
+}
+
+/**
+ * `GET /api/nodes/<nodeId>/folders/<folderId>/conflicts?page=&perPage=`: the folder's conflict copies, listed only; keeping one is a file operation on the node.
+ * `complete` is false while the folder is still being searched, so more may follow.
+ */
+export interface ConflictsPage extends ItemsPage<ConflictFile> {
+  complete: boolean;
+}
 
 /** `GET /api/nodes/<nodeId>/folders/<folderId>/discard-counts`: Syncthing's counts read now, what a revert or an override would discard; null when not given. */
 export interface DiscardCounts {

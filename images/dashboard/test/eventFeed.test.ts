@@ -122,6 +122,24 @@ describe("event feeds", () => {
     assert.equal(failed.level, "warning");
   });
 
+  it("an index update reaches the listener and stays out of Activity, and a restart is told", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    const heard: string[] = [];
+    const feeds = new EventFeeds(log, feedOptions, { event: (nodeId, event) => heard.push(`${nodeId}:${event.type}`), restarted: (nodeId) => heard.push(`${nodeId}:restarted`) });
+    feedSets.push(feeds);
+    feeds.reconcile([feed]);
+    fake.emit({ type: "LocalIndexUpdated", data: { folder: "documents", items: 1, filenames: ["a.sync-conflict-20261027-110000-TUH2R66.txt"], sequence: 9 } }, scanned("documents", "idle"));
+    await until(() => heard.length === 2, "both events at the listener");
+    assert.deepEqual(heard, ["pc:LocalIndexUpdated", "pc:StateChanged"]);
+    await until(() => log.query({}).entries.length === 1, "the state change in Activity");
+    assert.deepEqual(texts(log), ["pc: Documents is idle"]);
+    fake.restart();
+    fake.emit(scanned("documents", "scanning"));
+    await until(() => heard.includes("pc:restarted"), "the restart at the listener");
+    assert.equal(heard.filter((entry) => entry === "pc:restarted").length, 1, "the first start of a feed is no restart");
+  });
+
   it("a restart resets since without losing new events", async () => {
     const { fake, feed } = await instance("pc", "pc");
     const log = new ActivityLog(100);

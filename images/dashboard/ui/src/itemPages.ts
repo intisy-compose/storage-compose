@@ -1,8 +1,12 @@
-import type { FailedItem, FolderItem, ItemsPage, NeedItem, RemoteNeedPage } from "./api.js";
+import type { ConflictFile, FailedItem, FolderItem, ItemsPage, NeedItem, RemoteNeedPage } from "./api.js";
 import { formatCount, plural } from "./format.js";
 import type { ItemListState } from "./state.js";
 
-type ShownPage = ItemsPage<NeedItem | FolderItem | FailedItem>;
+type ShownPage = ItemsPage<NeedItem | FolderItem | FailedItem | ConflictFile>;
+
+export function conflictCopies(count: number): string {
+  return count === 1 ? "1 conflict copy" : `${formatCount(count)} conflict copies`;
+}
 
 export function pageCount(total: number | null, perPage: number): number | null {
   return total === null ? null : Math.max(1, Math.ceil(total / perPage));
@@ -27,6 +31,7 @@ export function totalText(list: Pick<ItemListState, "page" | "perPage" | "device
   if (page.total === null) return "How many in all could not be read.";
   if (list.kind === "failed") return `${plural(page.total, "item")} Syncthing could not sync.`;
   if (list.kind === "local-changed") return `${plural(page.total, "item")} changed here, which a revert deletes or replaces.`;
+  if (list.kind === "conflicts") return `${conflictCopies(page.total)}. Syncthing kept each when two devices changed the file at once; keep one by deleting or renaming the other on the node itself.`;
   const device = list.deviceId === null ? null : (page as RemoteNeedPage).device;
   const total = device ? `${device.name} still needs ${plural(page.total, "item")} of this folder.` : `${plural(page.total, "item")} still to fetch.`;
   const pages = pageCount(page.total, list.perPage);

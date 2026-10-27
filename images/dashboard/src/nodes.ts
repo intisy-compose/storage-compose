@@ -1,8 +1,9 @@
 import { deviceDisplayName } from "./api/deviceText.js";
 import type { NodeArray, NodeRegistryEntry, NodesResponse, StorageNode, Warning } from "./api/types.js";
 import { type ArrayStatus, arrayIds, arrayStatus, listedArrayIds } from "./arrayStatus.js";
-import { folderErrorWarnings, fromOtherHost, fullWarnings, hostWarnings, offlineWarnings, pausedWarnings, pendingWarnings, pruneFirstSeen, systemErrorWarnings, warning, withoutDuplicates } from "./attention.js";
+import { conflictWarnings, folderErrorWarnings, fromOtherHost, fullWarnings, hostWarnings, offlineWarnings, pausedWarnings, pendingWarnings, pruneFirstSeen, systemErrorWarnings, warning, withoutDuplicates } from "./attention.js";
 import { type BlockDevice, listBlockDevices, replacementCandidates } from "./blockDevices.js";
+import { conflictIndexes } from "./conflicts.js";
 import { type UnreadSources, recordPresentDrives } from "./driveHistory.js";
 import { agentProblem, readHeartbeat } from "./hostAgent.js";
 import { registryEntries, registryWarnings, syncthingEndpoint } from "./instances.js";
@@ -112,9 +113,14 @@ function arrayWarnings(status: ArrayStatus, node: StorageNode): Warning[] {
   return warnings;
 }
 
+/** Each folder's count of conflict copies, as far as the folder has been searched. */
+function withConflictCounts(node: StorageNode): StorageNode {
+  return { ...node, folders: node.folders.map((folder) => ({ ...folder, conflicts: conflictIndexes.count(node.id, folder.id) })) };
+}
+
 /** What a node's own Syncthing and its space say needs a person. */
 function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
-  const warnings = [...folderErrorWarnings(node), ...fullWarnings(node, attentionSettings), ...pausedWarnings(node)];
+  const warnings = [...folderErrorWarnings(node), ...conflictWarnings(node), ...fullWarnings(node, attentionSettings), ...pausedWarnings(node)];
   if (view) warnings.push(...systemErrorWarnings(node, view.systemErrors), ...pendingWarnings(node, view.pendingDevices, view.pendingFolders));
   return warnings;
 }
@@ -143,7 +149,7 @@ async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes
     const endpoint = await syncthingEndpoint(id);
     const view = endpoint && status.present ? await instanceView(id, endpoint, status.name) : null;
     if (view) views.push(view);
-    const node = await arrayNode(status, devices, sources, view);
+    const node = withConflictCounts(await arrayNode(status, devices, sources, view));
     nodes.push(node);
     warnings.push(...arrayWarnings(status, node), ...nodeWarnings(node, view));
   }
@@ -152,7 +158,7 @@ async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes
     const endpoint = entry.present ? await syncthingEndpoint(entry.id, entry) : null;
     const view = endpoint ? await instanceView(entry.id, endpoint, entry.name) : null;
     if (view) views.push(view);
-    const node = registryNode(entry, view);
+    const node = withConflictCounts(registryNode(entry, view));
     nodes.push(node);
     warnings.push(...nodeWarnings(node, view));
     if (!entry.present) warnings.push(warning({ id: `absent:${entry.id}`, level: "info", kind: "offline", text: `${entry.name} is not attached to this host`, nodeId: entry.id }));

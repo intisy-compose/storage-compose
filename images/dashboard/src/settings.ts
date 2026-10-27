@@ -30,6 +30,7 @@ export const registryDirectory = `${statusDirectory}/nodes`;
 export const joinsFile = `${statusDirectory}/joins.json`;
 /** The dashboard's own memory of devices and drives; a cache in the `rebuilt` status volume. */
 export const seenDirectory = `${statusDirectory}/seen`;
+export const conflictsDirectory = `${statusDirectory}/conflicts`;
 export const publicDirectory = new URL("../public/", import.meta.url).pathname;
 export const port = Number(process.env.PORT ?? 8080);
 /** The join port inside the stack: the gateway forwards /api/join on 443 here with a PROXY protocol header. */

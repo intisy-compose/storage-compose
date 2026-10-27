@@ -1,9 +1,9 @@
-import { type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type NeedStage, defaultItemsPerPage, fetchFailedItems, fetchLocalChanged, fetchNeedItems, fetchRemoteNeed, maxItemsPerPage } from "./api.js";
+import { type ConflictFile, type ConflictsPage, type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type NeedStage, defaultItemsPerPage, fetchConflicts, fetchFailedItems, fetchLocalChanged, fetchNeedItems, fetchRemoteNeed, maxItemsPerPage } from "./api.js";
 import { button, element } from "./dom.js";
 import { formatBytes, formatDate } from "./format.js";
 import { hasNextPage, positionText, totalText } from "./itemPages.js";
 import { requestRender } from "./renderRequest.js";
-import { type ItemListState, type ItemListTarget, appState, failedItemsNodeInLocation } from "./state.js";
+import { type ItemListState, type ItemListTarget, appState, itemListInLocation } from "./state.js";
 
 const pageSizes = [...new Set([25, defaultItemsPerPage, maxItemsPerPage])].sort((left, right) => left - right);
 
@@ -17,6 +17,7 @@ export function isItemListOpen(target: ItemListTarget): boolean {
 function readPage(list: ItemListState) {
   if (list.kind === "failed") return fetchFailedItems(list.nodeId, list.folderId, list.page, list.perPage);
   if (list.kind === "local-changed") return fetchLocalChanged(list.nodeId, list.folderId, list.page, list.perPage);
+  if (list.kind === "conflicts") return fetchConflicts(list.nodeId, list.folderId, list.page, list.perPage);
   if (list.deviceId === null) return fetchNeedItems(list.nodeId, list.folderId, list.page, list.perPage);
   return fetchRemoteNeed(list.nodeId, list.folderId, list.deviceId, list.page, list.perPage);
 }
@@ -39,11 +40,11 @@ export function openItemList(target: ItemListTarget): void {
   void load(list);
 }
 
-/** Opens the failed items the address asks for (`&failed=<nodeId>` on a folder), unless that list is already open. */
-export function openFailedListFromLocation(): void {
-  const nodeId = failedItemsNodeInLocation();
-  if (!nodeId || !appState.selectedFolderId) return;
-  const target: ItemListTarget = { nodeId, folderId: appState.selectedFolderId, deviceId: null, kind: "failed" };
+/** Opens the failed items or conflict copies the address asks for (`&failed=<nodeId>` or `&conflicts=<nodeId>` on a folder), unless that list is already open. */
+export function openListFromLocation(): void {
+  const asked = itemListInLocation();
+  if (!asked || !appState.selectedFolderId) return;
+  const target: ItemListTarget = { nodeId: asked.nodeId, folderId: appState.selectedFolderId, deviceId: null, kind: asked.kind };
   if (!isItemListOpen(target)) openItemList(target);
 }
 
@@ -75,7 +76,20 @@ function failedRow(item: FailedItem): HTMLElement {
   );
 }
 
-function itemRow(item: NeedItem | FolderItem | FailedItem): HTMLElement {
+function conflictRow(item: ConflictFile): HTMLElement {
+  const device = item.device ? ` with ${item.device}'s change` : "";
+  return element(
+    "li",
+    { className: "item-row item-conflict" },
+    element("span", { className: "item-name", title: item.path }, item.path),
+    element("small", { className: "item-meta" }, `copy of ${item.original}${device}, ${formatBytes(item.size)}, changed ${formatDate(item.modified)}`),
+  );
+}
+
+type ListedItem = NeedItem | FolderItem | FailedItem | ConflictFile;
+
+function itemRow(item: ListedItem): HTMLElement {
+  if ("original" in item) return conflictRow(item);
   if ("path" in item) return failedRow(item);
   const changedBy = item.modifiedBy ? `, by ${item.modifiedBy}` : "";
   return element(
@@ -102,7 +116,7 @@ function sizeChoice(list: ItemListState): HTMLElement {
   return select;
 }
 
-function pager(list: ItemListState, page: ItemsPage<NeedItem | FolderItem | FailedItem>): HTMLElement {
+function pager(list: ItemListState, page: ItemsPage<ListedItem>): HTMLElement {
   const hasNext = hasNextPage(list, page);
   const previous = button("Previous", () => goToPage(list, list.page - 1), "button ghost");
   previous.disabled = list.loading || list.page <= 1;
@@ -121,6 +135,7 @@ function readingText(): string {
 function emptyText(list: ItemListState): string {
   if (list.page > 1) return "No items on this page.";
   if (list.kind === "failed") return "No failed items.";
+  if (list.kind === "conflicts") return "No conflict copies found.";
   return list.kind === "local-changed" ? "Nothing was changed here." : "Nothing is out of sync.";
 }
 
@@ -132,8 +147,9 @@ function listBody(list: ItemListState): HTMLElement[] {
     return [element("p", { className: isRefusal ? "muted" : "tone-text-bad", attributes: { role: "status" } }, isRefusal ? `${answer.message}.` : `Could not be read: ${answer.message}`)];
   }
   const page = answer.value;
-  if (!page.items.length) return [element("p", { className: "muted" }, emptyText(list)), pager(list, page)];
-  return [element("p", { className: "muted" }, totalText(list, page)), element("ol", { className: "item-list" }, ...page.items.map(itemRow)), pager(list, page)];
+  const searching = list.kind === "conflicts" && !(page as ConflictsPage).complete ? [element("p", { className: "muted" }, "The folder is still being searched for conflict copies; more may be found.")] : [];
+  if (!page.items.length) return [...(searching.length ? searching : [element("p", { className: "muted" }, emptyText(list))]), pager(list, page)];
+  return [element("p", { className: "muted" }, totalText(list, page)), ...searching, element("ol", { className: "item-list" }, ...page.items.map(itemRow)), pager(list, page)];
 }
 
 /** The open list under `title`, with any `controls` above its items, such as the folder a device's need is read for. */

@@ -56,6 +56,8 @@ export type {
   ItemsPage,
   DiscardCounts,
   LocalChangedPage,
+  ConflictFile,
+  ConflictsPage,
   LocalChangesBody,
   LocalChangesDone,
   JoinEntry,
@@ -105,7 +107,7 @@ export type {
 } from "../../src/api/types.js";
 import type { LocalChangesAction } from "../../src/api/localChangesText.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, ConflictsPage, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
@@ -386,6 +388,11 @@ export function fetchDiscardCounts(nodeId: string, folderId: string): Promise<Re
 /** One page of what was changed on the node itself in a receive only folder. */
 export function fetchLocalChanged(nodeId: string, folderId: string, page: number, perPage: number): Promise<ReadResult<LocalChangedPage>> {
   return readJson(`${folderApiPath(nodeId, folderId, "/local-changed")}?${pageQuery(page, perPage)}`);
+}
+
+/** One page of the folder's conflict copies on the node. */
+export function fetchConflicts(nodeId: string, folderId: string, page: number, perPage: number): Promise<ReadResult<ConflictsPage>> {
+  return readJson(`${folderApiPath(nodeId, folderId, "/conflicts")}?${pageQuery(page, perPage)}`);
 }
 
 /** One page of what `deviceId` still needs of the node's folder. */

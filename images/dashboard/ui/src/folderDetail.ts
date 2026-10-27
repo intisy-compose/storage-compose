@@ -7,6 +7,7 @@ import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCon
 import { icon } from "./icons.js";
 import { outOfSyncCount, outOfSyncText } from "./outOfSync.js";
 import { isItemListOpen, itemListPanel, toggleItemList } from "./itemList.js";
+import { conflictCopies } from "./itemPages.js";
 import { type ItemListKind, type ItemListTarget, appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
 
 function onOff(value: boolean): string {
@@ -63,6 +64,14 @@ function changedHereValue(copy: FolderCopy): HTMLElement | string {
   return listToggle(copy, "local-changed", plural(copy.localChanged, "item"), `List what was changed on ${copy.nodeName}`, "link-button tone-text-warn");
 }
 
+/** The count opens the list of the copy's conflict copies; keeping one is done on the node, not here. */
+function conflictsValue(copy: FolderCopy): HTMLElement | string {
+  const count = copy.conflicts ?? null;
+  if (count === null) return copy.local ? "not searched yet" : "not counted";
+  if (!count) return "none";
+  return listToggle(copy, "conflicts", conflictCopies(count), `List the conflict copies on ${copy.nodeName}`, "link-button tone-text-warn");
+}
+
 function lastFileText(copy: FolderCopy): string {
   if (!copy.lastFile) return "none yet";
   return `${copy.lastFile.filename}${copy.lastFile.deleted ? " (deleted)" : ""}, ${formatDate(copy.lastFile.at)}`;
@@ -79,6 +88,7 @@ function copyCard(copy: FolderCopy): HTMLElement {
     ["Failed items", failedValue(copy)],
   ];
   if (copy.type === "receiveonly") rows.push(["Changed here", changedHereValue(copy)]);
+  rows.push(["Conflicts", conflictsValue(copy)]);
   rows.push(
     ["Last scan", formatDate(copy.lastScan)],
     ["Last file", lastFileText(copy)],
@@ -97,6 +107,7 @@ function copyCard(copy: FolderCopy): HTMLElement {
     listPanel(copy, "need", `What ${copy.nodeName} still has to fetch`),
     listPanel(copy, "failed", `Failed items on ${copy.nodeName}`),
     listPanel(copy, "local-changed", `Changed on ${copy.nodeName}`),
+    listPanel(copy, "conflicts", `Conflict copies on ${copy.nodeName}`),
   );
 }
 

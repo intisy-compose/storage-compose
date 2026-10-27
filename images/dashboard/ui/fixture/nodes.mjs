@@ -139,7 +139,7 @@ function remoteArray() {
 }
 
 function folderDetail(folder) {
-  return { label: "", errors: 0, needItems: 0, needTotalItems: 0, needBytes: 0, globalBytes: 0, globalFiles: 0, globalDirectories: 0, lastScan: ago(hour), lastFile: null, localChanged: 0, sharedWith: [], ...folder };
+  return { label: "", errors: 0, needItems: 0, needTotalItems: 0, needBytes: 0, globalBytes: 0, globalFiles: 0, globalDirectories: 0, lastScan: ago(hour), lastFile: null, localChanged: 0, conflicts: 0, sharedWith: [], ...folder };
 }
 
 function ownInstance() {

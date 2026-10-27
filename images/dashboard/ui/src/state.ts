@@ -1,4 +1,4 @@
-import { type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type ReadResult, defaultItemsPerPage } from "./api.js";
+import { type ConflictFile, type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type ReadResult, defaultItemsPerPage } from "./api.js";
 import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
@@ -164,8 +164,8 @@ export interface FolderActionState {
   result: Notice | null;
 }
 
-/** What an item list lists: what is out of sync, the failed items, or what was changed on a receive only node. */
-export type ItemListKind = "need" | "failed" | "local-changed";
+/** What an item list lists: what is out of sync, the failed items, what was changed on a receive only node, or the conflict copies. */
+export type ItemListKind = "need" | "failed" | "local-changed" | "conflicts";
 
 /** Which item list is open: what a node still has to fetch of a folder, or with `deviceId` what that device still needs of it. */
 export interface ItemListTarget {
@@ -181,7 +181,7 @@ export interface ItemListState extends ItemListTarget {
   page: number;
   perPage: number;
   loading: boolean;
-  answer: ReadResult<ItemsPage<NeedItem | FolderItem | FailedItem>> | null;
+  answer: ReadResult<ItemsPage<NeedItem | FolderItem | FailedItem | ConflictFile>> | null;
 }
 
 /** The Folders page's file explorer: which node's view, which directory, and what the person opened in it. */
@@ -400,11 +400,21 @@ export function failedItemsLocation(folderId: string, nodeId: string): string {
   return `${explorerLocation(folderId)}&failed=${encodeURIComponent(nodeId)}`;
 }
 
-/** The node whose failed items the address asks to open, or null. */
-export function failedItemsNodeInLocation(): string | null {
+/** The folder's detail with the list of its conflict copies on `nodeId` open. */
+export function conflictsLocation(folderId: string, nodeId: string): string {
+  return `${explorerLocation(folderId)}&conflicts=${encodeURIComponent(nodeId)}`;
+}
+
+/** The list the address asks to open (`&failed=<nodeId>` or `&conflicts=<nodeId>` on a folder), or null. */
+export function itemListInLocation(): { kind: "failed" | "conflicts"; nodeId: string } | null {
   const hash = location.hash;
   const queryStart = hash.indexOf("?");
-  return queryStart < 0 ? null : new URLSearchParams(hash.slice(queryStart + 1)).get("failed");
+  if (queryStart < 0) return null;
+  const query = new URLSearchParams(hash.slice(queryStart + 1));
+  const failed = query.get("failed");
+  if (failed) return { kind: "failed", nodeId: failed };
+  const conflicts = query.get("conflicts");
+  return conflicts ? { kind: "conflicts", nodeId: conflicts } : null;
 }
 
 /** The form that edits the folder's settings on the node `nodeId`, over the explorer where the folder's detail is open. */
