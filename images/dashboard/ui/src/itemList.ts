@@ -114,7 +114,9 @@ function pager(list: ItemListState, page: ItemsPage<NeedItem | FolderItem>): HTM
 function totalText(list: ItemListState, page: ItemsPage<NeedItem | FolderItem>): string {
   if (page.total === null) return "How many in all could not be read.";
   const device = list.deviceId === null ? null : (page as RemoteNeedPage).device;
-  return device ? `${device.name} still needs ${plural(page.total, "item")} of this folder.` : `${plural(page.total, "item")} still to fetch.`;
+  const total = device ? `${device.name} still needs ${plural(page.total, "item")} of this folder.` : `${plural(page.total, "item")} still to fetch.`;
+  const pages = pageCount(page.total, list.perPage);
+  return pages !== null && list.page > pages ? `${total} This page lies past that count: Syncthing lists items it is fetching again here.` : total;
 }
 
 function readingText(): string {
