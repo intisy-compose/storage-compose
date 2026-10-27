@@ -920,7 +920,6 @@ export interface FolderPathCheck {
   warning: string | null;
 }
 
-/** `GET /api/folders/<folderId>`; `settings` is keyed by node ID. */
 /** One item of a folder's index; `modifiedBy` names the device that last changed it, null when Syncthing does not say. */
 export interface FolderItem {
   name: string;
@@ -957,6 +956,7 @@ export interface RemoteNeedPage extends ItemsPage<FolderItem> {
   device: FolderPeer;
 }
 
+/** `GET /api/folders/<folderId>`; `settings` is keyed by node ID. */
 export interface FolderDetailResponse {
   summary: FolderSummary;
   settings: Record<string, FolderSettings>;

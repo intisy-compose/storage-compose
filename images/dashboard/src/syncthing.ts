@@ -142,7 +142,7 @@ export interface IndexItem {
   modifiedBy?: string;
 }
 
-export interface RemoteNeedPage {
+export interface RemoteNeedAnswer {
   files: IndexItem[] | null;
 }
 
@@ -324,7 +324,7 @@ export class SyncthingClient {
    * What the device still needs of the folder, as this instance knows the device's index.
    * @implNote Syncthing answers every item for a device the folder is not shared with, so callers check the sharing first.
    */
-  remoteNeedPage(folderId: string, deviceId: string, page: number, perPage: number): Promise<RemoteNeedPage> {
+  remoteNeedPage(folderId: string, deviceId: string, page: number, perPage: number): Promise<RemoteNeedAnswer> {
     const query = new URLSearchParams({ folder: folderId, device: deviceId, page: String(page), perpage: String(perPage) });
     return this.request("GET", `/db/remoteneed?${query.toString()}`, undefined, listTimeoutMs);
   }
