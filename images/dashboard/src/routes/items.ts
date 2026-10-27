@@ -5,7 +5,7 @@ import { RequestError, sendJson } from "../http.js";
 import { type LocalInstance, type RemoteInstance, type ResolvedInstance, callSyncthing, forwardRead, forwardedListTimeoutMs, resolveInstance } from "../instanceResolver.js";
 import type { Route } from "../routes.js";
 import { SharedRead } from "../sharedRead.js";
-import type { Completion, IndexItem, SyncthingClient, SyncthingDeviceConfig, SyncthingFolderConfig } from "../syncthing.js";
+import { type Completion, type IndexItem, type SyncthingClient, type SyncthingDeviceConfig, type SyncthingFolderConfig, listTimeoutMs } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
 
 export interface PageRequest {
@@ -70,11 +70,11 @@ function deviceOf(devices: SyncthingDeviceConfig[], deviceId: string): FolderPee
 
 /**
  * Why the device's need is not known although the folder is shared with it, or null.
- * @implNote Syncthing counts every item as needed by a device that never sent its index of the folder, as one that has not accepted it.
+ * @implNote Syncthing counts every item as needed by a device it has no index of the folder from, as one that has not accepted it or has not sent it yet.
  */
 function unknownNeedReason(completion: Completion | null, device: FolderPeer, label: string, instance: LocalInstance): string | null {
   if (completion?.remoteState === "notSharing") return `${device.name} does not share ${label} with ${instance.name}`;
-  if (completion?.remoteState === "unknown" && !completion.sequence) return `${device.name} has not accepted ${label} from ${instance.name}, so what it needs is not known`;
+  if (completion?.remoteState === "unknown" && !completion.sequence) return `${device.name} has sent no index of ${label} to ${instance.name} (not accepted, or nothing received yet), so what it needs is not known`;
   return null;
 }
 
@@ -141,17 +141,23 @@ function pageQuery(request: PageRequest): Record<string, string> {
   return { page: String(request.page), perPage: String(request.perPage) };
 }
 
+/**
+ * How long a forwarded list may take: the other dashboard waits up to `listTimeoutMs` on each of its Syncthing reads, and a remote need reads the
+ * device's completion before its page, one after the other.
+ */
+export const forwardBudgetsMs = { need: forwardedListTimeoutMs, remoteNeed: 2 * listTimeoutMs + 5_000 } as const;
+
 /** What the node still has to fetch of the folder, one page of it, read from the node's own Syncthing or its host's dashboard. */
 export async function needItems(instance: ResolvedInstance, folderId: string, request: PageRequest): Promise<ItemsPage<NeedItem>> {
   if (instance.kind === "local") return localNeed(instance, folderId, request);
-  const answer = await forwardRead(instance, listPath(instance, folderId, "need", pageQuery(request)), forwardedListTimeoutMs);
+  const answer = await forwardRead(instance, listPath(instance, folderId, "need", pageQuery(request)), forwardBudgetsMs.need);
   return forwardedPage(answer, request, forwardedNeedItem);
 }
 
 /** What `deviceId` still needs of the node's folder, one page of it; a device the folder is not shared with is refused, naming it. */
 export async function remoteNeedItems(instance: ResolvedInstance, folderId: string, deviceId: string, request: PageRequest): Promise<RemoteNeedPage> {
   if (instance.kind === "local") return localRemoteNeed(instance, folderId, deviceId, request);
-  const answer = await forwardRead(instance, listPath(instance, folderId, "remote-need", { device: deviceId, ...pageQuery(request) }), forwardedListTimeoutMs);
+  const answer = await forwardRead(instance, listPath(instance, folderId, "remote-need", { device: deviceId, ...pageQuery(request) }), forwardBudgetsMs.remoteNeed);
   return { ...forwardedPage(answer, request, forwardedItem), device: forwardedDevice(answer, deviceId) };
 }
 

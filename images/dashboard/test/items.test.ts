@@ -6,8 +6,9 @@ import type { ItemsPage, NeedItem, RemoteNeedPage } from "../src/api/types.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import { requestHandler } from "../src/routes.js";
-import { itemRoutes } from "../src/routes/items.js";
-import { SyncthingClient } from "../src/syncthing.js";
+import { forwardBudgetsMs, itemRoutes } from "../src/routes/items.js";
+import { SyncthingClient, listTimeoutMs } from "../src/syncthing.js";
+import { hasNextPage, positionText, totalText } from "../ui/src/itemPages.js";
 import { until } from "./until.js";
 
 const apiKey = "items-test-key";
@@ -193,7 +194,7 @@ describe("out-of-sync items", () => {
   it("remote need of a device that has not accepted the folder, or no longer shares it, says so instead of listing every item", async () => {
     const offered = await getJson<{ error: string }>(`/api/nodes/d7e5/folders/documents/remote-need?device=${offeredId}`);
     assert.equal(offered.status, 409);
-    assert.equal(offered.body.error, "laptop has not accepted Documents from dashboard-test-peer, so what it needs is not known");
+    assert.equal(offered.body.error, "laptop has sent no index of Documents to dashboard-test-peer (not accepted, or nothing received yet), so what it needs is not known");
     const left = await getJson<{ error: string }>(`/api/nodes/d7e5/folders/documents/remote-need?device=${leftId}`);
     assert.equal(left.status, 409);
     assert.equal(left.body.error, "phone does not share Documents with dashboard-test-peer");
@@ -217,5 +218,44 @@ describe("out-of-sync items", () => {
   it("a request already forwarded by another host is not forwarded again", async () => {
     const { status } = await getJson("/api/nodes/a1b2/folders/documents/need?scope=local");
     assert.equal(status, 404);
+  });
+});
+
+describe("forwarded item lists", () => {
+  it("a forwarded remote need may take both of the other dashboard's sequential reads", () => {
+    assert.equal(forwardBudgetsMs.remoteNeed, 2 * listTimeoutMs + 5_000);
+    assert.ok(forwardBudgetsMs.need > listTimeoutMs, "the other dashboard's own timeout answers first");
+    assert.ok(forwardBudgetsMs.remoteNeed > forwardBudgetsMs.need);
+  });
+});
+
+describe("item list pages", () => {
+  const item = { name: "a", size: 1, modified: "", deleted: false, modifiedBy: null };
+  const pageOf = (count: number, total: number | null) => ({ items: Array.from({ length: count }, () => item), page: 1, perPage: 25, total });
+
+  it("a next page follows while the count says so, or while the page is full past the count", () => {
+    assert.equal(hasNextPage({ page: 1, perPage: 25 }, pageOf(25, 29)), true);
+    assert.equal(hasNextPage({ page: 2, perPage: 25 }, pageOf(4, 29)), false);
+    assert.equal(hasNextPage({ page: 2, perPage: 25 }, pageOf(25, 29)), true, "Syncthing repeats items being fetched past the count");
+    assert.equal(hasNextPage({ page: 1, perPage: 25 }, pageOf(22, 22)), false);
+    assert.equal(hasNextPage({ page: 3, perPage: 25 }, pageOf(25, null)), true);
+    assert.equal(hasNextPage({ page: 3, perPage: 25 }, pageOf(3, null)), false);
+  });
+
+  it("the position names the page count only while the page lies within it", () => {
+    assert.equal(positionText({ page: 1, perPage: 25, loading: false }, 918_733), "Page 1 of 36,750");
+    assert.equal(positionText({ page: 3, perPage: 25, loading: false }, 29), "Page 3");
+    assert.equal(positionText({ page: 1, perPage: 25, loading: true }, 29), "Reading…");
+  });
+
+  it("the total names the device, and a page past the count says why it is there", () => {
+    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null }, pageOf(25, 29)), "29 items still to fetch.");
+    assert.equal(
+      totalText({ page: 3, perPage: 25, deviceId: null }, { ...pageOf(4, 29), page: 3 }),
+      "29 items still to fetch. This page lies past that count: Syncthing lists items it is fetching or has queued again here.",
+    );
+    const remote = { ...pageOf(1, 1), device: { deviceId: "PBMD2SH", name: "pc" } };
+    assert.equal(totalText({ page: 1, perPage: 25, deviceId: "PBMD2SH" }, remote), "pc still needs 1 item of this folder.");
+    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null }, pageOf(0, null)), "How many in all could not be read.");
   });
 });

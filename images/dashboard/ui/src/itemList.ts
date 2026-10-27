@@ -1,6 +1,7 @@
-import { type FolderItem, type ItemsPage, type NeedItem, type NeedStage, type RemoteNeedPage, defaultItemsPerPage, fetchNeedItems, fetchRemoteNeed, maxItemsPerPage } from "./api.js";
+import { type FolderItem, type ItemsPage, type NeedItem, type NeedStage, defaultItemsPerPage, fetchNeedItems, fetchRemoteNeed, maxItemsPerPage } from "./api.js";
 import { button, element } from "./dom.js";
-import { formatBytes, formatCount, formatDate, plural } from "./format.js";
+import { formatBytes, formatDate } from "./format.js";
+import { hasNextPage, positionText, totalText } from "./itemPages.js";
 import { requestRender } from "./renderRequest.js";
 import { type ItemListState, type ItemListTarget, appState } from "./state.js";
 
@@ -66,10 +67,6 @@ function itemRow(item: NeedItem | FolderItem): HTMLElement {
   );
 }
 
-function pageCount(total: number | null, perPage: number): number | null {
-  return total === null ? null : Math.max(1, Math.ceil(total / perPage));
-}
-
 function sizeChoice(list: ItemListState): HTMLElement {
   const select = element("select", { attributes: { id: "item-list-per-page", "aria-label": "Items per page" } });
   for (const size of pageSizes) {
@@ -85,38 +82,16 @@ function sizeChoice(list: ItemListState): HTMLElement {
   return select;
 }
 
-/**
- * A full page may be followed by another even past the count: Syncthing pages the items being fetched apart from the rest,
- * and lists an item being fetched again among the rest of a later page.
- */
-function hasNextPage(list: ItemListState, page: ItemsPage<NeedItem | FolderItem>, pages: number | null): boolean {
-  return page.items.length === list.perPage || (pages !== null && list.page < pages);
-}
-
-function positionText(list: ItemListState, pages: number | null): string {
-  if (list.loading) return "Reading…";
-  return pages !== null && list.page <= pages ? `Page ${formatCount(list.page)} of ${formatCount(pages)}` : `Page ${formatCount(list.page)}`;
-}
-
 function pager(list: ItemListState, page: ItemsPage<NeedItem | FolderItem>): HTMLElement {
-  const pages = pageCount(page.total, list.perPage);
-  const hasNext = hasNextPage(list, page, pages);
+  const hasNext = hasNextPage(list, page);
   const previous = button("Previous", () => goToPage(list, list.page - 1), "button ghost");
   previous.disabled = list.loading || list.page <= 1;
   const next = button("Next", () => goToPage(list, list.page + 1), "button ghost");
   next.disabled = list.loading || !hasNext;
-  const position = positionText(list, pages);
+  const position = positionText(list, page.total);
   const again = button("Read again", () => void load(list), "button ghost");
   again.disabled = list.loading;
   return element("div", { className: "item-pager" }, previous, element("span", { className: "muted" }, position), next, sizeChoice(list), again);
-}
-
-function totalText(list: ItemListState, page: ItemsPage<NeedItem | FolderItem>): string {
-  if (page.total === null) return "How many in all could not be read.";
-  const device = list.deviceId === null ? null : (page as RemoteNeedPage).device;
-  const total = device ? `${device.name} still needs ${plural(page.total, "item")} of this folder.` : `${plural(page.total, "item")} still to fetch.`;
-  const pages = pageCount(page.total, list.perPage);
-  return pages !== null && list.page > pages ? `${total} This page lies past that count: Syncthing lists items it is fetching again here.` : total;
 }
 
 function readingText(): string {
