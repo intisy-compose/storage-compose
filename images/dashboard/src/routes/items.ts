@@ -5,7 +5,7 @@ import { errorTotalOf, needTotalOf } from "../folderLists.js";
 import { RequestError, sendJson } from "../http.js";
 import { type LocalInstance, type RemoteInstance, type ResolvedInstance, callSyncthing, forwardRead, forwardedListTimeoutMs, resolveInstance } from "../instanceResolver.js";
 import type { Route } from "../routes.js";
-import { SharedRead } from "../sharedRead.js";
+import { KeyedSharedReads } from "../sharedRead.js";
 import { reshownForwardedError, shownSyncthingError } from "../shownSyncthingError.js";
 import { type Completion, type IndexItem, type SyncthingClient, type SyncthingDeviceConfig, type SyncthingFolderConfig, listTimeoutMs } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
@@ -261,16 +261,10 @@ const sharedReadsKept = 100;
  * @implNote A page of a folder with 900,000 items takes Syncthing seconds, so a page asked for again while it is read, or just after,
  * shares that read instead of starting another.
  */
-const sharedReads = new Map<string, SharedRead<unknown>>();
+const sharedReads = new KeyedSharedReads<unknown>(recentReadMs, sharedReadsKept);
 
 function shared<T>(key: string, read: () => Promise<T>): Promise<T> {
-  let entry = sharedReads.get(key);
-  if (!entry) {
-    entry = new SharedRead<unknown>(recentReadMs);
-    sharedReads.set(key, entry);
-    if (sharedReads.size > sharedReadsKept) sharedReads.delete(sharedReads.keys().next().value!);
-  }
-  return entry.read(read) as Promise<T>;
+  return sharedReads.read(key, read) as Promise<T>;
 }
 
 export interface ItemRouteSources {
