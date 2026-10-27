@@ -180,6 +180,10 @@ export interface CreatedFolder {
   ignores: AddedIgnores;
 }
 
+async function isFolderAt(instance: LocalInstance, folderId: string, path: string, node: NodeRoot): Promise<boolean> {
+  return (await instance.client.folders()).some((folder) => folder.id === folderId && isSamePath(folder.path, path, node));
+}
+
 /** Refuses a new folder's path outside the node's root or in another node's, without a Syncthing call. */
 export function guardNewFolderPath(instance: ResolvedInstance, path: string, nodes: NodeRoot[]): void {
   const { node } = rooted(instance);
@@ -205,8 +209,9 @@ function newFolderVersionsProblem(folder: NewFolder, versioning: Versioning | nu
  * The node's own default versioning and default ignore patterns are copied unjudged: its admin set them in the node's configuration.
  * A folder with ignore patterns is created paused and resumed once they are written, as Syncthing's own page does, so its
  * first scan already skips what they ignore; when they cannot be written it stays paused and the note says why.
+ * A lost answer counts as added once the node lists the folder with that ID at that path (`writeConfirmed`).
  */
-export async function createFolder(instance: ResolvedInstance, request: NewFolder, nodes: NodeRoot[], offered: OfferedFolder | null = null): Promise<CreatedFolder> {
+export async function createFolder(instance: ResolvedInstance, request: NewFolder, nodes: NodeRoot[], offered: OfferedFolder | null = null, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<CreatedFolder> {
   const { instance: local, node } = rooted(instance);
   const { ignores: typedIgnores, ...rest } = request;
   guardNewFolderPath(local, rest.path, nodes);
@@ -227,7 +232,7 @@ export async function createFolder(instance: ResolvedInstance, request: NewFolde
   const chosenVersioning = versioning ? { versioning: { ...asObject(defaults.versioning), ...versioning } } : {};
   const devices = withDevices(defaults.devices, offered ? [ownId, offered.offeredBy] : [ownId]);
   const config: SyncthingObject = { ...defaults, label: "", ...folder, ...chosenVersioning, ...(holdsIgnores ? { paused: true } : {}), devices };
-  await callSyncthing(local, (client) => client.request("POST", "/config/folders", config));
+  await writeConfirmed(local, (client) => client.request("POST", "/config/folders", config), () => isFolderAt(local, folder.id, folder.path, node), readBackDelaysMs);
   const startsPaused = folder.paused ?? defaults.paused === true;
   const keptPaused = holdsIgnores ? await startWithIgnores(local, folder, ignores, startsPaused) : null;
   return { instance: local, added: await settingsAfter(local, folder.id, config), folder, ignores: { lines: ignores.length, keptPaused } };
@@ -237,13 +242,13 @@ export async function createFolder(instance: ResolvedInstance, request: NewFolde
  * Adds a folder typed into the add form; on an array only with its ID typed, checked before any request.
  * @implNote An add alone can share the folder: the node's default devices may list another device.
  */
-export async function addFolder(instance: ResolvedInstance, body: unknown, nodes: NodeRoot[]): Promise<FolderAddition> {
+export async function addFolder(instance: ResolvedInstance, body: unknown, nodes: NodeRoot[], readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<FolderAddition> {
   const problem = newFolderProblem(body);
   if (problem) throw new RequestError(400, problem);
   const { confirm, ...request } = body as NewFolder;
   const confirmProblem = arrayConfirmProblem(requireLocal(instance), request.id.trim(), confirm, "add it");
   if (confirmProblem) throw new RequestError(400, confirmProblem);
-  const created = await createFolder(instance, request, nodes);
+  const created = await createFolder(instance, request, nodes, null, readBackDelaysMs);
   const { instance: local, folder, ignores } = created;
   return { added: created.added, note: { nodeId: local.nodeId, nodeName: local.name, folderId: folder.id, text: folderAddText(local.name, folder, ignores) } };
 }
@@ -610,7 +615,7 @@ export function nodeFolderRoutes(sources: NodeFolderSources = nodeFolderSources)
       pattern: /^\/api\/nodes\/([^/]+)\/folders$/,
       write: async ({ request, response, params: [nodeId] }) => {
         const instance = await node(nodeId);
-        const addition = await addFolder(instance, await readBody(request), await sources.nodeRoots());
+        const addition = await addFolder(instance, await readBody(request), await sources.nodeRoots(), sources.readBackDelaysMs);
         sendJson(response, 201, addition.added);
         return addition.note;
       },

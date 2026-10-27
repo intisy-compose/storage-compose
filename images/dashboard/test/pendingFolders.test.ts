@@ -101,6 +101,11 @@ describe("answering a folder offered to a node", () => {
   let beforeConfigRead: (read: number) => void = () => {};
   let configReads = 0;
   let url = "";
+  /** A write (`POST /rest/config/folders`) applied and then answered by a dropped connection, as a Syncthing that restarts on it. */
+  let loseAnswerOf = "";
+  /** A write dropped before it is applied, as a Syncthing that stops before the change. */
+  let dropWriteOf = "";
+  const fastReadBacks = [5, 10, 20];
 
   function reply(response: import("node:http").ServerResponse, body: unknown, status = 200): void {
     response.writeHead(status, { "Content-Type": "application/json" });
@@ -111,6 +116,9 @@ describe("answering a folder offered to a node", () => {
     const parsed = new URL(request.url ?? "/", "http://fake");
     const body = request.method === "GET" ? null : await requestBody(request);
     received.push({ method: request.method ?? "", path: `${parsed.pathname}${parsed.search}`, body });
+    const write = `${request.method} ${parsed.pathname}`;
+    if (write === dropWriteOf) return request.socket.destroy();
+    const answer = write === loseAnswerOf ? () => request.socket.destroy() : null;
     if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
     const folderMatch = parsed.pathname.match(/^\/rest\/config\/folders\/(.+)$/);
     if (folderMatch) {
@@ -134,7 +142,7 @@ describe("answering a folder offered to a node", () => {
       case "POST /rest/config/folders":
         folders = [...folders, body as Record<string, unknown>];
         delete pending[(body as { id: string }).id];
-        return reply(response, null);
+        return answer ? answer() : reply(response, null);
       case "GET /rest/config/defaults/folder":
         return reply(response, folderDefaults());
       case "GET /rest/config/defaults/ignores":
@@ -146,7 +154,7 @@ describe("answering a folder offered to a node", () => {
         return reply(response, config);
       case "PUT /rest/config":
         config = body as Record<string, unknown>;
-        return reply(response, null);
+        return answer ? answer() : reply(response, null);
       default:
         return reply(response, { error: "not faked" }, 404);
     }
@@ -188,6 +196,8 @@ describe("answering a folder offered to a node", () => {
     ignoreLines = [];
     configReads = 0;
     beforeConfigRead = () => {};
+    loseAnswerOf = "";
+    dropWriteOf = "";
   });
 
   after(() => {
@@ -223,6 +233,29 @@ describe("answering a folder offered to a node", () => {
     const created = received.find((entry) => entry.method === "POST")?.body as { type: string; versioning: Record<string, unknown> };
     assert.equal(created.type, "receiveonly");
     assert.deepEqual(created.versioning, { type: "staggered", params: { maxAge: "31536000" }, cleanupIntervalS: 3600, fsPath: "/var/syncthing/dashboard-test-a-versions", fsType: "basic" });
+  });
+
+  it("a lost answer to an accept is read back: the folder in place at its path is accepted, one missing is the 503 of a node that does not answer", async () => {
+    loseAnswerOf = "POST /rest/config/folders";
+    const result = await acceptPendingFolder(peer(), "dashboard-test-a", acceptBody(), nodes, fastReadBacks);
+    assert.equal(result.added.id, "dashboard-test-a");
+    assert.match(result.note.text, /^dashboard-test-peer: accepted folder Dashboard Test A/);
+
+    loseAnswerOf = "";
+    dropWriteOf = "POST /rest/config/folders";
+    await assert.rejects(acceptPendingFolder(peer(), "dashboard-test-b", acceptBody({ path: "/var/syncthing/dashboard-test-b" }), nodes, fastReadBacks), { status: 503, message: "dashboard-test-peer's Syncthing is not answering" });
+  });
+
+  it("a lost answer to an ignore is read back: the device's ignored folder in place is ignored, one missing is the 503 of a node that does not answer", async () => {
+    loseAnswerOf = "PUT /rest/config";
+    const result = await ignorePendingFolder(peer(), "dashboard-test-b", { offeredBy: offererId }, () => new Date("2026-10-27T12:00:00Z"), fastReadBacks);
+    assert.equal(result.ignored.alreadyIgnored, false);
+    assert.equal("text" in result.note && result.note.text, "dashboard-test-peer: ignored folder dashboard-test-b offered by dashboard-test-tw1");
+
+    config = wholeConfig();
+    loseAnswerOf = "";
+    dropWriteOf = "PUT /rest/config";
+    await assert.rejects(ignorePendingFolder(peer(), "dashboard-test-b", { offeredBy: offererId }, () => new Date(), fastReadBacks), { status: 503, message: "dashboard-test-peer's Syncthing is not answering" });
   });
 
   it("accepting on an array without the typed id is 400", async () => {

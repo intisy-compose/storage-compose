@@ -1,5 +1,5 @@
 import { RequestError } from "./http.js";
-import { type LocalInstance, callSyncthing } from "./instanceResolver.js";
+import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, writeConfirmed } from "./instanceResolver.js";
 import { SyncthingError } from "./syncthing.js";
 
 export type SyncthingConfig = Record<string, unknown>;
@@ -25,14 +25,20 @@ const changeAttempts = 2;
  * @implNote Only for what Syncthing has no narrower endpoint for (ignored devices, a device's ignored folders). Its PUT
  * has no version check, so the config is read again just before the PUT: a change in between (Syncthing or another
  * browser) starts once more from the changed config, and a second one is a 409 with `conflict` and nothing written.
+ * A lost answer counts as written once a fresh read holds the change, that is once `change` answers null for it.
  */
-export async function changeWholeConfig(instance: LocalInstance, change: (config: SyncthingConfig) => SyncthingConfig | null, conflict: string): Promise<"written" | "unchanged"> {
+export async function changeWholeConfig(
+  instance: LocalInstance,
+  change: (config: SyncthingConfig) => SyncthingConfig | null,
+  conflict: string,
+  readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs,
+): Promise<"written" | "unchanged"> {
   for (let attempt = 0; attempt < changeAttempts; attempt++) {
     const config = await readWholeConfig(instance);
     const updated = change(config);
     if (!updated) return "unchanged";
     if (JSON.stringify(await readWholeConfig(instance)) !== JSON.stringify(config)) continue;
-    await callSyncthing(instance, (client) => client.request("PUT", "/config", updated));
+    await writeConfirmed(instance, (client) => client.request("PUT", "/config", updated), async () => change(await readWholeConfig(instance)) === null, readBackDelaysMs);
     return "written";
   }
   throw new RequestError(409, conflict);

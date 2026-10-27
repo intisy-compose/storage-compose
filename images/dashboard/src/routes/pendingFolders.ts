@@ -3,7 +3,7 @@ import { type AcceptFolderBody, type AcceptFolderDefaults, type FolderOfferAnswe
 import { versioningWords } from "../api/versioningText.js";
 import { folderSettings, offersOf } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, arrayConfirmProblem, callSyncthing, isArrayInstance, requireLocal } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, arrayConfirmProblem, callSyncthing, defaultReadBackDelaysMs, isArrayInstance, requireLocal } from "../instanceResolver.js";
 import { type NodeRoot, folderPathProblem, pathUnderRoot } from "../pathGuard.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import type { SyncthingFolderSettings } from "../syncthing.js";
@@ -115,7 +115,7 @@ function acceptText(nodeName: string, offer: PendingFolderOffer, path: string, r
  * @implNote Accepting makes Syncthing create the directory and start syncing into it, so every refusal that needs no
  * Syncthing call (the body, the array guard, the path guard) comes before the first request.
  */
-export async function acceptPendingFolder(instance: ResolvedInstance, folderId: string, body: unknown, nodes: NodeRoot[]): Promise<FolderAcceptance> {
+export async function acceptPendingFolder(instance: ResolvedInstance, folderId: string, body: unknown, nodes: NodeRoot[], readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<FolderAcceptance> {
   const local = requireLocal(instance);
   const problem = acceptProblem(body);
   if (problem) throw new RequestError(400, problem);
@@ -128,7 +128,7 @@ export async function acceptPendingFolder(instance: ResolvedInstance, folderId: 
   const wrongType = typeProblem(offer, request.type);
   if (wrongType) throw new RequestError(400, wrongType);
   if (folders.some((folder) => folder.id === folderId)) throw new RequestError(409, `${local.name} already has folder ${folderId}; share it with ${offer.offeredByName} from the folder's settings`);
-  const created = await createFolder(local, { id: folderId, label: offer.label, path: request.path, type: request.type }, nodes, { offeredBy, versioning: request.versioning });
+  const created = await createFolder(local, { id: folderId, label: offer.label, path: request.path, type: request.type }, nodes, { offeredBy, versioning: request.versioning }, readBackDelaysMs);
   const text = acceptText(local.name, offer, created.folder.path, request, created.ignores.lines, created.ignores.keptPaused);
   return { added: created.added, note: { nodeId: local.nodeId, nodeName: local.name, folderId, text } };
 }
@@ -163,14 +163,14 @@ export interface FolderOfferIgnore {
  * @implNote Syncthing keeps ignored folders in the device's entry and has no endpoint for them alone, so the whole
  * configuration is written back as read, every other field and secret included, and never returned.
  */
-export async function ignorePendingFolder(instance: ResolvedInstance, folderId: string, body: unknown, now: () => Date = () => new Date()): Promise<FolderOfferIgnore> {
+export async function ignorePendingFolder(instance: ResolvedInstance, folderId: string, body: unknown, now: () => Date = () => new Date(), readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<FolderOfferIgnore> {
   const local = requireLocal(instance);
   const { offeredBy } = offerAnswerBody(body);
   const confirmProblem = arrayConfirmProblem(local, folderId, asObject(body).confirm, "ignore it");
   if (confirmProblem) throw new RequestError(400, confirmProblem);
   const offer = await pendingOffer(local, folderId, offeredBy);
   const conflict = `${local.name}'s configuration changed twice while ${offerLabel(offer)} from ${offer.offeredByName} was being ignored; nothing was written, try again`;
-  const outcome = await changeWholeConfig(local, (config) => withIgnoredFolder(config, offer, now(), local.name), conflict);
+  const outcome = await changeWholeConfig(local, (config) => withIgnoredFolder(config, offer, now(), local.name), conflict, readBackDelaysMs);
   if (outcome === "unchanged") return { ignored: { ...offer, alreadyIgnored: true }, note: { nothingWritten: true } };
   return { ignored: { ...offer, alreadyIgnored: false }, note: { nodeId: local.nodeId, nodeName: local.name, folderId, text: `${local.name}: ignored folder ${offerLabel(offer)} offered by ${offer.offeredByName}` } };
 }
@@ -208,7 +208,7 @@ export function pendingFolderRoutes(sources: NodeFolderSources = nodeFolderSourc
       pattern: offerPattern("accept"),
       write: async ({ request, response, params: [nodeId, folderSegment] }) => {
         const { instance, folderId } = await target(nodeId, folderSegment);
-        const acceptance = await acceptPendingFolder(instance, folderId, await readBody(request), await sources.nodeRoots());
+        const acceptance = await acceptPendingFolder(instance, folderId, await readBody(request), await sources.nodeRoots(), sources.readBackDelaysMs);
         sendJson(response, 201, acceptance.added);
         return acceptance.note;
       },
@@ -218,7 +218,7 @@ export function pendingFolderRoutes(sources: NodeFolderSources = nodeFolderSourc
       pattern: offerPattern("ignore"),
       write: async ({ request, response, params: [nodeId, folderSegment] }) => {
         const { instance, folderId } = await target(nodeId, folderSegment);
-        const ignore = await ignorePendingFolder(instance, folderId, await readBody(request));
+        const ignore = await ignorePendingFolder(instance, folderId, await readBody(request), undefined, sources.readBackDelaysMs);
         sendJson(response, 200, ignore.ignored);
         return ignore.note;
       },

@@ -94,6 +94,9 @@ describe("adding a folder to a node", () => {
   let silentAfterWrite = false;
   /** Drops the folder PATCH without applying it, as a Syncthing that stops before the change. */
   let dropWrite = false;
+  /** Applies the next new folder and then drops its connection; `dropAdd` drops it without applying it. */
+  let loseAddAnswer = false;
+  let dropAdd = false;
   let wrote = false;
   /** Drops this many requests once a folder PATCH was applied, as a Syncthing that answers again after a restart. */
   let dropAfterWrite = 0;
@@ -144,8 +147,9 @@ describe("adding a folder to a node", () => {
       return folder ? reply(response, folder) : reply(response, { error: "no such folder" }, 404);
     }
     if (request.method === "POST" && url.pathname === "/rest/config/folders") {
+      if (dropAdd) return request.socket.destroy();
       folders = [...folders, body as Record<string, unknown>];
-      return reply(response, null);
+      return loseAddAnswer ? request.socket.destroy() : reply(response, null);
     }
     if (request.method === "PATCH" && folderPath) {
       if (dropWrite) return request.socket.destroy();
@@ -189,6 +193,8 @@ describe("adding a folder to a node", () => {
     loseWriteAnswer = false;
     silentAfterWrite = false;
     dropWrite = false;
+    loseAddAnswer = false;
+    dropAdd = false;
     wrote = false;
     dropAfterWrite = 0;
     storedPath = (path) => path;
@@ -322,6 +328,17 @@ describe("adding a folder to a node", () => {
     assert.equal(addition.added.paused, true);
     assert.deepEqual(writes(), ["POST /rest/config/folders", "POST /rest/db/ignores?folder=dashboard-test-a"]);
     assert.match(addition.note.text, /; 1 line of ignore patterns; kept paused, as its ignore patterns were not saved: POST \/db\/ignores\?folder=dashboard-test-a: HTTP 500/);
+  });
+
+  it("a lost answer to an add is read back: the folder in place at its path is added, one missing is the 503 of a node that does not answer", async () => {
+    loseAddAnswer = true;
+    const addition = await addFolder(peer(), { id: "dashboard-test-a", path: "/var/syncthing/data/dashboard-test-a" }, roots, fastReadBacks);
+    assert.equal(addition.added.id, "dashboard-test-a");
+    assert.equal(addition.note.text, "dashboard-test-peer: added folder dashboard-test-a at /var/syncthing/data/dashboard-test-a");
+
+    loseAddAnswer = false;
+    dropAdd = true;
+    await assert.rejects(addFolder(peer(), { id: "dashboard-test-b", path: "/var/syncthing/data/dashboard-test-b" }, roots, fastReadBacks), { status: 503, message: "dashboard-test-peer's Syncthing is not answering" });
   });
 
   it("an ID or a path the node already has is 409 and nothing is added", async () => {
