@@ -1018,6 +1018,55 @@ export interface LocalChangesDone {
   text: string;
 }
 
+/** One kept version of a file, as Syncthing lists it: when it was replaced (`versionTime`, also its name in a restore), its own change time and size. */
+export interface FileVersion {
+  versionTime: string;
+  modTime: string;
+  size: number;
+}
+
+/** A directory of the versions tree, with how many files below it have a version within the date filter. */
+export interface VersionsDirectory {
+  path: string;
+  files: number;
+}
+
+/**
+ * `GET /api/nodes/<nodeId>/folders/<folderId>/versions?prefix=&from=&to=&page=&perPage=`: one level of the folder's versions tree below `prefix`,
+ * directories first, then files with their versions newest first, only versions whose `versionTime` lies within `from` and `to` (instants, either may be absent).
+ * `enabled` is false, with nothing listed, when the folder's versioning is off; `total` counts the entries of this level.
+ */
+export interface VersionsPage {
+  enabled: boolean;
+  versioning: Versioning;
+  folderType: FolderType;
+  prefix: string;
+  directories: VersionsDirectory[];
+  files: Record<string, FileVersion[]>;
+  page: number;
+  perPage: number;
+  total: number;
+  /** When the node's Syncthing listed its versions; the list is read once and shared for a minute while the tree is browsed. */
+  readAt: string | null;
+}
+
+/**
+ * `POST /api/nodes/<nodeId>/folders/<folderId>/versions/restore`: each path (as listed) to the `versionTime` of the version to put back.
+ * The current file is replaced; on an array `confirm` is the folder ID typed.
+ */
+export interface RestoreVersionsBody {
+  files: Record<string, string>;
+  confirm?: string;
+}
+
+/** What a restore did: the paths put back, and Syncthing's error for each one it could not restore. */
+export interface RestoredVersions {
+  folderId: string;
+  restored: string[];
+  errors: Record<string, string>;
+  text: string;
+}
+
 /** `GET /api/folders/<folderId>`; `settings` is keyed by node ID. */
 export interface FolderDetailResponse {
   summary: FolderSummary;

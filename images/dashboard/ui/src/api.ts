@@ -99,22 +99,27 @@ export type {
   SyncthingListener,
   TreeEntry,
   TreeListing,
+  FileVersion,
+  RestoredVersions,
+  RestoreVersionsBody,
   Versioning,
   VersioningType,
+  VersionsDirectory,
+  VersionsPage,
   Warning,
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
 import type { LocalChangesAction } from "../../src/api/localChangesText.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, ConflictsPage, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, ConflictsPage, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, RestoredVersions, RestoreVersionsBody, TreeListing, VersionsPage } from "../../src/api/types.js";
 
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
 export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
 export { ignoreLinesOf, ignoreLinesProblem } from "../../src/api/ignorePatterns.js";
-export { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, isKeptBySyncthing, offeredVersioningTypes, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versioningWords, versionsPathLabel } from "../../src/api/versioningText.js";
+export { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, isKeptBySyncthing, offeredVersioningTypes, restoreConsequences, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versioningWords, versionsPathLabel } from "../../src/api/versioningText.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 export { type LocalChangesAction, discardedCount, localChangesFolderType, overrideLossText, revertLossText } from "../../src/api/localChangesText.js";
 
@@ -398,6 +403,32 @@ export function fetchConflicts(nodeId: string, folderId: string, page: number, p
 /** One page of what `deviceId` still needs of the node's folder. */
 export function fetchRemoteNeed(nodeId: string, folderId: string, deviceId: string, page: number, perPage: number): Promise<ReadResult<RemoteNeedPage>> {
   return readJson(`${folderApiPath(nodeId, folderId, "/remote-need")}?${pageQuery(page, perPage, { device: deviceId })}`);
+}
+
+/** What the versions tree asks for: the directory `prefix`, and the versions kept between `from` and `to` (instants, empty for no bound). */
+export interface VersionsQuery {
+  prefix: string;
+  from: string;
+  to: string;
+  page: number;
+  perPage: number;
+  /** Lists the versions again instead of the list read in the last minute. */
+  reread: boolean;
+}
+
+/** One level of the folder's versions tree on the node, or `enabled: false` when its versioning is off. */
+export function fetchVersions(nodeId: string, folderId: string, query: VersionsQuery): Promise<ReadResult<VersionsPage>> {
+  const extra: Record<string, string> = { prefix: query.prefix };
+  if (query.from) extra.from = query.from;
+  if (query.to) extra.to = query.to;
+  if (query.reread) extra.reread = "true";
+  return readJson(`${folderApiPath(nodeId, folderId, "/versions")}?${pageQuery(query.page, query.perPage, extra)}`);
+}
+
+/** Replaces each named file with its chosen version; `confirm` is the folder ID, typed on an array. */
+export function restoreVersions(nodeId: string, folderId: string, files: Record<string, string>, confirm: string): Promise<SaveResult<RestoredVersions>> {
+  const body: RestoreVersionsBody = confirm ? { files, confirm } : { files };
+  return sendWrite(folderApiPath(nodeId, folderId, "/versions/restore"), "POST", body);
 }
 
 export function fetchTree(node: string, path: string, page: number): Promise<TreeListing> {

@@ -21,6 +21,7 @@ import { optionsRoutes } from "./routes/options.js";
 import { pendingRoutes } from "./routes/pending.js";
 import { pendingFolderRoutes } from "./routes/pendingFolders.js";
 import { treeRoutes } from "./routes/tree.js";
+import { versionRoutes } from "./routes/versions.js";
 import { arrayStatusDirectory, clusterArrayId, dashboardHosts, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
 import { SyncthingError, SyncthingUnavailable } from "./syncthing.js";
 
@@ -215,6 +216,7 @@ export const dashboardRoutes: AnyRoute[] = [
   ...folderIgnoreRoutes(),
   ...itemRoutes(),
   ...localChangesRoutes(),
+  ...versionRoutes(),
   ...folderActionRoutes(),
   { pattern: hostWritePattern(/^\/api\/join$/), handle: async () => joinElsewhere() },
 ];

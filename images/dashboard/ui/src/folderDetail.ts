@@ -8,6 +8,7 @@ import { icon } from "./icons.js";
 import { outOfSyncCount, outOfSyncText } from "./outOfSync.js";
 import { isItemListOpen, itemListPanel, toggleItemList } from "./itemList.js";
 import { conflictCopies } from "./itemPages.js";
+import { isVersionsOpen, toggleVersions, versionsPanel } from "./versionsPanel.js";
 import { type ItemListKind, type ItemListTarget, appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
 
 function onOff(value: boolean): string {
@@ -72,6 +73,15 @@ function conflictsValue(copy: FolderCopy): HTMLElement | string {
   return listToggle(copy, "conflicts", conflictCopies(count, copy.conflictsMore === true), `List the conflict copies on ${copy.nodeName}`, "link-button tone-text-warn");
 }
 
+/** Opens the browser of the copy's kept versions, or closes it when it is open. */
+function versionsValue(copy: FolderCopy): HTMLElement {
+  const isOpen = isVersionsOpen(copy);
+  const control = button(isOpen ? "Close the versions" : copy.local ? "Browse and restore" : "Browse", () => toggleVersions(copy), "link-button");
+  control.title = isOpen ? "Close the versions" : `List the versions ${copy.nodeName} keeps of this folder's files`;
+  control.setAttribute("aria-expanded", String(isOpen));
+  return control;
+}
+
 function lastFileText(copy: FolderCopy): string {
   if (!copy.lastFile) return "none yet";
   return `${copy.lastFile.filename}${copy.lastFile.deleted ? " (deleted)" : ""}, ${formatDate(copy.lastFile.at)}`;
@@ -88,7 +98,7 @@ function copyCard(copy: FolderCopy): HTMLElement {
     ["Failed items", failedValue(copy)],
   ];
   if (copy.type === "receiveonly") rows.push(["Changed here", changedHereValue(copy)]);
-  rows.push(["Conflicts", conflictsValue(copy)]);
+  rows.push(["Conflicts", conflictsValue(copy)], ["Versions", versionsValue(copy)]);
   rows.push(
     ["Last scan", formatDate(copy.lastScan)],
     ["Last file", lastFileText(copy)],
@@ -108,6 +118,7 @@ function copyCard(copy: FolderCopy): HTMLElement {
     listPanel(copy, "failed", `Failed items on ${copy.nodeName}`),
     listPanel(copy, "local-changed", `Changed on ${copy.nodeName}`),
     listPanel(copy, "conflicts", `Conflict copies on ${copy.nodeName}`),
+    versionsPanel(copy),
   );
 }
 

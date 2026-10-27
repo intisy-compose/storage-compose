@@ -115,6 +115,13 @@ export function conflictSweepSettings(environment: Record<string, string | undef
 
 export const conflictSettings = conflictSweepSettings(process.env);
 
+/** VERSIONS_LIST_MAX_MB from config.env: how much of a folder's versions list, which Syncthing answers whole, the dashboard reads before it refuses to list them. */
+export function versionsListMaxBytes(environment: Record<string, string | undefined>): number {
+  return Math.round(positiveNumber(environment.VERSIONS_LIST_MAX_MB, 16) * 1_000_000);
+}
+
+export const versionsSettings = { listMaxBytes: versionsListMaxBytes(process.env) };
+
 /** EXPLORER_NEED_LIMIT from config.env: above this many outstanding or failed items a folder's list is not placed in the tree. */
 export function explorerNeedLimit(environment: Record<string, string | undefined>): number {
   return Math.max(1, Math.floor(positiveNumber(environment.EXPLORER_NEED_LIMIT, 20_000)));

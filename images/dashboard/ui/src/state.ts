@@ -1,5 +1,5 @@
 import { type ConflictFile, type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type ReadResult, defaultItemsPerPage } from "./api.js";
-import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, FileVersion, VersionsPage, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -184,6 +184,28 @@ export interface ItemListState extends ItemListTarget {
   answer: ReadResult<ItemsPage<NeedItem | FolderItem | FailedItem | ConflictFile>> | null;
 }
 
+/** The open versions browser of one folder copy: where in the tree it is, the date filter, the versions chosen and the restore's confirmation. */
+export interface VersionsState {
+  nodeId: string;
+  folderId: string;
+  /** The directory shown, `/` separated, empty for the folder's root. */
+  prefix: string;
+  page: number;
+  perPage: number;
+  /** The date filter as its fields hold it, `YYYY-MM-DD`, empty for no bound. */
+  from: string;
+  to: string;
+  loading: boolean;
+  answer: ReadResult<VersionsPage> | null;
+  /** Each file chosen for a restore, with the version chosen for it. */
+  chosen: Map<string, FileVersion>;
+  confirmOpen: boolean;
+  /** The folder ID as typed on an array. */
+  confirm: string;
+  busy: boolean;
+  result: Notice | null;
+}
+
 /** The Folders page's file explorer: which node's view, which directory, and what the person opened in it. */
 export interface ExplorerState {
   node: string;
@@ -238,6 +260,7 @@ export interface AppState {
   /** By `<folder id>/<node id>`. */
   folderActions: Map<string, FolderActionState>;
   itemList: ItemListState | null;
+  versions: VersionsState | null;
   /** How many items a page of an item list holds; the person can change it in the list. */
   itemsPerPage: number;
   activity: ActivityResponse | null;
@@ -285,6 +308,7 @@ export const appState: AppState = {
   foldedSettings: new Set(),
   folderActions: new Map(),
   itemList: null,
+  versions: null,
   itemsPerPage: defaultItemsPerPage,
   activity: null,
   activityError: null,

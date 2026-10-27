@@ -748,3 +748,12 @@ a.activity-entry:hover { background: var(--selection); }
 .item-stage { grid-column: 2; grid-row: 1 / span 2; }
 .item-stage.stage-progress { color: var(--accent); }
 .item-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+
+/* Versions */
+.versions-filter { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; font-size: 13px; }
+.versions-date { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.versions-date span { color: var(--text-muted); font-size: 12px; }
+.versions-crumbs { overflow-wrap: anywhere; }
+.item-row.versions-file select { min-width: 0; max-width: 100%; }
+.item-row.versions-directory .link-button { text-align: left; }
+.versions-chosen { margin: 0 0 8px; padding-left: 18px; font-size: 13px; overflow-wrap: anywhere; }

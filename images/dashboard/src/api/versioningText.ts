@@ -1,4 +1,4 @@
-import type { Versioning, VersioningType } from "./types.js";
+import type { FolderType, Versioning, VersioningType } from "./types.js";
 
 export type VersioningParam = "cleanoutDays" | "keep" | "maxAge" | "command";
 
@@ -67,4 +67,24 @@ export function versioningWords(versioning: Versioning): string {
     ? [versioning.cleanupIntervalS ? `cleanup every ${versioning.cleanupIntervalS} s` : "no cleanup", `in ${versioning.fsPath || ".stversions inside the folder"}`]
     : [];
   return [versioningTypeTexts[versioning.type], ...paramWords(versioning), ...kept].join(", ");
+}
+
+/**
+ * What a restore does besides putting the chosen version back, for this folder's versioning and type: how Syncthing keeps the file it
+ * replaces, and where the restored file goes.
+ * @implNote Syncthing restores only from a versioning it keeps itself, and moves the current file into the versions before putting the
+ * old one in its place; a trash can keeps one version of a file, so the current file takes the restored one's place there.
+ */
+export function restoreConsequences(nodeName: string, folderName: string, versioning: Versioning, folderType: FolderType): string[] {
+  const on = `Versioning is on for ${folderName} on ${nodeName} (${versioningWords(versioning)})`;
+  const kept = !versioning.type
+    ? `Versioning is off for ${folderName} on ${nodeName}, so it keeps no versions to restore.`
+    : versioning.type === "trashcan"
+      ? `${on}, so Syncthing first moves each current file into the trash can, which keeps only the last version of a file. A file with no current copy is simply put back.`
+      : `${on}, so Syncthing first moves each current file into the versions, kept as that versioning keeps versions. A file with no current copy is simply put back.`;
+  const spread =
+    folderType === "receiveonly"
+      ? `${folderName} is receive only on ${nodeName}, so a restored file stays a change made here, which a revert would undo.`
+      : `A restored file is a change on ${nodeName}: Syncthing sends it to every device ${folderName} is shared with, replacing their copy.`;
+  return [kept, spread];
 }

@@ -3,7 +3,7 @@ import { deviceDisplayName, listedAddresses } from "./api/deviceText.js";
 import { connectionKind } from "./connectionKind.js";
 import { needTotalOf } from "./folderLists.js";
 import { effectiveSharing, sharedDevices } from "./syncthingConfig.js";
-import type { FolderFile, FolderPeer, FolderType, NodeFolder, NodeSync, Peer, RemoteState, SyncthingDevice, SyncthingInstance } from "./api/types.js";
+import type { FileVersion, FolderFile, FolderPeer, FolderType, NodeFolder, NodeSync, Peer, RemoteState, SyncthingDevice, SyncthingInstance } from "./api/types.js";
 
 export interface SyncthingEndpoint {
   url: string;
@@ -209,6 +209,41 @@ export class SyncthingError extends Error {}
 /** The instance did not answer at all: refused, unreachable or past the timeout. */
 export class SyncthingUnavailable extends SyncthingError {}
 
+/** An answer longer than its caller lets the dashboard read; the read stops there. */
+export class AnswerTooLarge extends SyncthingError {
+  constructor(
+    what: string,
+    readonly maxBytes: number,
+  ) {
+    super(`${what}: the answer passed ${maxBytes} bytes`);
+  }
+}
+
+async function boundedText(response: Response, maxBytes: number, what: string): Promise<string> {
+  if (Number(response.headers.get("content-length")) > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw new AnswerTooLarge(what, maxBytes);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+      length += chunk.value.byteLength;
+      if (length > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new AnswerTooLarge(what, maxBytes);
+      }
+      chunks.push(chunk.value);
+    }
+  } catch (error) {
+    if (error instanceof AnswerTooLarge) throw error;
+    throw new SyncthingUnavailable(`${what}: ${(error as Error).message}`);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 export class SyncthingClient {
   constructor(
     readonly endpoint: SyncthingEndpoint,
@@ -334,6 +369,23 @@ export class SyncthingClient {
   folderCompletion(folderId: string, deviceId: string): Promise<Completion> {
     const query = new URLSearchParams({ folder: folderId, device: deviceId });
     return this.request("GET", `/db/completion?${query.toString()}`, undefined, listTimeoutMs);
+  }
+
+  /**
+   * Every kept version of the folder's files by path, `/` separated.
+   * @implNote Syncthing walks the whole versions path for this and does not page it, so the answer is read only up to `maxBytes`.
+   */
+  async folderVersions(folderId: string, maxBytes: number): Promise<Record<string, FileVersion[]>> {
+    const path = `/folder/versions?folder=${encodeURIComponent(folderId)}`;
+    const response = await this.raw("GET", `/rest${path}`, listTimeoutMs);
+    const text = await boundedText(response, maxBytes, `GET ${path}`);
+    if (!response.ok) throw new SyncthingError(`GET ${path}: HTTP ${response.status} ${text}`);
+    return (text ? JSON.parse(text) : null) ?? {};
+  }
+
+  /** Puts back the version of each path named by its `versionTime`; Syncthing answers the error of each path it could not restore. */
+  restoreVersions(folderId: string, files: Record<string, string>): Promise<Record<string, string>> {
+    return this.request<Record<string, string> | null>("POST", `/folder/versions?folder=${encodeURIComponent(folderId)}`, files, listTimeoutMs).then((errors) => errors ?? {});
   }
 
   /** Shares the folder with the device unencrypted, as a folder edit's sharing does; false when the instance has no such folder. */
