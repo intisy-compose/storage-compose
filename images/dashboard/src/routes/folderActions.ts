@@ -108,8 +108,6 @@ export function folderRemovalText(nodeName: string, folder: Pick<Folder, "id" | 
   return `${nodeName}: removed folder ${named} from Syncthing; your files stay on disk at ${folder.path}; Syncthing removes only its own .stfolder marker`;
 }
 
-
-
 export interface FolderRemoval {
   removed: RemovedFolder;
   note: WriteNote;
