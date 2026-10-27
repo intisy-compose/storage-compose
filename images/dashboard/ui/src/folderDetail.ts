@@ -1,10 +1,11 @@
 import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type PendingFolderOffer, deviceDisplayName, folderTypeTexts, versioningWords } from "./api.js";
-import { element, keyValueList, section } from "./dom.js";
+import { button, element, keyValueList, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, formatPercent, normaliseCompletion, plural } from "./format.js";
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
 import { folderActions, orphanedActionResults } from "./folderActions.js";
 import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./folderCondition.js";
 import { icon } from "./icons.js";
+import { isItemListOpen, itemListPanel, toggleItemList } from "./itemList.js";
 import { appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
 
 function onOff(value: boolean): string {
@@ -30,6 +31,23 @@ function outOfSyncText(copy: FolderCopy): string {
   return `${plural(copy.needItems, "item")}, ${formatBytes(copy.needBytes)} (${formatPercent(normaliseCompletion(copy.completion))} done)`;
 }
 
+/** The count opens the list of what the copy's node still has to fetch. */
+function outOfSyncValue(copy: FolderCopy): HTMLElement | string {
+  const text = outOfSyncText(copy);
+  if (!copy.needItems) return text;
+  const target = { nodeId: copy.nodeId, folderId: copy.id, deviceId: null };
+  const control = button(text, () => toggleItemList(target), "link-button");
+  control.title = isItemListOpen(target) ? "Close the list" : `List what ${copy.nodeName} still has to fetch`;
+  control.setAttribute("aria-expanded", String(isItemListOpen(target)));
+  return control;
+}
+
+function needPanel(copy: FolderCopy): HTMLElement | null {
+  const list = appState.itemList;
+  if (!list || !isItemListOpen({ nodeId: copy.nodeId, folderId: copy.id, deviceId: null })) return null;
+  return itemListPanel(list, `What ${copy.nodeName} still has to fetch`);
+}
+
 function lastFileText(copy: FolderCopy): string {
   if (!copy.lastFile) return "none yet";
   return `${copy.lastFile.filename}${copy.lastFile.deleted ? " (deleted)" : ""}, ${formatDate(copy.lastFile.at)}`;
@@ -42,7 +60,7 @@ function copyCard(copy: FolderCopy): HTMLElement {
     ["Type", folderTypeTexts[copy.type] ?? copy.type],
     ["State", element("span", { className: `tone-text-${condition.tone}` }, condition.label)],
     ["Global", itemsText(copy)],
-    ["Out of sync", outOfSyncText(copy)],
+    ["Out of sync", outOfSyncValue(copy)],
     ["Failed items", copy.errors ? element("span", { className: "tone-text-bad" }, plural(copy.errors, "item")) : "none"],
   ];
   if (copy.type === "receiveonly") rows.push(["Changed here", plural(copy.localChanged, "item")]);
@@ -61,6 +79,7 @@ function copyCard(copy: FolderCopy): HTMLElement {
       copy.local ? null : element("small", {}, ` on ${copy.host}`),
     ),
     keyValueList(rows),
+    needPanel(copy),
   );
 }
 

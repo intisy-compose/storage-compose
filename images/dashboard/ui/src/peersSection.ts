@@ -1,4 +1,5 @@
 import { type DeviceSettings, type NodesResponse, type Peer, type RemoteState, type SaveResult, type StorageNode, connectionKindText, deviceDisplayName, pauseDevice, pauseNode } from "./api.js";
+import { closeItemList, isItemListOpen, itemListPanel, openItemList } from "./itemList.js";
 import { button, element, section } from "./dom.js";
 import { formatAge, formatPercent, formatRate, normaliseCompletion } from "./format.js";
 import { requestRender } from "./renderRequest.js";
@@ -37,13 +38,40 @@ function completionTone(peer: Peer): string {
   return peer.completion >= 100 ? "ok" : "accent";
 }
 
+/** A node whose Syncthing answers with folders can list what each of its devices still needs. */
+function canListNeed(node: StorageNode): boolean {
+  return node.syncthing !== null && node.folders.length > 0;
+}
+
+/** The folder a device's need opens on: the first the node shares with it, else the node's first. */
+function firstFolderOf(node: StorageNode, peer: Peer): string {
+  return node.folders.find((folder) => peer.folders.includes(folder.id))?.id ?? node.folders[0].id;
+}
+
+function isNeedOpenFor(node: StorageNode, peer: Peer): boolean {
+  const list = appState.itemList;
+  return list !== null && list.nodeId === node.id && list.deviceId === peer.deviceId;
+}
+
+/** The completion opens what the device still needs; it sits beside the row, as a local node's row is a link to the device's form. */
+function completionButton(node: StorageNode, peer: Peer, displayName: string): HTMLButtonElement {
+  const isOpen = isNeedOpenFor(node, peer);
+  const open = () => openItemList({ nodeId: node.id, folderId: firstFolderOf(node, peer), deviceId: peer.deviceId });
+  const control = button(completionText(peer) || "items", isOpen ? closeItemList : open, `link-button peer-completion tone-text-${completionTone(peer)}`);
+  control.title = isOpen ? "Close the list" : `List what ${displayName} still needs of ${node.name}'s folders`;
+  control.setAttribute("aria-expanded", String(isOpen));
+  return control;
+}
+
 /** A local node's row opens the device's form; another host's node is edited on its own dashboard. */
 function peerRow(node: StorageNode, peer: Peer, displayName: string): HTMLElement {
   const note = peer.paused ? "paused" : remoteStateText[peer.remoteState];
-  const link = node.local ? { className: "peer-row peer-link", title: `Edit ${displayName}`, attributes: { href: deviceFormLocation(node.id, peer.deviceId) } } : null;
+  const completionBeside = canListNeed(node);
+  const rowClass = completionBeside ? "peer-row completion-beside" : "peer-row";
+  const link = node.local ? { className: `${rowClass} peer-link`, title: `Edit ${displayName}`, attributes: { href: deviceFormLocation(node.id, peer.deviceId) } } : null;
   return element(
     link ? "a" : "div",
-    link ?? { className: "peer-row", title: peer.deviceId },
+    link ?? { className: rowClass, title: peer.deviceId },
     element("span", { className: `dot tone-${peerTone(peer)}`, title: peer.connected ? "connected" : "not connected" }),
     element(
       "span",
@@ -53,7 +81,7 @@ function peerRow(node: StorageNode, peer: Peer, displayName: string): HTMLElemen
       note ? element("small", { className: "tone-text-warn" }, note) : null,
     ),
     element("span", { className: "peer-rates" }, peer.connected ? `↓ ${formatRate(peer.inRate)}  ↑ ${formatRate(peer.outRate)}` : ""),
-    element("span", { className: `peer-completion tone-text-${completionTone(peer)}` }, completionText(peer)),
+    completionBeside ? null : element("span", { className: `peer-completion tone-text-${completionTone(peer)}` }, completionText(peer)),
   );
 }
 
@@ -99,10 +127,33 @@ function pauseButton(node: StorageNode, peer: Peer, displayName: string): HTMLBu
   return control;
 }
 
-/** A local node's row carries its pause, beside the link to the device's form rather than inside it. */
+/** A local node's row carries its pause, and a row that can list the device's need its completion, beside the row rather than inside it. */
 function peerItem(node: StorageNode, peer: Peer, displayName: string): HTMLElement {
   const row = peerRow(node, peer, displayName);
-  return node.local ? element("div", { className: "peer-item" }, row, pauseButton(node, peer, displayName)) : row;
+  const beside = [canListNeed(node) ? completionButton(node, peer, displayName) : null, node.local ? pauseButton(node, peer, displayName) : null].filter((control) => control !== null);
+  return beside.length ? element("div", { className: "peer-item" }, row, ...beside) : row;
+}
+
+function folderChoice(node: StorageNode, peer: Peer | undefined, folderId: string, deviceId: string): HTMLSelectElement {
+  const select = element("select", { attributes: { id: "remote-need-folder", "aria-label": "Folder" } });
+  for (const folder of node.folders) {
+    const shared = peer?.folders.includes(folder.id) ?? false;
+    const option = element("option", { attributes: { value: folder.id } }, `${folder.label || folder.id}${shared ? "" : ", not shared"}`);
+    option.selected = option.defaultSelected = folder.id === folderId;
+    select.append(option);
+  }
+  select.addEventListener("change", () => openItemList({ nodeId: node.id, folderId: select.value, deviceId }));
+  return select;
+}
+
+/** What the device whose completion was opened still needs of one of the node's folders, the folder chosen above the list. */
+function remoteNeedPanel(response: NodesResponse, node: StorageNode): HTMLElement | null {
+  const list = appState.itemList;
+  if (!list || list.nodeId !== node.id || list.deviceId === null || !isItemListOpen(list)) return null;
+  const peer = node.peers.find((candidate) => candidate.deviceId === list.deviceId);
+  const name = peer ? nameOf(response, peer) : deviceDisplayName(null, list.deviceId);
+  const choice = element("label", { className: "item-list-choice" }, "Folder ", folderChoice(node, peer, list.folderId, list.deviceId));
+  return itemListPanel(list, `What ${name} still needs of ${node.name}`, choice);
 }
 
 function nodePauseButton(node: StorageNode, paused: boolean): HTMLButtonElement {
@@ -139,6 +190,7 @@ export function peersSection(response: NodesResponse, node: StorageNode): HTMLEl
   return section(
     `Devices (${node.peers.length})`,
     node.peers.length ? element("div", { className: "peer-list" }, ...node.peers.map((peer) => peerItem(node, peer, nameOf(response, peer)))) : null,
+    remoteNeedPanel(response, node),
     actions.length ? element("div", { className: "button-row" }, ...actions) : null,
   );
 }

@@ -921,6 +921,42 @@ export interface FolderPathCheck {
 }
 
 /** `GET /api/folders/<folderId>`; `settings` is keyed by node ID. */
+/** One item of a folder's index; `modifiedBy` names the device that last changed it, null when Syncthing does not say. */
+export interface FolderItem {
+  name: string;
+  size: number;
+  modified: string;
+  deleted: boolean;
+  modifiedBy: string | null;
+}
+
+/** Where an outstanding item stands in Syncthing's pull: being fetched, next in line, or waiting behind those. */
+export type NeedStage = "progress" | "queued" | "rest";
+
+export interface NeedItem extends FolderItem {
+  stage: NeedStage;
+}
+
+/** What a page of an item list holds unless the person asks for another size, and the most it may hold: Syncthing walks the whole list for each page. */
+export const defaultItemsPerPage = 50;
+export const maxItemsPerPage = 100;
+
+/**
+ * One page of an item list; `total` is the count of the whole list, null when it could not be read.
+ * `GET /api/nodes/<nodeId>/folders/<folderId>/need?page=&perPage=` answers `ItemsPage<NeedItem>`: what the node still has to fetch.
+ */
+export interface ItemsPage<T> {
+  items: T[];
+  page: number;
+  perPage: number;
+  total: number | null;
+}
+
+/** `GET /api/nodes/<nodeId>/folders/<folderId>/remote-need?device=&page=&perPage=`: what the device still needs of the node's folder. */
+export interface RemoteNeedPage extends ItemsPage<FolderItem> {
+  device: FolderPeer;
+}
+
 export interface FolderDetailResponse {
   summary: FolderSummary;
   settings: Record<string, FolderSettings>;

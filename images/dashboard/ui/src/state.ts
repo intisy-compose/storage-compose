@@ -1,3 +1,4 @@
+import { type FolderItem, type ItemsPage, type NeedItem, type ReadResult, defaultItemsPerPage } from "./api.js";
 import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
@@ -156,6 +157,21 @@ export interface FolderActionState {
   result: Notice | null;
 }
 
+/** Which item list is open: what a node still has to fetch of a folder, or with `deviceId` what that device still needs of it. */
+export interface ItemListTarget {
+  nodeId: string;
+  folderId: string;
+  deviceId: string | null;
+}
+
+/** The one open item list and the page it shows; it keeps its last answer until the person pages or reads it again. */
+export interface ItemListState extends ItemListTarget {
+  page: number;
+  perPage: number;
+  loading: boolean;
+  answer: ReadResult<ItemsPage<NeedItem | FolderItem>> | null;
+}
+
 /** The Folders page's file explorer: which node's view, which directory, and what the person opened in it. */
 export interface ExplorerState {
   node: string;
@@ -209,6 +225,9 @@ export interface AppState {
   foldedSettings: Set<string>;
   /** By `<folder id>/<node id>`. */
   folderActions: Map<string, FolderActionState>;
+  itemList: ItemListState | null;
+  /** How many items a page of an item list holds; the person can change it in the list. */
+  itemsPerPage: number;
   activity: ActivityResponse | null;
   activityError: string | null;
   activityFilters: ActivityFilters;
@@ -253,6 +272,8 @@ export const appState: AppState = {
   explorer: emptyExplorer(allNodesView, ""),
   foldedSettings: new Set(),
   folderActions: new Map(),
+  itemList: null,
+  itemsPerPage: defaultItemsPerPage,
   activity: null,
   activityError: null,
   activityFilters: { node: "", folder: "", source: "", routine: false },

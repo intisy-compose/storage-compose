@@ -298,6 +298,7 @@ function onLocationChange(): void {
     appState.notice = null;
     appState.showCandidates = false;
     appState.folderDetailError = null;
+    appState.itemList = null;
   }
   render();
   if (previousItem !== selectedItemId()) document.querySelector(".detail")?.scrollTo(0, 0);

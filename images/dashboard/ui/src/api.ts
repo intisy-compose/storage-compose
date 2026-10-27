@@ -32,6 +32,7 @@ export type {
   FolderDetailResponse,
   FolderFile,
   FolderIgnores,
+  FolderItem,
   FolderPathCheck,
   FolderPeer,
   FolderRescan,
@@ -50,9 +51,12 @@ export type {
   InstanceConnection,
   InstanceGui,
   InstanceOptions,
+  ItemsPage,
   JoinEntry,
   MemberSmart,
   NearbyDevice,
+  NeedItem,
+  NeedStage,
   NewDevice,
   NewFolder,
   NewFolderDefaults,
@@ -73,6 +77,7 @@ export type {
   PullOrder,
   Peer,
   RemoteState,
+  RemoteNeedPage,
   RemoveDeviceBody,
   RemoveFolderBody,
   RemovedFolder,
@@ -93,9 +98,9 @@ export type {
   WarningLevel,
 } from "../../src/api/types.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
-export { diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
+export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
 export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
@@ -330,6 +335,33 @@ export function removeFolder(nodeId: string, folderId: string, confirm: string):
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {
   return getJson(`api/folders/${encodeURIComponent(folderId)}`);
+}
+
+/** A read that tells a refusal (`status` 4xx, such as a folder not shared with the device) from a failure. */
+export type ReadResult<T> = { ok: true; value: T } | { ok: false; status: number; message: string };
+
+async function readJson<T>(path: string): Promise<ReadResult<T>> {
+  try {
+    const response = await fetch(path, { cache: "no-store" });
+    const payload = (await response.json().catch(() => ({}))) as T & Partial<ErrorAnswer>;
+    return response.ok ? { ok: true, value: payload } : { ok: false, status: response.status, message: payload.error ?? `HTTP ${response.status}` };
+  } catch {
+    return { ok: false, status: 0, message: "The dashboard is not answering." };
+  }
+}
+
+function pageQuery(page: number, perPage: number, extra: Record<string, string> = {}): string {
+  return new URLSearchParams({ ...extra, page: String(page), perPage: String(perPage) }).toString();
+}
+
+/** One page of what the node still has to fetch of the folder. */
+export function fetchNeedItems(nodeId: string, folderId: string, page: number, perPage: number): Promise<ReadResult<ItemsPage<NeedItem>>> {
+  return readJson(`${folderApiPath(nodeId, folderId, "/need")}?${pageQuery(page, perPage)}`);
+}
+
+/** One page of what `deviceId` still needs of the node's folder. */
+export function fetchRemoteNeed(nodeId: string, folderId: string, deviceId: string, page: number, perPage: number): Promise<ReadResult<RemoteNeedPage>> {
+  return readJson(`${folderApiPath(nodeId, folderId, "/remote-need")}?${pageQuery(page, perPage, { device: deviceId })}`);
 }
 
 export function fetchTree(node: string, path: string, page: number): Promise<TreeListing> {

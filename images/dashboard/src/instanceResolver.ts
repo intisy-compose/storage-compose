@@ -6,7 +6,7 @@ import { statusRegistryEntries, syncthingEndpoint } from "./instances.js";
 import { fileJoinRecords } from "./join.js";
 import { otherHostNodes } from "./nodes.js";
 import { clusterArrayId, hostAgentHeartbeatFile, joinsFile, poolPath, registryDirectory } from "./settings.js";
-import { type SyncthingEndpoint, SyncthingClient, SyncthingUnavailable } from "./syncthing.js";
+import { type SyncthingEndpoint, SyncthingClient, SyncthingUnavailable, listTimeoutMs } from "./syncthing.js";
 import { fetchTailnet } from "./tailnet.js";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -266,8 +266,11 @@ export async function readDashboard(dashboardUrl: string, host: string, path: st
   throw new RequestError(answer.status, peerError(answer.body) ?? `${host}'s dashboard answered HTTP ${answer.status}`);
 }
 
+/** The wait for another dashboard that itself waits up to `listTimeoutMs` on its Syncthing, so its own answer arrives before this side gives up. */
+export const forwardedListTimeoutMs = listTimeoutMs + 5_000;
+
 /** A GET of a remote node's data from its own host's dashboard, which answers for its local nodes only. */
-export async function forwardRead(instance: RemoteInstance, path: string): Promise<unknown> {
+export async function forwardRead(instance: RemoteInstance, path: string, timeoutMs?: number): Promise<unknown> {
   if (!instance.dashboardUrl) throw new RequestError(404, `no dashboard for ${instance.name}`);
-  return readDashboard(instance.dashboardUrl, instance.host, path);
+  return readDashboard(instance.dashboardUrl, instance.host, path, timeoutMs);
 }

@@ -58,6 +58,8 @@ export interface SyncthingDeviceConfig {
   addresses: string[];
   paused?: boolean;
   untrusted?: boolean;
+  introducer?: boolean;
+  autoAcceptFolders?: boolean;
 }
 
 interface ConnectionTotals {
@@ -126,9 +128,22 @@ export interface IndexFile {
  * (`\` on Windows).
  */
 export interface NeedPage {
-  progress: { name: string }[] | null;
-  queued: { name: string }[] | null;
-  rest: { name: string }[] | null;
+  progress: IndexItem[] | null;
+  queued: IndexItem[] | null;
+  rest: IndexItem[] | null;
+}
+
+/** An item as the paged lists answer it; `modifiedBy` is the short ID of the device that last changed it, "" when none is known. */
+export interface IndexItem {
+  name: string;
+  size?: number;
+  modified?: string;
+  deleted?: boolean;
+  modifiedBy?: string;
+}
+
+export interface RemoteNeedPage {
+  files: IndexItem[] | null;
 }
 
 export interface ErrorsPage {
@@ -151,9 +166,10 @@ interface FolderStats {
   lastFile?: FolderFile;
 }
 
-interface Completion {
+export interface Completion {
   completion: number;
   needBytes: number;
+  needItems?: number;
   remoteState?: string;
 }
 
@@ -300,6 +316,20 @@ export class SyncthingClient {
 
   localChangedPage(folderId: string, page: number, perPage: number): Promise<LocalChangedPage> {
     return this.request("GET", `/db/localchanged?${pageQuery(folderId, page, perPage)}`, undefined, listTimeoutMs);
+  }
+
+  /**
+   * What the device still needs of the folder, as this instance knows the device's index.
+   * @implNote Syncthing answers every item for a device the folder is not shared with, so callers check the sharing first.
+   */
+  remoteNeedPage(folderId: string, deviceId: string, page: number, perPage: number): Promise<RemoteNeedPage> {
+    const query = new URLSearchParams({ folder: folderId, device: deviceId, page: String(page), perpage: String(perPage) });
+    return this.request("GET", `/db/remoteneed?${query.toString()}`, undefined, listTimeoutMs);
+  }
+
+  folderCompletion(folderId: string, deviceId: string): Promise<Completion> {
+    const query = new URLSearchParams({ folder: folderId, device: deviceId });
+    return this.request("GET", `/db/completion?${query.toString()}`, undefined, listTimeoutMs);
   }
 
   /** Shares the folder with the device unencrypted, as a folder edit's sharing does; false when the instance has no such folder. */
