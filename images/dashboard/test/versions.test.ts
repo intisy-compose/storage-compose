@@ -38,6 +38,7 @@ describe("file versions: browse and restore", () => {
   const asked: string[] = [];
   const restoreBodies: unknown[] = [];
   const notes: WriteNote[] = [];
+  let loseRestoreAnswer = false;
   let syncthingUrl = "";
   let dashboardUrl = "";
   let peerDashboardUrl = "";
@@ -47,6 +48,7 @@ describe("file versions: browse and restore", () => {
     { id: "test-off", label: "Test Off", path: "/var/syncthing/data/test-off", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }], versioning: off },
     { id: "test-ext", label: "", path: "/var/syncthing/data/test-ext", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }], versioning: external },
     { id: "test-paused", label: "", path: "/var/syncthing/data/test-paused", type: "receiveonly", paused: true, devices: [{ deviceID: ownId }], versioning: staggered },
+    { id: "test-declared", label: "", path: "/var/syncthing/data/test-declared", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }], versioning: staggered },
     { id: "test-big", label: "", path: "/var/syncthing/data/test-big", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }], versioning: staggered },
   ];
 
@@ -62,6 +64,11 @@ describe("file versions: browse and restore", () => {
     }
     if (url.pathname === "/rest/folder/versions" && request.method === "GET") {
       if (folderId === "test-off") return response.writeHead(500).end("no versioner configured\n");
+      if (folderId === "test-declared") {
+        response.writeHead(200, { "Content-Type": "application/json", "Content-Length": "10000" });
+        response.write("{");
+        return;
+      }
       if (folderId === "test-big") return reply(response, Object.fromEntries(Array.from({ length: 200 }, (_, index) => [`file-${index}.bin`, [version("2026-10-26T10:00:00+01:00")]])));
       return reply(response, storedVersions);
     }
@@ -70,6 +77,7 @@ describe("file versions: browse and restore", () => {
       request.on("data", (chunk) => (text += chunk));
       request.on("end", () => {
         restoreBodies.push(JSON.parse(text));
+        if (loseRestoreAnswer) return void request.socket.destroy();
         reply(response, { "gone.txt": "version not found" });
       });
       return;
@@ -190,6 +198,14 @@ describe("file versions: browse and restore", () => {
     assert.equal(small.status, 200);
   });
 
+  it("a versions answer that declares a length over the limit is refused without reading it", async () => {
+    const started = Date.now();
+    const answer = await get("/api/nodes/d7e5/folders/test-declared/versions");
+    assert.equal(answer.status, 409);
+    assert.match(answer.body.error ?? "", /keeps more versions than the dashboard reads at once/);
+    assert.ok(Date.now() - started < 5_000, "refused from the declared length, not after waiting on the body");
+  });
+
   it("external versioning is refused, and another host's node is read from its dashboard", async () => {
     const answer = await get("/api/nodes/d7e5/folders/test-ext/versions");
     assert.equal(answer.status, 409);
@@ -215,6 +231,31 @@ describe("file versions: browse and restore", () => {
     assert.deepEqual(notes.map((note) => [note.folderId, note.text]), [["test-a", answer.body.text]]);
   });
 
+  it("a restore whose answer is lost may have been saved, and the versions are read again", async () => {
+    await get("/api/nodes/d7e5/folders/test-a/versions");
+    const before = versionReads().length;
+    loseRestoreAnswer = true;
+    try {
+      const response = await fetch(`${dashboardUrl}/api/nodes/d7e5/folders/test-a/versions/restore`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ files: { "hello.txt": "2026-10-25T10:00:00+02:00" } }) });
+      const body = (await response.json()) as { error?: string; maybeSaved?: boolean };
+      assert.equal(response.status, 503);
+      assert.equal(body.maybeSaved, true);
+      assert.match(body.error ?? "", /may have been saved/);
+    } finally {
+      loseRestoreAnswer = false;
+    }
+    assert.deepEqual(restoreBodies, [{ "hello.txt": "2026-10-25T10:00:00+02:00" }]);
+    assert.deepEqual(notes, []);
+    await get("/api/nodes/d7e5/folders/test-a/versions");
+    assert.equal(versionReads().length, before + 1, "the list read before the restore is dropped");
+  });
+
+  it("a file named like an object property is restored, not taken for a failure", async () => {
+    const answer = await restore("/api/nodes/d7e5/folders/test-a/versions/restore", { files: { toString: "2026-10-25T10:00:00+02:00", constructor: "2026-10-25T10:00:00+02:00" } });
+    assert.equal(answer.status, 200);
+    assert.deepEqual(answer.body.restored, ["toString", "constructor"]);
+  });
+
   it("a restore of nothing but failures enters nothing in Activity", async () => {
     const answer = await restore("/api/nodes/d7e5/folders/test-a/versions/restore", { files: { "gone.txt": "2026-10-01T10:00:00+02:00" } });
     assert.equal(answer.status, 200);
@@ -227,7 +268,7 @@ describe("file versions: browse and restore", () => {
       const answer = await restore("/api/nodes/d7e5/folders/test-a/versions/restore", { files: { [path]: "2026-10-25T10:00:00+02:00" } });
       assert.equal(answer.status, 400, JSON.stringify(path));
     }
-    for (const body of [{}, { files: {} }, { files: [] }, { files: { "a.txt": 5 } }, { files: { "a.txt": "last week" } }, { files: Object.fromEntries(Array.from({ length: 101 }, (_, index) => [`f${index}`, "2026-10-25T10:00:00+02:00"])) }]) {
+    for (const body of [{}, { files: {} }, { files: [] }, { files: { "a.txt": 5 } }, { files: { "a.txt": "last week" } }, { files: { "a.txt": "2026-10-25" } }, { files: { "a.txt": "Oct 25 2026 10:00" } }, { files: { "a.txt": "2026-10-25T10:00:00" } }, { files: { "a.txt": "2026-10-25T10:00:00Z" }, folder: "other" }, { files: Object.fromEntries(Array.from({ length: 101 }, (_, index) => [`f${index}`, "2026-10-25T10:00:00+02:00"])) }]) {
       assert.equal((await restore("/api/nodes/d7e5/folders/test-a/versions/restore", body)).status, 400, JSON.stringify(body).slice(0, 80));
     }
     const windows = await restore("/api/nodes/w001/folders/test-a/versions/restore", { files: { "photos/PROGRA~1/x.txt": "2026-10-25T10:00:00+02:00" } });

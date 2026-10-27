@@ -231,9 +231,11 @@ function restoreControls(state: VersionsState, copy: FolderCopy, page: VersionsP
     },
     state.confirmOpen ? "button ghost" : "button danger",
   );
-  toggle.disabled = state.busy || state.chosen.size === 0;
+  const tooMany = state.chosen.size > maxItemsPerPage;
+  toggle.disabled = state.busy || state.chosen.size === 0 || tooMany;
+  const limit = tooMany ? element("p", { className: "notice tone-text-warn" }, `${plural(state.chosen.size, "file")} chosen: a restore takes at most ${maxItemsPerPage} at once, so set some back to keep the current file.`) : null;
   const result = state.result ? element("p", { className: `notice tone-text-${state.result.tone}`, attributes: { role: "status" } }, state.result.text) : null;
-  return [element("div", { className: "button-row" }, toggle), result, state.confirmOpen && state.chosen.size ? confirmForm(state, copy, page, formId) : null].filter((part): part is HTMLElement => part !== null);
+  return [element("div", { className: "button-row" }, toggle), limit, result, state.confirmOpen && state.chosen.size && !tooMany ? confirmForm(state, copy, page, formId) : null].filter((part): part is HTMLElement => part !== null);
 }
 
 function levelBody(state: VersionsState, copy: FolderCopy, page: VersionsPage, formId: string): HTMLElement[] {

@@ -5,13 +5,14 @@ import { type LocalInstance, type RemoteInstance, type ResolvedInstance, arrayCo
 import { folderSubpathProblem } from "../pathGuard.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { versionsSettings } from "../settings.js";
-import { SharedRead } from "../sharedRead.js";
 import { AnswerTooLarge } from "../syncthing.js";
+import { SharedLists } from "../versionLists.js";
 import { decodedSegment } from "./devices.js";
 import { type PageRequest, pageRequestOf } from "./items.js";
 
 interface StoredVersions {
   files: Record<string, FileVersion[]>;
+  bytes: number;
   readAt: string;
 }
 
@@ -26,31 +27,9 @@ interface LevelQuery {
   request: PageRequest;
 }
 
+/** How long a folder's versions list is shared while its tree is browsed, and how many lists are read at once. */
 const listKeptMs = 60_000;
-const listsKept = 4;
-
-/**
- * Each folder's versions list as last read, shared while the tree is browsed.
- * @implNote Syncthing walks the whole versions path for every list and cannot page it, so paging the tree must not ask again.
- */
-class VersionLists {
-  private readonly reads = new Map<string, SharedRead<StoredVersions>>();
-
-  read(key: string, fresh: boolean, start: () => Promise<StoredVersions>): Promise<StoredVersions> {
-    let entry = this.reads.get(key);
-    if (!entry) {
-      entry = new SharedRead<StoredVersions>(listKeptMs);
-      this.reads.set(key, entry);
-      if (this.reads.size > listsKept) this.reads.delete(this.reads.keys().next().value!);
-    }
-    if (fresh) entry.invalidate();
-    return entry.read(start);
-  }
-
-  forget(key: string): void {
-    this.reads.delete(key);
-  }
-}
+const listsReadAtOnce = 2;
 
 function folderName(settings: Pick<FolderSettings, "id" | "label">): string {
   return settings.label || settings.id;
@@ -150,7 +129,7 @@ function listKey(nodeId: string, folderId: string): string {
 }
 
 /** @implNote A folder without versioning is answered from its settings: Syncthing would answer 500, and it is never asked to walk anything. */
-async function localVersions(instance: LocalInstance, folderId: string, url: URL, lists: VersionLists, maxBytes: number): Promise<VersionsPage> {
+async function localVersions(instance: LocalInstance, folderId: string, url: URL, lists: SharedLists<StoredVersions>, maxBytes: number): Promise<VersionsPage> {
   const query = levelQueryOf(url);
   const settings = await knownFolder(instance, folderId);
   if (!settings.versioning.type) return versioningOff(settings, query);
@@ -158,7 +137,7 @@ async function localVersions(instance: LocalInstance, folderId: string, url: URL
   const fresh = url.searchParams.get("reread") === "true";
   try {
     const stored = await lists.read(listKey(instance.nodeId, folderId), fresh, async () => ({
-      files: await callSyncthing(instance, (client) => client.folderVersions(folderId, maxBytes)),
+      ...(await callSyncthing(instance, (client) => client.folderVersions(folderId, maxBytes))),
       readAt: new Date().toISOString(),
     }));
     return levelPage(settings, stored, query);
@@ -221,7 +200,14 @@ async function remoteVersions(instance: RemoteInstance, folderId: string, url: U
   return forwardedPage(await forwardRead(instance, path, forwardedListTimeoutMs), query);
 }
 
+const restoreBodyKeys = new Set(["files", "confirm"]);
+
+/** RFC 3339 with seconds and a zone, as Syncthing writes `versionTime` and reads it back. */
+const rfc3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
 function restoreBodyFiles(body: unknown, instance: LocalInstance): Record<string, string> {
+  const unknown = Object.keys(fieldsOf(body)).find((key) => !restoreBodyKeys.has(key));
+  if (unknown) throw new RequestError(400, `${unknown} is not part of a restore`);
   const files = fieldsOf(body).files;
   if (typeof files !== "object" || files === null || Array.isArray(files)) throw new RequestError(400, "a restore takes { files } naming each path and the versionTime of its version");
   const entries = Object.entries(files as Fields);
@@ -231,7 +217,7 @@ function restoreBodyFiles(body: unknown, instance: LocalInstance): Record<string
     if (!path) throw new RequestError(400, "a file to restore has no path");
     const problem = folderSubpathProblem(path, instance.os);
     if (problem) throw new RequestError(400, problem);
-    if (typeof versionTime !== "string" || !Number.isFinite(Date.parse(versionTime))) throw new RequestError(400, `the version of ${path} must be its versionTime as listed, not ${JSON.stringify(versionTime)}`);
+    if (typeof versionTime !== "string" || !rfc3339.test(versionTime) || !Number.isFinite(Date.parse(versionTime))) throw new RequestError(400, `the version of ${path} must be its versionTime as listed, not ${JSON.stringify(versionTime)}`);
   }
   return files as Record<string, string>;
 }
@@ -272,7 +258,7 @@ export async function restoreVersions(instance: ResolvedInstance, folderId: stri
     if (error instanceof RequestError && error.status === 503) throw new UnconfirmedWrite(local.name);
     throw error;
   }
-  const restored = Object.keys(files).filter((path) => !(path in errors));
+  const restored = Object.keys(files).filter((path) => !Object.hasOwn(errors, path));
   const text = restoredText(local, settings, files, restored, Object.keys(errors).length);
   const note: WriteNote | NothingWritten = restored.length ? { nodeId: local.nodeId, nodeName: local.name, folderId, text } : { nothingWritten: true };
   return { done: { folderId, restored, errors, text }, note };
@@ -282,6 +268,8 @@ export interface VersionSources {
   resolve(nodeId: string): Promise<ResolvedInstance>;
   /** How much of Syncthing's versions list is read before it is refused; tests make it small. */
   maxListBytes?: number;
+  /** How long a list is shared; tests make it short. */
+  listKeptMs?: number;
 }
 
 const liveSources: VersionSources = { resolve: (nodeId) => resolveInstance(nodeId) };
@@ -294,8 +282,8 @@ async function resolveFor(sources: VersionSources, url: URL, nodeId: string): Pr
 }
 
 export function versionRoutes(sources: VersionSources = liveSources): AnyRoute[] {
-  const lists = new VersionLists();
   const maxBytes = sources.maxListBytes ?? versionsSettings.listMaxBytes;
+  const lists = new SharedLists<StoredVersions>({ keptMs: sources.listKeptMs ?? listKeptMs, maxTotalBytes: 2 * maxBytes, maxReading: listsReadAtOnce });
   return [
     {
       method: "GET",
@@ -318,7 +306,7 @@ export function versionRoutes(sources: VersionSources = liveSources): AnyRoute[]
         try {
           restore = await restoreVersions(instance, folderId, body);
         } finally {
-          lists.forget(listKey(nodeId, folderId));
+          lists.forget(listKey(instance.nodeId, folderId));
         }
         sendJson(response, 200, restore.done);
         return restore.note;

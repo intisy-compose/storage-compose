@@ -375,12 +375,12 @@ export class SyncthingClient {
    * Every kept version of the folder's files by path, `/` separated.
    * @implNote Syncthing walks the whole versions path for this and does not page it, so the answer is read only up to `maxBytes`.
    */
-  async folderVersions(folderId: string, maxBytes: number): Promise<Record<string, FileVersion[]>> {
+  async folderVersions(folderId: string, maxBytes: number): Promise<{ files: Record<string, FileVersion[]>; bytes: number }> {
     const path = `/folder/versions?folder=${encodeURIComponent(folderId)}`;
     const response = await this.raw("GET", `/rest${path}`, listTimeoutMs);
     const text = await boundedText(response, maxBytes, `GET ${path}`);
     if (!response.ok) throw new SyncthingError(`GET ${path}: HTTP ${response.status} ${text}`);
-    return (text ? JSON.parse(text) : null) ?? {};
+    return { files: (text ? JSON.parse(text) : null) ?? {}, bytes: Buffer.byteLength(text) };
   }
 
   /** Puts back the version of each path named by its `versionTime`; Syncthing answers the error of each path it could not restore. */
