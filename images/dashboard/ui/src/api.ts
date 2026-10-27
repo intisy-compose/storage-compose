@@ -1,5 +1,7 @@
 export type {
   AcceptDeviceBody,
+  AcceptFolderBody,
+  AcceptFolderDefaults,
   AcceptedDevice,
   ActivityEntry,
   ActivityLevel,
@@ -42,6 +44,7 @@ export type {
   FolderType,
   HostSettings,
   IgnoredDevice,
+  IgnoredFolderOffer,
   IgnoresChange,
   InstanceConnection,
   InstanceGui,
@@ -89,7 +92,7 @@ export type {
   WarningLevel,
 } from "../../src/api/types.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderSettings, FolderSettingsChange, FolderRescan, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderSettings, FolderSettingsChange, FolderRescan, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
@@ -233,6 +236,30 @@ export function ignorePendingDevice(nodeId: string, deviceId: string): Promise<S
 /** Drops the request; the device is listed again when it next asks. */
 export function dismissPendingDevice(nodeId: string, deviceId: string): Promise<SaveResult<PendingDevice>> {
   return sendWrite(pendingDevicePath(nodeId, deviceId, "dismiss"), "POST");
+}
+
+function pendingFolderPath(offer: Pick<PendingFolderOffer, "nodeId" | "folderId">, answer: "defaults" | "accept" | "ignore" | "dismiss"): string {
+  return nodeApiPath(offer.nodeId, `pending/folders/${encodeURIComponent(offer.folderId)}/${answer}`);
+}
+
+/** What the accept form opens with for one device's offer. */
+export function fetchAcceptFolderDefaults(offer: PendingFolderOffer): Promise<AcceptFolderDefaults> {
+  return getJson(`${pendingFolderPath(offer, "defaults")}?offeredBy=${encodeURIComponent(offer.offeredBy)}`);
+}
+
+/** Adds the offered folder, shared with the offering device; the answer is the folder as the node now has it. */
+export function acceptPendingFolder(offer: PendingFolderOffer, body: AcceptFolderBody): Promise<SaveResult<FolderSettings>> {
+  return sendWrite(pendingFolderPath(offer, "accept"), "POST", body);
+}
+
+/** The device's offers of the folder are not listed again, as Syncthing's own Ignore. */
+export function ignorePendingFolder(offer: PendingFolderOffer): Promise<SaveResult<IgnoredFolderOffer>> {
+  return sendWrite(pendingFolderPath(offer, "ignore"), "POST", { offeredBy: offer.offeredBy });
+}
+
+/** Drops the offer; it is listed again when the device next offers the folder. */
+export function dismissPendingFolder(offer: PendingFolderOffer): Promise<SaveResult<PendingFolderOffer>> {
+  return sendWrite(pendingFolderPath(offer, "dismiss"), "POST", { offeredBy: offer.offeredBy });
 }
 
 /** A new folder as the node's Syncthing would make it, placed at the explorer's directory `under`. */

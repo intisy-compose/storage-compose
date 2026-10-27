@@ -5,6 +5,9 @@ import { versioningOfType } from "./folderDraft.js";
 import { requestRender } from "./renderRequest.js";
 import type { EditFolderFormState } from "./state.js";
 
+/** A form that holds a folder's versioning: the edit form, or the accept form of an offered folder. */
+export type VersioningForm = Pick<EditFolderFormState, "saved" | "draft" | "saving">;
+
 /** What each type keeps, shown under the type. */
 const typeMeanings: Record<VersioningType, string> = {
   "": "A file replaced or deleted by another device is gone from this node.",
@@ -42,7 +45,7 @@ function storedValue(key: VersioningParam, typed: string): string {
   return String(Math.round(number * secondsPerDay));
 }
 
-function paramField(form: EditFolderFormState, formId: string, key: VersioningParam): HTMLElement {
+function paramField(form: VersioningForm, formId: string, key: VersioningParam): HTMLElement {
   const { saved, draft } = form as Forms;
   const field = `versioning-${key}`;
   const input = element("input", { attributes: { id: controlId(formId, field), type: "number", min: key === "keep" ? "1" : "0", step: daysParams.has(key) ? "any" : "1" } });
@@ -53,7 +56,7 @@ function paramField(form: EditFolderFormState, formId: string, key: VersioningPa
   return fieldLabel(formId, field, versioningParamLabels[key], input, paramHints[key]);
 }
 
-function cleanupField(form: EditFolderFormState, formId: string): HTMLElement {
+function cleanupField(form: VersioningForm, formId: string): HTMLElement {
   const { saved, draft } = form as Forms;
   const input = element("input", { attributes: { id: controlId(formId, "versioning-cleanup"), type: "number", min: "0", step: "1" } });
   input.defaultValue = String(saved.versioning.cleanupIntervalS);
@@ -63,7 +66,7 @@ function cleanupField(form: EditFolderFormState, formId: string): HTMLElement {
   return fieldLabel(formId, "versioning-cleanup", cleanupIntervalLabel, input, "Seconds between removing versions past their time; 0 never.");
 }
 
-function versionsPathField(form: EditFolderFormState, formId: string): HTMLElement {
+function versionsPathField(form: VersioningForm, formId: string): HTMLElement {
   const { saved, draft } = form as Forms;
   const input = element("input", { attributes: { id: controlId(formId, "versioning-path"), autocomplete: "off", spellcheck: "false", placeholder: ".stversions inside the folder" } });
   input.defaultValue = saved.versioning.fsPath;
@@ -78,7 +81,7 @@ function typeChoices(saved: FolderSettings): VersioningType[] {
   return saved.versioning.type === "external" ? [...offeredVersioningTypes, "external"] : [...offeredVersioningTypes];
 }
 
-function typeField(form: EditFolderFormState, formId: string): HTMLElement {
+function typeField(form: VersioningForm, formId: string): HTMLElement {
   const { saved, draft } = form as Forms;
   const control = element("select", { attributes: { id: controlId(formId, "versioning-type") } });
   for (const type of typeChoices(saved)) {
@@ -95,7 +98,7 @@ function typeField(form: EditFolderFormState, formId: string): HTMLElement {
   return fieldLabel(formId, "versioning-type", folderSettingLabels.versioning, control, typeMeanings[draft.versioning.type]);
 }
 
-function externalCommand(form: EditFolderFormState): HTMLElement[] {
+function externalCommand(form: VersioningForm): HTMLElement[] {
   const { draft } = form as Forms;
   return [
     element("p", {}, "Command ", element("code", {}, draft.versioning.params.command ?? "")),
@@ -103,7 +106,7 @@ function externalCommand(form: EditFolderFormState): HTMLElement[] {
   ];
 }
 
-function keptFields(form: EditFolderFormState, formId: string): (HTMLElement | null)[] {
+function keptFields(form: VersioningForm, formId: string): (HTMLElement | null)[] {
   const { draft } = form as Forms;
   const type = draft.versioning.type;
   if (type === "external") return externalCommand(form);
@@ -113,6 +116,6 @@ function keptFields(form: EditFolderFormState, formId: string): (HTMLElement | n
 }
 
 /** The form's Versioning section; the draft's `versioning` is sent whole once anything in it differs from the saved one. */
-export function versioningSection(form: EditFolderFormState, formId: string): HTMLElement {
+export function versioningSection(form: VersioningForm, formId: string): HTMLElement {
   return section("Versioning", element("div", { className: "form-fields device-fields" }, typeField(form, formId), ...keptFields(form, formId)));
 }

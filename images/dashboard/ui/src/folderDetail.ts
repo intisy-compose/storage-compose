@@ -64,12 +64,15 @@ function copyCard(copy: FolderCopy): HTMLElement {
   );
 }
 
+/** An offer to a node of this host is answered on the Requests page; another host's on that host's dashboard. */
 function offerLine(offer: PendingFolderOffer): HTMLElement {
+  const isLocal = appState.data?.nodes.find((node) => node.id === offer.nodeId)?.local === true;
   return element(
     "p",
     { className: "offer-line" },
     `offered by ${offer.offeredByName}, not accepted on ${offer.nodeName}`,
     element("small", {}, `since ${formatDate(offer.time)}${offer.receiveEncrypted ? ", encrypted" : ""}`),
+    isLocal ? element("a", { className: "button ghost", attributes: { href: locationFor("requests") } }, "Accept, ignore or dismiss") : null,
   );
 }
 

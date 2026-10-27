@@ -176,7 +176,7 @@ describe("a node's devices", () => {
   });
 
   function pc(url = syncthingUrl): LocalInstance {
-    return { kind: "local", nodeId: "fb98", name: "pc", client: new SyncthingClient({ url, apiKey }), root: "F:\\", os: "windows", threshold: 50 };
+    return { kind: "local", nodeId: "fb98", name: "pc", client: new SyncthingClient({ url, apiKey }), root: "F:\\", os: "windows", threshold: 50, source: "host-agent" };
   }
 
   before(async () => {

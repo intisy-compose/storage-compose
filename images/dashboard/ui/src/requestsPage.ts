@@ -3,7 +3,8 @@ import { button, element } from "./dom.js";
 import { formatAge, formatDate } from "./format.js";
 import { registerForm } from "./forms.js";
 import { requestRender } from "./renderRequest.js";
-import { type DeviceAnswer, answerKey, freshAnswer, ignoreClick, pruneAnswers } from "./requestAnswers.js";
+import { folderOfferAnswer, pruneFolderAnswers } from "./folderOfferForm.js";
+import { type AnswerResult, type DeviceAnswer, answerKey, freshAnswer, ignoreClick, pruneAnswers } from "./requestAnswers.js";
 import { appState, deviceFormLocation, locationFor } from "./state.js";
 
 function since(time: string): HTMLElement {
@@ -12,12 +13,6 @@ function since(time: string): HTMLElement {
 
 function nodeLink(nodeId: string, nodeName: string): HTMLElement {
   return element("a", { attributes: { href: locationFor("nodes", nodeId) } }, nodeName);
-}
-
-interface AnswerResult {
-  text: string;
-  tone: "ok" | "bad";
-  link: { href: string; label: string } | null;
 }
 
 const answers = new Map<string, DeviceAnswer>();
@@ -36,11 +31,15 @@ function formIdOf(device: PendingDevice): string {
   return `pending-device-${device.nodeId}-${device.deviceId}`;
 }
 
+function report(result: AnswerResult): void {
+  lastAnswer = result;
+  requestRender();
+}
+
 function finish(device: PendingDevice, result: AnswerResult, answered: boolean): void {
   if (answered) answers.delete(answerKey(device));
   else answerOf(device).busy = false;
-  lastAnswer = result;
-  requestRender();
+  report(result);
 }
 
 async function accept(device: PendingDevice): Promise<void> {
@@ -135,9 +134,10 @@ function deviceAnswerForm(device: PendingDevice): HTMLElement {
   );
 }
 
-function answerPart(device: PendingDevice): HTMLElement {
-  const node = appState.data?.nodes.find((candidate) => candidate.id === device.nodeId);
-  if (node?.local) return deviceAnswerForm(device);
+/** The answer controls for a request to a node of this host; another host's node is answered on that host's dashboard. */
+function answerPart(nodeId: string, localAnswer: () => HTMLElement): HTMLElement {
+  const node = appState.data?.nodes.find((candidate) => candidate.id === nodeId);
+  if (node?.local) return localAnswer();
   return element("small", { className: "request-detail" }, node ? `Answered on ${node.host}'s own dashboard.` : "Answered on its host's own dashboard.");
 }
 
@@ -158,7 +158,7 @@ function deviceEntry(device: PendingDevice): HTMLElement {
       ),
       since(device.time),
     ),
-    answerPart(device),
+    answerPart(device.nodeId, () => deviceAnswerForm(device)),
   );
 }
 
@@ -182,18 +182,23 @@ function folderEntry(offer: PendingFolderOffer): HTMLElement {
   const folder = element("a", { attributes: { href: locationFor("folders", offer.folderId) } }, offer.label || offer.folderId);
   return element(
     "li",
-    { className: "request-entry" },
+    { className: "request-entry request-entry-answerable" },
     element(
-      "span",
-      { className: "request-text" },
-      element("strong", {}, offer.offeredByName),
-      " offers ",
-      folder,
-      " to ",
-      nodeLink(offer.nodeId, offer.nodeName),
-      element("small", { className: "request-detail" }, `folder ID ${offer.folderId}${offer.receiveEncrypted ? ", encrypted on receipt" : ""}`),
+      "div",
+      { className: "request-head" },
+      element(
+        "span",
+        { className: "request-text" },
+        element("strong", {}, offer.offeredByName),
+        " offers ",
+        folder,
+        " to ",
+        nodeLink(offer.nodeId, offer.nodeName),
+        element("small", { className: "request-detail" }, `folder ID ${offer.folderId}${offer.receiveEncrypted ? ", encrypted on receipt" : ""}`),
+      ),
+      since(offer.time),
     ),
-    since(offer.time),
+    answerPart(offer.nodeId, () => folderOfferAnswer(offer, report)),
   );
 }
 
@@ -230,7 +235,8 @@ function notConnectedNote(requests: RequestsResponse): HTMLElement | null {
 function body(): (HTMLElement | null)[] {
   const requests = appState.requests;
   if (!requests) return [element("p", { className: appState.requestsError ? "warning level-error" : "muted" }, appState.requestsError ?? "Loading requests…")];
-  pruneAnswers(answers, requests.devices);
+  pruneAnswers(answers, requests.devices.map(answerKey), requests.unreadable);
+  pruneFolderAnswers(requests);
   return [
     unreadableNotes(requests),
     notConnectedNote(requests),

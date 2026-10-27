@@ -98,9 +98,11 @@ export async function checkFolderPath(instance: ResolvedInstance, typed: string,
   return { path, problem: conflict, warning: overlapWarning(folders, path, node) };
 }
 
-function withOwnDevice(devices: unknown, ownId: string): unknown[] {
-  const list = Array.isArray(devices) ? devices : [];
-  return list.some((device) => asObject(device).deviceID === ownId) ? list : [...list, { deviceID: ownId, introducedBy: "", encryptionPassword: "" }];
+/** The default devices with each of `deviceIds` added unless it is there already. */
+function withDevices(devices: unknown, deviceIds: string[]): unknown[] {
+  const list = Array.isArray(devices) ? [...devices] : [];
+  for (const deviceId of deviceIds) if (!list.some((device) => asObject(device).deviceID === deviceId)) list.push({ deviceID: deviceId, introducedBy: "", encryptionPassword: "" });
+  return list;
 }
 
 function folderName(folder: Pick<SyncthingFolderSettings, "id" | "label">): string {
@@ -108,7 +110,7 @@ function folderName(folder: Pick<SyncthingFolderSettings, "id" | "label">): stri
 }
 
 /** How the add's ignore patterns went: how many lines it started with, and why it stayed paused when they could not be set. */
-interface AddedIgnores {
+export interface AddedIgnores {
   lines: number;
   keptPaused: string | null;
 }
@@ -161,22 +163,52 @@ export interface FolderAddition {
   note: WriteNote;
 }
 
+/** What accepting an offer adds to a new folder: the device that offered it, sharing it from the start, and the versioning chosen. */
+export interface OfferedFolder {
+  offeredBy: string;
+  versioning: Versioning;
+}
+
+/** A folder as created: the node's answer, the folder as sent, and how its ignore patterns went. */
+export interface CreatedFolder {
+  instance: LocalInstance;
+  added: FolderSettings;
+  folder: NewFolder;
+  ignores: AddedIgnores;
+}
+
+/** Refuses a new folder's path outside the node's root or in another node's, without a Syncthing call. */
+export function guardNewFolderPath(instance: ResolvedInstance, path: string, nodes: NodeRoot[]): void {
+  const { node } = rooted(instance);
+  const problem = folderPathProblem(path.trim(), node, nodes);
+  if (problem) throw new RequestError(400, problem);
+}
+
 /**
- * Adds a folder to the node's Syncthing, every setting the person left out taken from Syncthing's own defaults.
+ * Why a new folder at `folder.path` would mix files and versions, or null: its versions path judged against every
+ * folder (the new one included), its path against every folder's versions path.
+ */
+function newFolderVersionsProblem(folder: NewFolder, versioning: Versioning | null, folders: SyncthingFolderSettings[], node: NodeRoot): string | null {
+  const withNew = [...folders, { id: folder.id, label: folder.label ?? "", path: folder.path } as SyncthingFolderSettings];
+  const versionsProblem = versioning ? versionsPathFolderProblem(versioning.fsPath, withNew, folder.id, folder.path, node) : null;
+  return versionsProblem ?? movedFolderVersionsProblem(folder.path, folders, folder.id, true, node);
+}
+
+/**
+ * Adds a folder to the node's Syncthing, every setting the request leaves out taken from Syncthing's own defaults;
+ * an accepted offer also shares it with the offering device and sets the chosen versioning.
  * @implNote The path is judged against the node's root and the other nodes' roots before any Syncthing call,
  * as adding a folder makes Syncthing create and scan its directory; the path sent is the one judged.
  * The node's own default versioning and default ignore patterns are copied unjudged: its admin set them in the node's configuration.
  * A folder with ignore patterns is created paused and resumed once they are written, as Syncthing's own page does, so its
  * first scan already skips what they ignore; when they cannot be written it stays paused and the note says why.
  */
-export async function addFolder(instance: ResolvedInstance, body: unknown, nodes: NodeRoot[]): Promise<FolderAddition> {
-  const problem = newFolderProblem(body);
-  if (problem) throw new RequestError(400, problem);
+export async function createFolder(instance: ResolvedInstance, request: NewFolder, nodes: NodeRoot[], offered: OfferedFolder | null = null): Promise<CreatedFolder> {
   const { instance: local, node } = rooted(instance);
-  const { ignores: typedIgnores, ...request } = body as NewFolder;
-  const pathProblem = folderPathProblem(request.path.trim(), node, nodes);
-  if (pathProblem) throw new RequestError(400, pathProblem);
-  const folder: NewFolder = { ...request, id: request.id.trim(), path: checkedPath(request.path.trim(), node) };
+  const { ignores: typedIgnores, ...rest } = request;
+  guardNewFolderPath(local, rest.path, nodes);
+  const folder: NewFolder = { ...rest, id: rest.id.trim(), path: checkedPath(rest.path.trim(), node) };
+  const versioning = offered ? guardedVersioning(local, offered.versioning, folder.path, nodes) : null;
   const [folders, defaults, ownId, ignores] = await Promise.all([
     configuredFolders(local),
     syncthingDefaults(local),
@@ -186,13 +218,25 @@ export async function addFolder(instance: ResolvedInstance, body: unknown, nodes
   if (folders.some((existing) => existing.id === folder.id)) throw new RequestError(409, `${local.name} already has folder ${folder.id}`);
   const samePath = samePathProblem(local, folders, folder.path, node);
   if (samePath) throw new RequestError(409, samePath);
+  const versionsProblem = newFolderVersionsProblem(folder, versioning, folders, node);
+  if (versionsProblem) throw new RequestError(400, versionsProblem);
   const holdsIgnores = ignores.length > 0;
-  const config: SyncthingObject = { ...defaults, label: "", ...folder, ...(holdsIgnores ? { paused: true } : {}), devices: withOwnDevice(defaults.devices, ownId) };
+  const chosenVersioning = versioning ? { versioning: { ...asObject(defaults.versioning), ...versioning } } : {};
+  const devices = withDevices(defaults.devices, offered ? [ownId, offered.offeredBy] : [ownId]);
+  const config: SyncthingObject = { ...defaults, label: "", ...folder, ...chosenVersioning, ...(holdsIgnores ? { paused: true } : {}), devices };
   await callSyncthing(local, (client) => client.request("POST", "/config/folders", config));
   const startsPaused = folder.paused ?? defaults.paused === true;
   const keptPaused = holdsIgnores ? await startWithIgnores(local, folder, ignores, startsPaused) : null;
-  const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId: folder.id, text: folderAddText(local.name, folder, { lines: ignores.length, keptPaused }) };
-  return { added: await settingsAfter(local, folder.id, config), note };
+  return { instance: local, added: await settingsAfter(local, folder.id, config), folder, ignores: { lines: ignores.length, keptPaused } };
+}
+
+/** Adds a folder typed into the add form. */
+export async function addFolder(instance: ResolvedInstance, body: unknown, nodes: NodeRoot[]): Promise<FolderAddition> {
+  const problem = newFolderProblem(body);
+  if (problem) throw new RequestError(400, problem);
+  const created = await createFolder(instance, body as NewFolder, nodes);
+  const { instance: local, folder, ignores } = created;
+  return { added: created.added, note: { nodeId: local.nodeId, nodeName: local.name, folderId: folder.id, text: folderAddText(local.name, folder, ignores) } };
 }
 
 function onOff(value: boolean): string {
@@ -519,9 +563,9 @@ async function liveNodeRoots(): Promise<NodeRoot[]> {
   return (await localNodeInfos()).flatMap((info) => (info.root ? [{ nodeId: info.nodeId, name: info.name, root: info.root, os: info.os }] : []));
 }
 
-const liveSources: NodeFolderSources = { resolve: (nodeId) => resolveInstance(nodeId), nodeRoots: liveNodeRoots };
+export const nodeFolderSources: NodeFolderSources = { resolve: (nodeId) => resolveInstance(nodeId), nodeRoots: liveNodeRoots };
 
-export function nodeFolderRoutes(sources: NodeFolderSources = liveSources): AnyRoute[] {
+export function nodeFolderRoutes(sources: NodeFolderSources = nodeFolderSources): AnyRoute[] {
   const node = (segment: string) => sources.resolve(decodedSegment(segment, "node ID"));
   return [
     {

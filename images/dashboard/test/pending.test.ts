@@ -350,7 +350,7 @@ describe("answering a device that asks to connect", () => {
   });
 
   function peer(): LocalInstance {
-    return { kind: "local", nodeId: "d7e5", name: "dashboard-test-peer", client: new SyncthingClient({ url, apiKey }), root: "/var/syncthing", os: "linux", threshold: 0 };
+    return { kind: "local", nodeId: "d7e5", name: "dashboard-test-peer", client: new SyncthingClient({ url, apiKey }), root: "/var/syncthing", os: "linux", threshold: 0, source: "registry" };
   }
 
   const remote: RemoteInstance = { kind: "remote", nodeId: "a1b2", name: "p53-data", host: "p53", dashboardUrl: "http://127.0.0.1:1" };

@@ -162,8 +162,8 @@ describe("folder index", () => {
     }
     sources = {
       localInstances: async () => [
-        { nodeId: "fb98", nodeName: "pc", host: "finn", client: clients[0] },
-        { nodeId: "5784", nodeName: "private-array", host: "finn", client: clients[1] },
+        { nodeId: "fb98", nodeName: "pc", host: "finn", client: clients[0], root: "F:\\", os: "windows" },
+        { nodeId: "5784", nodeName: "private-array", host: "finn", client: clients[1], root: "/mnt/storage/pool-5784", os: "linux" },
       ],
       peerFolders: async () => [remoteMusic],
       peerFolderDetails: async () => [],
@@ -255,7 +255,7 @@ describe("folder index", () => {
 
   it("a peer's settings for its own copy are merged into the folder detail", async () => {
     const peerSettings: FolderSettings = { ...(await folderDetail("music", "local", sources)).settings.fb98, path: "/srv/music", type: "receiveonly" };
-    const peerDetail: FolderDetailResponse = { summary: remoteMusic, settings: { a1b2: peerSettings } };
+    const peerDetail: FolderDetailResponse = { summary: remoteMusic, settings: { a1b2: peerSettings }, treePath: "Music" };
     const detail = await folderDetail("music", "all", { ...sources, peerFolderDetails: async () => [peerDetail] });
     assert.deepEqual(Object.keys(detail.settings).sort(), ["5784", "a1b2", "fb98"]);
     assert.equal(detail.settings.a1b2.path, "/srv/music");
@@ -269,7 +269,7 @@ describe("folder index", () => {
       response.end("<html>sign in</html>");
     });
     const goodPeer = createServer((request, response) => {
-      const detail: FolderDetailResponse = { summary: remoteMusic, settings: {} };
+      const detail: FolderDetailResponse = { summary: remoteMusic, settings: {}, treePath: "Music" };
       reply(response, new URL(request.url ?? "/", "http://peer").pathname === "/api/folders" ? { folders: [remoteMusic], unreadable: [], offersUnreadable: [] } : detail);
     });
     try {
@@ -291,6 +291,17 @@ describe("folder index", () => {
     } finally {
       await close(dashboard);
     }
+  });
+
+  it("the detail says where the folder's root lies in the explorer's tree", async () => {
+    assert.equal((await folderDetail("documents", "all", sources)).treePath, "Documents");
+    assert.equal((await folderDetail("music", "all", sources)).treePath, "Music", "the first node with a copy places it");
+    assert.equal((await folderDetail("pictures", "all", sources)).treePath, "Other folders/Pictures", "an offer no node keeps sits under Other folders");
+    layout = { devices: [], folders: [{ relativePath: "Media/Pictures", id: "pictures", priority: 50 }], bands: [] };
+    const placed = await folderDetail("pictures", "all", sources).finally(() => (layout = null));
+    assert.equal(placed.treePath, "Media/Pictures", "or where the layout puts it");
+    const peerOnly = await folderDetail("music", "all", { ...sources, localInstances: async () => [], peerFolderDetails: async () => [{ summary: remoteMusic, settings: {}, treePath: "Audio/Music" }] });
+    assert.equal(peerOnly.treePath, "Audio/Music", "a folder kept only on another host is placed as that host's dashboard placed it");
   });
 
   it("a folder no node has and nobody offers is 404", async () => {

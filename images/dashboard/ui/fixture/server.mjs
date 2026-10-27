@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { devicesFixture } from "./devices.mjs";
 import { nodesFixture } from "./nodes.mjs";
+import { acceptDefaultsFixture, requestsFixture } from "./requests.mjs";
 import { treeFixture } from "./tree.mjs";
 
 /** Serves the built page with made-up nodes, so the UI is tested without the storage stack. */
@@ -42,6 +43,12 @@ async function route(request, response) {
   if (request.method === "GET" && path === "/api/devices") return sendJson(response, 200, devicesFixture(startedAt));
   if (request.method === "GET" && path === "/api/tree") return sendJson(response, 200, treeFixture(url.searchParams.get("node") ?? "all", url.searchParams.get("path") ?? ""));
   if (request.method === "GET" && path === "/api/fixture/actions") return sendJson(response, 200, actionLog);
+  if (request.method === "GET" && path === "/api/requests") return sendJson(response, 200, requestsFixture());
+  const offerDefaults = path.match(/^\/api\/nodes\/([^/]+)\/pending\/folders\/([^/]+)\/defaults$/);
+  if (request.method === "GET" && offerDefaults) {
+    const defaults = acceptDefaultsFixture(decodeURIComponent(offerDefaults[1]), decodeURIComponent(offerDefaults[2]), url.searchParams.get("offeredBy"));
+    return defaults ? sendJson(response, 200, defaults) : sendJson(response, 404, { error: "no such offer" });
+  }
   const scoped = path.match(/^\/api\/arrays\/([^/]+)\/(sync|scrub|add|rebuild|remove|accept-smart)$/);
   if (request.method === "POST" && scoped) return handleAction(decodeURIComponent(scoped[1]), scoped[2], request, response);
   return sendJson(response, 404, { error: "not found" });

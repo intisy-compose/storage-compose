@@ -184,7 +184,7 @@ describe("a node's options", () => {
   });
 
   it("are read from the node's own Syncthing, named after its own device entry", async () => {
-    const instance: LocalInstance = { kind: "local", nodeId: "fb98", name: "pc", client: new SyncthingClient({ url: syncthingUrl, apiKey: syncthingGui.apiKey }), root: "F:\\", os: "windows", threshold: 50 };
+    const instance: LocalInstance = { kind: "local", nodeId: "fb98", name: "pc", client: new SyncthingClient({ url: syncthingUrl, apiKey: syncthingGui.apiKey }), root: "F:\\", os: "windows", threshold: 50, source: "host-agent" };
     const answer = await nodeOptions(instance);
 
     assert.equal(answer.options.deviceName, "pc");

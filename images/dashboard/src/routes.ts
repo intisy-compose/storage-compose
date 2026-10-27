@@ -17,6 +17,7 @@ import { folderRoutes } from "./routes/folders.js";
 import { nodeFolderRoutes } from "./routes/nodeFolders.js";
 import { optionsRoutes } from "./routes/options.js";
 import { pendingRoutes } from "./routes/pending.js";
+import { pendingFolderRoutes } from "./routes/pendingFolders.js";
 import { treeRoutes } from "./routes/tree.js";
 import { arrayStatusDirectory, clusterArrayId, dashboardHosts, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
 import { SyncthingError, SyncthingUnavailable } from "./syncthing.js";
@@ -205,6 +206,7 @@ export const dashboardRoutes: AnyRoute[] = [
   ...treeRoutes,
   ...deviceIndexRoutes(joinRecords),
   ...pendingRoutes(joinRecords),
+  ...pendingFolderRoutes(),
   ...optionsRoutes,
   ...deviceRoutes(),
   ...nodeFolderRoutes(),

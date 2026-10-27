@@ -587,6 +587,7 @@ a.button { display: inline-block; text-decoration: none; color: inherit; }
 .copy-card h4 small { color: var(--text-faint); font-weight: 400; }
 .offer-line { margin: 0 0 8px; display: flex; flex-direction: column; }
 .offer-line small { color: var(--text-faint); font-size: 12px; }
+.offer-line .button { align-self: flex-start; margin-top: 4px; }
 .settings-blocks { display: flex; flex-direction: column; gap: 8px; }
 .settings-block { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; }
 .settings-block summary { cursor: pointer; font-weight: 500; }
@@ -708,6 +709,9 @@ a.activity-entry:hover { background: var(--selection); }
 .request-answer .button-row { margin-top: 0; }
 .request-name { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
 .request-name input { min-width: 200px; }
+.request-answer-folder { flex-direction: column; align-items: stretch; }
+.accept-folder { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.accept-folder .detail-section h3 { margin-top: 0; }
 .request-result { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; max-width: 760px; margin-bottom: 12px; }
 .request-result .notice { margin: 0; }
 .settings-heading { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 16px; margin: 0; }

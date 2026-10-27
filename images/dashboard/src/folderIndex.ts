@@ -3,14 +3,17 @@ import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type F
 import { versioningParamKeys, versioningTypeTexts } from "./api/versioningText.js";
 import { RequestError } from "./http.js";
 import type { SetupLayout } from "./setupRepo.js";
+import { type NodeOs, placeFolders } from "./treePaths.js";
 import { type SyncthingClient, type SyncthingDeviceConfig, SyncthingError, type PendingFolders, type SyncthingFolderSettings, SyncthingUnavailable, instanceFolders } from "./syncthing.js";
 
-/** A node of this host whose Syncthing answers. */
+/** A node of this host whose Syncthing answers; `root` and `os` place its folders in the explorer's tree. */
 export interface FolderInstance {
   nodeId: string;
   nodeName: string;
   host: string;
   client: SyncthingClient;
+  root: string | null;
+  os: NodeOs;
 }
 
 /** Where the index reads from; tests hand in fake instances and peers. */
@@ -198,5 +201,19 @@ export async function folderDetail(folderId: string, scope: "all" | "local", sou
   if (!summary) throw new RequestError(404, `no folder ${folderId}`);
   const settings = await localSettings(folderId, instances, summary.copies);
   for (const detail of remote) Object.assign(settings, detail.settings);
-  return { summary, settings };
+  return { summary, settings, treePath: treePathOf(summary, instances, remote, layout) };
+}
+
+/**
+ * Where the explorer places the folder's root: as the first node of this host with a copy places it, else as the host
+ * of a copy elsewhere placed it, else an offer's place (the layout's path or "Other folders").
+ */
+function treePathOf(summary: FolderSummary, instances: FolderInstance[], remote: FolderDetailResponse[], layout: SetupLayout | null): string | null {
+  for (const copy of summary.copies) {
+    const instance = instances.find((candidate) => copy.local && candidate.nodeId === copy.nodeId);
+    if (instance) return placeFolders([{ id: summary.id, label: summary.label, path: copy.path }], instance.root, instance.os, layout)[0].relativePath;
+  }
+  const placedElsewhere = remote.find((detail) => typeof detail.treePath === "string")?.treePath;
+  if (placedElsewhere) return placedElsewhere;
+  return summary.offers.length ? placeFolders([{ id: summary.id, label: summary.label, path: "" }], null, "linux", layout)[0].relativePath : null;
 }

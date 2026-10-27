@@ -32,7 +32,7 @@ export function peerFolderReads(dashboards: string[]): PeerFolderReads {
 }
 
 const liveSources: FolderIndexSources = {
-  localInstances: async () => (await localInstances()).map((instance) => ({ nodeId: instance.nodeId, nodeName: instance.name, host: hostName, client: instance.client })),
+  localInstances: async () => (await localInstances()).map((instance) => ({ nodeId: instance.nodeId, nodeName: instance.name, host: hostName, client: instance.client, root: instance.root, os: instance.os })),
   ...peerFolderReads(peerDashboards),
   layout: readLayout,
 };

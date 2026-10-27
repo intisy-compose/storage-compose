@@ -18,6 +18,8 @@ export type LocalInstance = {
   root: string | null;
   os: "linux" | "windows";
   threshold: number;
+  /** An array's folders are accepted with the stricter defaults of `acceptFolderDefaults`. */
+  source: LocalNodeSource;
 };
 
 /** A node of another host, read through that host's dashboard; `dashboardUrl` is null for a device no dashboard reported. */
@@ -92,7 +94,7 @@ async function registryNode(nodeId: string, sources: ResolverSources): Promise<L
 
 async function toInstance(node: LocalNode): Promise<LocalInstance | null> {
   const endpoint = node.present ? await node.endpoint() : null;
-  return endpoint ? { kind: "local", nodeId: node.nodeId, name: node.name, client: new SyncthingClient(endpoint), root: node.root, os: node.os, threshold: node.threshold } : null;
+  return endpoint ? { kind: "local", nodeId: node.nodeId, name: node.name, client: new SyncthingClient(endpoint), root: node.root, os: node.os, threshold: node.threshold, source: node.source } : null;
 }
 
 /** A node of this host whether or not its Syncthing can be addressed; `instance` is null while it cannot. */

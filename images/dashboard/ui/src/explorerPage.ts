@@ -1,4 +1,4 @@
-import { type EntryStatus, type FolderSummary, type StorageNode, type TreeEntry, type TreeListing, fetchTree, statusPresentation } from "./api.js";
+import { type EntryStatus, type FolderDetailResponse, type StorageNode, type TreeEntry, type TreeListing, fetchTree, statusPresentation } from "./api.js";
 import { element } from "./dom.js";
 import { loadedEntries } from "./explorerDetail.js";
 import { addableNodes } from "./folderForm.js";
@@ -108,32 +108,15 @@ function parentOf(path: string): string {
   return slash < 0 ? "" : path.slice(0, slash);
 }
 
-/**
- * Where a folder's root lies, for a `#/folders/<id>` link that does not say: a top directory row with
- * the folder's chip, else the part of a copy's path from the first segment that is a top directory.
- */
-function folderRootPath(summary: FolderSummary, top: TreeEntry[]): string | null {
-  const row = top.find((entry) => entry.folder?.id === summary.id);
-  if (row) return row.path;
-  const topNames = new Map(top.map((entry) => [entry.name.toLowerCase(), entry.name]));
-  for (const copy of summary.copies) {
-    const segments = copy.path.split(/[\\/]+/).filter(Boolean);
-    const start = segments.findIndex((segment) => topNames.has(segment.toLowerCase()));
-    if (start >= 0) return [topNames.get((segments[start] as string).toLowerCase()), ...segments.slice(start + 1)].join("/");
-  }
-  return null;
-}
-
-/** Opens the explorer at the folder's parent with its root row selected, once both are known. */
-export function placeAtFolder(summary: FolderSummary): boolean {
+/** Opens the explorer at the parent of the folder's root, as the server placed it, with the root row selected. */
+export function placeAtFolder(detail: FolderDetailResponse): boolean {
   const explorer = appState.explorer;
-  if (!explorer.placeAtFolder || explorer.path || !explorer.listing) return false;
+  if (!explorer.placeAtFolder || explorer.path) return false;
   explorer.placeAtFolder = false;
-  const rootPath = folderRootPath(summary, explorer.listing.entries);
-  if (rootPath === null) return false;
-  history.replaceState(null, "", explorerLocation(summary.id, explorer.node, parentOf(rootPath)));
+  if (detail.treePath === null) return false;
+  history.replaceState(null, "", explorerLocation(detail.summary.id, explorer.node, parentOf(detail.treePath)));
   readLocation();
-  appState.explorer.selectedPath = rootPath;
+  appState.explorer.selectedPath = detail.treePath;
   return true;
 }
 

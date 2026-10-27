@@ -469,6 +469,42 @@ export interface AcceptedDevice {
   setup: string;
 }
 
+/**
+ * `GET /api/nodes/<nodeId>/pending/folders/<folderId>/defaults?offeredBy=<deviceId>`: what the accept form opens with.
+ * On an array the folder is received only and kept with staggered versioning, and it is accepted only with its ID typed.
+ */
+export interface AcceptFolderDefaults {
+  offer: PendingFolderOffer;
+  /** The folder as the accept would create it: placed at `<root>/<label>`, shared with the offering device. */
+  settings: FolderSettings;
+  /** The node's root, inside which the path must stay. */
+  root: string;
+  /** Set on an array: `confirm` must be the folder ID. */
+  confirmRequired: boolean;
+  /** Why the default path cannot be used as it is; null when it can. */
+  placementProblem: string | null;
+}
+
+/** `POST /api/nodes/<nodeId>/pending/folders/<folderId>/accept`: adds the offered folder, shared with `offeredBy`. */
+export interface AcceptFolderBody {
+  offeredBy: string;
+  path: string;
+  type: FolderType;
+  versioning: Versioning;
+  /** The folder ID typed; required on an array. */
+  confirm?: string;
+}
+
+/** `POST .../pending/folders/<folderId>/ignore` and `/dismiss`: the device whose offer is answered. */
+export interface FolderOfferAnswerBody {
+  offeredBy: string;
+}
+
+/** The offer that was ignored; `alreadyIgnored` when the device's offers of the folder were ignored already and nothing was written. */
+export interface IgnoredFolderOffer extends PendingFolderOffer {
+  alreadyIgnored: boolean;
+}
+
 /** A device admitted through the join API; `setup` says what became of it in the setup repo. */
 export interface JoinEntry {
   name: string;
@@ -879,6 +915,8 @@ export interface FolderPathCheck {
 export interface FolderDetailResponse {
   summary: FolderSummary;
   settings: Record<string, FolderSettings>;
+  /** Where the folder's root lies in the explorer's tree (`Documents/GitHub`), as the explorer places it; null when no node places it. */
+  treePath: string | null;
 }
 
 /**

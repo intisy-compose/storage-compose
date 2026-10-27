@@ -207,7 +207,7 @@ async function loadAddFolder(nodesLoaded: Promise<void>): Promise<void> {
 async function loadFolders(nodesLoaded: Promise<void>): Promise<void> {
   await Promise.all([loadExplorer(), loadFolderDetail(), loadAddFolder(nodesLoaded)]);
   const detail = appState.folderDetail;
-  if (detail?.summary.id === appState.selectedFolderId && placeAtFolder(detail.summary)) await loadExplorer();
+  if (detail?.summary.id === appState.selectedFolderId && placeAtFolder(detail)) await loadExplorer();
 }
 
 async function loadActivity(): Promise<void> {
