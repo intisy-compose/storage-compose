@@ -43,6 +43,7 @@ class FakeSyncthing {
         if (answered) return;
         answered = true;
         clearTimeout(timer);
+        this.waiting = this.waiting.filter((wake) => wake !== answerOnce);
         reply(answer());
       };
       const timer = setTimeout(answerOnce, 30);
@@ -61,8 +62,9 @@ class FakeSyncthing {
     for (const wake of waiting) wake();
   }
 
-  /** Cuts the open long poll off, as a network failure would, without a restart. */
-  dropConnections(): void {
+  /** Cuts the open long poll off, as a network failure would, without a restart; waits for one to be open, so a poll always fails. */
+  async dropOpenPoll(): Promise<void> {
+    await until(() => this.waiting.length > 0, "a long poll to cut off");
     this.waiting = [];
     this.server.closeAllConnections();
   }
@@ -162,7 +164,7 @@ describe("event feeds", () => {
     assert.deepEqual(missed, [], "fewer than the buffer holds");
     fake.emit(scanned("documents", "scanning"), scanned("documents", "idle"), scanned("documents", "syncing"));
     await until(() => missed.length === 1, "a full buffer told");
-    fake.dropConnections();
+    await fake.dropOpenPoll();
     fake.emit(scanned("documents", "idle"));
     await until(() => missed.length === 2, "the failed poll told once it answers again");
   });
@@ -196,7 +198,7 @@ describe("event feeds", () => {
       feeds.reconcile([feed]);
       fake.emit(scanned("documents", "idle"));
       await until(() => fake.sinceSeen.some((since) => since >= 1), "the feed to take the first event");
-      fake.dropConnections();
+      await fake.dropOpenPoll();
       sequence = 41;
       fake.emit({ type: "LocalIndexUpdated", data: { folder: "documents", items: 1, filenames: ["a.txt"], sequence: 41 } });
       await until(() => fake.sinceSeen.some((since) => since >= 2), "the recovered poll");
