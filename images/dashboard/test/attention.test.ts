@@ -153,6 +153,13 @@ describe("attention", () => {
     assert.equal(warnings[0].text, "pc's Syncthing: folder documents: insufficient space");
   });
 
+  it("a system error carrying one of the node's secrets shows it replaced, in its text and its ID", () => {
+    const apiKey = "attention-api-key-0123456789";
+    const [shown] = systemErrorWarnings(node({}), [{ when: "2026-10-21T10:00:00Z", message: `GUI request with ${apiKey} refused` }], [apiKey]);
+    assert.equal(shown.text, "pc's Syncthing: GUI request with [redacted] refused");
+    assert.ok(!JSON.stringify(shown).includes(apiKey));
+  });
+
   it("a system error that names an include or quotes a pattern is hidden, in its text and its ID", () => {
     const warnings = systemErrorWarnings(node({}), [
       { when: "2026-10-21T10:00:00Z", message: "loading ignores: #include ../../config/config.xml" },

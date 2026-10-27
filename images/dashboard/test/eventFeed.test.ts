@@ -94,6 +94,7 @@ class FakeSyncthing {
 }
 
 
+const eventFeedApiKey = "event-feed-api-key-0123456789";
 const fakes: FakeSyncthing[] = [];
 const feedSets: EventFeeds[] = [];
 
@@ -101,7 +102,7 @@ async function instance(nodeId: string, name: string): Promise<{ fake: FakeSynct
   const fake = new FakeSyncthing();
   fakes.push(fake);
   const url = await fake.listen();
-  return { fake, feed: { nodeId, name, client: new SyncthingClient({ url, apiKey: "key" }) } };
+  return { fake, feed: { nodeId, name, client: new SyncthingClient({ url, apiKey: eventFeedApiKey }) } };
 }
 
 function feedsFor(log: ActivityLog): EventFeeds {
@@ -341,6 +342,19 @@ describe("event feeds", () => {
     fake.emit(completion(40), completion(70), completion(100), completion(100), completion(95));
     await until(() => log.query({}).entries.length === 2, "two completion entries");
     assert.deepEqual(texts(log), ["pc: private-array fell behind on Documents (95%)", "pc: Documents is complete on private-array"]);
+  });
+
+  it("an event text carrying the node's api key reaches Activity with it replaced", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emit(
+      { type: "ItemFinished", data: { folder: "documents", item: "a.txt", error: `rejected X-API-Key ${eventFeedApiKey}`, type: "file", action: "update" } },
+      { type: "Failure", data: `request with ${eventFeedApiKey} failed` },
+    );
+    await until(() => log.query({}).entries.length === 2, "two entries");
+    assert.ok(!JSON.stringify(log.query({})).includes(eventFeedApiKey));
+    assert.deepEqual(texts(log), ["pc: failure: request with [redacted] failed", "pc: Documents failed to sync a.txt (rejected X-API-Key [redacted])"]);
   });
 
   it("an event error that names an include or quotes a pattern reaches Activity hidden, any other as Syncthing wrote it", async () => {

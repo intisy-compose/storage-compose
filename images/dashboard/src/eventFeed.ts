@@ -4,7 +4,9 @@ import { arrayIds, arrayStatus } from "./arrayStatus.js";
 import { conflictIndexes } from "./conflicts.js";
 import { localNodeInfos } from "./instanceResolver.js";
 import { recentLog, runningJob } from "./parity.js";
+import { nodeSecretsOrApiKey } from "./nodeSecrets.js";
 import { shownUnscopedText } from "./shownSyncthingError.js";
+import { withoutSecrets } from "./supportBundle.js";
 import { activitySettings } from "./settings.js";
 import type { SyncthingClient, SyncthingEvent } from "./syncthing.js";
 
@@ -159,6 +161,8 @@ interface EventContext {
   folderLabels: Map<string, string>;
   /** The last completion seen per `<folder>/<device>`. */
   completions: Map<string, number>;
+  /** What every entry's text is cleared of (`nodeSecrets.ts`). */
+  secrets: readonly string[];
 }
 
 type EventData = Record<string, unknown>;
@@ -306,7 +310,7 @@ export function eventEntry(event: SyncthingEvent, nodeId: string, context: Event
   const described = describeEvent(event, context);
   if (!described) return null;
   const at = Number.isFinite(Date.parse(event.time)) ? new Date(event.time).toISOString() : new Date().toISOString();
-  return { at, source: "syncthing", nodeId, ...described, text: `${context.nodeName}: ${described.text}` };
+  return { at, source: "syncthing", nodeId, ...described, text: `${context.nodeName}: ${withoutSecrets(described.text, context.secrets)}` };
 }
 
 /** Failures Syncthing repeats on every pull; one entry per failure is kept while it is in the buffer. */
@@ -359,7 +363,7 @@ class InstanceFeed {
     private readonly options: FeedOptions,
     private readonly listener: FeedListener,
   ) {
-    this.context = { nodeName: instance.name, deviceNames: new Map(), folderLabels: new Map(), completions: position.completions };
+    this.context = { nodeName: instance.name, deviceNames: new Map(), folderLabels: new Map(), completions: position.completions, secrets: [instance.client.endpoint.apiKey] };
   }
 
   update(instance: FeedInstance): void {
@@ -378,6 +382,7 @@ class InstanceFeed {
         if (mayHaveRestarted) await this.followRestart();
         const events = await this.instance.client.events(this.position.since, followedEventTypes, this.options.waitSeconds, this.options.requestTimeoutMs);
         if (this.stopped) return;
+        this.context.secrets = await nodeSecretsOrApiKey(this.instance.nodeId, this.instance.client);
         const mayHaveMissed = this.pollFailed || events.length >= this.options.bufferSize;
         this.pollFailed = false;
         this.take(events);

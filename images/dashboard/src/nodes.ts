@@ -121,7 +121,7 @@ function withConflictCounts(node: StorageNode): StorageNode {
 /** What a node's own Syncthing and its space say needs a person. */
 function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
   const warnings = [...folderErrorWarnings(node), ...conflictWarnings(node), ...fullWarnings(node, attentionSettings), ...pausedWarnings(node)];
-  if (view) warnings.push(...systemErrorWarnings(node, view.systemErrors), ...pendingWarnings(node, view.pendingDevices, view.pendingFolders));
+  if (view) warnings.push(...systemErrorWarnings(node, view.systemErrors, view.secrets), ...pendingWarnings(node, view.pendingDevices, view.pendingFolders));
   return warnings;
 }
 

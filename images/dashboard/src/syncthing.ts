@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { deviceDisplayName, listedAddresses } from "./api/deviceText.js";
 import { connectionKind } from "./connectionKind.js";
 import { needTotalOf } from "./folderLists.js";
+import { nodeSecretsOrApiKey } from "./nodeSecrets.js";
 import { shownUnscopedText } from "./shownSyncthingError.js";
 import { effectiveSharing, sharedDevices } from "./syncthingConfig.js";
 import { type FileVersion, type FolderFile, type FolderPeer, type FolderType, type NodeFolder, type NodeSync, type Peer, type RemoteState, type SyncthingDevice, type SyncthingInstance, listTimeoutMs } from "./api/types.js";
@@ -203,6 +204,8 @@ export interface InstanceView {
   /** Folders offered to this instance and not accepted. */
   offersWaiting: number;
   systemErrors: SystemError[];
+  /** What its system errors are cleared of before they are shown (`nodeSecrets.ts`). */
+  secrets: string[];
 }
 
 export class SyncthingError extends Error {}
@@ -649,7 +652,7 @@ export function classifyConnections(views: InstanceView[], localDeviceIds: Reado
 export async function instanceView(key: string, endpoint: SyncthingEndpoint, nodeName = key): Promise<InstanceView | null> {
   const client = new SyncthingClient(endpoint);
   try {
-    const [status, version, connections, folderConfigs, deviceConfigs, deviceStats, folderStats, pendingDevices, pendingFolders, systemErrors] = await Promise.all([
+    const [status, version, connections, folderConfigs, deviceConfigs, deviceStats, folderStats, pendingDevices, pendingFolders, systemErrors, secrets] = await Promise.all([
       client.request<SystemStatus>("GET", "/system/status"),
       client.request<{ version: string }>("GET", "/system/version"),
       client.request<Connections>("GET", "/system/connections"),
@@ -660,6 +663,7 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint, nod
       optional(client.pendingDevices(), {}),
       optional(client.pendingFolders(), {}),
       optional(client.systemErrors(), []),
+      nodeSecretsOrApiKey(key, client),
     ]);
     const folderRates = rates(key, connections);
     const folders = await folderViews(client, status.myID, folderConfigs, deviceConfigs, folderStats);
@@ -690,6 +694,7 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint, nod
       pendingFolders,
       offersWaiting: Object.keys(pendingFolders).length,
       systemErrors,
+      secrets,
     };
   } catch {
     return null;

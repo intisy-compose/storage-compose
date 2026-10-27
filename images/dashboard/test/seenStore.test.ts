@@ -53,6 +53,7 @@ function view(nodeName: string, deviceId: string, peers: Peer[]): InstanceView {
     pendingFolders: {},
     offersWaiting: 0,
     systemErrors: [],
+    secrets: [],
   };
 }
 

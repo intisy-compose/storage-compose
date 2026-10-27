@@ -238,6 +238,7 @@ function view(nodeId: string, nodeName: string, deviceId: string, peers: Peer[])
     pendingFolders: {},
     offersWaiting: 0,
     systemErrors: [],
+    secrets: [],
   };
 }
 

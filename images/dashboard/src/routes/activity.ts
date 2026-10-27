@@ -5,7 +5,8 @@ import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, Route, WriteNote } from "../routes.js";
 import { shownUnscopedText } from "../shownSyncthingError.js";
-import { configSecrets, filesHoldingSecrets, holdsSecret, UnreadableZip, withoutSecrets, zipEntries } from "../supportBundle.js";
+import { nodeSecrets as readNodeSecrets } from "../nodeSecrets.js";
+import { filesHoldingSecrets, holdsSecret, UnreadableZip, withoutSecrets, zipEntries } from "../supportBundle.js";
 import { AnswerTooLarge, type SystemError, boundedBytes } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
 
@@ -92,24 +93,9 @@ function sinceOf(url: URL): string | null {
   return since;
 }
 
-const secretsKeptMs = 60_000;
-const keptSecrets = new Map<string, { readAt: number; secrets: Promise<string[]> }>();
-
-/**
- * What is never let out of the node: its API key and every password or API key its configuration holds, the GUI's password hash and
- * folder encryption passwords among them; read again after a minute.
- * @implNote The GUI's plain password is never known to the dashboard: Syncthing keeps only its bcrypt hash, so only the hash is searched for.
- */
+/** The node's secrets (`nodeSecrets.ts`); a node that does not answer is a 503, so nothing is shown unchecked. */
 function nodeSecrets(local: LocalInstance): Promise<string[]> {
-  const key = `${local.nodeId}\u0000${local.client.endpoint.url}`;
-  const kept = keptSecrets.get(key);
-  if (kept && Date.now() - kept.readAt < secretsKeptMs) return kept.secrets;
-  const secrets = callSyncthing(local, (client) => client.request<unknown>("GET", "/config")).then((config) => [...new Set([local.client.endpoint.apiKey, ...configSecrets(config)].filter(Boolean))]);
-  keptSecrets.set(key, { readAt: Date.now(), secrets });
-  secrets.catch(() => {
-    if (keptSecrets.get(key)?.secrets === secrets) keptSecrets.delete(key);
-  });
-  return secrets;
+  return callSyncthing(local, (client) => readNodeSecrets(local.nodeId, client));
 }
 
 function nodePath(nodeId: string, rest: string): string {
