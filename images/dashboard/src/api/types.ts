@@ -304,6 +304,10 @@ export interface StorageNode {
   folders: NodeFolder[];
   /** The other host's dashboard this node was read from; null for this host's nodes and for a device no dashboard reported. */
   dashboardUrl: string | null;
+  /** What rewrites some of the node's Syncthing settings at each start, which its forms then show read only; null for none, and off this host. */
+  keeper: SettingsKeeper | null;
+  /** Whether restarting the node's Syncthing needs its name typed, as the restart route asks. */
+  restartConfirmRequired: boolean;
 }
 
 export type WarningKind =

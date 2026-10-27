@@ -10,6 +10,9 @@ import {
   deviceDisplayName,
   folderShare,
   deviceSettingLabels,
+  generalSettingKeys,
+  isKeeperManaged,
+  keeperManagedText,
   removeDevice,
   saveDeviceSettings,
   saveFolderSettings,
@@ -149,9 +152,17 @@ export function settingFields(context: SettingsContext): HTMLElement {
   );
 }
 
-/** The node's own device: only its name can be changed, the name other devices are offered for the node. */
-function ownNameField(context: SettingsContext): HTMLElement {
-  return element("div", { className: "form-fields device-fields" }, labelled(context, "name", textInput(context, "name"), "Empty shows the short device ID."));
+/** The node's own device: only its name can be changed, the name other devices are offered for the node, unless its keeper sets it. */
+function ownNameField(context: SettingsContext, node: StorageNode): HTMLElement {
+  const input = textInput(context, "name");
+  const kept = isOwnNameKept(node);
+  if (kept) input.disabled = true;
+  const hint = node.keeper && kept ? `Read only: ${keeperManagedText(node.keeper)}.` : "Empty shows the short device ID.";
+  return element("div", { className: "form-fields device-fields" }, labelled(context, "name", input, hint));
+}
+
+function isOwnNameKept(node: StorageNode): boolean {
+  return isKeeperManaged(node.keeper, generalSettingKeys.deviceName);
 }
 
 function isOwnDevice(node: StorageNode, form: DeviceFormState): boolean {
@@ -202,18 +213,14 @@ function formBody(node: StorageNode, form: DeviceFormState): HTMLElement {
   }
   if (!node.local) return element("p", { className: "read-only-note" }, `Read-only. ${node.name}'s devices are edited on ${node.host}'s own dashboard.`);
   const context: SettingsContext = { formId, saving: form.saving, saved: form.saved, draft: form.draft, isArray: node.kind === "array" };
-  return element(
+  const own = isOwnDevice(node, form);
+  const buttons = element(
     "div",
-    { className: "device-form", attributes: { id: formId } },
-    isOwnDevice(node, form) ? ownNameField(context) : settingFields(context),
-    resultLine(form.result),
-    element(
-      "div",
-      { className: "button-row" },
-      Object.assign(button(form.saving ? "Saving…" : "Save", () => void save(form), "button primary"), { disabled: form.saving }),
-      Object.assign(button("Revert", () => revert(form), "button ghost"), { disabled: form.saving }),
-    ),
+    { className: "button-row" },
+    Object.assign(button(form.saving ? "Saving…" : "Save", () => void save(form), "button primary"), { disabled: form.saving }),
+    Object.assign(button("Revert", () => revert(form), "button ghost"), { disabled: form.saving }),
   );
+  return element("div", { className: "device-form", attributes: { id: formId } }, own ? ownNameField(context, node) : settingFields(context), resultLine(form.result), own && isOwnNameKept(node) ? null : buttons);
 }
 
 /** The panel's header with a way back to the node's detail. */

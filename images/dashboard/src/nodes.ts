@@ -5,10 +5,11 @@ import { conflictWarnings, folderErrorWarnings, fromOtherHost, fullWarnings, hos
 import { type BlockDevice, listBlockDevices, replacementCandidates } from "./blockDevices.js";
 import { conflictIndexes } from "./conflicts.js";
 import { type UnreadSources, recordPresentDrives } from "./driveHistory.js";
-import { agentProblem, readHeartbeat } from "./hostAgent.js";
-import { registryEntries, registryWarnings, syncthingEndpoint } from "./instances.js";
+import { agentEntries, agentProblem, readHeartbeat } from "./hostAgent.js";
+import { registryWarnings, statusRegistryEntries, syncthingEndpoint } from "./instances.js";
 import { type JoinRecords } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
+import { type LocalNodeSource, localNodeRules } from "./nodeSource.js";
 import { parityState } from "./parity.js";
 import { attentionSettings, hostName, peerDashboards, poolPath, registryDirectory } from "./settings.js";
 import { deviceSeenStore, localDeviceIds, recordDevices, rememberable, rememberedLocalNodes } from "./seenStore.js";
@@ -61,10 +62,11 @@ async function arrayNode(status: ArrayStatus, devices: BlockDevice[], sources: M
     peers: view?.peers ?? [],
     folders: view?.folders ?? [],
     dashboardUrl: null,
+    ...localNodeRules("array", status.id, poolPath(status.id)),
   };
 }
 
-function registryNode(entry: NodeRegistryEntry, view: InstanceView | null): StorageNode {
+function registryNode(entry: NodeRegistryEntry, source: LocalNodeSource, view: InstanceView | null): StorageNode {
   const hasSpace = entry.space.size !== null && entry.space.used !== null;
   return {
     id: entry.id,
@@ -83,6 +85,7 @@ function registryNode(entry: NodeRegistryEntry, view: InstanceView | null): Stor
     peers: view?.peers ?? [],
     folders: view?.folders ?? [],
     dashboardUrl: null,
+    ...localNodeRules(source, entry.id, entry.root),
   };
 }
 
@@ -132,13 +135,15 @@ function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
  * @param ephemeral filled with the nodes whose registry entry asks not to be remembered.
  */
 async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes: Map<string, string>, unread: UnreadSources, ephemeral: Set<string>): Promise<StorageNode[]> {
-  const [devices, sources, entries, listed, registryListed] = await Promise.all([
+  const [devices, sources, statusEntries, heartbeat, listed, registryListed] = await Promise.all([
     listBlockDevices(),
     mountSources(),
-    registryEntries(),
+    statusRegistryEntries(),
+    readHeartbeat(),
     listedArrayIds(),
     readdir(registryDirectory).then(() => true, () => false),
   ]);
+  const entries = [...statusEntries.map((entry) => ({ entry, source: "registry" as const })), ...agentEntries(heartbeat).map((entry) => ({ entry, source: "host-agent" as const }))];
   unread.allArrays = listed === null;
   unread.nodes = !registryListed;
   const nodes: StorageNode[] = [];
@@ -153,17 +158,16 @@ async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes
     nodes.push(node);
     warnings.push(...arrayWarnings(status, node), ...nodeWarnings(node, view));
   }
-  for (const entry of entries) {
+  for (const { entry, source } of entries) {
     if (entry.remember === false) ephemeral.add(entry.id);
     const endpoint = entry.present ? await syncthingEndpoint(entry.id, entry) : null;
     const view = endpoint ? await instanceView(entry.id, endpoint, entry.name) : null;
     if (view) views.push(view);
-    const node = withConflictCounts(registryNode(entry, view));
+    const node = withConflictCounts(registryNode(entry, source, view));
     nodes.push(node);
     warnings.push(...nodeWarnings(node, view));
     if (!entry.present) warnings.push(warning({ id: `absent:${entry.id}`, level: "info", kind: "offline", text: `${entry.name} is not attached to this host`, nodeId: entry.id }));
   }
-  const heartbeat = await readHeartbeat();
   for (const agentNode of heartbeat?.nodes ?? []) if (agentNode.syncthing?.deviceId) agentNodes.set(agentNode.syncthing.deviceId, agentNode.id);
   warnings.push(...hostWarnings(hostName, await registryWarnings(), agentProblem(heartbeat), heartbeat?.problems ?? []));
   return nodes;
@@ -218,6 +222,8 @@ export async function syncthingOnlyNodes(known: StorageNode[], views: InstanceVi
         peers: [],
         folders: [],
         dashboardUrl: null,
+        keeper: null,
+        restartConfirmRequired: false,
       });
     }
   }

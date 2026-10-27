@@ -60,6 +60,8 @@ function node(id: string, name: string, deviceId: string | null, overrides: Part
     peers: [],
     folders: [],
     dashboardUrl: null,
+    keeper: null,
+    restartConfirmRequired: false,
     ...overrides,
   };
 }

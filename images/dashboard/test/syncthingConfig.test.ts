@@ -11,6 +11,7 @@ import { type LocalInstance, type LocalNodeSource, type RemoteInstance, type Res
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
 import { type HostNode, type OptionsRouteSources, editOptions, hostSettings, nodeOptions, optionsRoutes } from "../src/routes/options.js";
 import { clusterArrayId } from "../src/settings.js";
+import { localNodeRules } from "../src/nodeSource.js";
 import { parseLayout } from "../src/setupRepo.js";
 import { SyncthingClient, type SyncthingFolderSettings } from "../src/syncthing.js";
 import { changedFields, folderChangeProblem, instanceGui, instanceOptions, optionsChangeProblem, redactConfig } from "../src/syncthingConfig.js";
@@ -607,6 +608,14 @@ describe("which keeper rewrites a node's settings", () => {
     assert.equal(settingsKeeperOf(node("array", clusterArrayId, "/mnt/storage/pool")), null, "the cluster's own service sets only its GUI");
     assert.equal(settingsKeeperOf(node("registry", "d7e5", "/var/syncthing/data")), null, "the test peer runs its own Syncthing");
     assert.equal(settingsKeeperOf(node("registry", "e1e1", null)), null);
+  });
+
+  it("a node on the page carries its keeper and whether a restart needs its name, by the rules the routes apply", () => {
+    assert.deepEqual(localNodeRules("host-agent", "fb98", "F:\\"), { keeper: "host-agent", restartConfirmRequired: true });
+    assert.deepEqual(localNodeRules("array", "5784", "/mnt/storage/5784"), { keeper: "nodes-service", restartConfirmRequired: true });
+    assert.deepEqual(localNodeRules("array", clusterArrayId, "/mnt/storage/pool"), { keeper: null, restartConfirmRequired: true });
+    assert.deepEqual(localNodeRules("registry", "c3d4", "/mnt/nodes/c3d4"), { keeper: "nodes-service", restartConfirmRequired: false });
+    assert.deepEqual(localNodeRules("registry", "d7e5", "/var/syncthing/data"), { keeper: null, restartConfirmRequired: false });
   });
 
   it("keeps one table, read by every route and form", () => {

@@ -1,16 +1,8 @@
 import type { NodeRestartState, RestartAnswer, RestartBody } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, requireLocal } from "../instanceResolver.js";
+import { isRestartConfirmRequired } from "../nodeSource.js";
 import type { AnyRoute, WriteNote } from "../routes.js";
-
-/**
- * Whether a restart needs the node's name typed.
- * @implNote While an array or the host's own native node (the PC's folders) restarts, its folders stop syncing; a container node such as
- * the test peer restarts with a click, as it is paused with one.
- */
-export function isRestartConfirmRequired(instance: LocalInstance): boolean {
-  return instance.source === "array" || instance.source === "host-agent";
-}
 
 /** Whether the node's Syncthing needs a restart before a saved change takes effect. */
 export async function requiresRestart(instance: LocalInstance): Promise<boolean> {
