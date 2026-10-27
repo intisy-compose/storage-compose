@@ -258,7 +258,9 @@ function panelBody(state: VersionsState, copy: FolderCopy, formId: string): HTML
   if (!answer) return [element("p", { className: "muted" }, "Reading the versions… Syncthing lists every kept version at once, which can take up to 30 s.")];
   if (!answer.ok) {
     const isRefusal = answer.status >= 400 && answer.status < 500;
-    return [element("p", { className: isRefusal ? "muted" : "tone-text-bad", attributes: { role: "status" } }, isRefusal ? `${answer.message}.` : `Could not be read: ${answer.message}`)];
+    const again = button(state.loading ? "Reading…" : "Read again", () => void load(state), "button ghost");
+    again.disabled = state.loading;
+    return [element("p", { className: isRefusal ? "muted" : "tone-text-bad", attributes: { role: "status" } }, isRefusal ? `${answer.message}.` : `Could not be read: ${answer.message}`), element("div", { className: "button-row" }, again)];
   }
   if (!answer.value.enabled) return [versioningOffText(copy)];
   return levelBody(state, copy, answer.value, formId);

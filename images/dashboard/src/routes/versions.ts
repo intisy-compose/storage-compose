@@ -5,7 +5,7 @@ import { type LocalInstance, type RemoteInstance, type ResolvedInstance, arrayCo
 import { folderSubpathProblem } from "../pathGuard.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { versionsSettings } from "../settings.js";
-import { AnswerTooLarge } from "../syncthing.js";
+import { AnswerTooLarge, listTimeoutMs } from "../syncthing.js";
 import { SharedLists } from "../versionLists.js";
 import { decodedSegment } from "./devices.js";
 import { type PageRequest, pageRequestOf } from "./items.js";
@@ -27,7 +27,10 @@ interface LevelQuery {
   request: PageRequest;
 }
 
-/** How long a folder's versions list is shared while its tree is browsed, and how many lists are read at once. */
+/**
+ * How long a folder's versions list is shared while its tree is browsed, and how many lists are read at once.
+ * @implNote One list is kept at a time, as browsing reads one tree at a time; a parsed list holds several times its bytes.
+ */
 const listKeptMs = 60_000;
 const listsReadAtOnce = 2;
 
@@ -270,6 +273,8 @@ export interface VersionSources {
   maxListBytes?: number;
   /** How long a list is shared; tests make it short. */
   listKeptMs?: number;
+  /** How long a read waits for a list being read to finish when as many as allowed are; tests make it short. */
+  slotWaitMs?: number;
 }
 
 const liveSources: VersionSources = { resolve: (nodeId) => resolveInstance(nodeId) };
@@ -283,7 +288,7 @@ async function resolveFor(sources: VersionSources, url: URL, nodeId: string): Pr
 
 export function versionRoutes(sources: VersionSources = liveSources): AnyRoute[] {
   const maxBytes = sources.maxListBytes ?? versionsSettings.listMaxBytes;
-  const lists = new SharedLists<StoredVersions>({ keptMs: sources.listKeptMs ?? listKeptMs, maxTotalBytes: 2 * maxBytes, maxReading: listsReadAtOnce });
+  const lists = new SharedLists<StoredVersions>({ keptMs: sources.listKeptMs ?? listKeptMs, maxTotalBytes: maxBytes, maxReading: listsReadAtOnce, slotWaitMs: sources.slotWaitMs ?? listTimeoutMs });
   return [
     {
       method: "GET",
