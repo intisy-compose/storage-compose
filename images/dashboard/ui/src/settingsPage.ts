@@ -1,8 +1,14 @@
 import type { HostSettings, InstanceGui, InstanceOptions, NodeOptionsResponse, PriorityBand, StorageNode } from "./api.js";
+import { advancedEditor } from "./advancedEditor.js";
 import { element, keyValueList } from "./dom.js";
 import { priorityUnsetText } from "./folderCondition.js";
 import { isNotConnected } from "./nodeStatus.js";
+import { defaultsSection } from "./defaultsSection.js";
+import { generalSettingsForm } from "./generalForm.js";
+import { ignoredSection } from "./ignoredSection.js";
+import { connectionOptionsForm } from "./optionsForm.js";
 import { applyTheme } from "./preferences.js";
+import { restartSection } from "./restartSection.js";
 import { requestRender } from "./renderRequest.js";
 import { appState, locationFor } from "./state.js";
 
@@ -12,15 +18,6 @@ function onOff(value: boolean): string {
 
 function listText(values: string[], emptyText: string): string {
   return values.length ? values.join(", ") : emptyText;
-}
-
-function rateText(kibPerSecond: number): string {
-  return kibPerSecond > 0 ? `${kibPerSecond} KiB/s` : "unlimited";
-}
-
-function usageReportingText(urAccepted: number): string {
-  if (urAccepted < 0) return "declined";
-  return urAccepted === 0 ? "not answered yet" : `accepted (version ${urAccepted})`;
 }
 
 function card(heading: string, subheading: string | null, ...children: (HTMLElement | null)[]): HTMLElement {
@@ -56,22 +53,11 @@ function hostCard(settings: HostSettings): HTMLElement {
   );
 }
 
-function optionsList(options: InstanceOptions): HTMLElement {
+/** The options neither the connections nor the general form changes; the advanced editor changes them. */
+function otherOptionsList(options: InstanceOptions): HTMLElement {
   return keyValueList([
-    ["Device name", options.deviceName || "not set"],
-    ["Listen on", listText(options.listenAddresses, "nothing")],
-    ["Global discovery", `${onOff(options.globalAnnounceEnabled)}, servers ${listText(options.globalAnnounceServers, "none")}`],
-    ["Local discovery", onOff(options.localAnnounceEnabled)],
-    ["Relays", onOff(options.relaysEnabled)],
-    ["NAT traversal", onOff(options.natEnabled)],
-    ["Send limit", rateText(options.maxSendKbps)],
-    ["Receive limit", rateText(options.maxRecvKbps)],
-    ["Limits in LAN", onOff(options.limitBandwidthInLan)],
     ["Always local", listText(options.alwaysLocalNets, "none")],
     ["Reconnect", `every ${options.reconnectionIntervalS} s`],
-    ["Keep free", `${options.minHomeDiskFree.value} ${options.minHomeDiskFree.unit} on its home disk`],
-    ["Usage reports", usageReportingText(options.urAccepted)],
-    ["Crash reports", onOff(options.crashReportingEnabled)],
   ]);
 }
 
@@ -80,7 +66,7 @@ function guiList(gui: InstanceGui): HTMLElement {
     ["GUI address", gui.address],
     ["GUI TLS", onOff(gui.useTLS)],
     ["GUI login", gui.user ? `${gui.user} (${gui.authMode})` : `none (${gui.authMode})`],
-    ["Managed by", "the stack, so it is not changed here"],
+    ["Managed by", "the stack, so it is not changed here, nor in the advanced editor"],
   ]);
 }
 
@@ -88,7 +74,16 @@ function nodeBody(node: StorageNode, answer: NodeOptionsResponse | { error: stri
   if (isNotConnected(node)) return [element("p", { className: "muted" }, "Not connected, so its options cannot be read.")];
   if (!answer) return [element("p", { className: "muted" }, "Reading its options…")];
   if ("error" in answer) return [element("p", { className: "warning" }, answer.error)];
-  return [optionsList(answer.options), guiList(answer.gui)];
+  return [
+    restartSection(node),
+    connectionOptionsForm(node, answer.options, localNodes().length, answer.keeper),
+    generalSettingsForm(node, answer.options, answer.keeper),
+    otherOptionsList(answer.options),
+    guiList(answer.gui),
+    defaultsSection(node),
+    ignoredSection(node),
+    advancedEditor(node.id, { kind: "options" }),
+  ];
 }
 
 function nodeCard(node: StorageNode): HTMLElement {

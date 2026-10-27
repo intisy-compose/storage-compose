@@ -75,8 +75,14 @@ export type {
   NodeEntryState,
   NodeFolder,
   NodeKind,
+  NodeOptionsEdit,
   NodeOptionsResponse,
   NodesResponse,
+  ConnectionOptionKey,
+  ConnectionOptions,
+  ConnectionOptionsChange,
+  OptionsEditOutcome,
+  OptionsEditResponse,
   NodeSync,
   Parity,
   ParityJob,
@@ -117,13 +123,33 @@ export type {
   NodeError,
   NodeErrors,
   NodeLog,
+  DefaultIgnores,
+  DeviceDefaultKey,
+  DeviceDefaults,
+  FolderDefaultKey,
+  FolderDefaults,
+  GeneralEditResponse,
+  GeneralSettingsChange,
+  IgnoredDeviceEntry,
+  IgnoredFolderEntry,
+  IgnoredLists,
+  UsageReportingChoice,
+  AdvancedConfig,
+  AdvancedTarget,
+  NodeRestartState,
+  RestartAnswer,
 } from "../../src/api/types.js";
 import type { LocalChangesAction } from "../../src/api/localChangesText.js";
 import { requestRefresh } from "./renderRequest.js";
+import type { AdvancedConfig, AdvancedTarget, ConnectionOptionsChange, DefaultIgnores, DeviceDefaults, FolderDefaults, GeneralEditResponse, GeneralSettingsChange, IgnoredLists, NodeRestartState, OptionsEditResponse, RestartAnswer, RestartBody } from "../../src/api/types.js";
+import { applyToHostQuery } from "../../src/api/optionsText.js";
 import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, DebugChange, DebugFacilities, NodeErrors, NodeLog, AddedDevice, ArrayAction, ArrayActionBody, ConflictsPage, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, RestoredVersions, RestoreVersionsBody, TreeListing, VersionsPage } from "../../src/api/types.js";
 import { type ActivityFilters, activityRequestQuery, defaultActivityFilters, folderChangesShown } from "../../src/api/activityFilters.js";
 import { changesActivityType } from "../../src/api/types.js";
 
+export { connectionOptionKeys, connectionOptionsOf, deviceDefaultKeys, folderDefaultKeys } from "../../src/api/types.js";
+export { type SettingsKeeper, generalSettingKeys, isKeeperManaged, keeperManagedText } from "../../src/api/keeperText.js";
+export { applyToHostLabel, applyToHostQuery, connectionOptionLabels, discoveryServerProblem, generalSettingLabels, listenAddressProblem, perNodeListenText } from "../../src/api/optionsText.js";
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
 export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
@@ -220,6 +246,78 @@ export function removeDevice(nodeId: string, deviceId: string, confirm: string):
 
 function nodeApiPath(nodeId: string, rest: string): string {
   return `api/nodes/${encodeURIComponent(nodeId)}/${rest}`;
+}
+
+/** Sends only `change`, to the node or, with `applyToHost`, to every node of this host; the answer says what became of each. */
+export function saveNodeOptions(nodeId: string, change: ConnectionOptionsChange, applyToHost: boolean): Promise<SaveResult<OptionsEditResponse>> {
+  return sendWrite(nodeApiPath(nodeId, `options${applyToHost ? `?${applyToHostQuery}` : ""}`), "PATCH", change);
+}
+
+/** Sends only the general settings the person changed; the answer is the node's options as they now stand, and what was not saved. */
+export function saveGeneralSettings(nodeId: string, change: GeneralSettingsChange): Promise<SaveResult<GeneralEditResponse>> {
+  return sendWrite(nodeApiPath(nodeId, "general"), "PATCH", change);
+}
+
+function advancedPath(nodeId: string, target: AdvancedTarget): string {
+  if (target.kind === "options") return nodeApiPath(nodeId, "advanced/options");
+  return nodeApiPath(nodeId, `advanced/${target.kind === "folder" ? "folders" : "devices"}/${encodeURIComponent(target.id)}`);
+}
+
+export function fetchAdvancedConfig(nodeId: string, target: AdvancedTarget): Promise<AdvancedConfig> {
+  return getJson(advancedPath(nodeId, target));
+}
+
+/** Sends only the keys the person changed; the answer is the object as it now stands. */
+export function saveAdvancedConfig(nodeId: string, target: AdvancedTarget, change: Record<string, unknown>): Promise<SaveResult<AdvancedConfig>> {
+  return sendWrite(advancedPath(nodeId, target), "PATCH", change);
+}
+
+export function fetchRestartState(nodeId: string): Promise<NodeRestartState> {
+  return getJson(nodeApiPath(nodeId, "restart-required"));
+}
+
+/** `confirm` is the node's name, needed where its restart state says so. */
+export function restartNode(nodeId: string, confirm: string): Promise<SaveResult<RestartAnswer>> {
+  const body: RestartBody = { confirm };
+  return sendWrite(nodeApiPath(nodeId, "restart"), "POST", body);
+}
+
+export function fetchFolderDefaultSettings(nodeId: string): Promise<FolderDefaults> {
+  return getJson(nodeApiPath(nodeId, "defaults/folder"));
+}
+
+export function saveFolderDefaultSettings(nodeId: string, change: Partial<FolderDefaults>): Promise<SaveResult<FolderDefaults>> {
+  return sendWrite(nodeApiPath(nodeId, "defaults/folder"), "PATCH", change);
+}
+
+export function fetchDeviceDefaultSettings(nodeId: string): Promise<DeviceDefaults> {
+  return getJson(nodeApiPath(nodeId, "defaults/device"));
+}
+
+export function saveDeviceDefaultSettings(nodeId: string, change: Partial<DeviceDefaults>): Promise<SaveResult<DeviceDefaults>> {
+  return sendWrite(nodeApiPath(nodeId, "defaults/device"), "PATCH", change);
+}
+
+export function fetchDefaultIgnores(nodeId: string): Promise<DefaultIgnores> {
+  return getJson(nodeApiPath(nodeId, "defaults/ignores"));
+}
+
+/** `opened` is the patterns the form read; the node refuses the save when its own differ by now. */
+export function saveDefaultIgnores(nodeId: string, lines: string[], opened: string[]): Promise<SaveResult<DefaultIgnores>> {
+  const body: IgnoresChange = { lines, opened };
+  return sendWrite(nodeApiPath(nodeId, "defaults/ignores"), "PUT", body);
+}
+
+export function fetchIgnoredLists(nodeId: string): Promise<IgnoredLists> {
+  return getJson(nodeApiPath(nodeId, "ignored"));
+}
+
+export function unignoreDevice(nodeId: string, deviceId: string): Promise<SaveResult<IgnoredLists>> {
+  return sendWrite(nodeApiPath(nodeId, `ignored/devices/${encodeURIComponent(deviceId)}`), "DELETE");
+}
+
+export function unignoreFolder(nodeId: string, folderId: string, offeredBy: string): Promise<SaveResult<IgnoredLists>> {
+  return sendWrite(`${nodeApiPath(nodeId, `ignored/folders/${encodeURIComponent(folderId)}`)}?offeredBy=${encodeURIComponent(offeredBy)}`, "DELETE");
 }
 
 /** A new device's settings as the node's Syncthing fills them in. */

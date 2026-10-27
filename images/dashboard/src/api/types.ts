@@ -2,6 +2,7 @@
  * The dashboard's HTTP contract, shared by the server (`src/`) and the page (`ui/`).
  * Sizes are bytes, rates bytes per second, times ISO 8601 strings in UTC, percentages 0 to 100.
  */
+import type { SettingsKeeper } from "./keeperText.js";
 
 /** "device" is a Syncthing device no dashboard and no join record describes, so nothing says what node it holds. */
 export type NodeKind = "array" | "drive" | "folder" | "device";
@@ -625,10 +626,146 @@ export interface InstanceGui {
   managedBy: "stack";
 }
 
-/** `GET /api/nodes/<nodeId>/options`. */
+/** `GET /api/nodes/<nodeId>/options`; `keeper` rewrites some of these settings at each start, which the forms show read only. */
 export interface NodeOptionsResponse {
   options: InstanceOptions;
   gui: InstanceGui;
+  keeper: SettingsKeeper | null;
+}
+
+/** The options of Syncthing's own Connections settings, the ones the options form changes. */
+export const connectionOptionKeys = [
+  "listenAddresses",
+  "maxRecvKbps",
+  "maxSendKbps",
+  "limitBandwidthInLan",
+  "natEnabled",
+  "localAnnounceEnabled",
+  "globalAnnounceEnabled",
+  "globalAnnounceServers",
+  "relaysEnabled",
+] as const;
+
+export type ConnectionOptionKey = (typeof connectionOptionKeys)[number];
+export type ConnectionOptions = Pick<InstanceOptions, ConnectionOptionKey>;
+/** `PATCH /api/nodes/<nodeId>/options`, with `?applyTo=host` for every node of this host: only the options the person changed. */
+export type ConnectionOptionsChange = Partial<ConnectionOptions>;
+
+export function connectionOptionsOf(options: InstanceOptions): ConnectionOptions {
+  return Object.fromEntries(connectionOptionKeys.map((key) => [key, structuredClone(options[key])])) as ConnectionOptions;
+}
+
+/** What an options edit did on one node: `unchanged` when every option already had its value, so nothing was sent. */
+export type OptionsEditOutcome = "saved" | "unchanged" | "maybe saved" | "failed" | "not connected" | "skipped";
+
+export interface NodeOptionsEdit {
+  nodeId: string;
+  name: string;
+  outcome: OptionsEditOutcome;
+  /** Why the node was not changed, or may not have been; null when it was. */
+  problem: string | null;
+  /** The node's options as they now stand, null when they could not be read. */
+  options: InstanceOptions | null;
+}
+
+/** The answer of an options edit: the node in the path first, then each other node of the host it was applied to. */
+export interface OptionsEditResponse {
+  nodes: NodeOptionsEdit[];
+}
+
+/** The person's answer to Syncthing's usage reporting question; it is never answered for them. */
+export type UsageReportingChoice = "accepted" | "declined";
+
+/**
+ * `PATCH /api/nodes/<nodeId>/general`: only the general settings the person changed. `deviceName` is the node's own device
+ * entry, the name other devices see; the rest are options. Answered with the node's `NodeOptionsResponse` as it now stands.
+ */
+export interface GeneralSettingsChange {
+  deviceName?: string;
+  minHomeDiskFree?: { value: number; unit: DiskFreeUnit };
+  usageReporting?: UsageReportingChoice;
+  crashReportingEnabled?: boolean;
+}
+
+/**
+ * The answer of a general settings edit: the node's options as they now stand (null when they could not be read again), and
+ * `problem` when the rename was saved but the other settings were not.
+ */
+export interface GeneralEditResponse {
+  settings: NodeOptionsResponse | null;
+  problem: string | null;
+}
+
+/** The Syncthing objects the advanced editor shows whole: a node's options, one of its folders or one of its devices. */
+export type AdvancedTarget = { kind: "options" } | { kind: "folder"; id: string } | { kind: "device"; id: string };
+
+/**
+ * `GET /api/nodes/<nodeId>/advanced/options|folders/<id>|devices/<id>`: the object as Syncthing has it, without any API key or password.
+ * Its `PATCH` takes only the keys the person changed and answers the same.
+ */
+export interface AdvancedConfig {
+  config: Record<string, unknown>;
+  /** Whether the node's Syncthing needs a restart before a saved change takes effect. */
+  restartRequired: boolean;
+}
+
+/** `GET /api/nodes/<nodeId>/restart-required`. */
+export interface NodeRestartState {
+  restartRequired: boolean;
+  /** Whether a restart needs the node's name typed, as for an array or the host's own native Syncthing. */
+  confirmRequired: boolean;
+}
+
+/** `POST /api/nodes/<nodeId>/restart`: `confirm` is the node's name, needed where `NodeRestartState.confirmRequired`. */
+export interface RestartBody {
+  confirm?: string;
+}
+
+export interface RestartAnswer {
+  restarting: true;
+}
+
+/** The folder settings a node's new folders start with, as Syncthing's Default Folder holds them; path, label and sharing are each folder's own. */
+export const folderDefaultKeys = ["type", "rescanIntervalS", "fsWatcherEnabled", "fsWatcherDelayS", "ignorePerms", "order", "minDiskFree", "maxConflicts", "syncOwnership", "syncXattrs", "versioning"] as const;
+export type FolderDefaultKey = (typeof folderDefaultKeys)[number];
+/** `GET /api/nodes/<nodeId>/defaults/folder`; `PATCH` takes `Partial` of it, only the fields the person changed. */
+export type FolderDefaults = Pick<FolderSettings, FolderDefaultKey>;
+
+/** The device settings a node's new devices start with, as Syncthing's Default Device holds them; the name is each device's own. */
+export const deviceDefaultKeys = ["addresses", "compression", "introducer", "autoAcceptFolders", "untrusted", "allowedNetworks", "maxSendKbps", "maxRecvKbps", "numConnections"] as const;
+export type DeviceDefaultKey = (typeof deviceDefaultKeys)[number];
+/** `GET /api/nodes/<nodeId>/defaults/device`; `PATCH` takes `Partial` of it, only the fields the person changed. */
+export type DeviceDefaults = Pick<DeviceSettings, DeviceDefaultKey>;
+
+/** `GET` and `PUT /api/nodes/<nodeId>/defaults/ignores`: the ignore patterns a new folder starts with. */
+export interface DefaultIgnores {
+  lines: string[];
+}
+
+/** A device the node ignores: it is not offered as a request again until un-ignored. */
+export interface IgnoredDeviceEntry {
+  deviceId: string;
+  name: string;
+  address: string;
+  time: string;
+}
+
+/** A folder the node ignores when `offeredBy` offers it. */
+export interface IgnoredFolderEntry {
+  folderId: string;
+  label: string;
+  offeredBy: string;
+  offeredByName: string;
+  time: string;
+}
+
+/**
+ * `GET /api/nodes/<nodeId>/ignored`, and the answer of `DELETE .../ignored/devices/<deviceId>` and
+ * `DELETE .../ignored/folders/<folderId>?offeredBy=<deviceId>`, which un-ignore one entry and keep every other.
+ */
+export interface IgnoredLists {
+  devices: IgnoredDeviceEntry[];
+  folders: IgnoredFolderEntry[];
 }
 
 export type DeviceCompression = "metadata" | "always" | "never";
