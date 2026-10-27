@@ -3,7 +3,7 @@ import { button, element } from "./dom.js";
 import { formatBytes, formatDate } from "./format.js";
 import { hasNextPage, positionText, totalText } from "./itemPages.js";
 import { requestRender } from "./renderRequest.js";
-import { type ItemListState, type ItemListTarget, appState, itemListInLocation } from "./state.js";
+import { type ItemListState, type ItemListTarget, appState, itemListInLocation, withoutItemListInHash } from "./state.js";
 
 const pageSizes = [...new Set([25, defaultItemsPerPage, maxItemsPerPage])].sort((left, right) => left - right);
 
@@ -34,7 +34,18 @@ async function load(list: ItemListState): Promise<void> {
   requestRender();
 }
 
+function isAskedByLocation(target: ItemListTarget): boolean {
+  const asked = itemListInLocation();
+  return asked !== null && asked.kind === target.kind && asked.nodeId === target.nodeId && target.deviceId === null && target.folderId === appState.selectedFolderId;
+}
+
+/** Drops the list the address asks to open once another list or none is open, so a reload does not open it again. */
+function forgetListInLocation(): void {
+  if (itemListInLocation()) history.replaceState(null, "", withoutItemListInHash(location.hash));
+}
+
 export function openItemList(target: ItemListTarget): void {
+  if (!isAskedByLocation(target)) forgetListInLocation();
   const list: ItemListState = { ...target, page: 1, perPage: appState.itemsPerPage, loading: false, answer: null };
   appState.itemList = list;
   void load(list);
@@ -49,6 +60,7 @@ export function openListFromLocation(): void {
 }
 
 export function closeItemList(): void {
+  forgetListInLocation();
   appState.itemList = null;
   requestRender();
 }

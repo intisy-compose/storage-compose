@@ -14,6 +14,7 @@ import { SyncthingClient, listTimeoutMs } from "../src/syncthing.js";
 import { acceptCountsRead, forgetCountsRead, startCountsRead } from "../ui/src/discardCounts.js";
 import { hasNextPage, positionText, totalText } from "../ui/src/itemPages.js";
 import { outOfSyncCount, outOfSyncText } from "../ui/src/outOfSync.js";
+import { withoutItemListInHash } from "../ui/src/state.js";
 import { until } from "./until.js";
 
 const apiKey = "items-test-key";
@@ -567,5 +568,14 @@ describe("syncthing's error text, shown", () => {
     assert.equal(shownSyncthingError("failed to read #include ../x", []), "Syncthing cannot read an included file");
     assert.equal(reshownForwardedError('invalid pattern "a["'), "invalid pattern in an included file");
     assert.equal(reshownForwardedError(lock), lock);
+  });
+});
+
+describe("the address of an item list", () => {
+  it("a closed list leaves the address, so a reload does not open it again", () => {
+    assert.equal(withoutItemListInHash("#/folders/documents?node=all&path=&failed=d7e5"), "#/folders/documents?node=all&path=");
+    assert.equal(withoutItemListInHash("#/folders/documents?node=all&path=Docs/Taxes&conflicts=d7e5"), "#/folders/documents?node=all&path=Docs/Taxes");
+    assert.equal(withoutItemListInHash("#/folders/documents?failed=d7e5"), "#/folders/documents");
+    assert.equal(withoutItemListInHash("#/folders/documents?node=all&path="), "#/folders/documents?node=all&path=", "an address without a list is kept as it is");
   });
 });

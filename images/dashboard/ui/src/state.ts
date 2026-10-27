@@ -429,6 +429,19 @@ export function conflictsLocation(folderId: string, nodeId: string): string {
   return `${explorerLocation(folderId)}&conflicts=${encodeURIComponent(nodeId)}`;
 }
 
+const itemListParams = ["failed", "conflicts"];
+
+/** The address without the list it asks to open; the rest is kept as written, as `path` keeps its slashes unencoded. */
+export function withoutItemListInHash(hash: string): string {
+  const queryStart = hash.indexOf("?");
+  if (queryStart < 0) return hash;
+  const kept = hash
+    .slice(queryStart + 1)
+    .split("&")
+    .filter((pair) => !itemListParams.includes(pair.split("=")[0]));
+  return kept.length ? `${hash.slice(0, queryStart)}?${kept.join("&")}` : hash.slice(0, queryStart);
+}
+
 /** The list the address asks to open (`&failed=<nodeId>` or `&conflicts=<nodeId>` on a folder), or null. */
 export function itemListInLocation(): { kind: "failed" | "conflicts"; nodeId: string } | null {
   const hash = location.hash;
