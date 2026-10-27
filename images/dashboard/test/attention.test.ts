@@ -16,6 +16,7 @@ import {
   warning,
   withoutDuplicates,
 } from "../src/attention.js";
+import { warningHref } from "../ui/src/attentionPage.js";
 import { attentionThresholds } from "../src/settings.js";
 import { SyncthingClient, peerSync } from "../src/syncthing.js";
 
@@ -36,6 +37,7 @@ function folder(overrides: Partial<NodeFolder>): NodeFolder {
     completion: 100,
     errors: 0,
     needItems: 0,
+    needTotalItems: 0,
     needBytes: 0,
     globalBytes: 0,
     globalFiles: 0,
@@ -43,6 +45,7 @@ function folder(overrides: Partial<NodeFolder>): NodeFolder {
     lastScan: null,
     lastFile: null,
     localChanged: 0,
+    conflicts: null,
     sharedWith: [],
     ...overrides,
   };
@@ -132,6 +135,12 @@ describe("attention", () => {
         ["warning", "folder-errors", "fb98", "pictures", "pictures on pc: 652 failed items"],
       ],
     );
+  });
+
+  it("a failed items warning links straight to the failed list, any other folder warning to the folder", () => {
+    const [failed] = folderErrorWarnings(node({ folders: [folder({ errors: 3 })] }));
+    assert.equal(warningHref(failed), "#/folders/documents?node=all&path=&failed=fb98");
+    assert.equal(warningHref({ ...failed, kind: "other" }), "#/folders/documents");
   });
 
   it("a syncthing system error is a warning", async () => {

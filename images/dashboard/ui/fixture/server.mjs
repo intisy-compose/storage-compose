@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { deviceSettingsFixture, devicesFixture } from "./devices.mjs";
 import { folderDefaultsFixture, folderDetailFixture } from "./folders.mjs";
+import { needFixture, remoteNeedFixture } from "./items.mjs";
 import { nodesFixture } from "./nodes.mjs";
 import { acceptDefaultsFixture, requestsFixture } from "./requests.mjs";
 import { treeFixture } from "./tree.mjs";
@@ -62,6 +63,15 @@ async function route(request, response) {
   if (request.method === "GET" && deviceRead) {
     const settings = deviceSettingsFixture(nodesFixture(startedAt).nodes, decodeURIComponent(deviceRead[1]), decodeURIComponent(deviceRead[2]));
     return settings ? sendJson(response, 200, settings) : sendJson(response, 404, { error: "no such device" });
+  }
+  const itemRead = path.match(/^\/api\/nodes\/([^/]+)\/folders\/([^/]+)\/(need|remote-need)$/);
+  if (request.method === "GET" && itemRead) {
+    const nodes = nodesFixture(startedAt).nodes;
+    const [nodeId, folderId] = [decodeURIComponent(itemRead[1]), decodeURIComponent(itemRead[2])];
+    const page = Number(url.searchParams.get("page") ?? 1);
+    const perPage = Math.min(Number(url.searchParams.get("perPage") ?? 50), 100);
+    const answer = itemRead[3] === "need" ? await needFixture(nodes, nodeId, folderId, page, perPage) : await remoteNeedFixture(nodes, nodeId, folderId, url.searchParams.get("device") ?? "", page, perPage);
+    return sendJson(response, answer.status, answer.body);
   }
   const folderRead = path.match(/^\/api\/folders\/([^/]+)$/);
   if (request.method === "GET" && folderRead) {

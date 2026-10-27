@@ -13,6 +13,7 @@ import { renderFolderDetail, renderFolderLoading, renderFolderNotFound } from ".
 import { openEditFolderForm, renderEditFolderForm } from "./folderEditForm.js";
 import { loadAddFolderForm, renderAddFolderForm } from "./folderForm.js";
 import { isFormOpen } from "./forms.js";
+import { openListFromLocation } from "./itemList.js";
 import { renderItemNotFound } from "./itemNotFound.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
 import { renderNodesPage } from "./nodesPage.js";
@@ -298,7 +299,9 @@ function onLocationChange(): void {
     appState.notice = null;
     appState.showCandidates = false;
     appState.folderDetailError = null;
+    appState.itemList = null;
   }
+  openListFromLocation();
   render();
   if (previousItem !== selectedItemId()) document.querySelector(".detail")?.scrollTo(0, 0);
   if (appState.page === "folders") void loadPageData().then(render);
@@ -321,6 +324,7 @@ function onKey(event: KeyboardEvent): void {
 
 applyTheme(appState.theme);
 readLocation();
+openListFromLocation();
 onRenderRequested(render);
 onRefreshRequested(() => void poll());
 window.addEventListener("hashchange", onLocationChange);

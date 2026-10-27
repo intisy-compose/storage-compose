@@ -215,7 +215,10 @@ export interface NodeFolder {
   completion: number;
   /** Items that failed to sync; Syncthing's `pullErrors`. */
   errors: number;
+  /** Files still to fetch; Syncthing's `needFiles`. */
   needItems: number;
+  /** Every item still to fetch, directories and deletes included; Syncthing's `needTotalItems`. */
+  needTotalItems: number;
   needBytes: number;
   globalBytes: number;
   globalFiles: number;
@@ -224,6 +227,10 @@ export interface NodeFolder {
   lastFile: FolderFile | null;
   /** Items changed here that a receive-only folder will not send on. */
   localChanged: number;
+  /** Conflict copies Syncthing kept in the folder; null until the folder has been searched for them, or from a dashboard that does not count them. */
+  conflicts: number | null;
+  /** True when the folder holds more conflict copies than `conflicts` counts, as the index keeps only so many. */
+  conflictsMore?: boolean;
   sharedWith: FolderPeer[];
 }
 
@@ -918,6 +925,146 @@ export interface FolderPathCheck {
   problem: string | null;
   /** An overlap with one of the node's folders, which Syncthing allows but syncs twice. */
   warning: string | null;
+}
+
+/** One item of a folder's index; `modifiedBy` names the device that last changed it, null when Syncthing does not say. */
+export interface FolderItem {
+  name: string;
+  size: number;
+  modified: string;
+  deleted: boolean;
+  modifiedBy: string | null;
+}
+
+/** Where an outstanding item stands in Syncthing's pull: being fetched, next in line, or waiting behind those. */
+export type NeedStage = "progress" | "queued" | "rest";
+
+export interface NeedItem extends FolderItem {
+  stage: NeedStage;
+}
+
+/** What a page of an item list holds unless the person asks for another size, and the most it may hold: Syncthing walks the whole list for each page. */
+export const defaultItemsPerPage = 50;
+export const maxItemsPerPage = 100;
+
+/**
+ * One page of an item list; `total` is the count of the whole list, null when it could not be read.
+ * `GET /api/nodes/<nodeId>/folders/<folderId>/need?page=&perPage=` answers `ItemsPage<NeedItem>`: what the node still has to fetch.
+ */
+export interface ItemsPage<T> {
+  items: T[];
+  page: number;
+  perPage: number;
+  total: number | null;
+}
+
+/** One item Syncthing could not sync, with its error text as Syncthing gives it. */
+export interface FailedItem {
+  path: string;
+  error: string;
+}
+
+/** `GET /api/nodes/<nodeId>/folders/<folderId>/errors?page=&perPage=` answers `ItemsPage<FailedItem>`: the folder's failed items; `total` is Syncthing's count of them. */
+export type FailedPage = ItemsPage<FailedItem>;
+
+/** `GET /api/nodes/<nodeId>/folders/<folderId>/remote-need?device=&page=&perPage=`: what the device still needs of the node's folder. */
+export interface RemoteNeedPage extends ItemsPage<FolderItem> {
+  device: FolderPeer;
+}
+
+/** `GET /api/nodes/<nodeId>/folders/<folderId>/local-changed?page=&perPage=`: what was changed on the node itself in a receive only folder; `total` is Syncthing's count. */
+export type LocalChangedPage = ItemsPage<FolderItem>;
+
+/** A copy Syncthing kept when two devices changed one file at once, named `<original>.sync-conflict-<date>-<time>-<short device ID><extension>`. */
+export interface ConflictFile {
+  path: string;
+  original: string;
+  size: number;
+  modified: string;
+  /** The device whose change lost, named as the node knows it, else by the short ID in the name; null when a forwarded answer does not say. */
+  device: string | null;
+}
+
+/**
+ * `GET /api/nodes/<nodeId>/folders/<folderId>/conflicts?page=&perPage=`: the folder's conflict copies, listed only; keeping one is a file operation on the node.
+ * `complete` is false while the folder is still being searched, so more may follow; `more` is true when the folder holds more than `total` copies.
+ */
+export interface ConflictsPage extends ItemsPage<ConflictFile> {
+  complete: boolean;
+  more: boolean;
+}
+
+/** `GET /api/nodes/<nodeId>/folders/<folderId>/discard-counts`: Syncthing's counts read now, what a revert or an override would discard; null when not given. */
+export interface DiscardCounts {
+  /** Items changed on the node in a receive only folder; Syncthing's `receiveOnlyTotalItems`. */
+  localChanged: number | null;
+  /** Items other devices changed that the node does not have; Syncthing's `needTotalItems`. */
+  needTotalItems: number | null;
+}
+
+/**
+ * `POST /api/nodes/<nodeId>/folders/<folderId>/revert` (receive only) and `.../override` (send only) take the folder ID typed exactly as `confirm`.
+ * Revert deletes or replaces what was changed on the node; override replaces what other devices changed with the node's versions.
+ */
+export interface LocalChangesBody {
+  confirm: string;
+}
+
+/** What a revert or override did; `items` is Syncthing's count just before it, null when it could not be read. */
+export interface LocalChangesDone {
+  folderId: string;
+  action: "revert" | "override";
+  items: number | null;
+  text: string;
+}
+
+/** One kept version of a file, as Syncthing lists it: when it was replaced (`versionTime`, also its name in a restore), its own change time and size. */
+export interface FileVersion {
+  versionTime: string;
+  modTime: string;
+  size: number;
+}
+
+/** A directory of the versions tree, with how many files below it have a version within the date filter. */
+export interface VersionsDirectory {
+  path: string;
+  files: number;
+}
+
+/**
+ * `GET /api/nodes/<nodeId>/folders/<folderId>/versions?prefix=&from=&to=&page=&perPage=`: one level of the folder's versions tree below `prefix`,
+ * directories first, then files with their versions newest first, only versions whose `versionTime` lies within `from` and `to` (instants, either may be absent).
+ * `enabled` is false, with nothing listed, when the folder's versioning is off; `total` counts the entries of this level.
+ */
+export interface VersionsPage {
+  enabled: boolean;
+  versioning: Versioning;
+  folderType: FolderType;
+  prefix: string;
+  directories: VersionsDirectory[];
+  files: Record<string, FileVersion[]>;
+  page: number;
+  perPage: number;
+  total: number;
+  /** When the node's Syncthing listed its versions; the list is read once and shared for a minute while the tree is browsed. */
+  readAt: string | null;
+}
+
+/**
+ * `POST /api/nodes/<nodeId>/folders/<folderId>/versions/restore`: each path (as listed) to the `versionTime` of the version to put back.
+ * The current file is replaced; on an array `confirm` is the folder ID typed.
+ */
+export interface RestoreVersionsBody {
+  files: Record<string, string>;
+  confirm?: string;
+}
+
+/** What a restore did: the paths put back, and Syncthing's error for each one it could not restore. */
+export interface RestoredVersions {
+  folderId: string;
+  restored: string[];
+  errors: Record<string, string>;
+  text: string;
 }
 
 /** `GET /api/folders/<folderId>`; `settings` is keyed by node ID. */

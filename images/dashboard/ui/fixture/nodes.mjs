@@ -35,7 +35,7 @@ function connectedPeer(seed, name, connectionKind, address, connectionType = "tc
 const onePeerPerConnectionKind = [
   connectedPeer("b71c", "cold-backup", "this-device", "100.75.83.74:22000"),
   connectedPeer("17aa", "finn-pc-disk", "local-network", "192.168.0.101:22000", "quic-client"),
-  connectedPeer("2b90", "p53", "tailscale", "100.64.0.12:22000"),
+  { ...connectedPeer("2b90", "p53", "tailscale", "100.64.0.12:22000"), completion: 97, needBytes: 4.2e8 },
   connectedPeer("d3e8", "phone", "internet", "203.0.113.40:22000"),
   connectedPeer("c204", "spisor-cluster", "relay", "relay://relay.example:22067", "relay-client"),
 ];
@@ -139,7 +139,7 @@ function remoteArray() {
 }
 
 function folderDetail(folder) {
-  return { label: "", errors: 0, needItems: 0, needBytes: 0, globalBytes: 0, globalFiles: 0, globalDirectories: 0, lastScan: ago(hour), lastFile: null, localChanged: 0, sharedWith: [], ...folder };
+  return { label: "", errors: 0, needItems: 0, needTotalItems: 0, needBytes: 0, globalBytes: 0, globalFiles: 0, globalDirectories: 0, lastScan: ago(hour), lastFile: null, localChanged: 0, conflicts: 0, sharedWith: [], ...folder };
 }
 
 function ownInstance() {
@@ -169,7 +169,7 @@ export function nodesFixture(startedAt) {
         space: { size: 0.256 * terabyte, used: 0.077 * terabyte },
         sync: { state: "syncing", completion: 64, lastSeen: ago(0) },
         syncthing: syncthing("e5d0", { inRate: 6.4e6, outRate: 0 }),
-        folders: [{ id: "documents", path: "D:\\files\\Documents", type: "sendreceive", state: "syncing", completion: 64 }],
+        folders: [{ id: "documents", path: "D:\\files\\Documents", type: "sendreceive", state: "syncing", completion: 64, needItems: 918_733, needTotalItems: 918_733, needBytes: 9.6e10 }],
       }),
       simpleNode("17aa", "finn-pc-disk", "drive", { local: true, host: "finn-pc", space: { size: 2 * terabyte, used: 1.1 * terabyte } }),
       simpleNode("2b90", "p53", "drive", { host: "p53", space: { size: 1 * terabyte, used: 0.35 * terabyte }, syncthing: syncthing("2b90", { addresses: ["tcp://100.64.0.12:22000"] }) }),

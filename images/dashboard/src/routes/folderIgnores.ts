@@ -1,8 +1,9 @@
-import { goTrimSpace, ignoreLinesProblem, ignoresChangeWords, isIncludeLine } from "../api/ignorePatterns.js";
+import { ignoreLinesProblem, ignoresChangeWords } from "../api/ignorePatterns.js";
 import type { FolderIgnores, IgnoresChange } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
+import { ownPatternCores, patternCore, shownSyncthingError } from "../shownSyncthingError.js";
 import type { SyncthingFolderConfig } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
 
@@ -32,37 +33,6 @@ export function writeIgnoreLines(instance: LocalInstance, folderId: string, line
   return callSyncthing(instance, (client) => client.request<SyncthingIgnores>("POST", ignoresPath(folderId), { ignore: lines }));
 }
 
-/** A pattern stripped of its prefixes and of the leading and trailing `**` segments Syncthing expands it with, so an expansion is traced to its line. */
-function patternCore(pattern: string): string {
-  let core = pattern.trim();
-  for (let previous = ""; previous !== core; ) {
-    previous = core;
-    core = core.replace(/^(?:!|\(\?[di]\))/, "");
-  }
-  return core.replace(/^(?:\*\*\/)+/, "").replace(/(?:\/\*\*)+$/, "").replace(/\/+$/, "").toLowerCase();
-}
-
-function isPatternLine(line: string): boolean {
-  const trimmed = goTrimSpace(line);
-  return trimmed !== "" && !trimmed.startsWith("//") && !isIncludeLine(trimmed);
-}
-
-function lineCores(lines: readonly string[]): Set<string> {
-  return new Set(lines.filter(isPatternLine).map(patternCore));
-}
-
-const invalidPatternError = /invalid pattern "/;
-
-/**
- * Syncthing's error with any pattern quoted from an included file replaced by words.
- * @implNote In a file with an `#include`, an error of any other shape could quote an included line, so it is replaced whole.
- */
-function shownError(error: string | null, lines: readonly string[], cores: ReadonlySet<string>): string | null {
-  if (!error) return null;
-  if (lines.some(isIncludeLine) && !invalidPatternError.test(error)) return "Syncthing cannot read an included file";
-  return error.replace(/invalid pattern "((?:[^"\\]|\\.)*)"(?: in ignore file)?/g, (whole, pattern: string) => (cores.has(patternCore(pattern)) ? whole : "invalid pattern in an included file"));
-}
-
 /**
  * The file as the page sees it: its lines, the expansions of its own lines, and Syncthing's error.
  * @implNote An included file's patterns are counted, never shown: Syncthing 2.1.6 expands an `#include` from anywhere the node
@@ -71,10 +41,10 @@ function shownError(error: string | null, lines: readonly string[], cores: Reado
  */
 export function shownIgnores(answer: SyncthingIgnores): FolderIgnores {
   const lines = answer.ignore ?? [];
-  const cores = lineCores(lines);
+  const cores = ownPatternCores(lines);
   const expanded = answer.expanded ?? [];
   const shown = expanded.filter((pattern) => cores.has(patternCore(pattern)));
-  return { lines, expanded: shown, hiddenIncluded: expanded.length - shown.length, error: shownError(answer.error, lines, cores) };
+  return { lines, expanded: shown, hiddenIncluded: expanded.length - shown.length, error: answer.error ? shownSyncthingError(answer.error, lines) : null };
 }
 
 async function knownFolder(instance: LocalInstance, folderId: string): Promise<SyncthingFolderConfig> {

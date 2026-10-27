@@ -1,6 +1,7 @@
 import { deviceDisplayName } from "./api/deviceText.js";
 import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type FoldersResponse, type PendingFolderOffer, type PullOrder, type Versioning, type VersioningType, diskFreeUnits, pullOrderTexts } from "./api/types.js";
 import { versioningParamKeys, versioningTypeTexts } from "./api/versioningText.js";
+import { conflictIndexes } from "./conflicts.js";
 import { RequestError } from "./http.js";
 import type { SetupLayout } from "./setupRepo.js";
 import { type NodeOs, placeFolders } from "./treePaths.js";
@@ -69,7 +70,7 @@ async function readPending(client: SyncthingClient): Promise<{ pending: PendingF
 async function readInstance(instance: FolderInstance): Promise<InstanceFolders> {
   try {
     const { folders, devices } = await instanceFolders(instance.client);
-    const copies = folders.map(({ config, view }) => ({ ...view, nodeId: instance.nodeId, nodeName: instance.nodeName, host: instance.host, local: true, paused: config.paused }));
+    const copies = folders.map(({ config, view }) => ({ ...view, conflicts: conflictIndexes.count(instance.nodeId, view.id), conflictsMore: conflictIndexes.hasMore(instance.nodeId, view.id), nodeId: instance.nodeId, nodeName: instance.nodeName, host: instance.host, local: true, paused: config.paused }));
     const { pending, error } = await readPending(instance.client);
     return { copies, offers: offersOf(instance, devices, pending), offersError: error, foldersError: null };
   } catch (error) {

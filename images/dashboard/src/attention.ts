@@ -81,6 +81,22 @@ export function folderErrorWarnings(node: StorageNode): Warning[] {
     );
 }
 
+/** A folder holding conflict copies stays on Attention until they are kept or removed on the node itself. */
+export function conflictWarnings(node: StorageNode): Warning[] {
+  return node.folders
+    .filter((folder) => (folder.conflicts ?? 0) > 0)
+    .map((folder) =>
+      warning({
+        id: `conflicts:${node.id}:${folder.id}`,
+        level: "warning",
+        kind: "conflicts",
+        text: `${folder.label || folder.id} on ${node.name}: ${folder.conflictsMore ? `more than ${folder.conflicts} sync conflicts` : plural(folder.conflicts!, "sync conflict")}`,
+        nodeId: node.id,
+        folderId: folder.id,
+      }),
+    );
+}
+
 export function systemErrorWarnings(node: StorageNode, errors: SystemError[]): Warning[] {
   return errors.map((error) =>
     warning({

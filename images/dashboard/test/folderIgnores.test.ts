@@ -184,7 +184,7 @@ describe("a folder's ignore patterns", () => {
   it("an error syncthing gives for a file with an #include is not passed on unless it is a pattern of the file's own", async () => {
     lines = ["*.tmp", "#include missing.txt"];
     forcedError = "failed to load include file missing.txt: <apikey>secret-api-key</apikey>";
-    assert.equal((await readIgnores(peer(), "dashboard-test-a")).error, "Syncthing cannot read an included file");
+    assert.equal((await readIgnores(peer(), "dashboard-test-a")).error, "error hidden: this folder's ignore file has an #include");
     lines = ["*.tmp"];
     forcedError = "folder marker missing";
     assert.equal((await readIgnores(peer(), "dashboard-test-a")).error, "folder marker missing", "without an include the error is Syncthing's own");
@@ -232,7 +232,7 @@ describe("a folder's ignore patterns", () => {
     lines = ["*.tmp", "\u0085#include missing.txt"];
     forcedError = "failed to load include file missing.txt: <apikey>secret-api-key</apikey>";
     const read = await readIgnores(peer(), "dashboard-test-a");
-    assert.equal(read.error, "Syncthing cannot read an included file");
+    assert.equal(read.error, "error hidden: this folder's ignore file has an #include");
     assert.match(ignoreLinesProblem(read.lines) ?? "", /^line 2 holds a control character/, "the edit form names the line that keeps the file from being saved");
   });
 

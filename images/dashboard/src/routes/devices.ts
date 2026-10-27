@@ -159,9 +159,10 @@ async function syncthingDefaults(instance: LocalInstance): Promise<SyncthingObje
   return asObject(await callSyncthing(instance, (client) => client.request<unknown>("GET", "/config/defaults/device")));
 }
 
-/** A new device's settings as the node's Syncthing fills them in. */
+/** A new device's settings as the node's Syncthing fills them in, with introducer and accept folders automatically off on an array. */
 export async function readDeviceDefaults(instance: ResolvedInstance): Promise<DeviceSettings> {
-  return deviceSettings(await syncthingDefaults(requireLocal(instance)));
+  const local = requireLocal(instance);
+  return deviceSettings({ ...(await syncthingDefaults(local)), ...arrayLockedOff(local) });
 }
 
 function addressList(value: unknown): string[] {

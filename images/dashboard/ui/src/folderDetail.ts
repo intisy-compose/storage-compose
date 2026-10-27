@@ -1,11 +1,15 @@
 import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type PendingFolderOffer, deviceDisplayName, folderTypeTexts, versioningWords } from "./api.js";
-import { element, keyValueList, section } from "./dom.js";
-import { formatBytes, formatDate, formatDuration, formatPercent, normaliseCompletion, plural } from "./format.js";
+import { button, element, keyValueList, section } from "./dom.js";
+import { formatBytes, formatDate, formatDuration, plural } from "./format.js";
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
 import { folderActions, orphanedActionResults } from "./folderActions.js";
 import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./folderCondition.js";
 import { icon } from "./icons.js";
-import { appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
+import { outOfSyncCount, outOfSyncText } from "./outOfSync.js";
+import { isItemListOpen, itemListPanel, toggleItemList } from "./itemList.js";
+import { conflictCopies } from "./itemPages.js";
+import { isVersionsOpen, toggleVersions, versionsPanel } from "./versionsPanel.js";
+import { type ItemListKind, type ItemListTarget, appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
 
 function onOff(value: boolean): string {
   return value ? "on" : "off";
@@ -25,9 +29,57 @@ function itemsText(copy: FolderCopy): string {
   return `${plural(items, "item")} (${plural(copy.globalFiles, "file")}, ${plural(copy.globalDirectories, "folder")}), ${formatBytes(copy.globalBytes)}`;
 }
 
-function outOfSyncText(copy: FolderCopy): string {
-  if (!copy.needItems && !copy.needBytes) return "nothing";
-  return `${plural(copy.needItems, "item")}, ${formatBytes(copy.needBytes)} (${formatPercent(normaliseCompletion(copy.completion))} done)`;
+function copyList(copy: FolderCopy, kind: ItemListKind): ItemListTarget {
+  return { nodeId: copy.nodeId, folderId: copy.id, deviceId: null, kind };
+}
+
+/** A count that opens one of the copy's item lists, or closes it when it is open. */
+function listToggle(copy: FolderCopy, kind: ItemListKind, text: string, opensWhat: string, className = "link-button"): HTMLButtonElement {
+  const target = copyList(copy, kind);
+  const control = button(text, () => toggleItemList(target), className);
+  control.title = isItemListOpen(target) ? "Close the list" : opensWhat;
+  control.setAttribute("aria-expanded", String(isItemListOpen(target)));
+  return control;
+}
+
+function listPanel(copy: FolderCopy, kind: ItemListKind, title: string): HTMLElement | null {
+  const list = appState.itemList;
+  return list && isItemListOpen(copyList(copy, kind)) ? itemListPanel(list, title) : null;
+}
+
+/** The count opens the list of what the copy's node still has to fetch. */
+function outOfSyncValue(copy: FolderCopy): HTMLElement | string {
+  const text = outOfSyncText(copy);
+  return outOfSyncCount(copy) ? listToggle(copy, "need", text, `List what ${copy.nodeName} still has to fetch`) : text;
+}
+
+/** The count opens the list of the copy's failed items, each with Syncthing's error text. */
+function failedValue(copy: FolderCopy): HTMLElement | string {
+  if (!copy.errors) return "none";
+  return listToggle(copy, "failed", plural(copy.errors, "item"), `List what Syncthing could not sync on ${copy.nodeName}`, "link-button tone-text-bad");
+}
+
+/** The count opens the list of what was changed on the copy's node, which a revert deletes or replaces. */
+function changedHereValue(copy: FolderCopy): HTMLElement | string {
+  if (!copy.localChanged) return "nothing";
+  return listToggle(copy, "local-changed", plural(copy.localChanged, "item"), `List what was changed on ${copy.nodeName}`, "link-button tone-text-warn");
+}
+
+/** The count opens the list of the copy's conflict copies; keeping one is done on the node, not here. */
+function conflictsValue(copy: FolderCopy): HTMLElement | string {
+  const count = copy.conflicts ?? null;
+  if (count === null) return copy.local ? "not searched yet" : "not counted";
+  if (!count) return "none";
+  return listToggle(copy, "conflicts", conflictCopies(count, copy.conflictsMore === true), `List the conflict copies on ${copy.nodeName}`, "link-button tone-text-warn");
+}
+
+/** Opens the browser of the copy's kept versions, or closes it when it is open. */
+function versionsValue(copy: FolderCopy): HTMLElement {
+  const isOpen = isVersionsOpen(copy);
+  const control = button(isOpen ? "Close the versions" : copy.local ? "Browse and restore" : "Browse", () => toggleVersions(copy), "link-button");
+  control.title = isOpen ? "Close the versions" : `List the versions ${copy.nodeName} keeps of this folder's files`;
+  control.setAttribute("aria-expanded", String(isOpen));
+  return control;
 }
 
 function lastFileText(copy: FolderCopy): string {
@@ -42,10 +94,11 @@ function copyCard(copy: FolderCopy): HTMLElement {
     ["Type", folderTypeTexts[copy.type] ?? copy.type],
     ["State", element("span", { className: `tone-text-${condition.tone}` }, condition.label)],
     ["Global", itemsText(copy)],
-    ["Out of sync", outOfSyncText(copy)],
-    ["Failed items", copy.errors ? element("span", { className: "tone-text-bad" }, plural(copy.errors, "item")) : "none"],
+    ["Out of sync", outOfSyncValue(copy)],
+    ["Failed items", failedValue(copy)],
   ];
-  if (copy.type === "receiveonly") rows.push(["Changed here", plural(copy.localChanged, "item")]);
+  if (copy.type === "receiveonly") rows.push(["Changed here", changedHereValue(copy)]);
+  rows.push(["Conflicts", conflictsValue(copy)], ["Versions", versionsValue(copy)]);
   rows.push(
     ["Last scan", formatDate(copy.lastScan)],
     ["Last file", lastFileText(copy)],
@@ -61,6 +114,11 @@ function copyCard(copy: FolderCopy): HTMLElement {
       copy.local ? null : element("small", {}, ` on ${copy.host}`),
     ),
     keyValueList(rows),
+    listPanel(copy, "need", `What ${copy.nodeName} still has to fetch`),
+    listPanel(copy, "failed", `Failed items on ${copy.nodeName}`),
+    listPanel(copy, "local-changed", `Changed on ${copy.nodeName}`),
+    listPanel(copy, "conflicts", `Conflict copies on ${copy.nodeName}`),
+    versionsPanel(copy),
   );
 }
 

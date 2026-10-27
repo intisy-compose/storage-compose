@@ -141,7 +141,7 @@ export function admittedFolders(layout: SetupLayout | null, request: JoinRequest
 async function shareWithInstances(instances: JoinInstance[], request: JoinRequest, folders: JoinFolder[]): Promise<JoinDevice[]> {
   const devices: JoinDevice[] = [];
   for (const instance of instances) {
-    await instance.addDevice({ deviceID: request.syncthingDeviceId, name: request.name, addresses: ["dynamic"] });
+    await instance.addDevice({ deviceID: request.syncthingDeviceId, name: request.name, addresses: ["dynamic"], introducer: false, autoAcceptFolders: false });
     for (const folder of folders) await instance.shareFolder(folder.id, request.syncthingDeviceId);
     devices.push({ name: instance.name, syncthingDeviceId: await instance.myId(), addresses: instance.addresses });
   }

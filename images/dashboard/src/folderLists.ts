@@ -37,6 +37,8 @@ export interface FolderLists {
 
 interface Slot<Value> {
   done: { fingerprint: string; value: Value } | null;
+  /** The last read's failure, kept until a read succeeds. */
+  failed: { error: unknown; at: number } | null;
   inFlight: Promise<Value> | null;
   wanted: { fingerprint: string; read: () => Promise<Value> } | null;
 }
@@ -45,21 +47,32 @@ interface Slot<Value> {
  * Per key, the last answer read in full and at most one read in flight. A caller gets the last
  * answer at once, even while a newer one is read; only the very first read of a key is waited for.
  * A fingerprint asked for while a read runs is read after it, once, with the newest request's reader.
+ * @implNote A failed read is tried again only once `retryAfterMs` has passed; until then a key with no
+ * answer yet is refused at once with the failure, so no caller waits on a read that keeps failing.
  */
 class RefreshingCache<Value> {
   private readonly slots = new Map<string, Slot<Value>>();
 
-  constructor(private readonly maxKeys = Infinity) {}
+  constructor(
+    private readonly maxKeys: number,
+    private readonly retryAfterMs: number,
+  ) {}
 
   get(key: string, fingerprint: string, read: () => Promise<Value>): Promise<Value> {
-    const slot = this.slots.get(key) ?? { done: null, inFlight: null, wanted: null };
+    const slot = this.slots.get(key) ?? { done: null, failed: null, inFlight: null, wanted: null };
     this.slots.delete(key);
     this.slots.set(key, slot);
     if (this.slots.size > this.maxKeys) this.slots.delete(this.slots.keys().next().value!);
     if (slot.done?.fingerprint === fingerprint) return Promise.resolve(slot.done.value);
     if (slot.inFlight) slot.wanted = { fingerprint, read };
-    else this.start(slot, fingerprint, read);
-    return slot.done ? Promise.resolve(slot.done.value) : slot.inFlight!;
+    else if (!this.isFailedRecently(slot)) this.start(slot, fingerprint, read);
+    if (slot.done) return Promise.resolve(slot.done.value);
+    if (this.isFailedRecently(slot)) return Promise.reject(slot.failed!.error);
+    return slot.inFlight!;
+  }
+
+  private isFailedRecently(slot: Slot<Value>): boolean {
+    return slot.failed !== null && Date.now() - slot.failed.at < this.retryAfterMs;
   }
 
   private start(slot: Slot<Value>, fingerprint: string, read: () => Promise<Value>): void {
@@ -69,19 +82,24 @@ class RefreshingCache<Value> {
     const finish = () => {
       slot.inFlight = null;
       const wanted = slot.wanted;
-      if (wanted && wanted.fingerprint !== slot.done?.fingerprint) this.start(slot, wanted.fingerprint, wanted.read);
+      if (wanted && wanted.fingerprint !== slot.done?.fingerprint && !this.isFailedRecently(slot)) this.start(slot, wanted.fingerprint, wanted.read);
     };
     reading.then(
       (value) => {
         slot.done = { fingerprint, value };
+        slot.failed = null;
         finish();
       },
-      finish,
+      (error: unknown) => {
+        slot.failed = { error, at: Date.now() };
+        finish();
+      },
     );
   }
 }
 
-const listsCache = new RefreshingCache<FolderLists>();
+/** @implNote A failed read of the lists waits a minute before the next try: each try can take Syncthing 30 s on a large folder. */
+const listsCache = new RefreshingCache<FolderLists>(Infinity, 60_000);
 
 async function readAllPages(readPage: (page: number) => Promise<string[]>, total: number): Promise<string[]> {
   const items: string[] = [];
@@ -133,7 +151,7 @@ function listsFingerprint(status: FolderStatus): string {
   return [treeFingerprint(status), needTotalOf(status), errorTotalOf(status), status.receiveOnlyTotalItems ?? 0].join(":");
 }
 
-const browseCache = new RefreshingCache<BrowseEntry[]>(200);
+const browseCache = new RefreshingCache<BrowseEntry[]>(200, 0);
 
 /**
  * One level of the folder's tree below `prefix`, kept per tree fingerprint.

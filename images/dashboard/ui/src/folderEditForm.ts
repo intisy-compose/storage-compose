@@ -23,6 +23,7 @@ import { button, element, section } from "./dom.js";
 import { plural } from "./format.js";
 import { controlId, registerForm } from "./forms.js";
 import { icon } from "./icons.js";
+import { outOfSyncCount } from "./outOfSync.js";
 import { requestRender } from "./renderRequest.js";
 import { type SharingChoice, clearSharing, folderSharingChange, hasSharingChanges, sharingList } from "./sharingFields.js";
 import { type EditFolderFormState, appState, explorerLocation, isArrayNode } from "./state.js";
@@ -177,7 +178,7 @@ function isAre(count: number): string {
 function leavingOneWayWarning(form: EditFolderFormState, copy: FolderCopy | undefined): string | null {
   const { saved } = form as { saved: FolderSettings };
   const changedHere = copy?.localChanged ?? 0;
-  const outOfSync = copy?.needItems ?? 0;
+  const outOfSync = copy ? outOfSyncCount(copy) : 0;
   if (saved.type === "receiveonly" && changedHere > 0) return `${plural(changedHere, "item")} changed here ${isAre(changedHere)} sent to the other devices once this is saved, replacing their versions.`;
   if (saved.type === "sendonly" && outOfSync > 0) return `${plural(outOfSync, "item")} out of sync here ${isAre(outOfSync)} pulled from the other devices once this is saved, replacing the local versions.`;
   return null;

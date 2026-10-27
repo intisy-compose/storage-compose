@@ -1,6 +1,8 @@
 import { type FolderCopy, type FolderSettings, type SaveResult, pauseFolder, removalConfirmations, removeFolder, rescanFolder } from "./api.js";
 import { button, element } from "./dom.js";
+import { isOrphanedAction } from "./folderCondition.js";
 import { registerForm } from "./forms.js";
+import { type RunAction, localChangesActionOf, localChangesForm, localChangesToggle } from "./localChangesForm.js";
 import { requestRender } from "./renderRequest.js";
 import { type FolderActionState, type Notice, appState } from "./state.js";
 
@@ -12,7 +14,7 @@ function actionState(folderId: string, nodeId: string): FolderActionState {
   const key = actionKey(folderId, nodeId);
   const existing = appState.folderActions.get(key);
   if (existing) return existing;
-  const created: FolderActionState = { folderId, nodeId, busy: false, sub: "", removeOpen: false, confirm: "", result: null };
+  const created: FolderActionState = { folderId, nodeId, busy: false, sub: "", removeOpen: false, confirm: "", discardOpen: false, discardConfirm: "", discardCounts: null, discardCountsReading: false, result: null };
   appState.folderActions.set(key, created);
   return created;
 }
@@ -132,6 +134,7 @@ function removeForm(copy: FolderCopy, settings: FolderSettings, state: FolderAct
         () => removeFolder(copy.nodeId, settings.id, state.confirm),
         () => {
           state.removeOpen = false;
+          state.sub = "";
           forgetShownDetail(settings.id);
           return removedNotice(copy, settings);
         },
@@ -159,17 +162,20 @@ function resultLine(result: Notice | null): HTMLElement | null {
   return result ? element("p", { className: `notice tone-text-${result.tone}`, attributes: { role: "status" } }, result.text) : null;
 }
 
-/** Pause or resume, rescan and remove one folder on one of this host's nodes, inside that node's settings of the folder. */
+/** Pause or resume, rescan, revert or override, and remove one folder on one of this host's nodes, inside that node's settings of the folder. */
 export function folderActions(copy: FolderCopy, settings: FolderSettings): HTMLElement {
   const state = actionState(settings.id, copy.nodeId);
   const formId = formIdOf(settings.id, copy.nodeId);
+  const discard = localChangesActionOf(settings);
+  const runDiscard: RunAction = (send, done, failed) => void run(state, send, (value) => done(value.text), failed);
   return element(
     "div",
     { className: "folder-actions", attributes: { id: formId } },
     settings.paused ? element("p", { className: "notice tone-text-warn" }, `Paused on ${copy.nodeName}: Syncthing neither scans nor syncs it here until it is resumed.`) : null,
-    element("div", { className: "button-row" }, pauseButton(copy, settings, state), removeToggle(state)),
+    element("div", { className: "button-row" }, pauseButton(copy, settings, state), discard ? localChangesToggle(discard, settings, state) : null, removeToggle(state)),
     rescanControls(copy, settings, state, formId),
     resultLine(state.result),
+    discard && state.discardOpen ? localChangesForm(discard, copy, settings, state, formId, runDiscard) : null,
     state.removeOpen ? removeForm(copy, settings, state, formId) : null,
   );
 }
@@ -186,7 +192,7 @@ let shownResults: ShownResult[] = [];
 /** Moves the result of each action on a node that no longer has the folder out of the actions, so it is not shown again once the folder is back. */
 function takeOrphanedResults(folderId: string, nodeIdsWithSettings: string[]): void {
   for (const [key, state] of appState.folderActions) {
-    if (state.folderId !== folderId || nodeIdsWithSettings.includes(state.nodeId)) continue;
+    if (state.folderId !== folderId || !isOrphanedAction(state, nodeIdsWithSettings)) continue;
     appState.folderActions.delete(key);
     if (state.result) shownResults.push({ folderId, nodeId: state.nodeId, result: state.result });
   }
