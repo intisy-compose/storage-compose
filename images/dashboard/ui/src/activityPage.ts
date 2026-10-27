@@ -1,4 +1,4 @@
-import { type ActivityEntry, type ActivityFilters, type ActivityLevel, type ActivitySource, routineActivityTypes } from "./api.js";
+import { type ActivityEntry, type ActivityLevel, type ActivitySource, changesActivityType, matchesActivityFilters } from "./api.js";
 import { button, element } from "./dom.js";
 import { registerForm } from "./forms.js";
 import { renderLogTab } from "./logTab.js";
@@ -55,8 +55,10 @@ function routineToggle(onChange: () => void): HTMLElement {
   return element("label", { className: "activity-routine" }, toggle, element("span", {}, "Scans and file changes"));
 }
 
+const kindLabels: [string, string][] = [[changesActivityType, "File changes"]];
+
 function filterBar(entries: ActivityEntry[], onChange: () => void): HTMLElement {
-  const set = (name: "node" | "folder" | "source") => (value: string) => {
+  const set = (name: "node" | "folder" | "source" | "kind") => (value: string) => {
     appState.activityFilters = { ...appState.activityFilters, [name]: value };
     onChange();
   };
@@ -68,18 +70,8 @@ function filterBar(entries: ActivityEntry[], onChange: () => void): HTMLElement 
     chooser("activity-node", "All nodes", nodeChoices(entries), filters.node, set("node")),
     chooser("activity-folder", "All folders", folderChoices(entries), filters.folder, set("folder")),
     chooser("activity-source", "All sources", sources, filters.source, set("source")),
-    routineToggle(onChange),
-  );
-}
-
-/** The filters applied here too, so a changed filter shows at once and the next answer only refreshes it. */
-function matchesFilters(entry: ActivityEntry, filters: ActivityFilters): boolean {
-  const isRoutine = (routineActivityTypes as readonly string[]).includes(entry.type);
-  return (
-    (!filters.node || entry.nodeId === filters.node) &&
-    (!filters.folder || entry.folderId === filters.folder) &&
-    (!filters.source || entry.source === filters.source) &&
-    (filters.routine || !isRoutine)
+    chooser("activity-kind", "All entries", kindLabels, filters.kind, set("kind")),
+    filters.kind ? null : routineToggle(onChange),
   );
 }
 
@@ -138,7 +130,7 @@ export interface ActivityPageActions {
 }
 
 const tabSummaries: Record<ActivityTab, string> = {
-  events: "Syncthing events, parity jobs and the changes made here, newest first. Each entry opens its folder or node.",
+  events: "Syncthing events, file changes, parity jobs and the changes made here, newest first. Each entry opens its folder or node; the filters stay in the address.",
   log: "Each node's Syncthing log and errors, its debug logging and its support bundle.",
 };
 
@@ -156,9 +148,9 @@ export function renderActivityPage(actions: ActivityPageActions): HTMLElement {
     const status = appState.activityError ? element("div", { className: "warning level-error" }, `Activity could not be read: ${appState.activityError}`) : element("p", { className: "muted" }, "Loading activity…");
     return element("div", { className: "page activity-page" }, header, status);
   }
-  const entries = response.entries.filter((entry) => matchesFilters(entry, appState.activityFilters));
-  const { node, folder, source } = appState.activityFilters;
-  const isFiltered = Boolean(node || folder || source);
+  const entries = response.entries.filter((entry) => matchesActivityFilters(entry, appState.activityFilters));
+  const { node, folder, source, kind } = appState.activityFilters;
+  const isFiltered = Boolean(node || folder || source || kind);
   const empty = isFiltered ? "Nothing matches the filters." : "Nothing has happened since the dashboard started.";
   return element(
     "div",

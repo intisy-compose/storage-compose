@@ -343,6 +343,15 @@ export class SyncthingClient {
     return this.request<SyncthingEvent[] | null>("GET", `/events?${query.toString()}`, undefined, timeoutMs).then((events) => events ?? []);
   }
 
+  /**
+   * A long poll of `/rest/events/disk`, the `LocalChangeDetected` and `RemoteChangeDetected` events after `since`, at most the newest `limit`.
+   * @implNote Syncthing 2.1.6 keeps them in a subscription of their own, numbered apart from `/rest/events` and holding the last 1000.
+   */
+  diskEvents(since: number, limit: number, waitSeconds: number, timeoutMs: number): Promise<SyncthingEvent[]> {
+    const query = new URLSearchParams({ since: String(since), limit: String(limit), timeout: String(waitSeconds) });
+    return this.request<SyncthingEvent[] | null>("GET", `/events/disk?${query.toString()}`, undefined, timeoutMs).then((events) => events ?? []);
+  }
+
   /** Adds the device, or leaves one with the same ID as it is. */
   async addDevice(device: SyncthingDeviceConfig): Promise<void> {
     const known = await this.devices();

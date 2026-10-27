@@ -1,5 +1,5 @@
 import type { ServerResponse } from "node:http";
-import type { ActivitySource, DebugChange, DebugFacilities, DebugFacility, LogLevel, LogMessage, NodeError, NodeErrors, NodeLog } from "../api/types.js";
+import { type ActivitySource, type DebugChange, type DebugFacilities, type DebugFacility, type LogLevel, type LogMessage, type NodeError, type NodeErrors, type NodeLog, activitySources, changeActivityTypes, changesActivityType } from "../api/types.js";
 import { type ActivityQuery, activityLog } from "../eventFeed.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
@@ -10,12 +10,15 @@ import { filesHoldingSecrets, holdsSecret, UnreadableZip, withoutSecrets, zipEnt
 import { AnswerTooLarge, type SystemError, boundedBytes } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
 
-const sources: ActivitySource[] = ["syncthing", "parity", "dashboard"];
-
 function sourceOf(value: string | null): ActivitySource | null {
   if (!value) return null;
-  if (!sources.includes(value as ActivitySource)) throw new RequestError(400, `source is one of ${sources.join(", ")}`);
+  if (!(activitySources as readonly string[]).includes(value)) throw new RequestError(400, `source is one of ${activitySources.join(", ")}`);
   return value as ActivitySource;
+}
+
+function typesOf(value: string | null): string[] {
+  const named = (value ?? "").split(",").map((type) => type.trim()).filter(Boolean);
+  return [...new Set(named.flatMap((type): string[] => (type === changesActivityType ? [...changeActivityTypes] : [type])))];
 }
 
 function limitOf(value: string | null): number | undefined {
@@ -31,7 +34,7 @@ export function activityQuery(url: URL): ActivityQuery {
     after: parameter("after"),
     node: parameter("node"),
     folder: parameter("folder"),
-    types: (parameter("type") ?? "").split(",").map((type) => type.trim()).filter(Boolean),
+    types: typesOf(parameter("type")),
     source: sourceOf(parameter("source")),
     routine: parameter("routine") !== "false",
     limit: limitOf(parameter("limit")),

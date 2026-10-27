@@ -1,5 +1,5 @@
 import { deviceDisplayName } from "./api/deviceText.js";
-import { type ActivityEntry, type ActivityLevel, type ActivityResponse, type ActivitySource, type ParityJob, routineActivityTypes } from "./api/types.js";
+import { type ActivityEntry, type ActivityLevel, type ActivityResponse, type ActivitySource, type FileChange, type ParityJob, changeActivityTypes, routineActivityTypes } from "./api/types.js";
 import { arrayIds, arrayStatus } from "./arrayStatus.js";
 import { conflictIndexes } from "./conflicts.js";
 import { localNodeInfos } from "./instanceResolver.js";
@@ -95,7 +95,7 @@ export class ActivityLog {
       (!query.folder || entry.folderId === query.folder) &&
       (!query.source || entry.source === query.source) &&
       (!types || types.has(entry.type)) &&
-      (query.routine !== false || !routineTypes.has(entry.type)),
+      (query.routine !== false || !routineTypes.has(entry.type) || Boolean(types?.has(entry.type))),
     );
     const entries = matches.sort(newestFirst).slice(0, query.limit ?? defaultLimit).map((stored) => stored.entry);
     return { entries, cursor: `${this.start}-${this.sequence}` };
@@ -118,6 +118,13 @@ export interface FeedOptions {
   retryMs: number;
   /** Syncthing's event buffer per subscription; a poll answering this many events may have lost older ones. */
   bufferSize: number;
+  /** The newest file changes one poll of `/rest/events/disk` takes; a burst beyond it is left out. */
+  changesPerPoll: number;
+  /**
+   * The pause after a poll that brought file changes.
+   * @implNote A folder being scanned reports a thousand changes in milliseconds (pc's `documents`, 2026-10-27), so without it the poll would spin.
+   */
+  changesPauseMs: number;
 }
 
 /** Hears every event a feed reads, besides Activity, and each time events may have been lost; `conflicts.ts` keeps its index current from it. */
@@ -132,8 +139,13 @@ export interface FeedListener {
 
 const quietListener: FeedListener = { event: () => {}, mayHaveMissed: () => {} };
 
-export const defaultFeedOptions: FeedOptions = { waitSeconds: 50, requestTimeoutMs: 60_000, retryMs: 5_000, bufferSize: 1000 };
+export const defaultFeedOptions: FeedOptions = { waitSeconds: 50, requestTimeoutMs: 60_000, retryMs: 5_000, bufferSize: 1000, changesPerPoll: 1000, changesPauseMs: 2_000 };
 
+/**
+ * The events read from `/rest/events`.
+ * @implNote File changes are read from `/rest/events/disk` instead: a folder being scanned reports thousands, which would fill this
+ * subscription's buffer and tell the conflict index it may have missed updates on every poll.
+ */
 export const followedEventTypes = [
   "StateChanged",
   "FolderCompletion",
@@ -142,8 +154,6 @@ export const followedEventTypes = [
   "FolderResumed",
   "ItemFinished",
   "LocalIndexUpdated",
-  "LocalChangeDetected",
-  "RemoteChangeDetected",
   "DeviceConnected",
   "DeviceDisconnected",
   "DevicePaused",
@@ -166,7 +176,7 @@ interface EventContext {
 }
 
 type EventData = Record<string, unknown>;
-type Described = Pick<NewActivityEntry, "folderId" | "type" | "level" | "text">;
+type Described = Pick<NewActivityEntry, "folderId" | "type" | "level" | "text" | "change">;
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -235,11 +245,19 @@ function itemFinished(context: EventContext, data: EventData): Described | null 
   return { folderId: text(data.folder), type: "item-failed", level: "warning", text: `${folderName(context, data.folder)} failed to sync ${text(data.item)} (${error})` };
 }
 
-function change(context: EventContext, data: EventData, remote: boolean): Described {
+function fileChange(context: EventContext, data: EventData, remote: boolean): Described {
   const folderId = text(data.folderID) || text(data.folder);
-  const by = remote ? ` by ${deviceName(context, data.modifiedBy)}` : "";
+  const device = remote ? deviceName(context, data.modifiedBy) : context.nodeName;
+  const change: FileChange = { path: text(data.path), action: text(data.action), item: text(data.type), device };
+  const by = remote ? ` by ${change.device}` : "";
   const where = remote ? "" : " here";
-  return { folderId, type: remote ? "remote-change" : "local-change", level: "info", text: `${text(data.path)} ${text(data.action)}${where} in ${folderName(context, folderId, data.label)}${by}` };
+  return { folderId, type: remote ? "remote-change" : "local-change", level: "info", text: `${change.path} ${change.action}${where} in ${folderName(context, folderId, data.label)}${by}`, change };
+}
+
+function describeDiskEvent(event: SyncthingEvent, context: EventContext): Described | null {
+  const data = (event.data && typeof event.data === "object" ? event.data : {}) as EventData;
+  if (event.type === "LocalChangeDetected") return fileChange(context, data, false);
+  return event.type === "RemoteChangeDetected" ? fileChange(context, data, true) : null;
 }
 
 function pendingDevices(context: EventContext, data: EventData): Described | null {
@@ -280,10 +298,6 @@ function describeEvent(event: SyncthingEvent, context: EventContext): Described 
       return folderEntry("folder-resumed", "resumed");
     case "ItemFinished":
       return itemFinished(context, data);
-    case "LocalChangeDetected":
-      return change(context, data, false);
-    case "RemoteChangeDetected":
-      return change(context, data, true);
     case "DeviceConnected":
       return { folderId: null, type: "device-connected", level: "info", text: `connected to ${context.deviceNames.get(text(data.id)) || text(data.deviceName) || device()} (${text(data.addr)})` };
     case "DeviceDisconnected":
@@ -305,12 +319,23 @@ function describeEvent(event: SyncthingEvent, context: EventContext): Described 
   }
 }
 
-/** One Syncthing event as an entry, or null for one Activity leaves out. */
-export function eventEntry(event: SyncthingEvent, nodeId: string, context: EventContext): NewActivityEntry | null {
-  const described = describeEvent(event, context);
+function entryOf(described: Described | null, event: SyncthingEvent, nodeId: string, context: EventContext): NewActivityEntry | null {
   if (!described) return null;
   const at = Number.isFinite(Date.parse(event.time)) ? new Date(event.time).toISOString() : new Date().toISOString();
-  return { at, source: "syncthing", nodeId, ...described, text: `${context.nodeName}: ${withoutSecrets(described.text, context.secrets)}` };
+  const shown = (value: string) => withoutSecrets(value, context.secrets);
+  const { change, ...rest } = described;
+  const entry: NewActivityEntry = { at, source: "syncthing", nodeId, ...rest, text: `${context.nodeName}: ${shown(described.text)}` };
+  return change ? { ...entry, change: { ...change, path: shown(change.path), device: shown(change.device) } } : entry;
+}
+
+/** One Syncthing event as an entry, or null for one Activity leaves out. */
+export function eventEntry(event: SyncthingEvent, nodeId: string, context: EventContext): NewActivityEntry | null {
+  return entryOf(describeEvent(event, context), event, nodeId, context);
+}
+
+/** One event of `/rest/events/disk` as a change entry, its texts cleared of the node's secrets as every entry's are. */
+export function changeEntry(event: SyncthingEvent, nodeId: string, context: EventContext): NewActivityEntry | null {
+  return entryOf(describeDiskEvent(event, context), event, nodeId, context);
 }
 
 /** Failures Syncthing repeats on every pull; one entry per failure is kept while it is in the buffer. */
@@ -322,8 +347,13 @@ const repeatedTypes = new Set(["item-failed", "folder-errors"]);
  */
 const routineTypes = new Set<string>(routineActivityTypes);
 
-export function feedBufferKey(nodeId: string, type: string): string {
-  return routineTypes.has(type) ? `${nodeId}:routine` : nodeId;
+/**
+ * The buffer an instance's entry goes into.
+ * @implNote Each folder's file changes have a buffer of their own, so a folder being scanned never pushes a quiet folder's last changes out.
+ */
+export function feedBufferKey(nodeId: string, entry: Pick<NewActivityEntry, "type" | "folderId">): string {
+  if ((changeActivityTypes as readonly string[]).includes(entry.type)) return `${nodeId}:changes:${entry.folderId ?? ""}`;
+  return routineTypes.has(entry.type) ? `${nodeId}:routine` : nodeId;
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -344,12 +374,19 @@ interface FeedPosition {
   startTime: string | null;
   /** The last completion seen per `<folder>/<device>`. */
   completions: Map<string, number>;
+  /** Where `/rest/events/disk` was read up to, in that subscription's own numbering. */
+  changesSince: number;
+  changesStartTime: string | null;
+}
+
+function newFeedPosition(): FeedPosition {
+  return { since: 0, startTime: null, completions: new Map(), changesSince: 0, changesStartTime: null };
 }
 
 /** How many failed items of one folder the instance's buffer keeps besides the folder's summary entry. */
 export const failedItemsPerFolder = 20;
 
-/** The long poll of one instance's events into its buffer. */
+/** The long polls of one instance's events and file changes into its buffers. */
 class InstanceFeed {
   private stopped = false;
   private namesRead = false;
@@ -403,11 +440,52 @@ class InstanceFeed {
     const isNewRun = this.position.startTime !== startTime;
     if (isNewRun && this.position.startTime !== null) this.forgetRun(true);
     this.position.startTime = startTime;
-    if (!isNewRun && this.namesRead) return;
+    if (isNewRun || !this.namesRead) await this.readNames();
+  }
+
+  private async readNames(): Promise<void> {
+    const client = this.instance.client;
     this.namesRead = true;
     const [devices, folders] = await Promise.all([client.devices().catch(() => []), client.folders().catch(() => [])]);
     this.context.deviceNames = namesFrom(devices, "deviceID", "name");
     this.context.folderLabels = namesFrom(folders, "id", "label");
+  }
+
+  /** The long poll of the instance's file changes, `/rest/events/disk`, into one buffer per folder. */
+  async runChanges(): Promise<void> {
+    let mayHaveRestarted = true;
+    while (!this.stopped) {
+      try {
+        if (mayHaveRestarted) await this.followChangesRestart();
+        const { changesPerPoll, waitSeconds, requestTimeoutMs } = this.options;
+        const events = await this.instance.client.diskEvents(this.position.changesSince, changesPerPoll, waitSeconds, requestTimeoutMs);
+        if (this.stopped) return;
+        this.context.secrets = await nodeSecretsOrApiKey(this.instance.nodeId, this.instance.client);
+        this.takeChanges(events);
+        mayHaveRestarted = events.length === 0;
+        if (events.length) await delay(this.options.changesPauseMs);
+      } catch {
+        mayHaveRestarted = true;
+        await delay(this.options.retryMs);
+      }
+    }
+  }
+
+  /** @implNote The disk subscription numbers its events from 1 again after a restart, as `/rest/events` does. */
+  private async followChangesRestart(): Promise<void> {
+    const startTime = await this.instance.client.startTime();
+    if (this.position.changesStartTime !== null && this.position.changesStartTime !== startTime) this.position.changesSince = 0;
+    this.position.changesStartTime = startTime;
+    if (!this.namesRead) await this.readNames();
+  }
+
+  private takeChanges(events: SyncthingEvent[]): void {
+    if (events.some((event) => event.id <= this.position.changesSince)) this.position.changesSince = 0;
+    for (const event of events) {
+      const entry = changeEntry(event, this.instance.nodeId, this.context);
+      if (entry) this.log.append(feedBufferKey(this.instance.nodeId, entry), entry);
+      this.position.changesSince = Math.max(this.position.changesSince, event.id);
+    }
   }
 
   private forgetRun(isRestart = false): void {
@@ -428,7 +506,7 @@ class InstanceFeed {
   }
 
   private enter(entry: NewActivityEntry): void {
-    const bufferKey = feedBufferKey(this.instance.nodeId, entry.type);
+    const bufferKey = feedBufferKey(this.instance.nodeId, entry);
     this.log.append(bufferKey, entry);
     if (entry.type === "item-failed") this.log.keepNewest(bufferKey, (known) => known.type === "item-failed" && known.folderId === entry.folderId, failedItemsPerFolder);
   }
@@ -440,7 +518,7 @@ class InstanceFeed {
   }
 
   private isRepeat(entry: NewActivityEntry): boolean {
-    return repeatedTypes.has(entry.type) && this.log.entriesOf(feedBufferKey(this.instance.nodeId, entry.type)).some((known) => known.type === entry.type && known.text === entry.text);
+    return repeatedTypes.has(entry.type) && this.log.entriesOf(feedBufferKey(this.instance.nodeId, entry)).some((known) => known.type === entry.type && known.text === entry.text);
   }
 }
 
@@ -468,11 +546,12 @@ export class EventFeeds {
         known.update(instance);
         continue;
       }
-      const position = this.positions.get(instance.nodeId) ?? { since: 0, startTime: null, completions: new Map() };
+      const position = this.positions.get(instance.nodeId) ?? newFeedPosition();
       this.positions.set(instance.nodeId, position);
       const feed = new InstanceFeed(instance, position, this.log, this.options, this.listener);
       this.feeds.set(instance.nodeId, feed);
       void feed.run();
+      void feed.runChanges();
     }
   }
 

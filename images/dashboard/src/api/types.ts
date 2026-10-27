@@ -333,7 +333,9 @@ export interface Warning {
   folderId: string | null;
 }
 
-export type ActivitySource = "syncthing" | "parity" | "dashboard";
+export const activitySources = ["syncthing", "parity", "dashboard"] as const;
+
+export type ActivitySource = (typeof activitySources)[number];
 
 export type ActivityLevel = "info" | "warning" | "error";
 
@@ -348,15 +350,32 @@ export interface ActivityEntry {
   type: string;
   level: ActivityLevel;
   text: string;
+  /** Set on a `local-change` or `remote-change`, read from Syncthing's `/rest/events/disk`. */
+  change?: FileChange;
 }
 
+/** One file or directory a node's Syncthing saw change; `device` is the device that changed it, the node itself for a local change. */
+export interface FileChange {
+  path: string;
+  /** As Syncthing reports it: 2.1.6 says `modified` for a new item too, and `deleted`. */
+  action: string;
+  /** `file`, `dir` or `symlink`. */
+  item: string;
+  device: string;
+}
+
+export const changeActivityTypes = ["local-change", "remote-change"] as const;
+
+/** The `type` that stands for both `changeActivityTypes`. */
+export const changesActivityType = "changes";
+
 /** Scans and file changes, which a busy folder produces every few seconds; `routine=false` leaves them out. */
-export const routineActivityTypes = ["state-changed", "local-change", "remote-change"] as const;
+export const routineActivityTypes = ["state-changed", ...changeActivityTypes] as const;
 
 /**
  * `GET /api/activity?after=<id>&node=&folder=&type=&source=&routine=&limit=`, newest first; `type` takes a
- * comma-separated list, `routine=false` leaves out `routineActivityTypes`, `limit` defaults to 200.
- * `cursor` is the newest entry's ID, for the next `after`.
+ * comma-separated list (`changes` for both change types), `routine=false` leaves out the `routineActivityTypes` that
+ * `type` does not name, `limit` defaults to 200. `cursor` is the newest entry's ID, for the next `after`.
  */
 export interface ActivityResponse {
   entries: ActivityEntry[];

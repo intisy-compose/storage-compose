@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { deflateRawSync, gzipSync } from "node:zlib";
-import { type DebugFacilities, type NodeErrors, type NodeLog, type ParityJob, listTimeoutMs } from "../src/api/types.js";
+import { type DebugFacilities, type NodeErrors, type NodeLog, type ParityJob, changeActivityTypes, listTimeoutMs } from "../src/api/types.js";
 import { versionsReadLongestSeconds, versionsSlotWaitMs } from "../src/api/versioningText.js";
 import { RequestError } from "../src/http.js";
 import { type LocalInstance, type RemoteInstance, type ResolvedInstance, forwardedListTimeoutMs } from "../src/instanceResolver.js";
@@ -23,14 +23,20 @@ import { until } from "./until.js";
 
 const pcDevice = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 const arrayDevice = "ARRAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
-const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20, bufferSize: 3 };
+const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20, bufferSize: 3, changesPerPoll: 4, changesPauseMs: 0 };
 
-/** A Syncthing that answers `/rest/events` like the real one: only events after `since`, or an empty list after a short wait. */
+/**
+ * A Syncthing that answers `/rest/events` and `/rest/events/disk` like the real one: only events after `since`, the newest `limit` of them,
+ * or an empty list after a short wait; the two subscriptions number their events apart.
+ */
 class FakeSyncthing {
   private events: SyncthingEvent[] = [];
+  private diskEvents: SyncthingEvent[] = [];
   private startTime = "2026-10-21T08:00:00Z";
   private waiting: (() => void)[] = [];
   readonly sinceSeen: number[] = [];
+  readonly typesSeen: string[] = [];
+  readonly diskQueries: { since: number; limit: number | null }[] = [];
   readonly server: Server;
 
   constructor() {
@@ -43,10 +49,19 @@ class FakeSyncthing {
       if (url.pathname === "/rest/system/status") return reply({ myID: pcDevice, startTime: this.startTime });
       if (url.pathname === "/rest/config/devices") return reply([{ deviceID: arrayDevice, name: "private-array", addresses: [] }]);
       if (url.pathname === "/rest/config/folders") return reply([{ id: "documents", label: "Documents", path: "/x", type: "sendreceive", paused: false, devices: [] }]);
-      if (url.pathname !== "/rest/events") return reply(null);
+      const isDisk = url.pathname === "/rest/events/disk";
+      if (url.pathname !== "/rest/events" && !isDisk) return reply(null);
       const since = Number(url.searchParams.get("since"));
-      this.sinceSeen.push(since);
-      const answer = () => this.events.filter((event) => event.id > since);
+      const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : null;
+      if (isDisk) this.diskQueries.push({ since, limit });
+      else {
+        this.sinceSeen.push(since);
+        this.typesSeen.push(url.searchParams.get("events") ?? "");
+      }
+      const answer = () => {
+        const after = (isDisk ? this.diskEvents : this.events).filter((event) => event.id > since);
+        return limit ? after.slice(-limit) : after;
+      };
       if (answer().length) return reply(answer());
       let answered = false;
       const answerOnce = () => {
@@ -72,6 +87,12 @@ class FakeSyncthing {
     for (const wake of waiting) wake();
   }
 
+  emitDisk(...events: { type: string; data: unknown }[]): void {
+    for (const event of events) this.diskEvents.push({ id: this.diskEvents.length + 1, time: new Date(Date.now() + this.diskEvents.length).toISOString(), ...event });
+    const waiting = this.waiting.splice(0);
+    for (const wake of waiting) wake();
+  }
+
   /** Cuts the open long poll off, as a network failure would, without a restart; waits for one to be open, so a poll always fails. */
   async dropOpenPoll(): Promise<void> {
     await until(() => this.waiting.length > 0, "a long poll to cut off");
@@ -82,6 +103,7 @@ class FakeSyncthing {
   /** Starts again: new start time, IDs from 1, and the open long poll cut off. */
   restart(): void {
     this.events = [];
+    this.diskEvents = [];
     this.startTime = "2026-10-21T09:00:00Z";
     this.waiting = [];
     this.server.closeAllConnections();
@@ -383,6 +405,94 @@ describe("event feeds", () => {
       "pc: failure: error hidden: it quotes an ignore pattern; the folder's ignore patterns show it",
       "pc: lost private-array (error hidden: it quotes an ignore pattern; the folder's ignore patterns show it)",
     ]);
+  });
+});
+
+describe("file changes", () => {
+  const pcShort = pcDevice.slice(0, 7);
+  const arrayShort = arrayDevice.slice(0, 7);
+  const diskChange = (type: "LocalChangeDetected" | "RemoteChangeDetected", path: string, modifiedBy: string, folder = "documents", action = "modified", item = "file") => ({
+    type,
+    data: { action, folder, folderID: folder, label: folder === "documents" ? "Documents" : folder, modifiedBy, path, type: item },
+  });
+  const changes = (log: ActivityLog, query = {}) => log.query({ types: [...changeActivityTypes], ...query }).entries;
+
+  it("disk events become change entries with path and device", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "notes/today.txt", pcShort), diskChange("RemoteChangeDetected", "old", arrayShort, "documents", "deleted", "dir"));
+    await until(() => changes(log).length === 2, "both changes");
+    const [remote, local] = changes(log);
+    assert.equal(local.type, "local-change");
+    assert.equal(local.nodeId, "pc");
+    assert.equal(local.folderId, "documents");
+    assert.equal(local.source, "syncthing");
+    assert.deepEqual(local.change, { path: "notes/today.txt", action: "modified", item: "file", device: "pc" });
+    assert.equal(local.text, "pc: notes/today.txt modified here in Documents");
+    assert.equal(remote.type, "remote-change");
+    assert.deepEqual(remote.change, { path: "old", action: "deleted", item: "dir", device: "private-array" });
+    assert.equal(remote.text, "pc: old deleted in Documents by private-array");
+  });
+
+  it("changes are read from syncthing's disk events with a cursor and a limit, never from the event poll", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "a.txt", pcShort));
+    await until(() => changes(log).length === 1, "the first change");
+    fake.emitDisk(diskChange("LocalChangeDetected", "b.txt", pcShort));
+    await until(() => changes(log).length === 2, "the second change");
+    await until(() => fake.diskQueries.some((query) => query.since === 2), "a poll after the second change");
+    assert.ok(fake.diskQueries.every((query) => query.limit === feedOptions.changesPerPoll), JSON.stringify(fake.diskQueries));
+    assert.deepEqual(fake.diskQueries.map((query) => query.since).filter((since, index, all) => all.indexOf(since) === index), [0, 1, 2]);
+    assert.ok(fake.typesSeen.length > 0 && fake.typesSeen.every((types) => !types.includes("ChangeDetected")), fake.typesSeen.join(" | "));
+  });
+
+  it("a burst of changes keeps the newest a poll may take", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    fake.emitDisk(...Array.from({ length: 10 }, (_, index) => diskChange("LocalChangeDetected", `file${index}`, pcShort)));
+    feedsFor(log).reconcile([feed]);
+    await until(() => changes(log).length > 0, "the burst");
+    await until(() => fake.diskQueries.some((query) => query.since === 10), "a poll after the burst");
+    assert.deepEqual(changes(log).map((entry) => entry.change?.path), ["file9", "file8", "file7", "file6"]);
+  });
+
+  it("a busy folder's changes do not push another folder's out", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(3);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "quiet.txt", pcShort, "dashboard-test-a"));
+    await until(() => changes(log).length === 1, "the quiet folder's change");
+    for (let batch = 0; batch < 3; batch++) {
+      fake.emitDisk(...Array.from({ length: 4 }, (_, index) => diskChange("LocalChangeDetected", `busy${batch}-${index}`, pcShort)));
+      await until(() => changes(log, { folder: "documents" }).some((entry) => entry.change?.path === `busy${batch}-3`), `busy batch ${batch}`);
+    }
+    assert.deepEqual(changes(log, { folder: "dashboard-test-a" }).map((entry) => entry.change?.path), ["quiet.txt"]);
+    assert.equal(changes(log, { folder: "documents" }).length, 3);
+  });
+
+  it("a restart reads the disk events from the start again", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "a.txt", pcShort), diskChange("LocalChangeDetected", "b.txt", pcShort));
+    await until(() => changes(log).length === 2, "the changes before the restart");
+    fake.restart();
+    fake.emitDisk(diskChange("LocalChangeDetected", "after.txt", pcShort));
+    await until(() => changes(log).length === 3, "the change after the restart");
+    assert.equal(changes(log)[0].change?.path, "after.txt");
+  });
+
+  it("a change's path or device carrying one of the node's secrets shows it replaced", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("RemoteChangeDetected", `keys/${eventFeedApiKey}.txt`, `${eventFeedApiKey}`));
+    await until(() => changes(log).length === 1, "the change");
+    assert.ok(!JSON.stringify(log.query({})).includes(eventFeedApiKey), JSON.stringify(log.query({})));
+    assert.equal(changes(log)[0].change?.path, "keys/[redacted].txt");
   });
 });
 

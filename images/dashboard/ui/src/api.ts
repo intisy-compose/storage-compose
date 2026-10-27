@@ -121,6 +121,8 @@ export type {
 import type { LocalChangesAction } from "../../src/api/localChangesText.js";
 import { requestRefresh } from "./renderRequest.js";
 import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, DebugChange, DebugFacilities, NodeErrors, NodeLog, AddedDevice, ArrayAction, ArrayActionBody, ConflictsPage, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, RestoredVersions, RestoreVersionsBody, TreeListing, VersionsPage } from "../../src/api/types.js";
+import { type ActivityFilters, activityRequestQuery, defaultActivityFilters, folderChangesShown } from "../../src/api/activityFilters.js";
+import { changesActivityType } from "../../src/api/types.js";
 
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
@@ -444,16 +446,9 @@ export function fetchTree(node: string, path: string, page: number): Promise<Tre
   return getJson(`api/tree?${query.toString()}`);
 }
 
-export { logLevels, routineActivityTypes } from "../../src/api/types.js";
+export { type FileChange, changesActivityType, logLevels } from "../../src/api/types.js";
 export { keptLogLines } from "../../src/api/logLines.js";
-
-export interface ActivityFilters {
-  node: string;
-  folder: string;
-  source: string;
-  /** Scans and file changes are shown only when this is on. */
-  routine: boolean;
-}
+export { type ActivityFilters, activityFiltersOf, activityFiltersQuery, defaultActivityFilters, folderChangesShown, isChangeEntry, matchesActivityFilters } from "../../src/api/activityFilters.js";
 
 export function fetchNodeLog(nodeId: string, since: string | null): Promise<NodeLog> {
   return getJson(`${nodeApiPath(nodeId, "log")}${since ? `?since=${encodeURIComponent(since)}` : ""}`);
@@ -482,10 +477,12 @@ export function supportBundleUrl(nodeId: string): string {
 }
 
 export function fetchActivity(filters: ActivityFilters, limit: number): Promise<ActivityResponse> {
-  const query = new URLSearchParams({ limit: String(limit) });
-  for (const name of ["node", "folder", "source"] as const) if (filters[name]) query.set(name, filters[name]);
-  if (!filters.routine) query.set("routine", "false");
-  return getJson(`api/activity?${query.toString()}`);
+  return getJson(`api/activity?${activityRequestQuery(filters, limit).toString()}`);
+}
+
+/** The folder's newest file changes on every node of this host. */
+export function fetchFolderChanges(folderId: string): Promise<ActivityResponse> {
+  return fetchActivity({ ...defaultActivityFilters, folder: folderId, kind: changesActivityType }, folderChangesShown);
 }
 
 async function postJson(path: string, body: ArrayActionBody): Promise<{ status: number; error: string | null }> {
