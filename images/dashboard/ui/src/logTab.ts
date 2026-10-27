@@ -1,4 +1,4 @@
-import { type DebugFacility, type LogLevel, type LogMessage, type StorageNode, clearNodeErrors, fetchDebugFacilities, fetchNodeErrors, fetchNodeLog, logLevels, saveDebugFacilities, supportBundleUrl } from "./api.js";
+import { type DebugFacility, type LogLevel, type LogMessage, type StorageNode, clearNodeErrors, keptLogLines, fetchDebugFacilities, fetchNodeErrors, fetchNodeLog, logLevels, saveDebugFacilities, supportBundleUrl } from "./api.js";
 import { button, element } from "./dom.js";
 import { controlId, registerForm } from "./forms.js";
 import type { Tone } from "./nodeStatus.js";
@@ -6,7 +6,7 @@ import { requestRender } from "./renderRequest.js";
 import { type NodeLogState, appState, emptyNodeLog, logLocation } from "./state.js";
 
 /** How many log lines the tab keeps while it reads only what is new; Syncthing itself keeps fewer. */
-const keptLogLines = 2000;
+const mostLogLines = 2000;
 
 const levelTones: Record<LogLevel, Tone> = { error: "bad", warning: "warn", info: "muted", debug: "muted" };
 const levelChoices: Record<LogLevel, string> = { debug: "Debug and above", info: "Info and above", warning: "Warnings and errors", error: "Errors only" };
@@ -35,16 +35,12 @@ function ensureNodeLog(): NodeLogState | null {
   return appState.nodeLog;
 }
 
-function withNewLines(known: LogMessage[] | null, added: LogMessage[]): LogMessage[] {
-  return [...(known ?? []), ...added].slice(-keptLogLines);
-}
-
 async function loadLog(state: NodeLogState): Promise<void> {
   const since = state.messages?.at(-1)?.when ?? null;
   try {
     const log = await fetchNodeLog(state.nodeId, since);
     if (appState.nodeLog !== state) return;
-    state.messages = since ? withNewLines(state.messages, log.messages) : withNewLines(null, log.messages);
+    state.messages = keptLogLines(since ? state.messages : null, log.messages, mostLogLines);
     state.logError = null;
   } catch (error) {
     if (appState.nodeLog === state) state.logError = messageOf(error);

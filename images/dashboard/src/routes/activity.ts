@@ -5,7 +5,7 @@ import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, Route, WriteNote } from "../routes.js";
 import { shownUnscopedText } from "../shownSyncthingError.js";
-import { configSecrets, filesHoldingSecrets, UnreadableZip, zipEntries } from "../supportBundle.js";
+import { configSecrets, filesHoldingSecrets, holdsSecret, UnreadableZip, withoutSecrets, zipEntries } from "../supportBundle.js";
 import { AnswerTooLarge, type SystemError, boundedBytes } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
 
@@ -65,22 +65,51 @@ export function logLevelOf(level: unknown): LogLevel {
   return syncthingLevels[level.toUpperCase()] ?? "info";
 }
 
-function logMessageOf(value: unknown): LogMessage {
-  const fields = fieldsOf(value);
-  return { when: String(fields.when ?? ""), level: logLevelOf(fields.level), message: shownUnscopedText(String(fields.message ?? "")) };
+/** A Syncthing text as the page sees it: the node's secrets replaced, then the redaction of Syncthing's texts. */
+function shownText(text: string, secrets: readonly string[]): string {
+  return shownUnscopedText(withoutSecrets(text, secrets));
 }
 
-function nodeErrorOf(value: unknown): NodeError {
+function logMessageOf(value: unknown, secrets: readonly string[] = []): LogMessage {
   const fields = fieldsOf(value);
-  return { when: String(fields.when ?? ""), message: shownUnscopedText(String(fields.message ?? "")) };
+  return { when: String(fields.when ?? ""), level: logLevelOf(fields.level), message: shownText(String(fields.message ?? ""), secrets) };
 }
 
+function nodeErrorOf(value: unknown, secrets: readonly string[] = []): NodeError {
+  const fields = fieldsOf(value);
+  return { when: String(fields.when ?? ""), message: shownText(String(fields.message ?? ""), secrets) };
+}
+
+/**
+ * The `since` asked for, checked to be an instant and passed on as written.
+ * @implNote Syncthing 2.1.6 writes times to a tenth of a microsecond and compares `since` at that precision, so one cut to milliseconds
+ * would answer the newest line again on every poll.
+ */
 function sinceOf(url: URL): string | null {
   const since = url.searchParams.get("since");
   if (!since) return null;
-  const time = Date.parse(since);
-  if (!Number.isFinite(time)) throw new RequestError(400, "since is an instant, such as 2026-10-27T12:00:00Z");
-  return new Date(time).toISOString();
+  if (!Number.isFinite(Date.parse(since))) throw new RequestError(400, "since is an instant, such as 2026-10-27T12:00:00Z");
+  return since;
+}
+
+const secretsKeptMs = 60_000;
+const keptSecrets = new Map<string, { readAt: number; secrets: Promise<string[]> }>();
+
+/**
+ * What is never let out of the node: its API key and every password or API key its configuration holds, the GUI's password hash and
+ * folder encryption passwords among them; read again after a minute.
+ * @implNote The GUI's plain password is never known to the dashboard: Syncthing keeps only its bcrypt hash, so only the hash is searched for.
+ */
+function nodeSecrets(local: LocalInstance): Promise<string[]> {
+  const key = `${local.nodeId}\u0000${local.client.endpoint.url}`;
+  const kept = keptSecrets.get(key);
+  if (kept && Date.now() - kept.readAt < secretsKeptMs) return kept.secrets;
+  const secrets = callSyncthing(local, (client) => client.request<unknown>("GET", "/config")).then((config) => [...new Set([local.client.endpoint.apiKey, ...configSecrets(config)].filter(Boolean))]);
+  keptSecrets.set(key, { readAt: Date.now(), secrets });
+  secrets.catch(() => {
+    if (keptSecrets.get(key)?.secrets === secrets) keptSecrets.delete(key);
+  });
+  return secrets;
 }
 
 function nodePath(nodeId: string, rest: string): string {
@@ -89,13 +118,14 @@ function nodePath(nodeId: string, rest: string): string {
 
 /**
  * What the node's Syncthing keeps of its log, after `since` when given.
- * @implNote Every line passes `shownUnscopedText`, here and again when another host's dashboard answered it, as the log can quote an ignore file.
+ * @implNote Every line has the node's secrets replaced and passes `shownUnscopedText`, here and again when another host's dashboard
+ * answered it, as the log can quote an ignore file and holds what the support bundle is searched for.
  */
 export async function readNodeLog(instance: ResolvedInstance, since: string | null): Promise<NodeLog> {
   const query = since ? `?since=${encodeURIComponent(since)}` : "";
-  if (instance.kind === "remote") return { messages: listOf(fieldsOf(await forwardRead(instance, nodePath(instance.nodeId, `/log${query}`))).messages).map(logMessageOf) };
-  const answer = await callSyncthing(instance, (client) => client.request<{ messages?: unknown } | null>("GET", `/system/log${query}`));
-  return { messages: listOf(answer?.messages).map(logMessageOf) };
+  if (instance.kind === "remote") return { messages: listOf(fieldsOf(await forwardRead(instance, nodePath(instance.nodeId, `/log${query}`))).messages).map((message) => logMessageOf(message)) };
+  const [answer, secrets] = await Promise.all([callSyncthing(instance, (client) => client.request<{ messages?: unknown } | null>("GET", `/system/log${query}`)), nodeSecrets(instance)]);
+  return { messages: listOf(answer?.messages).map((message) => logMessageOf(message, secrets)) };
 }
 
 async function localErrors(instance: LocalInstance): Promise<SystemError[]> {
@@ -103,8 +133,9 @@ async function localErrors(instance: LocalInstance): Promise<SystemError[]> {
 }
 
 export async function readNodeErrors(instance: ResolvedInstance): Promise<NodeErrors> {
-  if (instance.kind === "remote") return { errors: listOf(fieldsOf(await forwardRead(instance, nodePath(instance.nodeId, "/errors"))).errors).map(nodeErrorOf) };
-  return { errors: (await localErrors(instance)).map(nodeErrorOf) };
+  if (instance.kind === "remote") return { errors: listOf(fieldsOf(await forwardRead(instance, nodePath(instance.nodeId, "/errors"))).errors).map((error) => nodeErrorOf(error)) };
+  const [errors, secrets] = await Promise.all([localErrors(instance), nodeSecrets(instance)]);
+  return { errors: errors.map((error) => nodeErrorOf(error, secrets)) };
 }
 
 function plural(count: number, word: string): string {
@@ -116,7 +147,14 @@ export interface NodeWrite<T> {
   note: WriteNote | NothingWritten;
 }
 
-/** Clears the errors the node's Syncthing reports; with none reported nothing is sent. */
+function errorKey(error: SystemError): string {
+  return `${error.when}\u0000${error.message}`;
+}
+
+/**
+ * Clears the errors the node's Syncthing reports; with none reported nothing is sent.
+ * @implNote A lost answer counts as a clear once none of the errors reported before it are left; a failure that recurs is reported again at once.
+ */
 export async function clearNodeErrors(instance: ResolvedInstance, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<NodeWrite<NodeErrors>> {
   const local = requireLocal(instance);
   const before = await localErrors(local);
@@ -124,11 +162,14 @@ export async function clearNodeErrors(instance: ResolvedInstance, readBackDelays
   await writeConfirmed(
     local,
     (client) => client.request("POST", "/system/error/clear"),
-    async () => (await local.client.systemErrors()).length === 0,
+    async () => {
+      const cleared = new Set(before.map(errorKey));
+      return !(await local.client.systemErrors()).some((error) => cleared.has(errorKey(error)));
+    },
     readBackDelaysMs,
   );
-  const after = await localErrors(local).catch(() => [] as SystemError[]);
-  return { answer: { errors: after.map(nodeErrorOf) }, note: { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: `${local.name}: cleared ${plural(before.length, "Syncthing error")}` } };
+  const [after, secrets] = await Promise.all([localErrors(local).catch(() => [] as SystemError[]), nodeSecrets(local)]);
+  return { answer: { errors: after.map((error) => nodeErrorOf(error, secrets)) }, note: { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: `${local.name}: cleared ${plural(before.length, "Syncthing error")}` } };
 }
 
 /** `/rest/system/loglevels` of Syncthing 2.1.6: each facility's level (`INFO`, `DEBUG`) and its description. */
@@ -220,24 +261,35 @@ function bundleFileName(nodeName: string, at: Date): string {
   return `support-bundle-${nodeName.replace(/[^A-Za-z0-9._-]/g, "_") || "node"}-${stamp}.zip`;
 }
 
-/** What is never let out of the node: its API key and every password or API key its configuration holds, the GUI's password hash and folder encryption passwords among them. */
-async function nodeSecrets(local: LocalInstance): Promise<string[]> {
-  const config = await callSyncthing(local, (client) => client.request<unknown>("GET", "/config"));
-  return [...new Set([local.client.endpoint.apiKey, ...configSecrets(config)].filter(Boolean))];
-}
-
 function refusedBundle(nodeName: string, why: string): RequestError {
   return new RequestError(501, `the support bundle of ${nodeName} is not handed out: ${why}`);
 }
 
 /**
- * The node's Syncthing support bundle, handed out only once every file in it was read and found free of the node's secrets.
+ * The node's Syncthing support bundle, handed out only once the archive and every file in it were read and found free of the node's
+ * secrets; downloads asked for while one is read share it.
  * @implNote Syncthing 2.1.6 writes `REDACTED` for the API key, the GUI's user and password and every folder encryption password in the
  * bundle's configuration (checked on the test peer with all of them set). The bundle is still held whole and searched, its gzipped
  * profiles unpacked, so a version that redacts less is refused (501) instead of passed on.
  */
-export async function supportBundle(instance: ResolvedInstance, maxBytes: number = defaultMaxBundleBytes): Promise<{ fileName: string; zip: Buffer }> {
+export function supportBundle(instance: ResolvedInstance, maxBytes: number = defaultMaxBundleBytes): Promise<SupportBundle> {
   const local = requireLocal(instance);
+  const key = `${local.nodeId}\u0000${local.client.endpoint.url}\u0000${maxBytes}`;
+  const running = bundlesBeingRead.get(key);
+  if (running) return running;
+  const read = readSupportBundle(local, maxBytes).finally(() => bundlesBeingRead.delete(key));
+  bundlesBeingRead.set(key, read);
+  return read;
+}
+
+interface SupportBundle {
+  fileName: string;
+  zip: Buffer;
+}
+
+const bundlesBeingRead = new Map<string, Promise<SupportBundle>>();
+
+async function readSupportBundle(local: LocalInstance, maxBytes: number): Promise<SupportBundle> {
   const secrets = await nodeSecrets(local);
   const answer = await callSyncthing(local, (client) => client.raw("GET", "/rest/debug/support", supportBundleTimeoutMs));
   if (!answer.ok) {
@@ -258,6 +310,7 @@ export async function supportBundle(instance: ResolvedInstance, maxBytes: number
     if (error instanceof UnreadableZip) throw refusedBundle(local.name, `it could not be checked (${error.message})`);
     throw error;
   }
+  if (secrets.some((secret) => holdsSecret(zip, secret))) holding.push("the archive itself");
   if (holding.length) throw refusedBundle(local.name, `${holding.join(", ")} holds a password or the API key, or could not be searched`);
   return { fileName: bundleFileName(local.name, new Date()), zip };
 }

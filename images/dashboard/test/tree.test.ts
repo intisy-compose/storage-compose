@@ -374,7 +374,7 @@ describe("tree listing of one node", () => {
     instance.errorsFailText = "failed to load #include ../../config/config.xml";
     const listing = await treeListing(node.nodeId, "Documents", 1, sources());
     const note = listing.notes.find((candidate) => candidate.startsWith("Documents: "));
-    assert.ok(note?.endsWith("where they are could not be read: GET /folder/errors?folder=documents&page=1&perpage=100: HTTP 500 Syncthing cannot read an included file"), note);
+    assert.ok(note?.endsWith("where they are could not be read: GET /folder/errors?folder=documents&page=1&perpage=100: HTTP 500 error hidden: it mentions an include"), note);
     assert.ok(!JSON.stringify(listing).includes("config.xml"));
   });
 

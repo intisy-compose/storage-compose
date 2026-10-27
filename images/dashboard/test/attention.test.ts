@@ -160,7 +160,7 @@ describe("attention", () => {
     ]);
     assert.deepEqual(
       warnings.map((entry) => entry.text),
-      ["pc's Syncthing: Syncthing cannot read an included file", "pc's Syncthing: error hidden: it quotes an ignore pattern; the folder's ignore patterns show it"],
+      ["pc's Syncthing: error hidden: it mentions an include", "pc's Syncthing: error hidden: it quotes an ignore pattern; the folder's ignore patterns show it"],
     );
     assert.ok(!JSON.stringify(warnings).includes("config.xml") && !JSON.stringify(warnings).includes("secret-line"));
   });

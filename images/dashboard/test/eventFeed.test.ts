@@ -15,6 +15,7 @@ import { type WriteEffects, type WriteNote, errorAnswer, requestHandler } from "
 import { shownUnscopedText } from "../src/shownSyncthingError.js";
 import { logLevelOf, nodeLogRoutes } from "../src/routes/activity.js";
 import { zipEntries } from "../src/supportBundle.js";
+import { keptLogLines } from "../src/api/logLines.js";
 import { ActivityLog, EventFeeds, type FeedInstance, ParityWatcher, failedItemsPerFolder } from "../src/eventFeed.js";
 import { ConflictIndexes } from "../src/conflicts.js";
 import { type BrowseEntry, type FolderStatus, SyncthingClient, type SyncthingEvent, type SyncthingFolderConfig, SyncthingRefusal } from "../src/syncthing.js";
@@ -358,12 +359,12 @@ describe("event feeds", () => {
     await until(() => log.query({}).entries.length === 6, "six entries");
     const all = texts(log).join("\n");
     assert.ok(!all.includes("apikey-from-config") && !all.includes("config.xml") && !all.includes("secret.txt"), all);
-    assert.deepEqual(texts(log, { types: ["folder-errors"] }), ["pc: Documents failed to sync 1 item, first a.txt (Syncthing cannot read an included file)"]);
+    assert.deepEqual(texts(log, { types: ["folder-errors"] }), ["pc: Documents failed to sync 1 item, first a.txt (error hidden: it mentions an include)"]);
     assert.deepEqual(texts(log, { types: ["item-failed"] }), [
       "pc: Documents failed to sync c.txt (permission denied)",
       "pc: Documents failed to sync b.txt (error hidden: it quotes an ignore pattern; the folder's ignore patterns show it)",
     ]);
-    assert.deepEqual(texts(log, { types: ["state-changed"] }), ["pc: Documents stopped: Syncthing cannot read an included file"]);
+    assert.deepEqual(texts(log, { types: ["state-changed"] }), ["pc: Documents stopped: error hidden: it mentions an include"]);
     assert.deepEqual(texts(log, { types: ["device-disconnected", "failure"] }), [
       "pc: failure: error hidden: it quotes an ignore pattern; the folder's ignore patterns show it",
       "pc: lost private-array (error hidden: it quotes an ignore pattern; the folder's ignore patterns show it)",
@@ -499,6 +500,12 @@ function zipOfBytes(files: Record<string, Buffer>): Buffer {
   return Buffer.concat([...parts, directoryBytes, end]);
 }
 
+/** An instant in nanoseconds since the epoch, as precise as Syncthing writes it (`.9291837+02:00`). */
+function nanosOf(when: string): bigint {
+  const [, base, fraction = "", zone] = when.match(/^(.*?:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)$/) ?? [];
+  return BigInt(Date.parse(`${base}${zone}`)) * 1_000_000n + BigInt(fraction.padEnd(9, "0").slice(0, 9) || "0");
+}
+
 const guiPasswordHash = "$2a$10$abcdefghijklmnopqrstuvO1234567890abcdefghijklmnopqrst";
 const encryptionPassword = "fold<er>&pass";
 
@@ -516,6 +523,9 @@ class FakeDiagnostics {
   levels: Record<string, string> = { model: "INFO", scanner: "DEBUG", db: "INFO" };
   bundle: Buffer = zipOf({});
   loseNextAnswer = false;
+  supportReads = 0;
+  /** An error Syncthing reports again right after a clear, as a recurring failure does. */
+  errorsAfterClear: { when: string; message: string }[] = [];
 
   constructor(readonly apiKey: string) {
     this.server = createServer(async (request, response) => {
@@ -534,11 +544,11 @@ class FakeDiagnostics {
       if (request.headers["x-api-key"] !== apiKey) return reply({ error: "forbidden" }, 403);
       if (url.pathname === "/rest/system/log") {
         const since = url.searchParams.get("since");
-        return reply({ messages: this.messages.filter((message) => !since || Date.parse(message.when) > Date.parse(since)) });
+        return reply({ messages: this.messages.filter((message) => !since || nanosOf(message.when) > nanosOf(since)) });
       }
       if (url.pathname === "/rest/system/error" && request.method === "GET") return reply({ errors: this.errors.length ? this.errors : null });
       if (url.pathname === "/rest/system/error/clear" && request.method === "POST") {
-        this.errors = [];
+        this.errors = [...this.errorsAfterClear];
         return reply(null);
       }
       if (url.pathname === "/rest/system/loglevels" && request.method === "GET") {
@@ -552,6 +562,8 @@ class FakeDiagnostics {
         return reply({ gui: { apiKey: this.apiKey, user: "finn", password: guiPasswordHash }, folders: [{ id: "documents", devices: [{ deviceID: arrayDevice, encryptionPassword }] }] });
       }
       if (url.pathname === "/rest/debug/support") {
+        this.supportReads += 1;
+        await new Promise((resolve) => setTimeout(resolve, 50));
         response.writeHead(200, { "Content-Type": "application/zip", "Content-Disposition": "attachment; filename=support-bundle-PCAAAAA.zip" });
         return response.end(this.bundle);
       }
@@ -623,7 +635,7 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     assert.equal(log.messages[2].message, "error hidden: it quotes an ignore pattern; the folder's ignore patterns show it");
     const since = (await (await fetch(`${dashboard}/api/nodes/fb98/log?since=2026-10-27T10:00:01.5Z`)).json()) as NodeLog;
     assert.deepEqual(since.messages.map((message) => message.when), ["2026-10-27T10:00:02Z", "2026-10-27T10:00:03Z"]);
-    assert.ok(fake.received.includes("GET /rest/system/log?since=2026-10-27T10%3A00%3A01.500Z"), fake.received.join("\n"));
+    assert.ok(fake.received.includes("GET /rest/system/log?since=2026-10-27T10%3A00%3A01.5Z"), fake.received.join("\n"));
     assert.equal((await fetch(`${dashboard}/api/nodes/fb98/log?since=yesterday`)).status, 400);
     assert.deepEqual([logLevelOf("WRN"), logLevelOf("ERROR"), logLevelOf(-4), logLevelOf(8), logLevelOf("odd")], ["warning", "error", "debug", "error", "info"]);
   });
@@ -642,8 +654,8 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     const remote: RemoteInstance = { kind: "remote", nodeId: "c3d4", name: "laptop-data", host: "p53", dashboardUrl: `http://127.0.0.1:${(other.address() as AddressInfo).port}` };
     const dashboard = await dashboardFor([remote]);
     const log = (await (await fetch(`${dashboard}/api/nodes/c3d4/log?since=2026-10-27T09:00:00Z`)).json()) as NodeLog;
-    assert.deepEqual(log.messages, [{ when: "2026-10-27T10:00:00Z", level: "warning", message: "Syncthing cannot read an included file" }]);
-    assert.ok(answered[0].includes("since=2026-10-27T09%3A00%3A00.000Z") && answered[0].includes("scope=local"), answered[0]);
+    assert.deepEqual(log.messages, [{ when: "2026-10-27T10:00:00Z", level: "warning", message: "error hidden: it mentions an include" }]);
+    assert.ok(answered[0].includes("since=2026-10-27T09%3A00%3A00Z") && answered[0].includes("scope=local"), answered[0]);
     const errors = (await (await fetch(`${dashboard}/api/nodes/c3d4/errors`)).json()) as NodeErrors;
     assert.equal(errors.errors[0].message, "error hidden: it quotes an ignore pattern; the folder's ignore patterns show it");
     assert.deepEqual(((await (await fetch(`${dashboard}/api/nodes/c3d4/debug`)).json()) as DebugFacilities).facilities, [{ name: "model", description: "The root hub", debug: true }]);
@@ -669,7 +681,7 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     const dashboard = await dashboardFor([pc.node, peer.node]);
     notes.length = 0;
     const shown = (await (await fetch(`${dashboard}/api/nodes/d7e5/errors`)).json()) as NodeErrors;
-    assert.deepEqual(shown.errors.map((error) => error.message), ["Listen (BEP/tcp): address in use", "Syncthing cannot read an included file"]);
+    assert.deepEqual(shown.errors.map((error) => error.message), ["Listen (BEP/tcp): address in use", "error hidden: it mentions an include"]);
     const cleared = await post(`${dashboard}/api/nodes/d7e5/errors/clear`);
     assert.equal(cleared.status, 200);
     assert.deepEqual(await cleared.json(), { errors: [] });
@@ -728,6 +740,55 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     assert.equal(fake.writes().length, writes, "a facility already off is not sent");
   });
 
+  it("a since with more than millisecond digits is passed on as written, so the newest line is not read again", async () => {
+    const { fake, node } = await localNode("fb98", "pc");
+    fake.messages = [
+      { when: "2026-10-27T14:33:12.9291837+02:00", level: "WRN", message: "Failed to scan (path=a.txt)" },
+      { when: "2026-10-27T14:33:12.9297224+02:00", level: "WRN", message: "Failed to scan (path=b.txt)" },
+    ];
+    const dashboard = await dashboardFor([node]);
+    const since = encodeURIComponent("2026-10-27T14:33:12.9291837+02:00");
+    const log = (await (await fetch(`${dashboard}/api/nodes/fb98/log?since=${since}`)).json()) as NodeLog;
+    assert.deepEqual(log.messages.map((message) => message.message), ["Failed to scan (path=b.txt)"]);
+    assert.ok(fake.received.includes(`GET /rest/system/log?since=${since}`), fake.received.join("\n"));
+    const newest = encodeURIComponent("2026-10-27T14:33:12.9297224+02:00");
+    assert.deepEqual(((await (await fetch(`${dashboard}/api/nodes/fb98/log?since=${newest}`)).json()) as NodeLog).messages, []);
+  });
+
+  it("a log line or an error carrying one of the node's secrets shows it replaced", async () => {
+    const { fake, node } = await localNode("d7e5", "dashboard-test-peer");
+    fake.messages = [{ when: "2026-10-27T10:00:00Z", level: "INF", message: `GUI login with X-API-Key ${fake.apiKey} and folder password ${encryptionPassword}` }];
+    fake.errors = [{ when: "2026-10-27T10:00:00Z", message: `password hash ${guiPasswordHash} rejected` }];
+    const dashboard = await dashboardFor([node]);
+    const log = (await (await fetch(`${dashboard}/api/nodes/d7e5/log`)).json()) as NodeLog;
+    const errors = (await (await fetch(`${dashboard}/api/nodes/d7e5/errors`)).json()) as NodeErrors;
+    const shown = JSON.stringify([log, errors]);
+    for (const secret of [fake.apiKey, encryptionPassword, guiPasswordHash]) assert.ok(!shown.includes(secret), `${secret} in ${shown}`);
+    assert.equal(log.messages[0].message, "GUI login with X-API-Key [redacted] and folder password [redacted]");
+    assert.equal(errors.errors[0].message, "password hash [redacted] rejected");
+  });
+
+  it("a clear whose answer is lost counts as done once the errors it cleared are gone, even with a new one reported", async () => {
+    const { fake, node } = await localNode("d7e5", "dashboard-test-peer");
+    fake.errors = [{ when: "2026-10-27T10:00:00Z", message: "Listen (BEP/tcp): address in use" }];
+    fake.errorsAfterClear = [{ when: "2026-10-27T10:00:05Z", message: "Listen (BEP/tcp): address in use again" }];
+    fake.loseNextAnswer = true;
+    const dashboard = await dashboardFor([node]);
+    notes.length = 0;
+    const cleared = await post(`${dashboard}/api/nodes/d7e5/errors/clear`);
+    assert.equal(cleared.status, 200);
+    assert.deepEqual(notes.map((note) => note.text), ["dashboard-test-peer: cleared 1 Syncthing error"]);
+  });
+
+  it("two downloads of a node's support bundle at once share one read", async () => {
+    const { fake, node } = await localNode("d7e5", "dashboard-test-peer");
+    fake.bundle = zipOf({ "metrics.txt": "x 1\n" });
+    const dashboard = await dashboardFor([node]);
+    const answers = await Promise.all([fetch(`${dashboard}/api/nodes/d7e5/support-bundle`), fetch(`${dashboard}/api/nodes/d7e5/support-bundle`)]);
+    assert.deepEqual(answers.map((answer) => answer.status), [200, 200]);
+    assert.equal(fake.supportReads, 1);
+  });
+
   it("the support bundle carries no api key", async () => {
     const { fake, node } = await localNode("d7e5", "dashboard-test-peer");
     fake.bundle = zipOf({
@@ -770,6 +831,20 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     }
     fake.bundle = zipOfBytes({ "syncthing-heap.pprof": gzipSync(Buffer.from("no secret here")) });
     assert.equal((await fetch(`${dashboard}/api/nodes/d7e5/support-bundle`)).status, 200);
+    const xmlEscaped = encryptionPassword.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    const refusedBundles: [Buffer, string][] = [
+      [zipOf({ "config.xml": `<encryptionPassword>${xmlEscaped}</encryptionPassword>` }), "a secret escaped as XML is found"],
+      [zipOfBytes({ "inner.zip": zipOf({ "config.json.txt": "{}" }) }), "a nested archive is not passed on unsearched"],
+      [zipOfBytes({ "inner.pprof": gzipSync(gzipSync(Buffer.from("x"))) }), "a profile that unpacks to another archive is not passed on unsearched"],
+      [zipOf({ [`names-${fake.apiKey}.txt`]: "x" }), "the whole archive is searched, its file names too"],
+    ];
+    for (const [bundle, why] of refusedBundles) {
+      fake.bundle = bundle;
+      assert.equal((await fetch(`${dashboard}/api/nodes/d7e5/support-bundle`)).status, 501, why);
+    }
+    fake.bundle = zipOf({ "a.txt": randomBytes(600).toString("hex"), "b.txt": randomBytes(600).toString("hex") });
+    const overTotal = await fetch(`${await dashboardFor([node], 2000)}/api/nodes/d7e5/support-bundle`);
+    assert.equal(overTotal.status, 501, "the files together unpack to more than the bound");
     fake.bundle = Buffer.from("not a zip archive at all, but long enough to be looked at");
     assert.equal((await fetch(`${dashboard}/api/nodes/d7e5/support-bundle`)).status, 501, "a bundle that cannot be read is not passed on unread");
     fake.bundle = zipOf({ "metrics.txt": randomBytes(4096).toString("hex") });
@@ -794,8 +869,8 @@ describe("Syncthing's texts outside the event feed", () => {
       );
       assert.ok(refusal instanceof SyncthingRefusal);
       assert.equal(refusal.status, 500);
-      assert.equal(refusal.message, "GET /db/ignores?folder=documents: HTTP 500 Syncthing cannot read an included file");
-      assert.deepEqual(errorAnswer(refusal), { error: "Syncthing refused the request (HTTP 500): Syncthing cannot read an included file" });
+      assert.equal(refusal.message, "GET /db/ignores?folder=documents: HTTP 500 error hidden: it mentions an include");
+      assert.deepEqual(errorAnswer(refusal), { error: "Syncthing refused the request (HTTP 500): error hidden: it mentions an include" });
       assert.deepEqual(errorAnswer(new SyncthingRefusal("GET /x", 404, "")), { error: "Syncthing refused the request (HTTP 404)" });
     } finally {
       syncthing.close();
@@ -804,7 +879,10 @@ describe("Syncthing's texts outside the event feed", () => {
 
   it("a text without its folder's ignore file hides any mention of an include or a quoted pattern, and is cut when very long", () => {
     assert.equal(shownUnscopedText("open documents/a.txt: permission denied"), "open documents/a.txt: permission denied");
-    assert.equal(shownUnscopedText("Include of x failed"), "Syncthing cannot read an included file");
+    assert.equal(shownUnscopedText("Include of x failed"), "error hidden: it mentions an include");
+    assert.equal(shownUnscopedText("open src/include/x.h: permission denied"), "open src/include/x.h: permission denied", "a path with an include directory is no include");
+    assert.equal(shownUnscopedText("failed to load include file ../x: file not found"), "error hidden: it mentions an include");
+    assert.equal(shownUnscopedText("#include ../x"), "error hidden: it mentions an include");
     assert.equal(shownUnscopedText('parsing .stignore: line "secret"'), "error hidden: it quotes an ignore pattern; the folder's ignore patterns show it");
     assert.equal(shownUnscopedText("x".repeat(3000)).length, 2001);
   });
@@ -812,5 +890,18 @@ describe("Syncthing's texts outside the event feed", () => {
   it("a versions read waits for a slot and reads within what another host waits for it", () => {
     assert.ok(versionsSlotWaitMs + listTimeoutMs < forwardedListTimeoutMs, `${versionsSlotWaitMs} + ${listTimeoutMs} against ${forwardedListTimeoutMs}`);
     assert.equal(versionsReadLongestSeconds, (versionsSlotWaitMs + listTimeoutMs) / 1000);
+  });
+});
+
+describe("log lines the Log tab keeps", () => {
+  it("a line already kept is not added again, however precise its time", () => {
+    const kept = [
+      { when: "2026-10-27T14:33:12.9291837+02:00", level: "warning" as const, message: "a" },
+      { when: "2026-10-27T14:33:12.9297224+02:00", level: "warning" as const, message: "b" },
+    ];
+    const answered = [kept[1], { when: "2026-10-27T14:33:12.9297224+02:00", level: "warning" as const, message: "c" }, { when: "2026-10-27T14:33:13.1+02:00", level: "info" as const, message: "d" }];
+    assert.deepEqual(keptLogLines(kept, answered, 10).map((line) => line.message), ["a", "b", "c", "d"]);
+    assert.deepEqual(keptLogLines(kept, answered, 2).map((line) => line.message), ["c", "d"]);
+    assert.deepEqual(keptLogLines(null, kept, 10), kept);
   });
 });

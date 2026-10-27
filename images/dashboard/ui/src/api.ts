@@ -445,6 +445,7 @@ export function fetchTree(node: string, path: string, page: number): Promise<Tre
 }
 
 export { logLevels, routineActivityTypes } from "../../src/api/types.js";
+export { keptLogLines } from "../../src/api/logLines.js";
 
 export interface ActivityFilters {
   node: string;
