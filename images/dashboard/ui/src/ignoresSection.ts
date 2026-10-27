@@ -1,5 +1,6 @@
 import { type FolderIgnores, type FolderType, fetchFolderIgnores, ignoreLinesOf, ignoreLinesProblem, saveFolderIgnores } from "./api.js";
-import { controlId, editFailureNotice, resultLine } from "./deviceForm.js";
+import { editFailureNotice, resultLine } from "./deviceForm.js";
+import { controlId } from "./forms.js";
 import { button, element, section } from "./dom.js";
 import { areIgnoresUnsaved } from "./folderDraft.js";
 import { plural } from "./format.js";

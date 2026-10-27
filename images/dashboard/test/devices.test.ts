@@ -474,6 +474,37 @@ describe("a node's devices", () => {
     assert.deepEqual(writes.map((write) => `${write.method} ${write.path}`), ["POST /rest/config/devices"]);
   });
 
+  it("on an array introducer and accept folders automatically are never turned on, refused before any request", async () => {
+    const array: LocalInstance = { ...pc(), nodeId: "a3f9", name: "private-array", root: "/mnt/a3f9/pool", os: "linux", source: "array" };
+    const refusedWith = (label: string) => ({ status: 400, message: `${label} stays off on private-array, an array: Syncthing would then add or share its folders with nothing typed` });
+    await assert.rejects(editDevice(array, peerId, { introducer: true }), refusedWith("Introducer"));
+    await assert.rejects(editDevice(array, peerId, { name: "x", autoAcceptFolders: true }), refusedWith("Accept folders automatically"));
+    await assert.rejects(addDevice(array, { deviceId: newId, introducer: true }), refusedWith("Introducer"));
+    await assert.rejects(addDevice(array, { deviceId: newId, autoAcceptFolders: true }), refusedWith("Accept folders automatically"));
+    assert.equal(arrivals, 0, "an array is never asked before the refusal");
+
+    await editDevice(array, peerId, { introducer: false, autoAcceptFolders: false });
+    assert.deepEqual(writes.map((write) => write.body), [{ introducer: false, autoAcceptFolders: false }], "turning them off stays allowed");
+  });
+
+  it("on an array a new device never takes introducer or accept folders automatically from syncthing's defaults", async () => {
+    const array: LocalInstance = { ...pc(), nodeId: "a3f9", name: "private-array", root: "/mnt/a3f9/pool", os: "linux", source: "array" };
+    syncthingDefaults.introducer = true;
+    try {
+      const result = await addDevice(array, { deviceId: newId, name: "dashboard-test-device" });
+      const posted = writes[0].body as Record<string, unknown>;
+      assert.equal(posted.introducer, false);
+      assert.equal(posted.autoAcceptFolders, false);
+      assert.equal(posted.compression, "always", "every other default is still syncthing's");
+      assert.equal(result.added.device.autoAcceptFolders, false);
+      writes.length = 0;
+      await addDevice(pc(), { deviceId: nearbyId, name: "dashboard-test-device" });
+      assert.equal((writes[0].body as Record<string, unknown>).autoAcceptFolders, true, "a node that is not an array keeps syncthing's defaults");
+    } finally {
+      syncthingDefaults.introducer = false;
+    }
+  });
+
   it("a share that fails after the device is added still reports and enters the add", async () => {
     dropAfter = 5;
     const result = await addDevice(pc(), { deviceId: newId, name: "dashboard-test-device", shareFolders: ["dashboard-test-a"] });

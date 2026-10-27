@@ -18,10 +18,10 @@ import {
   saveFolderSettings,
 } from "./api.js";
 import { arrayConfirmField, isArrayConfirmed } from "./arrayConfirm.js";
-import { controlId, editFailureNotice, resultLine } from "./deviceForm.js";
+import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
 import { plural } from "./format.js";
-import { registerForm } from "./forms.js";
+import { controlId, registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
 import { type SharingChoice, clearSharing, folderSharingChange, hasSharingChanges, sharingList } from "./sharingFields.js";

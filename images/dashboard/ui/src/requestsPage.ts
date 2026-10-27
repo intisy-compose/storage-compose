@@ -1,11 +1,12 @@
 import { type JoinEntry, type PendingDevice, type PendingFolderOffer, type RequestsResponse, acceptPendingDevice, deviceDisplayName, deviceSettingLabels, dismissPendingDevice, ignorePendingDevice, shortDeviceId } from "./api.js";
+import { arrayAutomationText } from "./arrayConfirm.js";
 import { button, element } from "./dom.js";
 import { formatAge, formatDate } from "./format.js";
 import { registerForm } from "./forms.js";
 import { requestRender } from "./renderRequest.js";
 import { folderOfferAnswer, pruneFolderAnswers } from "./folderOfferForm.js";
 import { type AnswerResult, type DeviceAnswer, answerKey, freshAnswer, ignoreClick, pruneAnswers } from "./requestAnswers.js";
-import { appState, deviceFormLocation, locationFor } from "./state.js";
+import { appState, deviceFormLocation, isArrayNode, locationFor } from "./state.js";
 
 function since(time: string): HTMLElement {
   return element("small", { className: "request-time", title: formatDate(time) }, formatAge(time));
@@ -124,6 +125,7 @@ function deviceAnswerForm(device: PendingDevice): HTMLElement {
     { className: "request-answer", attributes: { id: formId } },
     nameField(device, answer),
     recordField(device, answer),
+    isArrayNode(device.nodeId) ? element("small", { className: "muted" }, arrayAutomationText) : null,
     element(
       "div",
       { className: "button-row" },

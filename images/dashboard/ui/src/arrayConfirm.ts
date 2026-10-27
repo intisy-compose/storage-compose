@@ -1,6 +1,6 @@
 import type { StorageNode } from "./api.js";
-import { controlId } from "./deviceForm.js";
 import { element } from "./dom.js";
+import { controlId } from "./forms.js";
 import { requestRender } from "./renderRequest.js";
 import { editFolderLocation } from "./state.js";
 
@@ -16,6 +16,9 @@ export interface ArrayConfirm {
   disabled: boolean;
   onInput: (typed: string) => void;
 }
+
+/** Why an array's device forms keep introducer and accept folders automatically off, as the server refuses them. */
+export const arrayAutomationText = "Introducer and Accept folders automatically stay off on an array: Syncthing would then add or share its folders with nothing typed.";
 
 export function isArrayConfirmed(typed: string, folderId: string): boolean {
   return folderId !== "" && typed === folderId;

@@ -14,9 +14,9 @@ import {
   saveDeviceSettings,
   saveFolderSettings,
 } from "./api.js";
-import { arraySharesElsewhere } from "./arrayConfirm.js";
+import { arrayAutomationText, arraySharesElsewhere } from "./arrayConfirm.js";
 import { button, element, section } from "./dom.js";
-import { registerForm } from "./forms.js";
+import { controlId, registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
 import { type SharingChoice, clearSharing, sharingList } from "./sharingFields.js";
@@ -41,17 +41,17 @@ export interface SettingsContext {
   /** Each control's default, so the poll can tell typed input from what the form opened with. */
   saved: DeviceSettings;
   draft: DeviceSettings;
+  /** On an array, introducer and accept folders automatically are only ever turned off. */
+  isArray: boolean;
 }
+
+const arrayLockedToggles: readonly ToggleField[] = ["introducer", "autoAcceptFolders"];
 
 const compressionChoices: [DeviceCompression, string][] = [
   ["metadata", "Metadata only"],
   ["always", "All data"],
   ["never", "Off"],
 ];
-
-export function controlId(owner: string, field: string): string {
-  return `${owner}-${field}`;
-}
 
 /** One entry per line or comma, as a person pastes them. */
 function listOf(text: string): string[] {
@@ -99,7 +99,7 @@ function toggle(context: SettingsContext, field: ToggleField, hint: string): HTM
   box.defaultChecked = saved[field];
   box.checked = draft[field];
   box.addEventListener("change", () => (draft[field] = box.checked));
-  box.disabled = context.saving;
+  box.disabled = context.saving || (context.isArray && arrayLockedToggles.includes(field) && !saved[field]);
   return element("label", { className: "toggle", attributes: { for: id } }, box, element("span", {}, deviceSettingLabels[field], hint ? element("small", { className: "muted" }, ` ${hint}`) : null));
 }
 
@@ -133,6 +133,7 @@ export function settingFields(context: SettingsContext): HTMLElement {
       toggle(context, "autoAcceptFolders", "accepts the folders it offers"),
       toggle(context, "untrusted", "shares only encrypted folders with it"),
       toggle(context, "paused", ""),
+      context.isArray ? element("small", { className: "muted" }, arrayAutomationText) : null,
     ),
     labelled(context, "allowedNetworks", listInput(context, "allowedNetworks"), "One network per line, such as 192.168.0.0/16; empty allows any."),
     element(
@@ -197,7 +198,7 @@ function formBody(node: StorageNode, form: DeviceFormState): HTMLElement {
     return element("p", { className: form.loadError ? "tone-text-bad" : "muted" }, form.loadError ? `Could not read the device: ${form.loadError}` : "Reading the device…");
   }
   if (!node.local) return element("p", { className: "read-only-note" }, `Read-only. ${node.name}'s devices are edited on ${node.host}'s own dashboard.`);
-  const context: SettingsContext = { formId, saving: form.saving, saved: form.saved, draft: form.draft };
+  const context: SettingsContext = { formId, saving: form.saving, saved: form.saved, draft: form.draft, isArray: node.kind === "array" };
   return element(
     "div",
     { className: "device-form", attributes: { id: formId } },

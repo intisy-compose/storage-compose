@@ -1,9 +1,9 @@
 import { type FolderSettings, type FolderType, type StorageNode, addFolder, browseFolderPaths, checkFolderPath, fetchFolderDefaults, folderSettingLabels, folderTypeTexts, ignoreLinesOf, ignoreLinesProblem } from "./api.js";
 import { arrayConfirmField, isArrayConfirmed } from "./arrayConfirm.js";
-import { controlId, resultLine } from "./deviceForm.js";
+import { resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
 import { draftOf, newFolderBody, treePathOf } from "./folderDraft.js";
-import { registerForm } from "./forms.js";
+import { controlId, registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
 import { type AddFolderFormState, type FolderDraft, type Notice, appState, explorerLocation } from "./state.js";

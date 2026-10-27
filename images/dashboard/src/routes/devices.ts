@@ -74,6 +74,24 @@ export function deviceEditText(nodeName: string, deviceName: string, change: Dev
   return [`${nodeName}: ${lead}`, ...details].join("; ");
 }
 
+/** The device settings that let Syncthing add an offered folder, or share folders with an introduced device, by itself. */
+const arrayLockedSettings = ["introducer", "autoAcceptFolders"] as const;
+
+/**
+ * Why the change may not be made on this node, or null: on an array neither setting is turned on.
+ * @implNote Either would let Syncthing add or share an array's folders with nothing typed (`arrayConfirmProblem`); turning them off stays allowed.
+ */
+function arrayAutomationProblem(instance: LocalInstance, change: DeviceSettingsChange): string | null {
+  if (!isArrayInstance(instance)) return null;
+  const turnedOn = arrayLockedSettings.find((key) => change[key] === true);
+  return turnedOn ? `${deviceSettingLabels[turnedOn]} stays off on ${instance.name}, an array: Syncthing would then add or share its folders with nothing typed` : null;
+}
+
+/** On an array a new device starts with both locked settings off, whatever the node's own defaults say. */
+function arrayLockedOff(instance: LocalInstance): SyncthingObject {
+  return isArrayInstance(instance) ? Object.fromEntries(arrayLockedSettings.map((key) => [key, false])) : {};
+}
+
 export interface DeviceEdit {
   settings: DeviceSettings;
   note: WriteNote;
@@ -85,7 +103,7 @@ export interface DeviceEdit {
  */
 export async function editDevice(instance: ResolvedInstance, deviceId: string, change: unknown, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<DeviceEdit> {
   const local = requireLocal(instance);
-  const problem = deviceChangeProblem(change);
+  const problem = deviceChangeProblem(change) ?? arrayAutomationProblem(local, change as DeviceSettingsChange);
   if (problem) throw new RequestError(400, problem);
   const valid = change as DeviceSettingsChange;
   const before = await configuredDevice(local, deviceId);
@@ -221,7 +239,7 @@ async function planAdd(instance: LocalInstance, request: NewDevice): Promise<Add
   const folderIds = [...new Set(shareFolders)];
   const missing = folderIds.find((folderId) => !(folders ?? []).some((folder) => folder.id === folderId));
   if (missing) throw new RequestError(400, `${instance.name} has no folder ${missing}`);
-  return { deviceId, config: { ...defaults, ...change, deviceID: deviceId }, change, folderIds };
+  return { deviceId, config: { ...defaults, ...change, ...arrayLockedOff(instance), deviceID: deviceId }, change, folderIds };
 }
 
 /** @implNote A share on an array needs the folder ID typed (`arrayConfirmProblem`), which the add's list of folders has no place for. */
@@ -238,7 +256,7 @@ function arraySharesProblem(instance: LocalInstance, request: NewDevice): string
  */
 export async function addDevice(instance: ResolvedInstance, body: unknown): Promise<DeviceAddition> {
   const local = requireLocal(instance);
-  const problem = newDeviceProblem(body) ?? arraySharesProblem(local, body as NewDevice);
+  const problem = newDeviceProblem(body) ?? arraySharesProblem(local, body as NewDevice) ?? arrayAutomationProblem(local, body as NewDevice);
   if (problem) throw new RequestError(400, problem);
   const plan = await planAdd(local, body as NewDevice);
   await callSyncthing(local, (client) => client.request("POST", "/config/devices", plan.config));

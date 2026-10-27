@@ -1,8 +1,7 @@
 import { type AcceptFolderDefaults, type FolderSettings, type FolderType, type PendingFolderOffer, type RequestsResponse, acceptPendingFolder, dismissPendingFolder, editableFolderTypes, fetchAcceptFolderDefaults, folderSettingLabels, folderTypeTexts, ignorePendingFolder } from "./api.js";
 import { arrayConfirmField, isArrayConfirmed } from "./arrayConfirm.js";
-import { controlId } from "./deviceForm.js";
 import { button, element } from "./dom.js";
-import { registerForm } from "./forms.js";
+import { controlId, registerForm } from "./forms.js";
 import { requestRender } from "./renderRequest.js";
 import { type AnswerResult, type FolderAnswer, folderAnswerKey, freshFolderAnswer, ignoreClick, isAcceptConfirmed, pruneAnswers } from "./requestAnswers.js";
 import { isArrayNode, locationFor } from "./state.js";

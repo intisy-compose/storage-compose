@@ -1,5 +1,5 @@
 import { type FolderSettings, type VersioningParam, type VersioningType, cleanupIntervalLabel, externalVersioningRefusal, folderSettingLabels, isKeptBySyncthing, offeredVersioningTypes, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versionsPathLabel } from "./api.js";
-import { controlId } from "./deviceForm.js";
+import { controlId } from "./forms.js";
 import { element, section } from "./dom.js";
 import { versioningOfType } from "./folderDraft.js";
 import { requestRender } from "./renderRequest.js";

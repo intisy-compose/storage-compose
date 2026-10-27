@@ -1,8 +1,8 @@
 import { type AddedDevice, type NearbyDevice, type StorageNode, addDevice, changedFields, checkDeviceId, deviceDisplayName, fetchDeviceDefaults, fetchNearbyDevices, qrCodeUrl, shareFoldersLabel, shortDeviceId } from "./api.js";
 import { arraySharesElsewhere } from "./arrayConfirm.js";
-import { controlId, nodeFormHeader, resultLine, settingFields } from "./deviceForm.js";
+import { nodeFormHeader, resultLine, settingFields } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
-import { registerForm } from "./forms.js";
+import { controlId, registerForm } from "./forms.js";
 import { requestRender } from "./renderRequest.js";
 import { type AddDeviceFormState, deviceFormLocation } from "./state.js";
 
@@ -192,7 +192,7 @@ function formBody(node: StorageNode, form: AddDeviceFormState): HTMLElement {
     "div",
     { className: "device-form", attributes: { id: formId } },
     element("div", { className: "form-fields device-fields" }, deviceIdField(form)),
-    settingFields({ formId, saving: form.saving, saved: form.defaults, draft: form.draft }),
+    settingFields({ formId, saving: form.saving, saved: form.defaults, draft: form.draft, isArray: node.kind === "array" }),
     shareFoldersField(node, form),
     resultLine(form.result),
     element(
