@@ -375,6 +375,17 @@ describe("tree listing of one node", () => {
     await until(() => delayedAnswers === 0, "the slow status");
   });
 
+  it("a slow folder status and slow lists share one wait, not one each", async () => {
+    instance.folders = instance.folders.filter((folder) => folder.id === "documents");
+    instance.statusDelayMs = 600;
+    instance.errorsDelayMs = 2000;
+    const started = Date.now();
+    const listing = await treeListing(node.nodeId, "Documents", 1, sources({ firstListsWaitMs: 800 }));
+    assert.ok(Date.now() - started < 1200, `${Date.now() - started} ms`);
+    assert.deepEqual(stateOf(listing.entries.find((entry) => entry.name === "Recipes")), { status: "unknown", detail: "still being read" });
+    await until(() => delayedAnswers === 0, "the slow status and lists");
+  });
+
   it("a first browse that takes too long lists nothing yet and says the contents are still being read", async () => {
     instance.browseDelayMs = 400;
     const started = Date.now();

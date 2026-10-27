@@ -51,6 +51,12 @@ interface ListsView {
 /** A folder's status, or "reading" while it has not answered within the listing's wait; null when it could not be read. */
 type StatusView = FolderStatus | "reading" | null;
 
+/** A folder's status being read, and when the listing's wait for it and its first lists ends. */
+interface StatusRead {
+  read: Promise<FolderStatus | null>;
+  waitEndsAt: number;
+}
+
 /** A Syncthing folder placed in the tree: one the node holds (`config` set) or one only offered to it. */
 interface PlacedFolder {
   placement: FolderPlacement;
@@ -63,7 +69,7 @@ export interface NodeTree {
   ownId: string;
   folders: PlacedFolder[];
   deviceNames: Map<string, string>;
-  statuses: Map<string, Promise<FolderStatus | null>>;
+  statuses: Map<string, StatusRead>;
   statusViews: Map<string, Promise<StatusView>>;
   lists: Map<string, Promise<ListsView | null>>;
   sources: ListingSources;
@@ -136,16 +142,24 @@ function instanceKeyOf(tree: NodeTree): string {
   return `${tree.node.nodeId}@${tree.node.client?.endpoint.url ?? ""}`;
 }
 
-function folderStatus(tree: NodeTree, folder: PlacedFolder): Promise<FolderStatus | null> {
+function statusRead(tree: NodeTree, folder: PlacedFolder): StatusRead | null {
   const config = folder.config;
-  if (!config || config.paused || !tree.node.client) return Promise.resolve(null);
+  if (!config || config.paused || !tree.node.client) return null;
   const client = tree.node.client;
   let status = tree.statuses.get(config.id);
   if (!status) {
-    status = client.folderStatus(config.id).catch(() => null);
+    status = { read: client.folderStatus(config.id).catch(() => null), waitEndsAt: Date.now() + tree.sources.firstListsWaitMs };
     tree.statuses.set(config.id, status);
   }
   return status;
+}
+
+function folderStatus(tree: NodeTree, folder: PlacedFolder): Promise<FolderStatus | null> {
+  return statusRead(tree, folder)?.read ?? Promise.resolve(null);
+}
+
+function waitLeftMs(status: StatusRead | null): number {
+  return Math.max(0, (status?.waitEndsAt ?? 0) - Date.now());
 }
 
 export function withinDeadline<Value>(work: Promise<Value>, waitMs: number, late: () => Value): Promise<Value> {
@@ -163,7 +177,8 @@ function statusView(tree: NodeTree, folder: PlacedFolder): Promise<StatusView> {
   if (!config) return Promise.resolve(null);
   let view = tree.statusViews.get(config.id);
   if (!view) {
-    view = withinDeadline<StatusView>(folderStatus(tree, folder), tree.sources.firstListsWaitMs, () => "reading");
+    const status = statusRead(tree, folder);
+    view = withinDeadline<StatusView>(status?.read ?? Promise.resolve(null), waitLeftMs(status), () => "reading");
     tree.statusViews.set(config.id, view);
   }
   return view;
@@ -206,7 +221,7 @@ function folderLists(tree: NodeTree, folder: PlacedFolder): Promise<ListsView | 
   if (!lists) {
     lists = statusView(tree, folder).then((status) => {
       if (status === "reading") return nothingKnownYet;
-      return status ? withinWait(tree.sources.firstListsWaitMs, status, listsWithStatus(instanceKeyOf(tree), client, config.id, status, tree.sources.needLimit)) : null;
+      return status ? withinWait(waitLeftMs(statusRead(tree, folder)), status, listsWithStatus(instanceKeyOf(tree), client, config.id, status, tree.sources.needLimit)) : null;
     });
     tree.lists.set(config.id, lists);
   }
