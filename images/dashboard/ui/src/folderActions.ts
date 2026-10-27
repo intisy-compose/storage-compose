@@ -1,5 +1,6 @@
 import { type FolderCopy, type FolderSettings, type SaveResult, pauseFolder, removalConfirmations, removeFolder, rescanFolder } from "./api.js";
 import { button, element } from "./dom.js";
+import { isOrphanedAction } from "./folderCondition.js";
 import { registerForm } from "./forms.js";
 import { requestRender } from "./renderRequest.js";
 import { type FolderActionState, type Notice, appState } from "./state.js";
@@ -132,6 +133,7 @@ function removeForm(copy: FolderCopy, settings: FolderSettings, state: FolderAct
         () => removeFolder(copy.nodeId, settings.id, state.confirm),
         () => {
           state.removeOpen = false;
+          state.sub = "";
           forgetShownDetail(settings.id);
           return removedNotice(copy, settings);
         },
@@ -186,7 +188,7 @@ let shownResults: ShownResult[] = [];
 /** Moves the result of each action on a node that no longer has the folder out of the actions, so it is not shown again once the folder is back. */
 function takeOrphanedResults(folderId: string, nodeIdsWithSettings: string[]): void {
   for (const [key, state] of appState.folderActions) {
-    if (state.folderId !== folderId || nodeIdsWithSettings.includes(state.nodeId)) continue;
+    if (state.folderId !== folderId || !isOrphanedAction(state, nodeIdsWithSettings)) continue;
     appState.folderActions.delete(key);
     if (state.result) shownResults.push({ folderId, nodeId: state.nodeId, result: state.result });
   }

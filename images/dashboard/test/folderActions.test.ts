@@ -8,7 +8,8 @@ import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/ins
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
 import { folderActionRoutes, pauseFolder, removeFolder, rescanAll, rescanFolder, rescanSubProblem } from "../src/routes/folderActions.js";
 import { SyncthingClient } from "../src/syncthing.js";
-import { copyCondition, nodeFolderState, rescanAllQuestion, worstCondition } from "../ui/src/folderCondition.js";
+import { copyCondition, isOrphanedAction, nodeFolderState, rescanAllQuestion, worstCondition } from "../ui/src/folderCondition.js";
+import type { FolderActionState } from "../ui/src/state.js";
 import type { FolderCopy, FolderSummary, NodeFolder, StorageNode } from "../src/api/types.js";
 import { until } from "./until.js";
 
@@ -279,5 +280,20 @@ describe("a paused folder reads plainly as paused", () => {
     const node = { name: "pc", folders: [folder("idle", 900000, 20733), folder("idle", 3, 1), folder("paused", 50, 5)] } as StorageNode;
     assert.equal(rescanAllQuestion(node), "Rescan all 2 folders of pc, 920,737 items?");
     assert.equal(rescanAllQuestion({ name: "d7e5", folders: [folder("idle", 1, 0)] } as StorageNode), "Rescan all 1 folder of d7e5, 1 item?");
+  });
+});
+
+describe("a folder action whose node misses its settings", () => {
+  const idle: FolderActionState = { folderId: "dashboard-test-c", nodeId: "d7e5", busy: false, sub: "", removeOpen: false, confirm: "", result: { text: "Removed Test C from dashboard-test-peer's Syncthing.", tone: "ok" } };
+
+  it("keeps a running action, an open removal and a typed subfolder for the next poll", () => {
+    assert.equal(isOrphanedAction({ ...idle, busy: true }, []), false);
+    assert.equal(isOrphanedAction({ ...idle, removeOpen: true, confirm: "Test" }, []), false);
+    assert.equal(isOrphanedAction({ ...idle, sub: "photos/2024" }, []), false);
+  });
+
+  it("takes an idle action's result once its node no longer has the folder", () => {
+    assert.equal(isOrphanedAction(idle, []), true);
+    assert.equal(isOrphanedAction(idle, ["d7e5"]), false, "the node still has the folder");
   });
 });
