@@ -372,9 +372,10 @@ class InstanceFeed {
         if (mayHaveRestarted) await this.followRestart();
         const events = await this.instance.client.events(this.position.since, followedEventTypes, this.options.waitSeconds, this.options.requestTimeoutMs);
         if (this.stopped) return;
-        if (this.pollFailed || events.length >= this.options.bufferSize) this.listener.mayHaveMissed(this.instance.nodeId, false);
+        const mayHaveMissed = this.pollFailed || events.length >= this.options.bufferSize;
         this.pollFailed = false;
         this.take(events);
+        if (mayHaveMissed) this.listener.mayHaveMissed(this.instance.nodeId, false);
         mayHaveRestarted = events.length === 0;
       } catch {
         mayHaveRestarted = true;

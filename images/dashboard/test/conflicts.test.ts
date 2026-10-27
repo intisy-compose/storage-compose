@@ -369,6 +369,62 @@ describe("conflict index", () => {
     assert.deepEqual(await readdir(path), []);
   });
 
+  it("a node known only from its stored files is deleted after two file scans that did not keep it", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    const { indexes, path } = await indexesIn(undefined, { recheckMs: 150 });
+    await writeFile(join(path, "zz99-old.json"), JSON.stringify({ nodeId: "zz99", folderId: "old", sequence: 1, sweptAt: "", conflicts: [] }));
+    const started = Date.now();
+    let rounds = 0;
+    while (Date.now() - started < 400) {
+      await indexes.reconcile([{ nodeId: "fb98", client: reader }], new Set(["fb98"]));
+      await indexes.idle();
+      rounds += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(rounds > 6, `${rounds} rounds, most of them without a file scan`);
+    assert.ok(!(await readdir(path)).includes("zz99-old.json"), "rounds that did not read the files do not start its count over");
+    assert.ok((await readdir(path)).includes("fb98-documents.json"));
+  });
+
+  it("a sequence that moves while a sweep runs starts it again from the root", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    reader.trees.delete("music");
+    let release = () => {};
+    reader.hold = new Promise((resolve) => (release = resolve));
+    const { indexes } = await indexesIn();
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await until(() => reader.inFlight === 1, "the sweep to read the root");
+    reader.sequences.set("documents", 45);
+    indexes.mayHaveMissedUpdates("fb98");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    reader.hold = null;
+    await indexes.idle();
+    assert.equal(reader.asked.filter((entry) => entry === "documents::0").length, 2);
+    assert.equal(indexes.list("fb98", "documents")?.complete, true);
+  });
+
+  it("a sequence that moves while a folder waits after a failure starts its sweep again but keeps the wait", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    reader.failOnce.add("documents:big");
+    const { indexes } = await indexesIn(undefined, { retryFirstMs: 60_000, retryMaxMs: 600_000 });
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    const readsBefore = reader.asked.filter((entry) => entry.startsWith("documents:")).length;
+    reader.sequences.set("documents", 45);
+    indexes.mayHaveMissedUpdates("fb98");
+    await indexes.idle();
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    assert.equal(reader.asked.filter((entry) => entry.startsWith("documents:")).length, readsBefore, "still waiting");
+    indexes.mayHaveMissedUpdates("fb98", true);
+    await indexes.idle();
+    assert.equal(reader.asked.filter((entry) => entry === "documents::0").length, 2, "the restart ends the wait, and the moved folder is read from the root");
+  });
+
   it("a folder brought back under the cap by an update no longer says there are more, and is searched for the copies left out", async () => {
     const reader = new FakeReader();
     documentsTree(reader);

@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { ParityJob } from "../src/api/types.js";
 import { ActivityLog, EventFeeds, type FeedInstance, ParityWatcher, failedItemsPerFolder } from "../src/eventFeed.js";
-import { SyncthingClient, type SyncthingEvent } from "../src/syncthing.js";
+import { ConflictIndexes } from "../src/conflicts.js";
+import { type BrowseEntry, type FolderStatus, SyncthingClient, type SyncthingEvent, type SyncthingFolderConfig } from "../src/syncthing.js";
 import { until } from "./until.js";
 
 const pcDevice = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
@@ -161,6 +165,50 @@ describe("event feeds", () => {
     fake.dropConnections();
     fake.emit(scanned("documents", "idle"));
     await until(() => missed.length === 2, "the failed poll told once it answers again");
+  });
+
+  it("a failed poll whose recovered batch moved the sequence does not start a running conflict sweep again", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const directory = await mkdtemp(join(tmpdir(), "feed-conflicts-"));
+    let sequence = 40;
+    const roots: string[] = [];
+    let release = () => {};
+    const hold = new Promise<void>((resolve) => (release = resolve));
+    const reader = {
+      browse: async (_folderId: string, prefix: string): Promise<BrowseEntry[]> => {
+        if (prefix === "") roots.push(prefix);
+        await hold;
+        return [];
+      },
+      file: async () => null,
+      folderStatus: async (): Promise<FolderStatus> => ({ state: "idle", globalBytes: 0, needBytes: 0, sequence }),
+      folders: async (): Promise<SyncthingFolderConfig[]> => [{ id: "documents", label: "Documents", path: "/x", type: "sendreceive", paused: false, devices: [] }],
+    };
+    const indexes = new ConflictIndexes({ directory, recheckMs: 0, browsePauseMs: 0, report: () => {} });
+    const feeds = new EventFeeds(new ActivityLog(100), feedOptions, {
+      event: (nodeId, event) => indexes.takeEvent(nodeId, event),
+      mayHaveMissed: (nodeId, isRestart) => indexes.mayHaveMissedUpdates(nodeId, isRestart),
+    });
+    feedSets.push(feeds);
+    try {
+      await indexes.reconcile([{ nodeId: "pc", client: reader }]);
+      await until(() => roots.length === 1, "the sweep to read the root");
+      feeds.reconcile([feed]);
+      fake.emit(scanned("documents", "idle"));
+      await until(() => fake.sinceSeen.some((since) => since >= 1), "the feed to take the first event");
+      fake.dropConnections();
+      sequence = 41;
+      fake.emit({ type: "LocalIndexUpdated", data: { folder: "documents", items: 1, filenames: ["a.txt"], sequence: 41 } });
+      await until(() => fake.sinceSeen.some((since) => since >= 2), "the recovered poll");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      release();
+      await indexes.idle();
+      assert.deepEqual(roots, [""], "the batch brought the index to the folder's sequence, so the sweep went on");
+      assert.equal(indexes.list("pc", "documents")?.complete, true);
+    } finally {
+      indexes.stop();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("a restart resets since without losing new events", async () => {

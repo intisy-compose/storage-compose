@@ -267,8 +267,9 @@ export class ConflictIndexes {
   }
 
   /**
-   * @implNote A node is gone only once two reconciles in a row did not keep it: one heartbeat that failed to read lists no
-   * host agent node at all. The stored files are read at most once per `recheckMs`, as `reconcile` runs with every `/api/nodes`.
+   * @implNote A node is gone only once two looks in a row did not keep it: one heartbeat that failed to read lists no
+   * host agent node at all. A node known only from its stored files is looked at only when the files are read, at most once
+   * per `recheckMs` as `reconcile` runs with every `/api/nodes`, and its count starts over only when it is kept.
    */
   private async forgetNodesNotKept(kept: ReadonlySet<string>): Promise<void> {
     if (!kept.size) return;
@@ -276,13 +277,14 @@ export class ConflictIndexes {
     const shouldReadFiles = Date.now() - this.filesCheckedAt >= this.options.recheckMs;
     const files = shouldReadFiles ? await this.storedFiles() : [];
     for (const file of files) if (file.nodeId) known.add(file.nodeId);
-    for (const nodeId of [...this.missedReconciles.keys()]) if (kept.has(nodeId) || !known.has(nodeId)) this.missedReconciles.delete(nodeId);
+    for (const nodeId of kept) this.missedReconciles.delete(nodeId);
     for (const nodeId of known) if (!kept.has(nodeId)) this.missedReconciles.set(nodeId, (this.missedReconciles.get(nodeId) ?? 0) + 1);
     const isGone = (nodeId: string | null) => nodeId === null || (this.missedReconciles.get(nodeId) ?? 0) >= 2;
     for (const index of this.indexes.values()) if (isGone(index.nodeId)) await this.forget(index);
     if (!shouldReadFiles) return;
     this.filesCheckedAt = Date.now();
     for (const file of files) if (isGone(file.nodeId)) await rm(file.path, { force: true });
+    for (const nodeId of [...this.missedReconciles.keys()]) if (isGone(nodeId)) this.missedReconciles.delete(nodeId);
   }
 
   /** The stored index files, each with the node it names, null for a file that does not read as an index. */
