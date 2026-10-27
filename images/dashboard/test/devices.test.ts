@@ -505,6 +505,22 @@ describe("a node's devices", () => {
     }
   });
 
+  it("on an array the add form's defaults have introducer and accept folders automatically off", async () => {
+    const array: LocalInstance = { ...pc(), nodeId: "a3f9", name: "private-array", root: "/mnt/a3f9/pool", os: "linux", source: "array" };
+    syncthingDefaults.introducer = true;
+    try {
+      const defaults = await readDeviceDefaults(array);
+      assert.equal(defaults.introducer, false);
+      assert.equal(defaults.autoAcceptFolders, false);
+      assert.equal(defaults.compression, "always", "every other default is still syncthing's");
+      const elsewhere = await readDeviceDefaults(pc());
+      assert.equal(elsewhere.introducer, true, "a node that is not an array keeps syncthing's defaults");
+      assert.equal(elsewhere.autoAcceptFolders, true);
+    } finally {
+      syncthingDefaults.introducer = false;
+    }
+  });
+
   it("a share that fails after the device is added still reports and enters the add", async () => {
     dropAfter = 5;
     const result = await addDevice(pc(), { deviceId: newId, name: "dashboard-test-device", shareFolders: ["dashboard-test-a"] });
