@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { devicesFixture } from "./devices.mjs";
+import { deviceSettingsFixture, devicesFixture } from "./devices.mjs";
 import { folderDefaultsFixture, folderDetailFixture } from "./folders.mjs";
 import { nodesFixture } from "./nodes.mjs";
 import { acceptDefaultsFixture, requestsFixture } from "./requests.mjs";
@@ -57,6 +57,11 @@ async function route(request, response) {
     if (nodeRead[2] === "folder-path-check") return sendJson(response, 200, { path: url.searchParams.get("path") ?? "", problem: null, warning: null });
     const defaults = folderDefaultsFixture(nodes, decodeURIComponent(nodeRead[1]), url.searchParams.get("under") ?? "");
     return defaults ? sendJson(response, 200, defaults) : sendJson(response, 404, { error: "no such local node" });
+  }
+  const deviceRead = path.match(/^\/api\/nodes\/([^/]+)\/devices\/([^/]+)$/);
+  if (request.method === "GET" && deviceRead) {
+    const settings = deviceSettingsFixture(nodesFixture(startedAt).nodes, decodeURIComponent(deviceRead[1]), decodeURIComponent(deviceRead[2]));
+    return settings ? sendJson(response, 200, settings) : sendJson(response, 404, { error: "no such device" });
   }
   const folderRead = path.match(/^\/api\/folders\/([^/]+)$/);
   if (request.method === "GET" && folderRead) {

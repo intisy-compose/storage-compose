@@ -80,3 +80,13 @@ export function devicesFixture(startedAt) {
   });
   return { devices, drives };
 }
+
+/** `GET /api/nodes/<nodeId>/devices/<deviceId>`: a local node's peer as its device form opens it. */
+export function deviceSettingsFixture(nodes, nodeId, deviceId) {
+  const peer = nodes.find((node) => node.id === nodeId && node.local)?.peers.find((candidate) => candidate.deviceId === deviceId);
+  if (!peer) return null;
+  return {
+    deviceId, name: peer.name, addresses: ["dynamic"], compression: "metadata", introducer: false, autoAcceptFolders: false, paused: peer.paused,
+    untrusted: peer.untrusted, allowedNetworks: [], maxSendKbps: 0, maxRecvKbps: 0, numConnections: 0,
+  };
+}
