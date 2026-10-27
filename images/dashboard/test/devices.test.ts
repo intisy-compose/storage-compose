@@ -98,6 +98,13 @@ describe("a node's devices", () => {
   let dropAfter: number | null = null;
   /** Answers the device list with HTTP 500 from this many device reads on; null keeps answering it. */
   let failDeviceReadsAfter: number | null = null;
+  /** Applies the next device PATCH and then drops its connection, as a Syncthing that restarts on the change. */
+  let loseWriteAnswer = false;
+  /** Once a device PATCH was applied, drops every later request, as a Syncthing that does not come back. */
+  let silentAfterWrite = false;
+  let wrote = false;
+  /** Drops this many requests once a device PATCH was applied, as a Syncthing that answers again after a restart. */
+  let dropAfterWrite = 0;
   let syncthingUrl = "";
   let deadUrl = "";
   /** Requests the fake has not finished answering, so a test starts only once the last one's stragglers are done. */
@@ -109,6 +116,11 @@ describe("a node's devices", () => {
     arrivals += 1;
     response.on("close", () => (openRequests -= 1));
     if (dropAfter !== null && dropAfter-- === 0) return request.socket.destroy();
+    if (silentAfterWrite && wrote) return request.socket.destroy();
+    if (wrote && dropAfterWrite > 0) {
+      dropAfterWrite -= 1;
+      return request.socket.destroy();
+    }
     if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
     const path = new URL(request.url ?? "/", "http://fake").pathname;
     const query = new URL(request.url ?? "/", "http://fake").searchParams;
@@ -156,13 +168,15 @@ describe("a node's devices", () => {
       const body = await bodyOf(request);
       writes.push({ method: "PATCH", path, body });
       configured = configured.map((device) => (device.deviceID === decodeURIComponent(devicePath[1]) ? { ...device, ...(body as object) } : device));
+      wrote = true;
+      if (loseWriteAnswer) return request.socket.destroy();
       return reply(response, null);
     }
     reply(response, { error: "not faked" }, 404);
   });
 
   function pc(url = syncthingUrl): LocalInstance {
-    return { kind: "local", nodeId: "fb98", name: "pc", client: new SyncthingClient({ url, apiKey }), root: "F:\\", os: "windows", threshold: 50 };
+    return { kind: "local", nodeId: "fb98", name: "pc", client: new SyncthingClient({ url, apiKey }), root: "F:\\", os: "windows", threshold: 50, source: "host-agent" };
   }
 
   before(async () => {
@@ -178,6 +192,10 @@ describe("a node's devices", () => {
     writes.length = 0;
     dropAfter = null;
     failDeviceReadsAfter = null;
+    loseWriteAnswer = false;
+    silentAfterWrite = false;
+    wrote = false;
+    dropAfterWrite = 0;
     configured = [{ deviceID: ownId, name: "pc", addresses: ["dynamic"] }, { ...syncthingPeer }];
     folders = [
       { id: "dashboard-test-a", label: "dashboard-test-a", path: "F:/dashboard-test-a", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }] },
@@ -264,7 +282,7 @@ describe("a node's devices", () => {
   }
 
   async function dashboardWith(effects: WriteEffects): Promise<{ url: string; close: () => void }> {
-    const handle = requestHandler(deviceRoutes({ resolve: async (nodeId) => (nodeId === "fb98" ? pc() : Promise.reject(new RequestError(404, `no node ${nodeId}`))) }), effects);
+    const handle = requestHandler(deviceRoutes({ resolve: async (nodeId) => (nodeId === "fb98" ? pc() : Promise.reject(new RequestError(404, `no node ${nodeId}`))), readBackDelaysMs: [5, 10, 20] }), effects);
     const dashboard = createServer((request, response) => void handle(request, response));
     return { url: await listen(dashboard), close: () => dashboard.close() };
   }
@@ -330,6 +348,53 @@ describe("a node's devices", () => {
     }
   });
 
+  it("a lost answer whose change is in place reports the edit saved and enters it", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      loseWriteAnswer = true;
+      const answer = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`, { name: "dashboard-test-renamed" });
+      assert.equal(answer.status, 200);
+      assert.equal(((await answer.json()) as { name: string }).name, "dashboard-test-renamed");
+      assert.equal(writes.length, 1);
+      assert.deepEqual(effects.notes.map((note) => note.text), ["pc: renamed device dashboard-test-peer to dashboard-test-renamed"]);
+      assert.equal(effects.invalidations, 1);
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("a lost answer Syncthing does not confirm says the edit may have been saved, and enters nothing", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      loseWriteAnswer = true;
+      silentAfterWrite = true;
+      const answer = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`, { name: "dashboard-test-renamed" });
+      assert.equal(answer.status, 503);
+      assert.deepEqual(await answer.json(), { error: "pc's Syncthing stopped answering during the change, so it may have been saved; check once pc answers again", maybeSaved: true });
+      assert.deepEqual(effects.notes, []);
+      assert.equal(effects.invalidations, 1, "a write that may have happened drops the shared build");
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("a lost answer is read back again until a late answer shows the edit in place", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      loseWriteAnswer = true;
+      dropAfterWrite = 2;
+      const answer = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`, { name: "dashboard-test-renamed" });
+      assert.equal(answer.status, 200);
+      assert.equal(dropAfterWrite, 0, "the first two read-backs got no answer");
+      assert.deepEqual(effects.notes.map((note) => note.text), ["pc: renamed device dashboard-test-peer to dashboard-test-renamed"]);
+    } finally {
+      dashboard.close();
+    }
+  });
+
   it("an edit's activity entry names the node, the device and what changed", async () => {
     const result = await editDevice(pc(), peerId, { name: "dashboard-test-renamed" });
     assert.deepEqual(result.note, { nodeId: "fb98", nodeName: "pc", folderId: null, text: "pc: renamed device dashboard-test-peer to dashboard-test-renamed" });
@@ -389,9 +454,55 @@ describe("a node's devices", () => {
     await assert.rejects(addDevice(pc(), { deviceId: newId, addresses: ["ftp://bad"] }), (error: Error & { status?: number }) => error.status === 400 && /ftp:\/\/bad/.test(error.message));
     await assert.rejects(addDevice(pc(), { deviceId: newId, shareFolders: "dashboard-test-a" }), (error: Error & { status?: number }) => error.status === 400 && error.message === "Share these folders must be a list of folder IDs");
     await assert.rejects(addDevice(pc(), { deviceId: newId, ignoredFolders: [] }), (error: Error & { status?: number }) => error.status === 400 && error.message === "ignoredFolders is not a device setting");
+    await assert.rejects(
+      addDevice(pc(), { deviceId: newId, untrusted: true, shareFolders: ["dashboard-test-a"] }),
+      (error: Error & { status?: number }) => error.status === 400 && error.message === "an untrusted device is shared a folder only with an encryption password: add it, then share from its Folders list",
+    );
     const remote: RemoteInstance = { kind: "remote", nodeId: "a1b2", name: "p53-data", host: "p53", dashboardUrl: "http://127.0.0.1:1" };
     await assert.rejects(addDevice(remote, { deviceId: newId }), (error: Error & { status?: number }) => error.status === 409 && error.message === "act on p53's dashboard");
     assert.deepEqual(writes, []);
+  });
+
+  it("on an array the add shares no folder, refused before any request: each is shared from its own settings, where its ID is typed", async () => {
+    const array: LocalInstance = { ...pc(), nodeId: "a3f9", name: "private-array", root: "/mnt/a3f9/pool", os: "linux", source: "array" };
+    await assert.rejects(addDevice(array, { deviceId: newId, shareFolders: ["dashboard-test-a"] }), {
+      status: 400,
+      message: "on private-array, an array, a folder is shared only from its own settings, where its ID is typed: add the device, then share each folder there",
+    });
+    assert.equal(arrivals, 0, "an array is never asked before the ID is typed");
+    await addDevice(array, { deviceId: newId, shareFolders: [] });
+    assert.deepEqual(writes.map((write) => `${write.method} ${write.path}`), ["POST /rest/config/devices"]);
+  });
+
+  it("on an array introducer and accept folders automatically are never turned on, refused before any request", async () => {
+    const array: LocalInstance = { ...pc(), nodeId: "a3f9", name: "private-array", root: "/mnt/a3f9/pool", os: "linux", source: "array" };
+    const refusedWith = (label: string) => ({ status: 400, message: `${label} stays off on private-array, an array: Syncthing would then add or share its folders with nothing typed` });
+    await assert.rejects(editDevice(array, peerId, { introducer: true }), refusedWith("Introducer"));
+    await assert.rejects(editDevice(array, peerId, { name: "x", autoAcceptFolders: true }), refusedWith("Accept folders automatically"));
+    await assert.rejects(addDevice(array, { deviceId: newId, introducer: true }), refusedWith("Introducer"));
+    await assert.rejects(addDevice(array, { deviceId: newId, autoAcceptFolders: true }), refusedWith("Accept folders automatically"));
+    assert.equal(arrivals, 0, "an array is never asked before the refusal");
+
+    await editDevice(array, peerId, { introducer: false, autoAcceptFolders: false });
+    assert.deepEqual(writes.map((write) => write.body), [{ introducer: false, autoAcceptFolders: false }], "turning them off stays allowed");
+  });
+
+  it("on an array a new device never takes introducer or accept folders automatically from syncthing's defaults", async () => {
+    const array: LocalInstance = { ...pc(), nodeId: "a3f9", name: "private-array", root: "/mnt/a3f9/pool", os: "linux", source: "array" };
+    syncthingDefaults.introducer = true;
+    try {
+      const result = await addDevice(array, { deviceId: newId, name: "dashboard-test-device" });
+      const posted = writes[0].body as Record<string, unknown>;
+      assert.equal(posted.introducer, false);
+      assert.equal(posted.autoAcceptFolders, false);
+      assert.equal(posted.compression, "always", "every other default is still syncthing's");
+      assert.equal(result.added.device.autoAcceptFolders, false);
+      writes.length = 0;
+      await addDevice(pc(), { deviceId: nearbyId, name: "dashboard-test-device" });
+      assert.equal((writes[0].body as Record<string, unknown>).autoAcceptFolders, true, "a node that is not an array keeps syncthing's defaults");
+    } finally {
+      syncthingDefaults.introducer = false;
+    }
   });
 
   it("a share that fails after the device is added still reports and enters the add", async () => {

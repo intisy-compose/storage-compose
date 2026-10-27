@@ -1,14 +1,33 @@
-import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type StorageNode, changedFields, deviceDisplayName, deviceSettingLabels, removeDevice, saveDeviceSettings } from "./api.js";
+import {
+  type DeviceCompression,
+  type DeviceSettings,
+  type DeviceSettingsChange,
+  type FolderSettings,
+  type FolderSettingsChange,
+  type SaveResult,
+  type StorageNode,
+  changedFields,
+  deviceDisplayName,
+  folderShare,
+  deviceSettingLabels,
+  removeDevice,
+  saveDeviceSettings,
+  saveFolderSettings,
+} from "./api.js";
+import { arrayAutomationText, arraySharesElsewhere } from "./arrayConfirm.js";
 import { button, element, section } from "./dom.js";
-import { registerForm } from "./forms.js";
+import { controlId, registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
-import { type DeviceFormState, appState, locationFor } from "./state.js";
+import { type SharingChoice, clearSharing, sharingList } from "./sharingFields.js";
+import { type DeviceFormState, type Notice, appState, locationFor } from "./state.js";
 
 const formId = "device-form";
 registerForm(formId);
 const removeFormId = "device-remove-form";
 registerForm(removeFormId);
+const foldersFormId = "device-folders-form";
+registerForm(foldersFormId);
 
 type TextField = "name";
 type ListField = "addresses" | "allowedNetworks";
@@ -22,17 +41,17 @@ export interface SettingsContext {
   /** Each control's default, so the poll can tell typed input from what the form opened with. */
   saved: DeviceSettings;
   draft: DeviceSettings;
+  /** On an array, introducer and accept folders automatically are only ever turned off. */
+  isArray: boolean;
 }
+
+const arrayLockedToggles: readonly ToggleField[] = ["introducer", "autoAcceptFolders"];
 
 const compressionChoices: [DeviceCompression, string][] = [
   ["metadata", "Metadata only"],
   ["always", "All data"],
   ["never", "Off"],
 ];
-
-export function controlId(owner: string, field: string): string {
-  return `${owner}-${field}`;
-}
 
 /** One entry per line or comma, as a person pastes them. */
 function listOf(text: string): string[] {
@@ -80,7 +99,7 @@ function toggle(context: SettingsContext, field: ToggleField, hint: string): HTM
   box.defaultChecked = saved[field];
   box.checked = draft[field];
   box.addEventListener("change", () => (draft[field] = box.checked));
-  box.disabled = context.saving;
+  box.disabled = context.saving || (context.isArray && arrayLockedToggles.includes(field) && !saved[field]);
   return element("label", { className: "toggle", attributes: { for: id } }, box, element("span", {}, deviceSettingLabels[field], hint ? element("small", { className: "muted" }, ` ${hint}`) : null));
 }
 
@@ -114,6 +133,7 @@ export function settingFields(context: SettingsContext): HTMLElement {
       toggle(context, "autoAcceptFolders", "accepts the folders it offers"),
       toggle(context, "untrusted", "shares only encrypted folders with it"),
       toggle(context, "paused", ""),
+      context.isArray ? element("small", { className: "muted" }, arrayAutomationText) : null,
     ),
     labelled(context, "allowedNetworks", listInput(context, "allowedNetworks"), "One network per line, such as 192.168.0.0/16; empty allows any."),
     element(
@@ -153,7 +173,7 @@ async function save(form: DeviceFormState): Promise<void> {
     form.draft = structuredClone(result.value);
     form.result = { text: "Saved.", tone: "ok" };
   } else {
-    form.result = { text: `Not saved: ${result.message}`, tone: "bad" };
+    form.result = editFailureNotice(result);
   }
   requestRender();
 }
@@ -162,6 +182,11 @@ function revert(form: DeviceFormState): void {
   if (form.saved) form.draft = structuredClone(form.saved);
   form.result = null;
   requestRender();
+}
+
+/** An edit that was refused says so; one whose node stopped answering mid-write may have been saved, and the server's words say to check. */
+export function editFailureNotice(result: Extract<SaveResult<unknown>, { ok: false }>): Notice {
+  return result.maybeSaved ? { text: `${result.message}.`, tone: "warn" } : { text: `Not saved: ${result.message}`, tone: "bad" };
 }
 
 export function resultLine(result: DeviceFormState["result"]): HTMLElement | null {
@@ -173,7 +198,7 @@ function formBody(node: StorageNode, form: DeviceFormState): HTMLElement {
     return element("p", { className: form.loadError ? "tone-text-bad" : "muted" }, form.loadError ? `Could not read the device: ${form.loadError}` : "Reading the device…");
   }
   if (!node.local) return element("p", { className: "read-only-note" }, `Read-only. ${node.name}'s devices are edited on ${node.host}'s own dashboard.`);
-  const context: SettingsContext = { formId, saving: form.saving, saved: form.saved, draft: form.draft };
+  const context: SettingsContext = { formId, saving: form.saving, saved: form.saved, draft: form.draft, isArray: node.kind === "array" };
   return element(
     "div",
     { className: "device-form", attributes: { id: formId } },
@@ -251,13 +276,109 @@ function removedBody(node: StorageNode, name: string): HTMLElement {
   );
 }
 
+function folderChoices(node: StorageNode, form: DeviceFormState, name: string): SharingChoice[] {
+  const choices = node.folders.map((folder): SharingChoice => ({
+    key: folder.id,
+    label: folder.label || folder.id,
+    detail: folder.path,
+    isShared: folder.sharedWith.some((peer) => peer.deviceId === form.deviceId),
+    needsPassword: form.saved?.untrusted ?? false,
+    receiver: name,
+  }));
+  return choices.sort((first, second) => first.label.localeCompare(second.label));
+}
+
+interface FolderShareWrite {
+  folderId: string;
+  change: FolderSettingsChange;
+}
+
+function folderShareWrites(form: DeviceFormState): FolderShareWrite[] {
+  const shares = [...form.sharing.share].map(([folderId, password]) => ({ folderId, change: { devices: { share: [folderShare(form.deviceId, password)] } } }));
+  const unshares = [...form.sharing.unshare].map((folderId) => ({ folderId, change: { devices: { unshare: [form.deviceId] } } }));
+  return [...shares, ...unshares];
+}
+
+/** @implNote Looked up again, like a removal: the node the form was drawn with may be an earlier poll's. */
+function showSharedInCurrentNode(form: DeviceFormState, settings: FolderSettings, name: string): void {
+  const folder = appState.data?.nodes.find((candidate) => candidate.id === form.nodeId)?.folders.find((candidate) => candidate.id === settings.id);
+  if (!folder) return;
+  const others = folder.sharedWith.filter((peer) => peer.deviceId !== form.deviceId);
+  folder.sharedWith = settings.devices.some((device) => device.deviceId === form.deviceId) ? [...others, { deviceId: form.deviceId, name }] : others;
+}
+
+function forgetSaved(form: DeviceFormState, folderId: string): void {
+  form.sharing.share.delete(folderId);
+  form.sharing.unshare.delete(folderId);
+  form.sharing.revealed.delete(folderId);
+}
+
+/** Failed folders and ones that may have been saved are both named, so a person sees every folder still to check. */
+function sharingNotice(failures: string[], unsure: string[]): Notice {
+  const parts = [...(failures.length ? [`Not saved for ${failures.join("; ")}.`] : []), ...(unsure.length ? [`${unsure.join("; ")}.`] : [])];
+  if (parts.length === 0) return { text: "Saved.", tone: "ok" };
+  return { text: parts.join(" "), tone: failures.length ? "bad" : "warn" };
+}
+
+/** Each ticked or unticked folder is its own edit of that folder's sharing; one that fails stays ticked to try again. */
+async function saveSharing(form: DeviceFormState, name: string): Promise<void> {
+  const writes = folderShareWrites(form);
+  if (writes.length === 0) {
+    form.sharingResult = { text: "Nothing changed.", tone: "ok" };
+    return requestRender();
+  }
+  form.sharingSaving = true;
+  form.sharingResult = null;
+  requestRender();
+  const failures: string[] = [];
+  const unsure: string[] = [];
+  for (const write of writes) {
+    const result = await saveFolderSettings(form.nodeId, write.folderId, write.change);
+    if (result.ok) {
+      forgetSaved(form, write.folderId);
+      showSharedInCurrentNode(form, result.value, name);
+    } else if (result.maybeSaved) {
+      unsure.push(`${write.folderId}: ${result.message}`);
+    } else {
+      failures.push(`${write.folderId}: ${result.message}`);
+    }
+  }
+  form.sharingSaving = false;
+  form.sharingResult = sharingNotice(failures, unsure);
+  requestRender();
+}
+
+function revertSharing(form: DeviceFormState): void {
+  clearSharing(form.sharing);
+  form.sharingResult = null;
+  requestRender();
+}
+
+function foldersForm(node: StorageNode, form: DeviceFormState, name: string): HTMLElement {
+  if (node.kind === "array") return arraySharesElsewhere(node);
+  const choices = folderChoices(node, form, name);
+  if (choices.length === 0) return element("p", { className: "muted" }, `${node.name} has no folder yet.`);
+  return element(
+    "div",
+    { className: "device-form", attributes: { id: foldersFormId } },
+    sharingList(foldersFormId, `${node.name}'s folders shared with ${name}`, form.sharing, choices, form.sharingSaving, () => (form.sharingResult = null)),
+    resultLine(form.sharingResult),
+    element(
+      "div",
+      { className: "button-row" },
+      Object.assign(button(form.sharingSaving ? "Saving…" : "Save sharing", () => void saveSharing(form, name), "button primary"), { disabled: form.sharingSaving }),
+      Object.assign(button("Revert", () => revertSharing(form), "button ghost"), { disabled: form.sharingSaving }),
+    ),
+  );
+}
+
 function deviceSections(node: StorageNode, form: DeviceFormState, name: string): HTMLElement[] {
   if (form.removed) return [section("Removed", removedBody(node, name))];
-  const removable = node.local && form.saved !== null && !isOwnDevice(node, form);
+  const isOtherLocalDevice = node.local && form.saved !== null && !isOwnDevice(node, form);
   return [
     section("Device ID", element("code", { className: "device-id" }, form.deviceId)),
     section("Settings", formBody(node, form)),
-    ...(removable ? [section("Remove device", removeForm(node, form, name))] : []),
+    ...(isOtherLocalDevice ? [section("Folders", foldersForm(node, form, name)), section("Remove device", removeForm(node, form, name))] : []),
   ];
 }
 

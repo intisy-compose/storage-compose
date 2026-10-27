@@ -1,15 +1,19 @@
 import { deviceDisplayName } from "./api/deviceText.js";
-import type { FolderCopy, FolderDetailResponse, FolderSettings, FolderSummary, FoldersResponse, PendingFolderOffer } from "./api/types.js";
+import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type FoldersResponse, type PendingFolderOffer, type PullOrder, type Versioning, type VersioningType, diskFreeUnits, pullOrderTexts } from "./api/types.js";
+import { versioningParamKeys, versioningTypeTexts } from "./api/versioningText.js";
 import { RequestError } from "./http.js";
 import type { SetupLayout } from "./setupRepo.js";
+import { type NodeOs, placeFolders } from "./treePaths.js";
 import { type SyncthingClient, type SyncthingDeviceConfig, SyncthingError, type PendingFolders, type SyncthingFolderSettings, SyncthingUnavailable, instanceFolders } from "./syncthing.js";
 
-/** A node of this host whose Syncthing answers. */
+/** A node of this host whose Syncthing answers; `root` and `os` place its folders in the explorer's tree. */
 export interface FolderInstance {
   nodeId: string;
   nodeName: string;
   host: string;
   client: SyncthingClient;
+  root: string | null;
+  os: NodeOs;
 }
 
 /** Where the index reads from; tests hand in fake instances and peers. */
@@ -131,9 +135,23 @@ function oneOf<Value extends string>(value: string | undefined, allowed: readonl
   return allowed.includes(value as Value) ? (value as Value) : fallback;
 }
 
-const orders = ["random", "alphabetic", "smallestFirst", "largestFirst", "oldestFirst", "newestFirst"] as const;
-const diskUnits = ["%", "kB", "MB", "GB", "TB"] as const;
-const versioningTypes = ["", "trashcan", "simple", "staggered", "external"] as const;
+const orders = Object.keys(pullOrderTexts) as PullOrder[];
+const versioningTypes = Object.keys(versioningTypeTexts) as VersioningType[];
+
+/**
+ * @implNote Only the type's own params: Syncthing keeps the keys of every type a folder had, as a PATCH merges `params`.
+ * An external command is shown to every dashboard viewer as written, including any token it embeds.
+ */
+function versioning(config: SyncthingFolderSettings["versioning"]): Versioning {
+  const type = oneOf(config?.type, versioningTypes, "");
+  const params = config?.params ?? {};
+  return {
+    type,
+    params: Object.fromEntries(versioningParamKeys[type].flatMap((key) => (typeof params[key] === "string" ? [[key, params[key]]] : []))),
+    cleanupIntervalS: config?.cleanupIntervalS ?? 0,
+    fsPath: config?.fsPath ?? "",
+  };
+}
 
 /** @implNote Built field by field, so nothing Syncthing adds later (or a password) reaches the page. */
 export function folderSettings(config: SyncthingFolderSettings): FolderSettings {
@@ -148,17 +166,12 @@ export function folderSettings(config: SyncthingFolderSettings): FolderSettings 
     fsWatcherDelayS: config.fsWatcherDelayS ?? 0,
     ignorePerms: config.ignorePerms ?? false,
     order: oneOf(config.order, orders, "random"),
-    minDiskFree: { value: config.minDiskFree?.value ?? 0, unit: oneOf(config.minDiskFree?.unit, diskUnits, "%") },
+    minDiskFree: { value: config.minDiskFree?.value ?? 0, unit: oneOf(config.minDiskFree?.unit, diskFreeUnits, "%") },
     maxConflicts: config.maxConflicts ?? 0,
     syncOwnership: config.syncOwnership ?? false,
     syncXattrs: config.syncXattrs ?? false,
     devices: config.devices.map((device) => ({ deviceId: device.deviceID, encrypted: Boolean(device.encryptionPassword) })),
-    versioning: {
-      type: oneOf(config.versioning?.type, versioningTypes, ""),
-      params: { ...(config.versioning?.params ?? {}) },
-      cleanupIntervalS: config.versioning?.cleanupIntervalS ?? 0,
-      fsPath: config.versioning?.fsPath ?? "",
-    },
+    versioning: versioning(config.versioning),
   };
 }
 
@@ -188,5 +201,19 @@ export async function folderDetail(folderId: string, scope: "all" | "local", sou
   if (!summary) throw new RequestError(404, `no folder ${folderId}`);
   const settings = await localSettings(folderId, instances, summary.copies);
   for (const detail of remote) Object.assign(settings, detail.settings);
-  return { summary, settings };
+  return { summary, settings, treePath: treePathOf(summary, instances, remote, layout) };
+}
+
+/**
+ * Where the explorer places the folder's root: as the first node of this host with a copy places it, else as the host
+ * of a copy elsewhere placed it, else an offer's place (the layout's path or "Other folders").
+ */
+function treePathOf(summary: FolderSummary, instances: FolderInstance[], remote: FolderDetailResponse[], layout: SetupLayout | null): string | null {
+  for (const copy of summary.copies) {
+    const instance = instances.find((candidate) => copy.local && candidate.nodeId === copy.nodeId);
+    if (instance) return placeFolders([{ id: summary.id, label: summary.label, path: copy.path }], instance.root, instance.os, layout)[0].relativePath;
+  }
+  const placedElsewhere = remote.find((detail) => typeof detail.treePath === "string")?.treePath;
+  if (placedElsewhere) return placedElsewhere;
+  return summary.offers.length ? placeFolders([{ id: summary.id, label: summary.label, path: "" }], null, "linux", layout)[0].relativePath : null;
 }

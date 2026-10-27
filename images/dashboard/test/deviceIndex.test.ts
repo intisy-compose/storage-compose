@@ -26,6 +26,7 @@ function peer(deviceId: string, overrides: Partial<Peer> = {}): Peer {
     name: "",
     connected: false,
     paused: false,
+    untrusted: false,
     connectionType: null,
     connectionKind: null,
     address: null,

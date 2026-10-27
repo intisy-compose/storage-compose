@@ -7,7 +7,8 @@ import { type JoinRecords, type JoinedDevice, conflictingId, isDeviceName } from
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { peerDashboards, setupRepoDirectory } from "../settings.js";
 import { type SetupLayout, type SetupRecordResult, readLayout, recordDevice, withoutUrlCredentials } from "../setupRepo.js";
-import { type PendingDevices, type SyncthingClient, SyncthingError, SyncthingUnavailable } from "../syncthing.js";
+import { type PendingDevices, type SyncthingClient, SyncthingUnavailable } from "../syncthing.js";
+import { type SyncthingConfig, changeWholeConfig } from "../wholeConfig.js";
 import { addDevice, decodedSegment } from "./devices.js";
 
 /** A node of this host; `client` is null while its Syncthing cannot be addressed. */
@@ -181,47 +182,20 @@ export async function acceptPendingDevice(instance: ResolvedInstance, deviceId: 
   return { accepted: { device: added.device, setup: setupText }, note };
 }
 
-type SyncthingConfig = Record<string, unknown>;
-
-/** A number JSON gave us that is not exactly the one Syncthing wrote, as an int64 above 2^53 is not. */
-function hasInexactNumber(value: unknown): boolean {
-  if (typeof value === "number") return Number.isInteger(value) && !Number.isSafeInteger(value);
-  if (Array.isArray(value)) return value.some(hasInexactNumber);
-  return typeof value === "object" && value !== null && Object.values(value).some(hasInexactNumber);
-}
-
-async function readWholeConfig(instance: LocalInstance): Promise<SyncthingConfig> {
-  const config = await callSyncthing(instance, (client) => client.request<SyncthingConfig>("GET", "/config"));
-  if (hasInexactNumber(config)) throw new SyncthingError(`${instance.name}'s configuration holds a number too large to hand back unchanged; nothing was written`);
-  return config;
-}
-
 function ignoredDevices(config: SyncthingConfig): Record<string, unknown>[] {
   return Array.isArray(config.remoteIgnoredDevices) ? (config.remoteIgnoredDevices as Record<string, unknown>[]) : [];
 }
 
-function withIgnored(config: SyncthingConfig, offer: PendingDevice, now: Date): SyncthingConfig {
+function withIgnored(config: SyncthingConfig, offer: PendingDevice, now: Date): SyncthingConfig | null {
+  if (ignoredDevices(config).some((device) => device.deviceID === offer.deviceId)) return null;
   const entry = { time: now.toISOString(), deviceID: offer.deviceId, name: offer.name, address: offer.address };
   return { ...config, remoteIgnoredDevices: [...ignoredDevices(config), entry] };
 }
 
-const ignoreAttempts = 2;
-
-/**
- * Appends the device to the node's ignored devices, the one write here that replaces Syncthing's whole configuration.
- * @implNote Syncthing has no endpoint for ignored devices and its PUT has no version check, so the config is read
- * again just before the PUT: a change in between (Syncthing or another browser) starts once more from the changed config.
- */
+/** Appends the device to the node's ignored devices; Syncthing has no endpoint for them, so its whole configuration is written. */
 async function writeIgnored(instance: LocalInstance, offer: PendingDevice, now: Date): Promise<"written" | "already ignored"> {
-  for (let attempt = 0; attempt < ignoreAttempts; attempt++) {
-    const config = await readWholeConfig(instance);
-    if (ignoredDevices(config).some((device) => device.deviceID === offer.deviceId)) return "already ignored";
-    const updated = withIgnored(config, offer, now);
-    if (JSON.stringify(await readWholeConfig(instance)) !== JSON.stringify(config)) continue;
-    await callSyncthing(instance, (client) => client.request("PUT", "/config", updated));
-    return "written";
-  }
-  throw new RequestError(409, `${instance.name}'s configuration changed twice while ${offerName(offer)} was being ignored; nothing was written, try again`);
+  const conflict = `${instance.name}'s configuration changed twice while ${offerName(offer)} was being ignored; nothing was written, try again`;
+  return (await changeWholeConfig(instance, (config) => withIgnored(config, offer, now), conflict)) === "written" ? "written" : "already ignored";
 }
 
 export interface DeviceIgnore {

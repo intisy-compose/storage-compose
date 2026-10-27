@@ -1,7 +1,8 @@
 import { type AddedDevice, type NearbyDevice, type StorageNode, addDevice, changedFields, checkDeviceId, deviceDisplayName, fetchDeviceDefaults, fetchNearbyDevices, qrCodeUrl, shareFoldersLabel, shortDeviceId } from "./api.js";
-import { controlId, nodeFormHeader, resultLine, settingFields } from "./deviceForm.js";
+import { arraySharesElsewhere } from "./arrayConfirm.js";
+import { nodeFormHeader, resultLine, settingFields } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
-import { registerForm } from "./forms.js";
+import { controlId, registerForm } from "./forms.js";
 import { requestRender } from "./renderRequest.js";
 import { type AddDeviceFormState, deviceFormLocation } from "./state.js";
 
@@ -136,6 +137,7 @@ function folderChoice(form: AddDeviceFormState, folderId: string, label: string,
 }
 
 function shareFoldersField(node: StorageNode, form: AddDeviceFormState): HTMLElement {
+  if (node.kind === "array") return element("fieldset", { className: "share-folders" }, element("legend", {}, shareFoldersLabel), arraySharesElsewhere(node));
   const choices = node.folders.length ? node.folders.map((folder) => folderChoice(form, folder.id, folder.label, folder.path)) : [element("small", { className: "muted" }, `${node.name} has no folders yet.`)];
   return element("fieldset", { className: "share-folders" }, element("legend", {}, shareFoldersLabel), ...choices);
 }
@@ -190,7 +192,7 @@ function formBody(node: StorageNode, form: AddDeviceFormState): HTMLElement {
     "div",
     { className: "device-form", attributes: { id: formId } },
     element("div", { className: "form-fields device-fields" }, deviceIdField(form)),
-    settingFields({ formId, saving: form.saving, saved: form.defaults, draft: form.draft }),
+    settingFields({ formId, saving: form.saving, saved: form.defaults, draft: form.draft, isArray: node.kind === "array" }),
     shareFoldersField(node, form),
     resultLine(form.result),
     element(

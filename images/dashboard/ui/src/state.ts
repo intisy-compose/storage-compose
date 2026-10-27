@@ -1,4 +1,4 @@
-import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -14,10 +14,39 @@ export interface OpenForm {
 
 export interface Notice {
   text: string;
-  tone: "ok" | "bad";
+  tone: "ok" | "warn" | "bad";
 }
 
 export const allNodesView = "all";
+
+/**
+ * Shares ticked and unticked in a form and not saved yet, keyed by device ID in a folder's form and by folder ID in a device's.
+ * `share` holds the encryption password typed for each, "" for none; `revealed` the passwords shown in clear.
+ */
+export interface SharingDraft {
+  share: Map<string, string>;
+  unshare: Set<string>;
+  revealed: Set<string>;
+}
+
+export function emptySharing(): SharingDraft {
+  return { share: new Map(), unshare: new Set(), revealed: new Set() };
+}
+
+/** The folder's ignore patterns in its edit form, read and saved on their own. */
+export interface IgnoresDraft {
+  /** As the node answered when the section opened or as the last save answered; a save is refused once the node's file differs from it. */
+  opened: FolderIgnores | null;
+  text: string;
+  loading: boolean;
+  loadError: string | null;
+  saving: boolean;
+  result: Notice | null;
+}
+
+export function emptyIgnores(): IgnoresDraft {
+  return { opened: null, text: "", loading: false, loadError: null, saving: false, result: null };
+}
 
 /** The form of `#/nodes/<nodeId>/devices/<deviceId>`: one device as one node's Syncthing has it. */
 export interface DeviceFormState {
@@ -36,6 +65,10 @@ export interface DeviceFormState {
   removeResult: Notice | null;
   /** Set once the node no longer has the device. */
   removed: boolean;
+  /** The node's folders ticked or unticked for the device. */
+  sharing: SharingDraft;
+  sharingSaving: boolean;
+  sharingResult: Notice | null;
 }
 
 /** The form of `#/nodes/<nodeId>/devices/new`: a device to add to one node's Syncthing. */
@@ -56,6 +89,71 @@ export interface AddDeviceFormState {
   saving: boolean;
   result: Notice | null;
   added: AddedDevice | null;
+}
+
+/** What the add folder form holds, typed or not. */
+export interface FolderDraft {
+  id: string;
+  label: string;
+  path: string;
+  type: FolderType;
+  paused: boolean;
+  /** The ignore patterns as typed, one per line. */
+  ignores: string;
+}
+
+/** The form of `#/folders?node=&path=&add=folder`: a folder to add to one node, placed at the explorer's directory by default. */
+export interface AddFolderFormState {
+  /** Null until the person chooses one of this host's nodes. */
+  nodeId: string | null;
+  /** The explorer's view the form was opened from; the form stays open only while the address names the same view and directory. */
+  openedFrom: string;
+  /** The explorer's directory the form was opened at, which places the default path. */
+  under: string;
+  /** The chosen node's defaults, which the form's changes are measured against. */
+  defaults: NewFolderDefaults | null;
+  draft: FolderDraft | null;
+  /** How the add would judge the typed path, for the path it was asked about. */
+  pathCheck: { typed: string; check: FolderPathCheck } | null;
+  /** Directories the node completes the typed path to. */
+  suggestions: string[];
+  loadError: string | null;
+  /** The folder ID as typed to confirm the add on an array. */
+  confirm: string;
+  saving: boolean;
+  result: Notice | null;
+  added: FolderSettings | null;
+}
+
+/** The form of `#/folders/<folderId>?...&edit=<nodeId>`: one folder's settings as one node's Syncthing has them. */
+export interface EditFolderFormState {
+  folderId: string;
+  nodeId: string;
+  /** As the folder detail answered when the form opened or as the last save answered; changes are measured against it, never against a later read. */
+  saved: FolderSettings | null;
+  draft: FolderSettings | null;
+  /** How the node would judge the typed path, for the path it was asked about. */
+  pathCheck: { typed: string; check: FolderPathCheck } | null;
+  /** The node's devices ticked or unticked for the folder. */
+  sharing: SharingDraft;
+  /** The folder ID as typed to confirm a share on an array. */
+  confirm: string;
+  ignores: IgnoresDraft;
+  saving: boolean;
+  result: Notice | null;
+}
+
+/** One node's actions on one folder in the folder detail: what is on its way, what was typed, and how the last one went. */
+export interface FolderActionState {
+  folderId: string;
+  nodeId: string;
+  busy: boolean;
+  /** The part of the folder a rescan is limited to; empty is the whole folder. */
+  sub: string;
+  removeOpen: boolean;
+  /** The folder's ID as typed to confirm the removal. */
+  confirm: string;
+  result: Notice | null;
 }
 
 /** The Folders page's file explorer: which node's view, which directory, and what the person opened in it. */
@@ -86,6 +184,8 @@ export interface AppState {
   selectedDriveKey: string | null;
   deviceForm: DeviceFormState | null;
   addDeviceForm: AddDeviceFormState | null;
+  addFolderForm: AddFolderFormState | null;
+  editFolderForm: EditFolderFormState | null;
   data: NodesResponse | null;
   devices: DevicesResponse | null;
   devicesError: string | null;
@@ -107,6 +207,8 @@ export interface AppState {
   explorer: ExplorerState;
   /** `<folder id>/<node id>` of the settings a person folded away. */
   foldedSettings: Set<string>;
+  /** By `<folder id>/<node id>`. */
+  folderActions: Map<string, FolderActionState>;
   activity: ActivityResponse | null;
   activityError: string | null;
   activityFilters: ActivityFilters;
@@ -129,6 +231,8 @@ export const appState: AppState = {
   selectedDriveKey: null,
   deviceForm: null,
   addDeviceForm: null,
+  addFolderForm: null,
+  editFolderForm: null,
   data: null,
   devices: null,
   devicesError: null,
@@ -148,6 +252,7 @@ export const appState: AppState = {
   folderDetailError: null,
   explorer: emptyExplorer(allNodesView, ""),
   foldedSettings: new Set(),
+  folderActions: new Map(),
   activity: null,
   activityError: null,
   activityFilters: { node: "", folder: "", source: "", routine: false },
@@ -161,15 +266,37 @@ export const appState: AppState = {
 
 const pages: PageId[] = ["nodes", "folders", "attention", "activity", "requests", "settings"];
 
+/** The value of `add` that opens the add folder form over the explorer. */
+const addFolderFlag = "folder";
+
+function emptyAddFolderForm(node: string, under: string): AddFolderFormState {
+  return { nodeId: node === allNodesView ? null : node, openedFrom: node, under, defaults: null, draft: null, pathCheck: null, suggestions: [], loadError: null, confirm: "", saving: false, result: null, added: null };
+}
+
+/** Keeps the open add form, and what was typed into it, while the address names the same view and directory. */
+function readAddFolderForm(adding: boolean, node: string, under: string): void {
+  const open = appState.addFolderForm;
+  appState.addFolderForm = adding ? (open?.under === under && open.openedFrom === node ? open : emptyAddFolderForm(node, under)) : null;
+}
+
+/** Keeps the open edit form, and what was typed into it, while the address names the same folder and node. */
+function readEditFolderForm(folderId: string | null, nodeId: string | null): void {
+  const open = appState.editFolderForm;
+  if (!folderId || !nodeId) appState.editFolderForm = null;
+  else if (open?.folderId !== folderId || open.nodeId !== nodeId) appState.editFolderForm = { folderId, nodeId, saved: null, draft: null, pathCheck: null, sharing: emptySharing(), confirm: "", ignores: emptyIgnores(), saving: false, result: null };
+}
+
 function readExplorerLocation(query: URLSearchParams): void {
   const node = query.get("node") || allNodesView;
   const path = query.get("path") ?? "";
   if (node !== appState.explorer.node || path !== appState.explorer.path) appState.explorer = emptyExplorer(node, path);
   appState.explorer.placeAtFolder = appState.selectedFolderId !== null && !query.has("path");
+  readAddFolderForm(appState.selectedFolderId === null && query.get("add") === addFolderFlag, node, path);
+  readEditFolderForm(appState.selectedFolderId, query.get("edit"));
 }
 
 function emptyDeviceForm(nodeId: string, deviceId: string): DeviceFormState {
-  return { nodeId, deviceId, saved: null, draft: null, loadError: null, saving: false, result: null, removeConfirm: "", removing: false, removeResult: null, removed: false };
+  return { nodeId, deviceId, saved: null, draft: null, loadError: null, saving: false, result: null, removeConfirm: "", removing: false, removeResult: null, removed: false, sharing: emptySharing(), sharingSaving: false, sharingResult: null };
 }
 
 /** The device segment of the add form's address; a device ID is upper case, so no device is called this. */
@@ -210,6 +337,10 @@ export function readLocation(): void {
   readNodesSelection(appState.page === "nodes" ? selected : null, subItemId ? decodeURIComponent(subItemId) : null, deviceId ? decodeURIComponent(deviceId) : null);
   appState.selectedFolderId = appState.page === "folders" ? selected : null;
   if (appState.page === "folders") readExplorerLocation(query);
+  else {
+    appState.addFolderForm = null;
+    appState.editFolderForm = null;
+  }
 }
 
 function encodePath(path: string): string {
@@ -224,6 +355,21 @@ export function explorerLocation(folderId: string | null, node = appState.explor
   const base = locationFor("folders", folderId);
   if (!folderId && node === allNodesView && !path) return base;
   return `${base}?node=${encodeURIComponent(node)}&path=${encodePath(path)}`;
+}
+
+/** Whether the node is an array of this host's, where a folder is added, shared, accepted or ignored only with its ID typed. */
+export function isArrayNode(nodeId: string): boolean {
+  return appState.data?.nodes.find((node) => node.id === nodeId)?.kind === "array";
+}
+
+/** The form that edits the folder's settings on the node `nodeId`, over the explorer where the folder's detail is open. */
+export function editFolderLocation(folderId: string, nodeId: string): string {
+  return `${explorerLocation(folderId)}&edit=${encodeURIComponent(nodeId)}`;
+}
+
+/** The add folder form over the explorer at a node's view of a directory, the folder placed there by default. */
+export function addFolderLocation(node: string, path: string): string {
+  return `${locationFor("folders")}?node=${encodeURIComponent(node)}&path=${encodePath(path)}&add=${addFolderFlag}`;
 }
 
 /** The address of a page, or of one node or folder on it. */
@@ -254,5 +400,7 @@ export function selectedItemId(): string | null {
   if (appState.selectedDriveKey !== null) return `drive/${appState.selectedDriveKey}`;
   if (appState.deviceForm) return `${appState.deviceForm.nodeId}/devices/${appState.deviceForm.deviceId}`;
   if (appState.addDeviceForm) return `${appState.addDeviceForm.nodeId}/devices/${newDeviceSegment}`;
+  if (appState.addFolderForm) return `add-folder/${appState.addFolderForm.under}`;
+  if (appState.editFolderForm) return `edit-folder/${appState.editFolderForm.folderId}/${appState.editFolderForm.nodeId}`;
   return appState.selectedNodeId ?? appState.selectedFolderId ?? (appState.page === "folders" ? appState.explorer.selectedPath : null);
 }

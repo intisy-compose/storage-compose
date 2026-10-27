@@ -37,7 +37,9 @@ function isMissingLocally(input: StatusInput): boolean {
 /**
  * The spec's status table, first match wins.
  * @implNote "unknown" is checked first although the table lists it late: without an answer every
- * other input is a placeholder, and a placeholder must not read as "not here yet".
+ * other input is a placeholder, and a placeholder must not read as "not here yet". "paused" is checked
+ * right after the folder is known to be there, before the rows the table lists above it: a paused folder
+ * neither scans nor syncs, so "only here" or "not here yet" would hide why nothing changes.
  */
 export function entryStatus(input: StatusInput): StatusResult {
   if (!input.answering) return { status: "unknown", detail: "the node's Syncthing is not answering" };
@@ -51,11 +53,11 @@ export function entryStatus(input: StatusInput): StatusResult {
     if (isMissingLocally(input) && input.folderState === "syncing") return { status: "syncing", detail: "being fetched" };
   }
   if (!input.hasFolder) return { status: "missing", detail: input.offered ? "offered, not accepted" : "not shared with this node" };
+  if (input.folderPaused) return { status: "paused", detail: "Syncthing neither scans nor syncs it until it is resumed" };
   if (isMissingLocally(input)) return { status: "missing", detail: "not on this node yet" };
   if (input.local?.ignored) return { status: "ignored", detail: "ignored by .stignore" };
   if (input.locallyChanged) return { status: "local-only", detail: "changed here in a receive-only folder" };
   if (!input.sharedWithOthers) return { status: "local-only", detail: "shared with no other device" };
   if (input.effectivePriority < input.threshold) return { status: "below-threshold", detail: `below threshold ${input.threshold}` };
-  if (input.folderPaused) return { status: "paused", detail: null };
   return { status: "in-sync", detail: null };
 }

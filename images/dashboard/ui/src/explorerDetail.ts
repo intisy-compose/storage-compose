@@ -4,7 +4,8 @@ import { presentationClasses, priorityCell, stateParts, statusDot } from "./expl
 import { formatBytes, formatDate } from "./format.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
-import { appState } from "./state.js";
+import { addableNodes } from "./folderForm.js";
+import { addFolderLocation, appState } from "./state.js";
 
 type Override = TreeListing["overridesBelow"][number];
 
@@ -66,6 +67,12 @@ function closeButton(): HTMLElement {
   return close;
 }
 
+/** Offers the directory as a new folder, unless it already is one or no node here can take one. */
+function addAsFolderLink(path: string, isFolder: boolean): HTMLElement | null {
+  if (isFolder || !addableNodes().length) return null;
+  return element("p", {}, element("a", { className: "button", attributes: { href: addFolderLocation(appState.explorer.node, path) } }, "Add as a folder"));
+}
+
 function entryDetail(entry: TreeEntry): HTMLElement {
   const facts: [string, HTMLElement | string][] = [["Path", element("code", {}, entry.path)]];
   if (entry.kind === "file") facts.push(["Size", formatBytes(entry.size)]);
@@ -78,6 +85,7 @@ function entryDetail(entry: TreeEntry): HTMLElement {
     prioritySection(entry.priority, entry.kind === "directory" ? overridesBelowPath(entry.path) : []),
     section("On each node", entry.nodes.length ? element("ul", { className: "node-state-list" }, ...entry.nodes.map(nodeStateLine)) : element("p", { className: "muted" }, "No node viewed has it.")),
     section("Held by", entry.availability.length ? element("p", {}, entry.availability.map((device) => device.name).join(", ")) : element("p", { className: "muted" }, "No connected device reports a copy.")),
+    entry.kind === "directory" ? addAsFolderLink(entry.path, entry.folder !== null) : null,
   );
 }
 
@@ -89,6 +97,7 @@ function directoryDetail(listing: TreeListing | null): HTMLElement {
     { className: "detail-inner" },
     element("header", { className: "detail-header" }, element("h2", {}, name), element("p", { className: "detail-status muted" }, path ? element("code", {}, path) : "The top directory")),
     listing ? prioritySection(listing.priority, listing.overridesBelow, !path) : element("p", { className: "muted" }, "Reading the directory…"),
+    path ? addAsFolderLink(path, false) : null,
     element("p", { className: "muted small" }, "Select a row to see each node's state of it; select a row with a folder chip for that folder's copies and settings."),
   );
 }

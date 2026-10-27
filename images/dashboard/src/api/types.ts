@@ -187,6 +187,14 @@ export interface SyncthingDevice {
 
 export type FolderType = "sendreceive" | "sendonly" | "receiveonly" | "receiveencrypted";
 
+/** A folder type in words, as the pages and Activity name it. */
+export const folderTypeTexts: Record<FolderType, string> = {
+  sendreceive: "send and receive",
+  sendonly: "send only",
+  receiveonly: "receive only",
+  receiveencrypted: "receive encrypted",
+};
+
 export interface FolderFile {
   at: string;
   filename: string;
@@ -249,6 +257,8 @@ export interface Peer {
   name: string;
   connected: boolean;
   paused: boolean;
+  /** Shared folders only encrypted, so a share with it needs an encryption password. */
+  untrusted: boolean;
   connectionType: string | null;
   /** Null while not connected. */
   connectionKind: ConnectionKind | null;
@@ -457,6 +467,44 @@ export interface IgnoredDevice extends PendingDevice {
 export interface AcceptedDevice {
   device: DeviceSettings;
   setup: string;
+}
+
+/**
+ * `GET /api/nodes/<nodeId>/pending/folders/<folderId>/defaults?offeredBy=<deviceId>`: what the accept form opens with.
+ * On an array the folder is received only and kept with staggered versioning, and it is accepted only with its ID typed.
+ */
+export interface AcceptFolderDefaults {
+  offer: PendingFolderOffer;
+  /** The folder as the accept would create it: placed at `<root>/<label>`, shared with the offering device. */
+  settings: FolderSettings;
+  /** The node's root, inside which the path must stay. */
+  root: string;
+  /** Set on an array: `confirm` must be the folder ID. */
+  confirmRequired: boolean;
+  /** Why the default path cannot be used as it is; null when it can. */
+  placementProblem: string | null;
+}
+
+/** `POST /api/nodes/<nodeId>/pending/folders/<folderId>/accept`: adds the offered folder, shared with `offeredBy`. */
+export interface AcceptFolderBody {
+  offeredBy: string;
+  path: string;
+  type: FolderType;
+  versioning: Versioning;
+  /** The folder ID typed; required on an array. */
+  confirm?: string;
+}
+
+/** `POST .../pending/folders/<folderId>/ignore` and `/dismiss`: the device whose offer is answered. */
+export interface FolderOfferAnswerBody {
+  offeredBy: string;
+  /** The folder ID typed; required to ignore on an array. */
+  confirm?: string;
+}
+
+/** The offer that was ignored; `alreadyIgnored` when the device's offers of the folder were ignored already and nothing was written. */
+export interface IgnoredFolderOffer extends PendingFolderOffer {
+  alreadyIgnored: boolean;
 }
 
 /** A device admitted through the join API; `setup` says what became of it in the setup repo. */
@@ -672,12 +720,15 @@ export interface FoldersResponse {
   offersUnreadable: { nodeId: string; nodeName: string; error: string }[];
 }
 
+/** A folder's file versioning in Syncthing's own shape: `params` are strings, `fsPath` is the versions path, empty for `.stversions` inside the folder. */
 export interface Versioning {
   type: "" | "trashcan" | "simple" | "staggered" | "external";
   params: Record<string, string>;
   cleanupIntervalS: number;
   fsPath: string;
 }
+
+export type VersioningType = Versioning["type"];
 
 /** A node's Syncthing settings for one folder. */
 export interface FolderSettings {
@@ -700,10 +751,181 @@ export interface FolderSettings {
   versioning: Versioning;
 }
 
+export type PullOrder = FolderSettings["order"];
+
+/** A pull order in words, as the form offers it and Activity names it. */
+export const pullOrderTexts: Record<PullOrder, string> = {
+  random: "random",
+  alphabetic: "alphabetic",
+  smallestFirst: "smallest first",
+  largestFirst: "largest first",
+  oldestFirst: "oldest first",
+  newestFirst: "newest first",
+};
+
+export type DiskFreeUnit = FolderSettings["minDiskFree"]["unit"];
+
+export const diskFreeUnits: readonly DiskFreeUnit[] = ["%", "kB", "MB", "GB", "TB"];
+
+/** The folder types a folder can be given here; receive encrypted is only ever accepted from an offer. */
+export const editableFolderTypes: readonly FolderType[] = ["sendreceive", "sendonly", "receiveonly"];
+
+/** A device to share a folder with. `encryptionPassword` makes it receive the folder encrypted; an untrusted device needs one. */
+export interface FolderShare {
+  deviceId: string;
+  encryptionPassword?: string;
+}
+
+/** A share's encryption password as it is sent, trimmed; a blank one is no password, so whitespace is never sent as one. */
+export function sharePassword(password: string | undefined): string | null {
+  const trimmed = password?.trim() ?? "";
+  return trimmed === "" ? null : trimmed;
+}
+
+/** A share of a folder with `deviceId`, carrying the password only when there is one. */
+export function folderShare(deviceId: string, password: string | undefined): FolderShare {
+  const kept = sharePassword(password);
+  return kept === null ? { deviceId } : { deviceId, encryptionPassword: kept };
+}
+
+/**
+ * The `devices` field of a folder edit: the devices to start and to stop sharing the folder with. Every other device
+ * keeps its share as it is, and a device already shared (or already not shared) changes nothing. Sharing an already
+ * shared device with another password is refused: a password changes only by stopping sharing and sharing again.
+ */
+export interface FolderSharingChange {
+  share?: FolderShare[];
+  unshare?: string[];
+}
+
+/**
+ * `PATCH /api/nodes/<nodeId>/folders/<folderId>`: only the settings the form changed; the folder ID cannot change.
+ * `versioning` goes whole, with exactly its type's params: Syncthing resets a cleanup interval left out of it.
+ */
+export type FolderSettingsChange = Partial<
+  Pick<FolderSettings, "label" | "path" | "type" | "rescanIntervalS" | "fsWatcherEnabled" | "fsWatcherDelayS" | "ignorePerms" | "order" | "minDiskFree" | "maxConflicts" | "syncOwnership" | "syncXattrs" | "versioning">
+> & { devices?: FolderSharingChange };
+
+/** The body of a folder edit: the change, and on an array the folder ID typed (`confirm`) when it shares the folder with a device. */
+export type FolderEditBody = FolderSettingsChange & { confirm?: string };
+
+/** Each editable folder setting as the form labels it; a refusal names the setting the same way. */
+export const folderSettingLabels: Record<keyof FolderSettingsChange, string> = {
+  label: "Label",
+  path: "Path",
+  type: "Type",
+  rescanIntervalS: "Full rescan interval",
+  fsWatcherEnabled: "Watch for changes",
+  fsWatcherDelayS: "Watch delay",
+  ignorePerms: "Ignore permissions",
+  order: "Pull order",
+  minDiskFree: "Minimum free disk",
+  maxConflicts: "Conflict copies kept",
+  syncOwnership: "Sync ownership",
+  syncXattrs: "Sync extended attributes",
+  versioning: "File versioning",
+  devices: "Sharing",
+};
+
+/** A refused or failed request's answer. */
+export interface ErrorAnswer {
+  error: string;
+  /** Set when a write's answer was lost and its effect could not be read back: it may have been saved. */
+  maybeSaved?: true;
+}
+
+/** `POST /api/nodes/<nodeId>/folders`: a folder to add to the node; every setting it leaves out is the node's Syncthing default. */
+export interface NewFolder {
+  id: string;
+  label?: string;
+  /** Inside the node's root and not inside another node's root on this host. */
+  path: string;
+  type?: FolderType;
+  paused?: boolean;
+  /** The folder's ignore patterns; when absent, the node's defaults. */
+  ignores?: string[];
+  /** The folder ID typed; required on an array (`NewFolderDefaults.confirmRequired`). */
+  confirm?: string;
+}
+
+/** `GET /api/nodes/<nodeId>/folders/<folderId>/ignores`, and the answer of its `PUT`: the folder's `.stignore` on that node. */
+export interface FolderIgnores {
+  /** The file's lines as written. */
+  lines: string[];
+  /** The patterns Syncthing matches, each line expanded; those that came only from included files are left out. */
+  expanded: string[];
+  /** How many expanded patterns came from included files and are not shown, as an included file is not the dashboard's to show. */
+  hiddenIncluded: number;
+  /** Why Syncthing cannot use the patterns; while set, the folder does not sync. */
+  error: string | null;
+}
+
+/** `PUT /api/nodes/<nodeId>/folders/<folderId>/ignores`: the whole new file, and the lines the form opened with. */
+export interface IgnoresChange {
+  lines: string[];
+  /** The file as the form read it; when the node's file differs by now, nothing is written. */
+  opened: string[];
+}
+
+/** `POST /api/nodes/<nodeId>/folders/<folderId>/rescan`: the whole folder, or only `sub`, a directory or file below its path. */
+export interface RescanBody {
+  sub?: string;
+}
+
+/** The answer of a rescan: which folder, or null for every folder of the node, and which part of it. */
+export interface FolderRescan {
+  folderId: string | null;
+  sub: string | null;
+}
+
+/** `DELETE /api/nodes/<nodeId>/folders/<folderId>`: the folder's label or ID, typed exactly, confirms the removal. */
+export interface RemoveFolderBody {
+  confirm: string;
+}
+
+/** What may be typed to confirm a folder's removal: its label when it has one, or its ID. */
+export function removalConfirmations(folder: { id: string; label: string }): string[] {
+  return folder.label && folder.label !== folder.id ? [folder.label, folder.id] : [folder.id];
+}
+
+/** The answer of a removal: the folder is gone from the node's Syncthing, its files are still at `path`. */
+export interface RemovedFolder {
+  folderId: string;
+  label: string;
+  path: string;
+  /** In words, saying that the files stay on disk. */
+  text: string;
+}
+
+/** `GET /api/nodes/<nodeId>/folder-defaults?under=<tree path>`: a new folder as the node's Syncthing would make it, placed at that directory. */
+export interface NewFolderDefaults {
+  settings: FolderSettings;
+  /** The node's default ignore patterns, which a new folder starts with. */
+  ignores: string[];
+  /** The node's root, inside which the path must stay. */
+  root: string;
+  /** Why the directory the form was opened at cannot be the folder, so the root is offered instead; null when it can. */
+  placementProblem: string | null;
+  /** Set on an array: `confirm` must be the folder ID. */
+  confirmRequired: boolean;
+}
+
+/** `GET /api/nodes/<nodeId>/folder-path-check?path=`: how the add would judge a typed path. */
+export interface FolderPathCheck {
+  /** The path as it would be sent: `..` resolved, the node's separator. */
+  path: string;
+  /** Why the add would refuse it. */
+  problem: string | null;
+  /** An overlap with one of the node's folders, which Syncthing allows but syncs twice. */
+  warning: string | null;
+}
+
 /** `GET /api/folders/<folderId>`; `settings` is keyed by node ID. */
 export interface FolderDetailResponse {
   summary: FolderSummary;
   settings: Record<string, FolderSettings>;
+  /** Where the folder's root lies in the explorer's tree (`Documents/GitHub`), as the explorer places it; null when no node places it. */
+  treePath: string | null;
 }
 
 /**

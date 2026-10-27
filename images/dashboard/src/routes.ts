@@ -1,19 +1,23 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
-import type { ArrayAction, ArrayActionBody } from "./api/types.js";
+import type { ArrayAction, ArrayActionBody, ErrorAnswer } from "./api/types.js";
 import { type ArrayStatus, arrayStatus } from "./arrayStatus.js";
 import { isReplacementCandidate, listBlockDevices } from "./blockDevices.js";
 import { recordDashboardActivity, refreshEventFeeds } from "./eventFeed.js";
-import { type HostAllowlist, RequestError, hostAllowlist, hostRefusal, readBody, refuseCrossSiteWrite, sendJson } from "./http.js";
+import { type HostAllowlist, RequestError, UnconfirmedWrite, hostAllowlist, hostRefusal, readBody, refuseCrossSiteWrite, sendJson } from "./http.js";
 import { fileJoinRecords } from "./join.js";
 import { invalidateLocalNodes, nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
 import { activityRoutes } from "./routes/activity.js";
 import { deviceIndexRoutes } from "./routes/deviceIndex.js";
 import { deviceRoutes } from "./routes/devices.js";
+import { folderActionRoutes } from "./routes/folderActions.js";
+import { folderIgnoreRoutes } from "./routes/folderIgnores.js";
 import { folderRoutes } from "./routes/folders.js";
+import { nodeFolderRoutes } from "./routes/nodeFolders.js";
 import { optionsRoutes } from "./routes/options.js";
 import { pendingRoutes } from "./routes/pending.js";
+import { pendingFolderRoutes } from "./routes/pendingFolders.js";
 import { treeRoutes } from "./routes/tree.js";
 import { arrayStatusDirectory, clusterArrayId, dashboardHosts, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
 import { SyncthingError, SyncthingUnavailable } from "./syncthing.js";
@@ -202,8 +206,12 @@ export const dashboardRoutes: AnyRoute[] = [
   ...treeRoutes,
   ...deviceIndexRoutes(joinRecords),
   ...pendingRoutes(joinRecords),
+  ...pendingFolderRoutes(),
   ...optionsRoutes,
   ...deviceRoutes(),
+  ...nodeFolderRoutes(),
+  ...folderIgnoreRoutes(),
+  ...folderActionRoutes(),
   { pattern: hostWritePattern(/^\/api\/join$/), handle: async () => joinElsewhere() },
 ];
 
@@ -257,7 +265,15 @@ function errorStatus(error: unknown): number {
   return 500;
 }
 
-/** Answers a request from `routeList`; a refusal or failure becomes `{ error }` with its status. */
+function errorAnswer(error: unknown): ErrorAnswer {
+  const answer: ErrorAnswer = { error: error instanceof Error ? error.message : String(error) };
+  return error instanceof UnconfirmedWrite ? { ...answer, maybeSaved: true } : answer;
+}
+
+/**
+ * Answers a request from `routeList`; a refusal or failure becomes `{ error }` with its status.
+ * @implNote A write that may have been saved drops the shared build, so the next read shows it if it was, but enters nothing in Activity.
+ */
 export function requestHandler(
   routeList: AnyRoute[],
   effects: WriteEffects = liveWriteEffects,
@@ -267,9 +283,10 @@ export function requestHandler(
     try {
       await route(routeList, effects, hosts, request, response);
     } catch (error) {
+      if (error instanceof UnconfirmedWrite) effects.invalidate();
       const status = errorStatus(error);
       if (status === 500) console.error(error);
-      sendJson(response, status, { error: error instanceof Error ? error.message : String(error) });
+      sendJson(response, status, errorAnswer(error));
     }
   };
 }

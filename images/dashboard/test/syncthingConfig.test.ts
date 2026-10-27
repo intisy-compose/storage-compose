@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
+import type { Versioning } from "../src/api/types.js";
+import { folderSettings } from "../src/folderIndex.js";
 import type { LocalInstance, RemoteInstance } from "../src/instanceResolver.js";
 import { hostSettings, nodeOptions } from "../src/routes/options.js";
 import { parseLayout } from "../src/setupRepo.js";
-import { SyncthingClient } from "../src/syncthing.js";
-import { instanceGui, instanceOptions, redactConfig } from "../src/syncthingConfig.js";
+import { SyncthingClient, type SyncthingFolderSettings } from "../src/syncthing.js";
+import { folderChangeProblem, instanceGui, instanceOptions, redactConfig } from "../src/syncthingConfig.js";
 
 const syncthingOptions = {
   listenAddresses: ["default"],
@@ -88,6 +90,46 @@ describe("syncthing configuration", () => {
   });
 });
 
+/** A folder's configuration as Syncthing 2.1.6 answers it after a PATCH: `params` keeps the keys of the types it had before. */
+function syncthingFolder(versioning: object): SyncthingFolderSettings {
+  return { id: "dashboard-test-a", label: "", path: "/var/syncthing/data/dashboard-test-a", type: "sendreceive", paused: false, devices: [], versioning };
+}
+
+describe("file versioning", () => {
+  it("versioning params are strings in syncthing's shape and round-trip", () => {
+    const staggered: Versioning = { type: "staggered", params: { maxAge: "31536000" }, cleanupIntervalS: 3600, fsPath: "" };
+    assert.equal(folderChangeProblem({ versioning: staggered }), null);
+    const answered = syncthingFolder({ ...staggered, params: { cleanoutDays: "0", keep: "5", maxAge: "31536000" }, fsType: "basic" });
+    assert.deepEqual(folderSettings(answered).versioning, staggered, "keys left over from an earlier type are not the folder's");
+    for (const versioning of [
+      { type: "", params: {}, cleanupIntervalS: 3600, fsPath: "" },
+      { type: "trashcan", params: { cleanoutDays: "0" }, cleanupIntervalS: 3600, fsPath: "/var/syncthing/data/versions" },
+      { type: "simple", params: { keep: "5", cleanoutDays: "30" }, cleanupIntervalS: 0, fsPath: "" },
+    ] as Versioning[]) {
+      assert.equal(folderChangeProblem({ versioning }), null, versioning.type);
+      assert.deepEqual(folderSettings(syncthingFolder(versioning)).versioning, versioning, versioning.type);
+    }
+  });
+
+  it("a versioning change is refused unless it is whole and in syncthing's shape", () => {
+    const refusals: [unknown, string][] = [
+      [{ type: "staggered", params: { maxAge: 31536000 }, cleanupIntervalS: 3600, fsPath: "" }, "Maximum age, in seconds, must be a whole number, 0 or more"],
+      [{ type: "staggered", params: { maxAge: "-1" }, cleanupIntervalS: 3600, fsPath: "" }, "Maximum age, in seconds, must be a whole number, 0 or more"],
+      [{ type: "simple", params: { keep: "0", cleanoutDays: "0" }, cleanupIntervalS: 3600, fsPath: "" }, "Versions kept must be a whole number, 1 or more"],
+      [{ type: "simple", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "" }, "simple versioning takes Versions kept, Clean out after (days)"],
+      [{ type: "trashcan", params: { cleanoutDays: "0", maxAge: "1" }, cleanupIntervalS: 3600, fsPath: "" }, "trash can versioning takes Clean out after (days)"],
+      [{ type: "", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "" }, "no versioning takes no settings"],
+      [{ type: "staggered", params: { maxAge: "1" } }, "File versioning must give its type, settings, cleanup interval and versions path"],
+      [{ type: "staggered", params: { maxAge: "1" }, cleanupIntervalS: 3600, fsPath: "", fsType: "basic" }, "File versioning must give its type, settings, cleanup interval and versions path"],
+      [{ type: "weekly", params: {}, cleanupIntervalS: 3600, fsPath: "" }, "File versioning must be none, trash can, simple, staggered"],
+      [{ type: "staggered", params: { maxAge: "1" }, cleanupIntervalS: -5, fsPath: "" }, "Cleanup interval must be a whole number, 0 or more"],
+      [{ type: "staggered", params: { maxAge: "1" }, cleanupIntervalS: 3600, fsPath: 7 }, "Versions path must be text"],
+      [{ type: "external", params: { command: "/bin/true" }, cleanupIntervalS: 3600, fsPath: "" }, "external versioning runs a program on the node, so it is set in the node's own Syncthing configuration, not from the dashboard"],
+    ];
+    for (const [versioning, message] of refusals) assert.equal(folderChangeProblem({ versioning }), message, JSON.stringify(versioning));
+  });
+});
+
 const ownId = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 
 function reply(response: ServerResponse, body: unknown, status = 200): void {
@@ -142,7 +184,7 @@ describe("a node's options", () => {
   });
 
   it("are read from the node's own Syncthing, named after its own device entry", async () => {
-    const instance: LocalInstance = { kind: "local", nodeId: "fb98", name: "pc", client: new SyncthingClient({ url: syncthingUrl, apiKey: syncthingGui.apiKey }), root: "F:\\", os: "windows", threshold: 50 };
+    const instance: LocalInstance = { kind: "local", nodeId: "fb98", name: "pc", client: new SyncthingClient({ url: syncthingUrl, apiKey: syncthingGui.apiKey }), root: "F:\\", os: "windows", threshold: 50, source: "host-agent" };
     const answer = await nodeOptions(instance);
 
     assert.equal(answer.options.deviceName, "pc");

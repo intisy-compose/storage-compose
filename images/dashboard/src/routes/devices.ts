@@ -2,10 +2,10 @@ import type { ServerResponse } from "node:http";
 import { deviceDisplayName, deviceSettingLabels, shortDeviceId } from "../api/deviceText.js";
 import type { AddedDevice, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, NearbyDevice, NewDevice, RemoveDeviceBody } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, forwardRead, requireLocal, resolveInstance } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, isArrayInstance, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { SyncthingError } from "../syncthing.js";
-import { deviceChangeProblem, deviceSettings, newDeviceProblem, redactConfig } from "../syncthingConfig.js";
+import { deviceChangeProblem, deviceSettings, isChangeInPlace, newDeviceProblem, redactConfig } from "../syncthingConfig.js";
 
 type SyncthingObject = Record<string, unknown>;
 
@@ -74,6 +74,24 @@ export function deviceEditText(nodeName: string, deviceName: string, change: Dev
   return [`${nodeName}: ${lead}`, ...details].join("; ");
 }
 
+/** The device settings that let Syncthing add an offered folder, or share folders with an introduced device, by itself. */
+const arrayLockedSettings = ["introducer", "autoAcceptFolders"] as const;
+
+/**
+ * Why the change may not be made on this node, or null: on an array neither setting is turned on.
+ * @implNote Either would let Syncthing add or share an array's folders with nothing typed (`arrayConfirmProblem`); turning them off stays allowed.
+ */
+function arrayAutomationProblem(instance: LocalInstance, change: DeviceSettingsChange): string | null {
+  if (!isArrayInstance(instance)) return null;
+  const turnedOn = arrayLockedSettings.find((key) => change[key] === true);
+  return turnedOn ? `${deviceSettingLabels[turnedOn]} stays off on ${instance.name}, an array: Syncthing would then add or share its folders with nothing typed` : null;
+}
+
+/** On an array a new device starts with both locked settings off, whatever the node's own defaults say. */
+function arrayLockedOff(instance: LocalInstance): SyncthingObject {
+  return isArrayInstance(instance) ? Object.fromEntries(arrayLockedSettings.map((key) => [key, false])) : {};
+}
+
 export interface DeviceEdit {
   settings: DeviceSettings;
   note: WriteNote;
@@ -83,15 +101,20 @@ export interface DeviceEdit {
  * Sends exactly the fields of `change` to the node's Syncthing, so a field the person did not touch
  * is never written back over a change made elsewhere meanwhile.
  */
-export async function editDevice(instance: ResolvedInstance, deviceId: string, change: unknown): Promise<DeviceEdit> {
+export async function editDevice(instance: ResolvedInstance, deviceId: string, change: unknown, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<DeviceEdit> {
   const local = requireLocal(instance);
-  const problem = deviceChangeProblem(change);
+  const problem = deviceChangeProblem(change) ?? arrayAutomationProblem(local, change as DeviceSettingsChange);
   if (problem) throw new RequestError(400, problem);
   const valid = change as DeviceSettingsChange;
   const before = await configuredDevice(local, deviceId);
   const deviceName = deviceDisplayName(typeof before.name === "string" ? before.name : "", deviceId);
   const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: deviceEditText(local.name, deviceName, valid) };
-  await callSyncthing(local, (client) => client.request("PATCH", `/config/devices/${encodeURIComponent(deviceId)}`, valid));
+  await writeConfirmed(
+    local,
+    (client) => client.request("PATCH", `/config/devices/${encodeURIComponent(deviceId)}`, valid),
+    async () => isChangeInPlace(await configuredDevice(local, deviceId), valid),
+    readBackDelaysMs,
+  );
   return { settings: await settingsAfter(local, deviceId, { ...before, ...valid }), note };
 }
 
@@ -216,7 +239,13 @@ async function planAdd(instance: LocalInstance, request: NewDevice): Promise<Add
   const folderIds = [...new Set(shareFolders)];
   const missing = folderIds.find((folderId) => !(folders ?? []).some((folder) => folder.id === folderId));
   if (missing) throw new RequestError(400, `${instance.name} has no folder ${missing}`);
-  return { deviceId, config: { ...defaults, ...change, deviceID: deviceId }, change, folderIds };
+  return { deviceId, config: { ...defaults, ...change, ...arrayLockedOff(instance), deviceID: deviceId }, change, folderIds };
+}
+
+/** @implNote A share on an array needs the folder ID typed (`arrayConfirmProblem`), which the add's list of folders has no place for. */
+function arraySharesProblem(instance: LocalInstance, request: NewDevice): string | null {
+  if (!isArrayInstance(instance) || !request.shareFolders?.length) return null;
+  return `on ${instance.name}, an array, a folder is shared only from its own settings, where its ID is typed: add the device, then share each folder there`;
 }
 
 /**
@@ -227,7 +256,7 @@ async function planAdd(instance: LocalInstance, request: NewDevice): Promise<Add
  */
 export async function addDevice(instance: ResolvedInstance, body: unknown): Promise<DeviceAddition> {
   const local = requireLocal(instance);
-  const problem = newDeviceProblem(body);
+  const problem = newDeviceProblem(body) ?? arraySharesProblem(local, body as NewDevice) ?? arrayAutomationProblem(local, body as NewDevice);
   if (problem) throw new RequestError(400, problem);
   const plan = await planAdd(local, body as NewDevice);
   await callSyncthing(local, (client) => client.request("POST", "/config/devices", plan.config));
@@ -348,6 +377,8 @@ export function decodedSegment(segment: string, what: string): string {
 
 export interface DeviceRouteSources {
   resolve(nodeId: string): Promise<ResolvedInstance>;
+  /** The waits between read-backs of an edit whose answer was lost; tests shorten them. */
+  readBackDelaysMs?: readonly number[];
 }
 
 const liveSources: DeviceRouteSources = { resolve: (nodeId) => resolveInstance(nodeId) };
@@ -399,7 +430,7 @@ export function deviceRoutes(sources: DeviceRouteSources = liveSources): AnyRout
       pattern: devicePattern,
       write: async ({ request, response, params }) => {
         const { instance, deviceId } = await target(params);
-        const edit = await editDevice(instance, deviceId, await readBody(request));
+        const edit = await editDevice(instance, deviceId, await readBody(request), sources.readBackDelaysMs);
         sendJson(response, 200, edit.settings);
         return edit.note;
       },

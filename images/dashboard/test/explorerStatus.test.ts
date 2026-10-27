@@ -60,6 +60,13 @@ describe("explorer status", () => {
     assert.equal(entryStatus(input({ folderPaused: true, outstandingBelow: 4 })).status, "paused");
   });
 
+  it("a paused folder reads paused even where it would be only here, below threshold, ignored or not here yet", () => {
+    for (const overrides of [{ sharedWithOthers: false }, { locallyChanged: true }, { effectivePriority: 10 }, { local: { deleted: false, ignored: true } }, { local: null }]) {
+      assert.deepEqual(entryStatus(input({ folderPaused: true, ...overrides })), { status: "paused", detail: "Syncthing neither scans nor syncs it until it is resumed" }, JSON.stringify(overrides));
+    }
+    assert.equal(entryStatus(input({ folderPaused: true, hasFolder: false, local: null })).status, "missing", "a node without the folder has nothing paused");
+  });
+
   it("an instance that does not answer is unknown", () => {
     assert.deepEqual(entryStatus(input({ answering: false, hasFolder: false, local: null, failedBelow: 3 })), { status: "unknown", detail: "the node's Syncthing is not answering" });
   });
