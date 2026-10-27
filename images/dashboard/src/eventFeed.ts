@@ -245,8 +245,12 @@ function itemFinished(context: EventContext, data: EventData): Described | null 
   return { folderId: text(data.folder), type: "item-failed", level: "warning", text: `${folderName(context, data.folder)} failed to sync ${text(data.item)} (${error})` };
 }
 
+function changeFolderId(data: EventData): string {
+  return text(data.folderID) || text(data.folder);
+}
+
 function fileChange(context: EventContext, data: EventData, remote: boolean): Described {
-  const folderId = text(data.folderID) || text(data.folder);
+  const folderId = changeFolderId(data);
   const device = remote ? deviceName(context, data.modifiedBy) : context.nodeName;
   const change: FileChange = { path: text(data.path), action: text(data.action), item: text(data.type), device };
   const by = remote ? ` by ${change.device}` : "";
@@ -254,8 +258,12 @@ function fileChange(context: EventContext, data: EventData, remote: boolean): De
   return { folderId, type: remote ? "remote-change" : "local-change", level: "info", text: `${change.path} ${change.action}${where} in ${folderName(context, folderId, data.label)}${by}`, change };
 }
 
+function dataOf(event: SyncthingEvent): EventData {
+  return (event.data && typeof event.data === "object" ? event.data : {}) as EventData;
+}
+
 function describeDiskEvent(event: SyncthingEvent, context: EventContext): Described | null {
-  const data = (event.data && typeof event.data === "object" ? event.data : {}) as EventData;
+  const data = dataOf(event);
   if (event.type === "LocalChangeDetected") return fileChange(context, data, false);
   return event.type === "RemoteChangeDetected" ? fileChange(context, data, true) : null;
 }
@@ -354,6 +362,23 @@ const routineTypes = new Set<string>(routineActivityTypes);
 export function feedBufferKey(nodeId: string, entry: Pick<NewActivityEntry, "type" | "folderId">): string {
   if ((changeActivityTypes as readonly string[]).includes(entry.type)) return `${nodeId}:changes:${entry.folderId ?? ""}`;
   return routineTypes.has(entry.type) ? `${nodeId}:routine` : nodeId;
+}
+
+/**
+ * One entry counting the changes a full poll skipped, or null: Syncthing answers the newest `limit` changes after `since`, so a gap
+ * between `since` and the first ID answered was never listed.
+ * @implNote The skipped changes' folders are unknown; the entry names the answer's folder when every change answered is in one, as a
+ * single busy folder is what fills a poll.
+ */
+function notListedEntry(events: SyncthingEvent[], since: number, limit: number, nodeId: string, context: EventContext): NewActivityEntry | null {
+  const first = events[0];
+  const skipped = first ? first.id - since - 1 : 0;
+  if (events.length < limit || skipped <= 0) return null;
+  const folderIds = new Set(events.map((event) => changeFolderId(dataOf(event))));
+  const folderId = folderIds.size === 1 ? [...folderIds][0] || null : null;
+  const where = folderId ? ` in ${folderName(context, folderId)}` : "";
+  const at = Number.isFinite(Date.parse(first.time)) ? new Date(first.time).toISOString() : new Date().toISOString();
+  return { at, source: "syncthing", nodeId, folderId, type: "changes-not-listed", level: "info", text: `${context.nodeName}: ${skipped} changes not listed${where}` };
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -481,6 +506,8 @@ class InstanceFeed {
 
   private takeChanges(events: SyncthingEvent[]): void {
     if (events.some((event) => event.id <= this.position.changesSince)) this.position.changesSince = 0;
+    const notListed = notListedEntry(events, this.position.changesSince, this.options.changesPerPoll, this.instance.nodeId, this.context);
+    if (notListed) this.log.append(feedBufferKey(this.instance.nodeId, notListed), notListed);
     for (const event of events) {
       const entry = changeEntry(event, this.instance.nodeId, this.context);
       if (entry) this.log.append(feedBufferKey(this.instance.nodeId, entry), entry);

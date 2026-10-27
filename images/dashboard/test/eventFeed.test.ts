@@ -514,7 +514,23 @@ describe("file changes", () => {
     feedsFor(log).reconcile([feed]);
     await until(() => changes(log).length > 0, "the burst");
     await until(() => fake.diskQueries.some((query) => query.since === 10), "a poll after the burst");
-    assert.deepEqual(changes(log).map((entry) => entry.change?.path), ["file9", "file8", "file7", "file6"]);
+    assert.deepEqual(changes(log).map((entry) => entry.change?.path ?? entry.text), ["file9", "file8", "file7", "file6", "pc: 6 changes not listed in Documents"]);
+  });
+
+  it("changes past what a poll may take are counted in one entry for their node and folder, and a full poll without a gap adds none", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    fake.emitDisk(...Array.from({ length: 4 }, (_, index) => diskChange("LocalChangeDetected", `first${index}`, pcShort)));
+    feedsFor(log).reconcile([feed]);
+    await until(() => fake.diskQueries.some((query) => query.since === 4), "a poll after the full first answer");
+    assert.equal(changes(log).length, 4, "a full answer that follows the cursor leaves nothing out");
+    fake.emitDisk(...Array.from({ length: 7 }, (_, index) => diskChange("RemoteChangeDetected", `second${index}`, arrayShort, "dashboard-test-a")));
+    await until(() => fake.diskQueries.some((query) => query.since === 11), "a poll after the second burst");
+    const [note] = changes(log, { folder: "dashboard-test-a" }).filter((entry) => !entry.change);
+    assert.equal(note.text, "pc: 3 changes not listed in dashboard-test-a");
+    assert.equal(note.nodeId, "pc");
+    assert.equal(note.folderId, "dashboard-test-a");
+    assert.equal(changes(log).filter((entry) => !entry.change).length, 1);
   });
 
   it("a busy folder's changes do not push another folder's out", async () => {

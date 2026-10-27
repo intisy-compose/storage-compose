@@ -365,9 +365,10 @@ export interface FileChange {
   device: string;
 }
 
-export const changeActivityTypes = ["local-change", "remote-change"] as const;
+/** `changes-not-listed` counts the changes a poll of `/rest/events/disk` had no room for: `pc: 6 changes not listed in Documents`. */
+export const changeActivityTypes = ["local-change", "remote-change", "changes-not-listed"] as const;
 
-/** The `type` that stands for both `changeActivityTypes`. */
+/** The `type` that stands for every one of `changeActivityTypes`. */
 export const changesActivityType = "changes";
 
 /** Scans and file changes, which a busy folder produces every few seconds; `routine=false` leaves them out. */
