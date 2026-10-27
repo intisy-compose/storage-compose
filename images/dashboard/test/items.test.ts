@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
-import type { FailedItem, ItemsPage, NeedItem, RemoteNeedPage } from "../src/api/types.js";
+import { overrideLossText, revertLossText } from "../src/api/localChangesText.js";
+import type { FailedItem, ItemsPage, LocalChangedPage, LocalChangesDone, NeedItem, RemoteNeedPage } from "../src/api/types.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
-import { requestHandler } from "../src/routes.js";
+import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
 import { forwardBudgetsMs, itemRoutes } from "../src/routes/items.js";
+import { localChangesRoutes } from "../src/routes/localChanges.js";
+import { reshownForwardedError, shownSyncthingError } from "../src/shownSyncthingError.js";
 import { SyncthingClient, listTimeoutMs } from "../src/syncthing.js";
 import { hasNextPage, positionText, totalText } from "../ui/src/itemPages.js";
 import { until } from "./until.js";
@@ -63,6 +66,7 @@ describe("out-of-sync items", () => {
     }
     if (url.pathname === "/rest/config/folders") return reply(response, [{ id: "documents", label: "Documents", path: "/var/syncthing/data/documents", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }, { deviceID: peerId }, { deviceID: offeredId }, { deviceID: leftId }] }]);
     if (folder !== "documents") return response.writeHead(404).end("no such folder\n");
+    if (url.pathname === "/rest/db/ignores") return reply(response, { ignore: ["*.bak"], expanded: ["*.bak", "secret/included/**"], error: null });
     if (url.pathname === "/rest/db/status") return reply(response, { needTotalItems: 918_733, needFiles: 918_000, errors: 652 });
     if (url.pathname === "/rest/db/completion") {
       const device = url.searchParams.get("device");
@@ -298,17 +302,183 @@ describe("item list pages", () => {
   });
 
   it("the total of a failed list says Syncthing could not sync them", () => {
-    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null, failed: true }, pageOf(25, 652)), "652 items Syncthing could not sync.");
+    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null, kind: "failed" }, pageOf(25, 652)), "652 items Syncthing could not sync.");
   });
 
   it("the total names the device, and a page past the count says why it is there", () => {
-    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null, failed: false }, pageOf(25, 29)), "29 items still to fetch.");
+    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null, kind: "need" }, pageOf(25, 29)), "29 items still to fetch.");
     assert.equal(
-      totalText({ page: 3, perPage: 25, deviceId: null, failed: false }, { ...pageOf(4, 29), page: 3 }),
+      totalText({ page: 3, perPage: 25, deviceId: null, kind: "need" }, { ...pageOf(4, 29), page: 3 }),
       "29 items still to fetch. This page lies past that count: Syncthing lists items it is fetching or has queued again here.",
     );
     const remote = { ...pageOf(1, 1), device: { deviceId: "PBMD2SH", name: "pc" } };
-    assert.equal(totalText({ page: 1, perPage: 25, deviceId: "PBMD2SH", failed: false }, remote), "pc still needs 1 item of this folder.");
-    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null, failed: false }, pageOf(0, null)), "How many in all could not be read.");
+    assert.equal(totalText({ page: 1, perPage: 25, deviceId: "PBMD2SH", kind: "need" }, remote), "pc still needs 1 item of this folder.");
+    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null, kind: "need" }, pageOf(0, null)), "How many in all could not be read.");
+  });
+});
+
+describe("local changes: list, revert and override", () => {
+  const asked: string[] = [];
+  const notes: WriteNote[] = [];
+  let syncthingUrl = "";
+  let dashboardUrl = "";
+  const trashcan = { type: "trashcan", params: { cleanoutDays: "0" }, cleanupIntervalS: 3600, fsPath: "" };
+  const off = { type: "", params: {}, cleanupIntervalS: 0, fsPath: "" };
+  const folders = [
+    { id: "test-ro", label: "Test RO", path: "/var/syncthing/data/test-ro", type: "receiveonly", paused: false, devices: [{ deviceID: ownId }, { deviceID: peerId }], versioning: trashcan },
+    { id: "test-so", label: "Test SO", path: "/var/syncthing/data/test-so", type: "sendonly", paused: false, devices: [{ deviceID: ownId }, { deviceID: peerId }], versioning: off },
+    { id: "test-sr", label: "Test SR", path: "/var/syncthing/data/test-sr", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }], versioning: off },
+    { id: "test-paused", label: "", path: "/var/syncthing/data/test-paused", type: "receiveonly", paused: true, devices: [{ deviceID: ownId }], versioning: off },
+  ];
+
+  const syncthing = createServer((request, response) => {
+    if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
+    const url = new URL(request.url ?? "/", "http://fake");
+    asked.push(`${request.method} ${url.pathname}${url.search}`);
+    const folderId = url.searchParams.get("folder");
+    if (url.pathname === "/rest/config/devices") return reply(response, [{ deviceID: ownId, name: "dashboard-test-peer" }, { deviceID: peerId, name: "pc" }]);
+    if (url.pathname === "/rest/config/folders") return reply(response, folders);
+    if (url.pathname.startsWith("/rest/config/folders/")) {
+      const folder = folders.find((candidate) => candidate.id === decodeURIComponent(url.pathname.split("/").at(-1) ?? ""));
+      return folder ? reply(response, folder) : reply(response, { error: "no such folder" }, 404);
+    }
+    if (url.pathname === "/rest/db/status") return reply(response, { receiveOnlyTotalItems: folderId === "test-ro" ? 2 : 0, needTotalItems: folderId === "test-so" ? 3 : 0, needFiles: 3 });
+    if (url.pathname === "/rest/db/localchanged") return reply(response, { page: 1, perpage: 50, files: [fileInfo("added-here.txt", { modifiedBy: "D7E5AAA" }), fileInfo("hello.txt", { deleted: true, modifiedBy: "D7E5AAA" })] });
+    if (url.pathname === "/rest/db/revert" || url.pathname === "/rest/db/override") return reply(response, {});
+    reply(response, { error: "not faked" }, 404);
+  });
+
+  function peer(source: LocalInstance["source"] = "registry"): LocalInstance {
+    const isArray = source === "array";
+    return { kind: "local", nodeId: isArray ? "5784" : "d7e5", name: isArray ? "private-array" : "dashboard-test-peer", client: new SyncthingClient({ url: syncthingUrl, apiKey }), root: "/var/syncthing/data", os: "linux", threshold: 0, source };
+  }
+
+  async function resolve(nodeId: string): Promise<ResolvedInstance> {
+    if (nodeId === "d7e5") return peer();
+    if (nodeId === "5784") return peer("array");
+    if (nodeId === "a1b2") return { kind: "remote", nodeId, name: "p53-data", host: "p53", dashboardUrl: "http://127.0.0.1:9" };
+    throw new RequestError(404, `no node ${nodeId}`);
+  }
+
+  const effects: WriteEffects = { invalidate: () => {}, record: (note) => void notes.push(note) };
+  const handle = requestHandler([...itemRoutes({ resolve }), ...localChangesRoutes({ resolve })], effects);
+  const dashboard = createServer((request, response) => void handle(request, response));
+
+  async function post(path: string, body?: unknown): Promise<{ status: number; body: LocalChangesDone & { error?: string } }> {
+    const response = await fetch(`${dashboardUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    return { status: response.status, body: (await response.json()) as LocalChangesDone & { error?: string } };
+  }
+
+  const writes = () => asked.filter((entry) => entry.startsWith("POST"));
+
+  before(async () => {
+    syncthingUrl = await listen(syncthing);
+    dashboardUrl = await listen(dashboard);
+  });
+
+  beforeEach(() => {
+    asked.length = 0;
+    notes.length = 0;
+  });
+
+  after(() => {
+    syncthing.close();
+    dashboard.close();
+  });
+
+  it("the local changes of a receive only folder page with syncthing's count", async () => {
+    const response = await fetch(`${dashboardUrl}/api/nodes/d7e5/folders/test-ro/local-changed?page=1&perPage=500`);
+    const page = (await response.json()) as LocalChangedPage;
+    assert.equal(response.status, 200);
+    assert.ok(asked.includes("GET /rest/db/localchanged?folder=test-ro&page=1&perpage=100"), asked.join(", "));
+    assert.equal(page.total, 2);
+    assert.equal(page.perPage, 100);
+    assert.deepEqual(page.items[1], { name: "hello.txt", size: 1024, modified: "2026-10-21T10:00:00+02:00", deleted: true, modifiedBy: "dashboard-test-peer" });
+    assert.deepEqual(writes(), []);
+  });
+
+  it("revert is refused on a send receive folder", async () => {
+    const answer = await post("/api/nodes/d7e5/folders/test-sr/revert", { confirm: "test-sr" });
+    assert.equal(answer.status, 409);
+    assert.equal(answer.body.error, "revert is only for a receive only folder; Test SR is send and receive on dashboard-test-peer");
+    assert.equal((await post("/api/nodes/d7e5/folders/test-so/revert", { confirm: "test-so" })).status, 409);
+    assert.equal((await post("/api/nodes/d7e5/folders/test-ro/override", { confirm: "test-ro" })).status, 409, "override is for send only folders");
+    assert.deepEqual(writes(), []);
+    assert.deepEqual(notes, []);
+  });
+
+  it("override needs the folder id typed", async () => {
+    for (const body of [undefined, {}, { confirm: "" }, { confirm: "Test SO" }, { confirm: " test-so" }, { confirm: "TEST-SO" }]) {
+      const answer = await post("/api/nodes/d7e5/folders/test-so/override", body);
+      assert.equal(answer.status, 400, JSON.stringify(body));
+      assert.equal(answer.body.error, "type the folder ID test-so to override the other devices' changes");
+    }
+    assert.equal((await post("/api/nodes/d7e5/folders/test-ro/revert", { confirm: "Test RO" })).status, 400);
+    assert.deepEqual(asked, [], "a missing confirmation is refused before any request to the node");
+  });
+
+  it("override with the id typed replaces the other devices' changes and enters Activity", async () => {
+    const answer = await post("/api/nodes/d7e5/folders/test-so/override", { confirm: "test-so" });
+    assert.equal(answer.status, 200);
+    assert.deepEqual(writes(), ["POST /rest/db/override?folder=test-so"]);
+    assert.deepEqual(answer.body, {
+      folderId: "test-so",
+      action: "override",
+      items: 3,
+      text: "dashboard-test-peer: overrode 3 items other devices changed in folder Test SO with dashboard-test-peer's versions; versioning off on dashboard-test-peer",
+    });
+    assert.deepEqual(notes.map((note) => [note.folderId, note.text]), [["test-so", answer.body.text]]);
+  });
+
+  it("revert with the id typed deletes or replaces the local changes and names the versioning", async () => {
+    const answer = await post("/api/nodes/d7e5/folders/test-ro/revert", { confirm: "test-ro" });
+    assert.equal(answer.status, 200);
+    assert.deepEqual(writes(), ["POST /rest/db/revert?folder=test-ro"]);
+    assert.equal(answer.body.items, 2);
+    assert.match(answer.body.text, /^dashboard-test-peer: reverted 2 items changed here in folder Test RO, deleted or replaced by the other devices' versions; versioning trash can/);
+    assert.equal(notes.length, 1);
+  });
+
+  it("on an array the typed id goes through the array guard first, and a paused folder or another host's node is refused", async () => {
+    const array = await post("/api/nodes/5784/folders/test-ro/revert", { confirm: "Test RO" });
+    assert.equal(array.status, 400);
+    assert.equal(array.body.error, "type the folder ID test-ro to revert its local changes on private-array, an array");
+    assert.deepEqual(asked, []);
+    assert.equal((await post("/api/nodes/a1b2/folders/test-ro/revert", { confirm: "test-ro" })).body.error, "act on p53's dashboard");
+    const paused = await post("/api/nodes/d7e5/folders/test-paused/revert", { confirm: "test-paused" });
+    assert.equal(paused.status, 409);
+    assert.equal(paused.body.error, "test-paused is paused on dashboard-test-peer; resume it first");
+    assert.equal((await post("/api/nodes/d7e5/folders/nosuch/revert", { confirm: "nosuch" })).status, 404);
+    assert.deepEqual(writes(), []);
+    assert.deepEqual(notes, []);
+  });
+});
+
+describe("the words of a revert or override", () => {
+  const staggered = { type: "staggered" as const, params: { maxAge: "31536000" }, cleanupIntervalS: 3600, fsPath: "" };
+  const off = { type: "" as const, params: {}, cleanupIntervalS: 0, fsPath: "" };
+
+  it("say how many items are lost and whether versioning keeps them", () => {
+    assert.deepEqual(revertLossText("d7e5", "Test A", 2, off), [
+      "2 items changed on d7e5 will be lost: a file added here is deleted, and a file changed or deleted here is replaced by the version the other devices have.",
+      "Versioning is off for Test A on d7e5, so what is deleted or replaced cannot be restored.",
+    ]);
+    assert.match(revertLossText("d7e5", "Test A", 1, staggered)[1], /^Versioning is on for Test A on d7e5 \(staggered, versions kept up to 365 days/);
+    assert.match(overrideLossText("d7e5", "Test B", null, off)[0], /^an unknown number of items that other devices changed will be lost/);
+    assert.match(overrideLossText("d7e5", "Test B", 1, staggered)[1], /only if its own copy of Test B has versioning on; versioning on d7e5 \(staggered/);
+  });
+});
+
+describe("syncthing's error text, shown", () => {
+  it("passes on nothing from an included file, with one policy for ignores and failed items", () => {
+    const lock = "open x.lock: permission denied";
+    assert.equal(shownSyncthingError(lock, ["*.tmp"]), lock);
+    assert.equal(shownSyncthingError(lock, ["*.tmp", "#include more.stignore"]), "Syncthing cannot read an included file", "in a folder with an include, an unrecognised shape is replaced whole");
+    assert.equal(shownSyncthingError(lock, null), "Syncthing cannot read an included file", "an unreadable .stignore counts as one with an include");
+    assert.equal(shownSyncthingError('invalid pattern "*.tmp[" in ignore file', ["*.tmp["]), 'invalid pattern "*.tmp[" in ignore file', "the folder's own pattern may be shown");
+    assert.equal(shownSyncthingError('invalid pattern "secret/**" in ignore file', ["*.tmp[", "#include more.stignore"]), "invalid pattern in an included file");
+    assert.equal(shownSyncthingError("failed to read #include ../x", []), "Syncthing cannot read an included file");
+    assert.equal(reshownForwardedError('invalid pattern "a["'), "invalid pattern in an included file");
+    assert.equal(reshownForwardedError(lock), lock);
   });
 });

@@ -965,6 +965,25 @@ export interface RemoteNeedPage extends ItemsPage<FolderItem> {
   device: FolderPeer;
 }
 
+/** `GET /api/nodes/<nodeId>/folders/<folderId>/local-changed?page=&perPage=`: what was changed on the node itself in a receive only folder; `total` is Syncthing's count. */
+export type LocalChangedPage = ItemsPage<FolderItem>;
+
+/**
+ * `POST /api/nodes/<nodeId>/folders/<folderId>/revert` (receive only) and `.../override` (send only) take the folder ID typed exactly as `confirm`.
+ * Revert deletes or replaces what was changed on the node; override replaces what other devices changed with the node's versions.
+ */
+export interface LocalChangesBody {
+  confirm: string;
+}
+
+/** What a revert or override did; `items` is Syncthing's count just before it, null when it could not be read. */
+export interface LocalChangesDone {
+  folderId: string;
+  action: "revert" | "override";
+  items: number | null;
+  text: string;
+}
+
 /** `GET /api/folders/<folderId>`; `settings` is keyed by node ID. */
 export interface FolderDetailResponse {
   summary: FolderSummary;

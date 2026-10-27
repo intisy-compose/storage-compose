@@ -23,9 +23,10 @@ export function positionText(list: Pick<ItemListState, "page" | "perPage" | "loa
   return pages !== null && list.page <= pages ? `Page ${formatCount(list.page)} of ${formatCount(pages)}` : `Page ${formatCount(list.page)}`;
 }
 
-export function totalText(list: Pick<ItemListState, "page" | "perPage" | "deviceId" | "failed">, page: ShownPage): string {
+export function totalText(list: Pick<ItemListState, "page" | "perPage" | "deviceId" | "kind">, page: ShownPage): string {
   if (page.total === null) return "How many in all could not be read.";
-  if (list.failed) return `${plural(page.total, "item")} Syncthing could not sync.`;
+  if (list.kind === "failed") return `${plural(page.total, "item")} Syncthing could not sync.`;
+  if (list.kind === "local-changed") return `${plural(page.total, "item")} changed here, which a revert deletes or replaces.`;
   const device = list.deviceId === null ? null : (page as RemoteNeedPage).device;
   const total = device ? `${device.name} still needs ${plural(page.total, "item")} of this folder.` : `${plural(page.total, "item")} still to fetch.`;
   const pages = pageCount(page.total, list.perPage);

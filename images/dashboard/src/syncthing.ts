@@ -150,8 +150,9 @@ export interface ErrorsPage {
   errors: { path: string; error: string }[] | null;
 }
 
-export interface LocalChangedPage {
-  files: { name: string }[] | null;
+/** `/rest/db/localchanged`: one page of what a receive only folder has changed locally. */
+export interface LocalChangedAnswer {
+  files: IndexItem[] | null;
 }
 
 /** @implNote Item lists of a folder with 900,000 items take far longer than the 4 s the rest of the API gets. */
@@ -316,7 +317,7 @@ export class SyncthingClient {
     return this.request("GET", `/folder/errors?${pageQuery(folderId, page, perPage)}`, undefined, listTimeoutMs);
   }
 
-  localChangedPage(folderId: string, page: number, perPage: number): Promise<LocalChangedPage> {
+  localChangedPage(folderId: string, page: number, perPage: number): Promise<LocalChangedAnswer> {
     return this.request("GET", `/db/localchanged?${pageQuery(folderId, page, perPage)}`, undefined, listTimeoutMs);
   }
 

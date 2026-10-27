@@ -154,16 +154,23 @@ export interface FolderActionState {
   removeOpen: boolean;
   /** The folder's ID as typed to confirm the removal. */
   confirm: string;
+  /** The revert or override form is open. */
+  discardOpen: boolean;
+  /** The folder's ID as typed to confirm a revert or override. */
+  discardConfirm: string;
   result: Notice | null;
 }
+
+/** What an item list lists: what is out of sync, the failed items, or what was changed on a receive only node. */
+export type ItemListKind = "need" | "failed" | "local-changed";
 
 /** Which item list is open: what a node still has to fetch of a folder, or with `deviceId` what that device still needs of it. */
 export interface ItemListTarget {
   nodeId: string;
   folderId: string;
+  /** Set only for a need list, naming the device whose need is listed. */
   deviceId: string | null;
-  /** The folder's failed items instead of what is out of sync; `deviceId` is null then. */
-  failed: boolean;
+  kind: ItemListKind;
 }
 
 /** The one open item list and the page it shows; it keeps its last answer until the person pages or reads it again. */

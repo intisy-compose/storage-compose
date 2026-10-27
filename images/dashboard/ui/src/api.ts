@@ -54,6 +54,9 @@ export type {
   InstanceGui,
   InstanceOptions,
   ItemsPage,
+  LocalChangedPage,
+  LocalChangesBody,
+  LocalChangesDone,
   JoinEntry,
   MemberSmart,
   NearbyDevice,
@@ -99,8 +102,9 @@ export type {
   WarningKind,
   WarningLevel,
 } from "../../src/api/types.js";
+import type { LocalChangesAction } from "../../src/api/localChangesText.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
@@ -109,6 +113,7 @@ export { changedFields } from "../../src/syncthingConfig.js";
 export { ignoreLinesOf, ignoreLinesProblem } from "../../src/api/ignorePatterns.js";
 export { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, isKeptBySyncthing, offeredVersioningTypes, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versioningWords, versionsPathLabel } from "../../src/api/versioningText.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
+export { type LocalChangesAction, localChangesFolderType, overrideLossText, revertLossText } from "../../src/api/localChangesText.js";
 
 export interface ActionResult {
   ok: boolean;
@@ -335,6 +340,12 @@ export function removeFolder(nodeId: string, folderId: string, confirm: string):
   return sendWrite(folderApiPath(nodeId, folderId), "DELETE", body);
 }
 
+/** Reverts a receive only folder's local changes, or overrides what other devices changed in a send only one; `confirm` is the folder ID, typed. */
+export function discardChanges(nodeId: string, folderId: string, action: LocalChangesAction, confirm: string): Promise<SaveResult<LocalChangesDone>> {
+  const body: LocalChangesBody = { confirm };
+  return sendWrite(folderApiPath(nodeId, folderId, `/${action}`), "POST", body);
+}
+
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {
   return getJson(`api/folders/${encodeURIComponent(folderId)}`);
 }
@@ -364,6 +375,11 @@ export function fetchNeedItems(nodeId: string, folderId: string, page: number, p
 /** One page of the folder's failed items on the node. */
 export function fetchFailedItems(nodeId: string, folderId: string, page: number, perPage: number): Promise<ReadResult<FailedPage>> {
   return readJson(`${folderApiPath(nodeId, folderId, "/errors")}?${pageQuery(page, perPage)}`);
+}
+
+/** One page of what was changed on the node itself in a receive only folder. */
+export function fetchLocalChanged(nodeId: string, folderId: string, page: number, perPage: number): Promise<ReadResult<LocalChangedPage>> {
+  return readJson(`${folderApiPath(nodeId, folderId, "/local-changed")}?${pageQuery(page, perPage)}`);
 }
 
 /** One page of what `deviceId` still needs of the node's folder. */

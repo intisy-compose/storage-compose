@@ -1,10 +1,11 @@
 import { deviceDisplayName } from "../api/deviceText.js";
-import { type FailedItem, type FailedPage, type FolderItem, type FolderPeer, type ItemsPage, type NeedItem, type NeedStage, type RemoteNeedPage, defaultItemsPerPage, maxItemsPerPage } from "../api/types.js";
+import { type FailedItem, type FailedPage, type FolderItem, type FolderPeer, type ItemsPage, type LocalChangedPage, type NeedItem, type NeedStage, type RemoteNeedPage, defaultItemsPerPage, maxItemsPerPage } from "../api/types.js";
 import { errorTotalOf, needTotalOf } from "../folderLists.js";
 import { RequestError, sendJson } from "../http.js";
 import { type LocalInstance, type RemoteInstance, type ResolvedInstance, callSyncthing, forwardRead, forwardedListTimeoutMs, resolveInstance } from "../instanceResolver.js";
 import type { Route } from "../routes.js";
 import { SharedRead } from "../sharedRead.js";
+import { reshownForwardedError, shownSyncthingError } from "../shownSyncthingError.js";
 import { type Completion, type IndexItem, type SyncthingClient, type SyncthingDeviceConfig, type SyncthingFolderConfig, listTimeoutMs } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
 
@@ -64,24 +65,31 @@ async function localNeed(instance: LocalInstance, folderId: string, request: Pag
   });
 }
 
-const includeMention = /#include/i;
-const quotedPattern = /invalid pattern "(?:[^"\\]|\\.)*"(?: in ignore file)?/g;
-
-/**
- * Syncthing's error text for a failed item, as given.
- * @implNote Nothing from an included ignore file is passed on: a pattern Syncthing quotes from one is replaced by words, and an error naming an include is replaced whole.
- */
-export function shownFailure(error: string): string {
-  if (includeMention.test(error)) return "Syncthing cannot read an included file";
-  return error.replace(quotedPattern, "invalid pattern in an included file");
+/** The folder's own `.stignore` lines, null when they cannot be read, which the error redaction treats as a file with an `#include`. */
+async function ownIgnoreLines(client: SyncthingClient, folderId: string): Promise<string[] | null> {
+  try {
+    const answer = await client.request<{ ignore?: string[] | null }>("GET", `/db/ignores?folder=${encodeURIComponent(folderId)}`);
+    return answer?.ignore ?? [];
+  } catch {
+    return null;
+  }
 }
 
 async function localErrors(instance: LocalInstance, folderId: string, request: PageRequest): Promise<FailedPage> {
   return callSyncthing(instance, async (client) => {
     await folderContext(instance, client, folderId);
-    const [answer, status] = await Promise.all([client.errorsPage(folderId, request.page, request.perPage), client.folderStatus(folderId).catch(() => null)]);
-    const items = (answer.errors ?? []).map((item): FailedItem => ({ path: item.path, error: shownFailure(item.error) }));
+    const [answer, status, ownLines] = await Promise.all([client.errorsPage(folderId, request.page, request.perPage), client.folderStatus(folderId).catch(() => null), ownIgnoreLines(client, folderId)]);
+    const items = (answer.errors ?? []).map((item): FailedItem => ({ path: item.path, error: shownSyncthingError(item.error, ownLines) }));
     return { items, page: request.page, perPage: request.perPage, total: status ? errorTotalOf(status) : null };
+  });
+}
+
+async function localChanged(instance: LocalInstance, folderId: string, request: PageRequest): Promise<LocalChangedPage> {
+  return callSyncthing(instance, async (client) => {
+    const { devices } = await folderContext(instance, client, folderId);
+    const [answer, status] = await Promise.all([client.localChangedPage(folderId, request.page, request.perPage), client.folderStatus(folderId).catch(() => null)]);
+    const items = (answer.files ?? []).map((item) => folderItem(item, devices));
+    return { items, page: request.page, perPage: request.perPage, total: typeof status?.receiveOnlyTotalItems === "number" ? status.receiveOnlyTotalItems : null };
   });
 }
 
@@ -151,7 +159,7 @@ function forwardedPage<T>(answer: unknown, request: PageRequest, item: (value: u
 
 function forwardedFailedItem(value: unknown): FailedItem {
   const fields = fieldsOf(value);
-  return { path: String(fields.path ?? ""), error: shownFailure(String(fields.error ?? "")) };
+  return { path: String(fields.path ?? ""), error: reshownForwardedError(String(fields.error ?? "")) };
 }
 
 function forwardedDevice(answer: unknown, deviceId: string): FolderPeer {
@@ -185,6 +193,13 @@ export async function failedItems(instance: ResolvedInstance, folderId: string, 
   if (instance.kind === "local") return localErrors(instance, folderId, request);
   const answer = await forwardRead(instance, listPath(instance, folderId, "errors", pageQuery(request)), forwardBudgetsMs.need);
   return forwardedPage(answer, request, forwardedFailedItem);
+}
+
+/** What was changed on the node itself in a receive only folder, one page of it, which a revert would delete or replace. */
+export async function localChangedItems(instance: ResolvedInstance, folderId: string, request: PageRequest): Promise<LocalChangedPage> {
+  if (instance.kind === "local") return localChanged(instance, folderId, request);
+  const answer = await forwardRead(instance, listPath(instance, folderId, "local-changed", pageQuery(request)), forwardBudgetsMs.need);
+  return forwardedPage(answer, request, forwardedItem);
 }
 
 /** What `deviceId` still needs of the node's folder, one page of it; a device the folder is not shared with is refused, naming it. */
@@ -250,6 +265,18 @@ export function itemRoutes(sources: ItemRouteSources = liveSources): Route[] {
         const instance = await resolveFor(sources, url, nodeId);
         const key = ["errors", nodeId, folderId, request.page, request.perPage].join("\u0000");
         sendJson(response, 200, await shared(key, () => failedItems(instance, folderId, request)));
+      },
+    },
+    {
+      method: "GET",
+      pattern: /^\/api\/nodes\/([^/]+)\/folders\/([^/]+)\/local-changed$/,
+      handle: async ({ response, url, params: [nodeSegment, folderSegment] }) => {
+        const nodeId = decodedSegment(nodeSegment, "node ID");
+        const folderId = decodedSegment(folderSegment, "folder ID");
+        const request = pageRequestOf(url);
+        const instance = await resolveFor(sources, url, nodeId);
+        const key = ["local-changed", nodeId, folderId, request.page, request.perPage].join("\u0000");
+        sendJson(response, 200, await shared(key, () => localChangedItems(instance, folderId, request)));
       },
     },
     {

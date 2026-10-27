@@ -1,4 +1,4 @@
-import { type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type NeedStage, defaultItemsPerPage, fetchFailedItems, fetchNeedItems, fetchRemoteNeed, maxItemsPerPage } from "./api.js";
+import { type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type NeedStage, defaultItemsPerPage, fetchFailedItems, fetchLocalChanged, fetchNeedItems, fetchRemoteNeed, maxItemsPerPage } from "./api.js";
 import { button, element } from "./dom.js";
 import { formatBytes, formatDate } from "./format.js";
 import { hasNextPage, positionText, totalText } from "./itemPages.js";
@@ -11,11 +11,12 @@ const stageTexts: Record<NeedStage, string> = { progress: "being fetched", queue
 
 export function isItemListOpen(target: ItemListTarget): boolean {
   const list = appState.itemList;
-  return list !== null && list.nodeId === target.nodeId && list.folderId === target.folderId && list.deviceId === target.deviceId && list.failed === target.failed;
+  return list !== null && list.nodeId === target.nodeId && list.folderId === target.folderId && list.deviceId === target.deviceId && list.kind === target.kind;
 }
 
 function readPage(list: ItemListState) {
-  if (list.failed) return fetchFailedItems(list.nodeId, list.folderId, list.page, list.perPage);
+  if (list.kind === "failed") return fetchFailedItems(list.nodeId, list.folderId, list.page, list.perPage);
+  if (list.kind === "local-changed") return fetchLocalChanged(list.nodeId, list.folderId, list.page, list.perPage);
   if (list.deviceId === null) return fetchNeedItems(list.nodeId, list.folderId, list.page, list.perPage);
   return fetchRemoteNeed(list.nodeId, list.folderId, list.deviceId, list.page, list.perPage);
 }
@@ -42,7 +43,7 @@ export function openItemList(target: ItemListTarget): void {
 export function openFailedListFromLocation(): void {
   const nodeId = failedItemsNodeInLocation();
   if (!nodeId || !appState.selectedFolderId) return;
-  const target = { nodeId, folderId: appState.selectedFolderId, deviceId: null, failed: true };
+  const target: ItemListTarget = { nodeId, folderId: appState.selectedFolderId, deviceId: null, kind: "failed" };
   if (!isItemListOpen(target)) openItemList(target);
 }
 
@@ -119,7 +120,8 @@ function readingText(): string {
 
 function emptyText(list: ItemListState): string {
   if (list.page > 1) return "No items on this page.";
-  return list.failed ? "No failed items." : "Nothing is out of sync.";
+  if (list.kind === "failed") return "No failed items.";
+  return list.kind === "local-changed" ? "Nothing was changed here." : "Nothing is out of sync.";
 }
 
 function listBody(list: ItemListState): HTMLElement[] {

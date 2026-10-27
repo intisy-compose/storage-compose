@@ -6,7 +6,7 @@ import { folderActions, orphanedActionResults } from "./folderActions.js";
 import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./folderCondition.js";
 import { icon } from "./icons.js";
 import { isItemListOpen, itemListPanel, toggleItemList } from "./itemList.js";
-import { appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
+import { type ItemListKind, type ItemListTarget, appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
 
 function onOff(value: boolean): string {
   return value ? "on" : "off";
@@ -31,37 +31,40 @@ function outOfSyncText(copy: FolderCopy): string {
   return `${plural(copy.needItems, "item")}, ${formatBytes(copy.needBytes)} (${formatPercent(normaliseCompletion(copy.completion))} done)`;
 }
 
-/** The count opens the list of what the copy's node still has to fetch. */
-function outOfSyncValue(copy: FolderCopy): HTMLElement | string {
-  const text = outOfSyncText(copy);
-  if (!copy.needItems) return text;
-  const target = { nodeId: copy.nodeId, folderId: copy.id, deviceId: null, failed: false };
-  const control = button(text, () => toggleItemList(target), "link-button");
-  control.title = isItemListOpen(target) ? "Close the list" : `List what ${copy.nodeName} still has to fetch`;
+function copyList(copy: FolderCopy, kind: ItemListKind): ItemListTarget {
+  return { nodeId: copy.nodeId, folderId: copy.id, deviceId: null, kind };
+}
+
+/** A count that opens one of the copy's item lists, or closes it when it is open. */
+function listToggle(copy: FolderCopy, kind: ItemListKind, text: string, opensWhat: string, className = "link-button"): HTMLButtonElement {
+  const target = copyList(copy, kind);
+  const control = button(text, () => toggleItemList(target), className);
+  control.title = isItemListOpen(target) ? "Close the list" : opensWhat;
   control.setAttribute("aria-expanded", String(isItemListOpen(target)));
   return control;
 }
 
-function needPanel(copy: FolderCopy): HTMLElement | null {
+function listPanel(copy: FolderCopy, kind: ItemListKind, title: string): HTMLElement | null {
   const list = appState.itemList;
-  if (!list || !isItemListOpen({ nodeId: copy.nodeId, folderId: copy.id, deviceId: null, failed: false })) return null;
-  return itemListPanel(list, `What ${copy.nodeName} still has to fetch`);
+  return list && isItemListOpen(copyList(copy, kind)) ? itemListPanel(list, title) : null;
+}
+
+/** The count opens the list of what the copy's node still has to fetch. */
+function outOfSyncValue(copy: FolderCopy): HTMLElement | string {
+  const text = outOfSyncText(copy);
+  return copy.needItems ? listToggle(copy, "need", text, `List what ${copy.nodeName} still has to fetch`) : text;
 }
 
 /** The count opens the list of the copy's failed items, each with Syncthing's error text. */
 function failedValue(copy: FolderCopy): HTMLElement | string {
   if (!copy.errors) return "none";
-  const target = { nodeId: copy.nodeId, folderId: copy.id, deviceId: null, failed: true };
-  const control = button(plural(copy.errors, "item"), () => toggleItemList(target), "link-button tone-text-bad");
-  control.title = isItemListOpen(target) ? "Close the list" : `List what Syncthing could not sync on ${copy.nodeName}`;
-  control.setAttribute("aria-expanded", String(isItemListOpen(target)));
-  return control;
+  return listToggle(copy, "failed", plural(copy.errors, "item"), `List what Syncthing could not sync on ${copy.nodeName}`, "link-button tone-text-bad");
 }
 
-function failedPanel(copy: FolderCopy): HTMLElement | null {
-  const list = appState.itemList;
-  if (!list || !isItemListOpen({ nodeId: copy.nodeId, folderId: copy.id, deviceId: null, failed: true })) return null;
-  return itemListPanel(list, `Failed items on ${copy.nodeName}`);
+/** The count opens the list of what was changed on the copy's node, which a revert deletes or replaces. */
+function changedHereValue(copy: FolderCopy): HTMLElement | string {
+  if (!copy.localChanged) return "nothing";
+  return listToggle(copy, "local-changed", plural(copy.localChanged, "item"), `List what was changed on ${copy.nodeName}`, "link-button tone-text-warn");
 }
 
 function lastFileText(copy: FolderCopy): string {
@@ -79,7 +82,7 @@ function copyCard(copy: FolderCopy): HTMLElement {
     ["Out of sync", outOfSyncValue(copy)],
     ["Failed items", failedValue(copy)],
   ];
-  if (copy.type === "receiveonly") rows.push(["Changed here", plural(copy.localChanged, "item")]);
+  if (copy.type === "receiveonly") rows.push(["Changed here", changedHereValue(copy)]);
   rows.push(
     ["Last scan", formatDate(copy.lastScan)],
     ["Last file", lastFileText(copy)],
@@ -95,8 +98,9 @@ function copyCard(copy: FolderCopy): HTMLElement {
       copy.local ? null : element("small", {}, ` on ${copy.host}`),
     ),
     keyValueList(rows),
-    needPanel(copy),
-    failedPanel(copy),
+    listPanel(copy, "need", `What ${copy.nodeName} still has to fetch`),
+    listPanel(copy, "failed", `Failed items on ${copy.nodeName}`),
+    listPanel(copy, "local-changed", `Changed on ${copy.nodeName}`),
   );
 }
 

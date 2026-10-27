@@ -66,5 +66,5 @@ export function rescanAllQuestion(node: Pick<StorageNode, "name" | "folders">): 
  */
 export function isOrphanedAction(state: FolderActionState, nodeIdsWithSettings: string[]): boolean {
   if (nodeIdsWithSettings.includes(state.nodeId)) return false;
-  return !state.busy && !state.removeOpen && state.sub === "";
+  return !state.busy && !state.removeOpen && !state.discardOpen && state.sub === "";
 }

@@ -15,6 +15,7 @@ import { folderActionRoutes } from "./routes/folderActions.js";
 import { folderIgnoreRoutes } from "./routes/folderIgnores.js";
 import { folderRoutes } from "./routes/folders.js";
 import { itemRoutes } from "./routes/items.js";
+import { localChangesRoutes } from "./routes/localChanges.js";
 import { nodeFolderRoutes } from "./routes/nodeFolders.js";
 import { optionsRoutes } from "./routes/options.js";
 import { pendingRoutes } from "./routes/pending.js";
@@ -213,6 +214,7 @@ export const dashboardRoutes: AnyRoute[] = [
   ...nodeFolderRoutes(),
   ...folderIgnoreRoutes(),
   ...itemRoutes(),
+  ...localChangesRoutes(),
   ...folderActionRoutes(),
   { pattern: hostWritePattern(/^\/api\/join$/), handle: async () => joinElsewhere() },
 ];
