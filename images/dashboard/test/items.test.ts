@@ -323,6 +323,8 @@ describe("local changes: list, revert and override", () => {
   const asked: string[] = [];
   const notes: WriteNote[] = [];
   let omitNeedTotal = false;
+  let loseDiscardAnswer = false;
+  let invalidations = 0;
   let syncthingUrl = "";
   let dashboardUrl = "";
   const trashcan = { type: "trashcan", params: { cleanoutDays: "0" }, cleanupIntervalS: 3600, fsPath: "" };
@@ -350,7 +352,10 @@ describe("local changes: list, revert and override", () => {
       return reply(response, { receiveOnlyTotalItems: folderId === "test-ro" ? 2 : 0, needFiles: 3, ...needTotal });
     }
     if (url.pathname === "/rest/db/localchanged") return reply(response, { page: 1, perpage: 50, files: [fileInfo("added-here.txt", { modifiedBy: "D7E5AAA" }), fileInfo("hello.txt", { deleted: true, modifiedBy: "D7E5AAA" })] });
-    if (url.pathname === "/rest/db/revert" || url.pathname === "/rest/db/override") return reply(response, {});
+    if (url.pathname === "/rest/db/revert" || url.pathname === "/rest/db/override") {
+      if (loseDiscardAnswer) return void request.socket.destroy();
+      return reply(response, {});
+    }
     reply(response, { error: "not faked" }, 404);
   });
 
@@ -366,7 +371,7 @@ describe("local changes: list, revert and override", () => {
     throw new RequestError(404, `no node ${nodeId}`);
   }
 
-  const effects: WriteEffects = { invalidate: () => {}, record: (note) => void notes.push(note) };
+  const effects: WriteEffects = { invalidate: () => void invalidations++, record: (note) => void notes.push(note) };
   const handle = requestHandler([...itemRoutes({ resolve }), ...localChangesRoutes({ resolve })], effects);
   const dashboard = createServer((request, response) => void handle(request, response));
 
@@ -385,11 +390,30 @@ describe("local changes: list, revert and override", () => {
   beforeEach(() => {
     asked.length = 0;
     notes.length = 0;
+    invalidations = 0;
   });
 
   after(() => {
     syncthing.close();
     dashboard.close();
+  });
+
+  it("a revert or override whose answer is lost may have been done, drops the shared read and enters nothing in Activity", async () => {
+    loseDiscardAnswer = true;
+    try {
+      for (const [folderId, action, done] of [["test-ro", "revert", "reverted"], ["test-so", "override", "overridden"]] as const) {
+        const response = await fetch(`${dashboardUrl}/api/nodes/d7e5/folders/${folderId}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: folderId }) });
+        const body = (await response.json()) as { error?: string; maybeSaved?: boolean };
+        assert.equal(response.status, 503, action);
+        assert.equal(body.maybeSaved, true, action);
+        assert.equal(body.error, `dashboard-test-peer's Syncthing stopped answering during the change, so it may have been ${done}; check once dashboard-test-peer answers again`);
+      }
+    } finally {
+      loseDiscardAnswer = false;
+    }
+    assert.deepEqual(writes(), ["POST /rest/db/revert?folder=test-ro", "POST /rest/db/override?folder=test-so"]);
+    assert.equal(invalidations, 2);
+    assert.deepEqual(notes, []);
   });
 
   it("the local changes of a receive only folder page with syncthing's count", async () => {

@@ -1,15 +1,15 @@
 import { type LocalChangesAction, localChangesDoneText, localChangesFolderType } from "../api/localChangesText.js";
 import { type LocalChangesDone, folderTypeTexts } from "../api/types.js";
 import { folderSettings } from "../folderIndex.js";
-import { RequestError, readBody, sendJson } from "../http.js";
+import { RequestError, UnconfirmedWrite, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, arrayConfirmProblem, callSyncthing, requireLocal, resolveInstance } from "../instanceResolver.js";
 import type { AnyRoute, WriteNote } from "../routes.js";
 import type { FolderStatus, SyncthingFolderSettings } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
 
-const actionWords: Record<LocalChangesAction, { doing: string; guard: string }> = {
-  revert: { doing: "revert its local changes", guard: "revert the local changes" },
-  override: { doing: "override the other devices' changes", guard: "override the other devices' changes" },
+const actionWords: Record<LocalChangesAction, { doing: string; guard: string; done: string }> = {
+  revert: { doing: "revert its local changes", guard: "revert the local changes", done: "reverted" },
+  override: { doing: "override the other devices' changes", guard: "override the other devices' changes", done: "overridden" },
 };
 
 function typedConfirm(body: unknown): unknown {
@@ -44,6 +44,15 @@ function discardedCount(action: LocalChangesAction, status: FolderStatus | null)
   return typeof count === "number" ? count : null;
 }
 
+async function askToDiscard(instance: LocalInstance, folderId: string, action: LocalChangesAction): Promise<void> {
+  try {
+    await callSyncthing(instance, (client) => client.request("POST", `/db/${action}?folder=${encodeURIComponent(folderId)}`));
+  } catch (error) {
+    if (error instanceof RequestError && error.status === 503) throw new UnconfirmedWrite(instance.name, actionWords[action].done);
+    throw error;
+  }
+}
+
 export interface LocalChangesResult {
   done: LocalChangesDone;
   note: WriteNote;
@@ -52,7 +61,7 @@ export interface LocalChangesResult {
 /**
  * Reverts a receive only folder's local changes, or overrides what other devices changed in a send only folder, once its ID is typed exactly.
  * @implNote Both discard data, here or on every other device, so the typed ID is checked before the node is asked anything and the
- * folder type before Syncthing is told to act.
+ * folder type before Syncthing is told to act. A lost answer may mean Syncthing already discarded the data, so it is never a plain failure.
  */
 export async function discardChanges(instance: ResolvedInstance, folderId: string, action: LocalChangesAction, body: unknown): Promise<LocalChangesResult> {
   const local = requireLocal(instance);
@@ -60,7 +69,7 @@ export async function discardChanges(instance: ResolvedInstance, folderId: strin
   const folder = await knownFolder(local, folderId);
   requireFolderFor(action, folder, local);
   const status = await callSyncthing(local, (client) => client.folderStatus(folderId)).catch(() => null);
-  await callSyncthing(local, (client) => client.request("POST", `/db/${action}?folder=${encodeURIComponent(folderId)}`));
+  await askToDiscard(local, folderId, action);
   const items = discardedCount(action, status);
   const text = localChangesDoneText(action, local.name, folder.label || folder.id, items, folderSettings(folder).versioning);
   return { done: { folderId, action, items, text }, note: { nodeId: local.nodeId, nodeName: local.name, folderId, text } };
