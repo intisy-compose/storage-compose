@@ -159,9 +159,21 @@ describe("pause, resume, rescan and remove a folder", () => {
     for (const body of [null, [], { sub: 1 }, { folder: "x" }]) {
       await assert.rejects(rescanFolder(peer(), "dashboard-test-c", body), { status: 400 }, JSON.stringify(body));
     }
-    assert.equal(rescanSubProblem("a..b/c"), null, "a name holding two dots is no climb");
+    assert.equal(rescanSubProblem("a..b/c", "linux"), null, "a name holding two dots is no climb");
     await assert.rejects(rescanFolder(peer(), "dashboard-test-p", {}), { status: 409, message: "dashboard-test-p is paused, so Syncthing does not scan it; resume it first" });
     assert.deepEqual(writes(), []);
+  });
+
+  it("on a Windows node a subfolder whose name Windows may read as another is refused before any scan", async () => {
+    const windowsPeer: LocalInstance = { ...peer(), os: "windows", root: "F:\\" };
+    for (const sub of ["PROGRA~1/x", "photos/2024.", "photos/2024 /x", "photos:hidden", "a\\b?"]) {
+      await assert.rejects(rescanFolder(windowsPeer, "dashboard-test-c", { sub }), (error: Error & { status?: number }) => error.status === 400 && /Windows may read as another name/.test(error.message), JSON.stringify(sub));
+    }
+    assert.match(rescanSubProblem("photos/STORAG~1", "windows") ?? "", /^photos\/STORAG~1 names STORAG~1, which Windows may read as another name/);
+    assert.equal(rescanSubProblem("photos/STORAG~1", "linux"), null, "a Linux node reads the name as written");
+    assert.deepEqual(writes(), []);
+    await rescanFolder(windowsPeer, "dashboard-test-c", { sub: "photos\\2024" });
+    assert.equal(writes().length, 1);
   });
 
   it("rescan every folder sends a scan without a folder", async () => {

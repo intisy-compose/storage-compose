@@ -2,8 +2,10 @@ import { type FolderRescan, type FolderSettings, type RemoveFolderBody, type Rem
 import { folderSettings } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
+import { relativeWindowsAliasSegment, windowsAliasProblem } from "../pathGuard.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import type { SyncthingFolderSettings } from "../syncthing.js";
+import type { NodeOs } from "../treePaths.js";
 import { decodedSegment } from "./devices.js";
 
 type Folder = SyncthingFolderSettings;
@@ -52,16 +54,17 @@ export async function pauseFolder(instance: ResolvedInstance, folderId: string, 
 
 const controlCharacter = /[\u0000-\u001f\u007f-\u009f]/;
 
-/** Why `sub` is no part of a folder to rescan, or null: it must name something below the folder's path. */
-export function rescanSubProblem(sub: string): string | null {
+/** Why `sub` is no part of a folder to rescan on a node of `os`, or null: it must name something below the folder's path, as written. */
+export function rescanSubProblem(sub: string, os: NodeOs): string | null {
   if (controlCharacter.test(sub)) return "the subfolder holds a control character";
   if (/^[\\/]/.test(sub) || /^[A-Za-z]:/.test(sub)) return `${sub} is not inside the folder: give a path below the folder's own, such as photos/2024`;
   if (sub.split(/[\\/]/).some((segment) => segment === "..")) return `${sub} climbs out of the folder with ..; give a path below the folder's own`;
-  return null;
+  const alias = os === "windows" ? relativeWindowsAliasSegment(sub) : null;
+  return alias ? windowsAliasProblem(sub, alias) : null;
 }
 
 /** The part of the folder a rescan body names, or null for the whole folder; refused before any Syncthing call. */
-function rescanSub(body: unknown): string | null {
+function rescanSub(body: unknown, os: NodeOs): string | null {
   if (typeof body !== "object" || body === null || Array.isArray(body)) throw new RequestError(400, "a rescan takes nothing, or { sub } naming a part of the folder");
   const fields = body as Record<string, unknown>;
   const unknown = Object.keys(fields).find((key) => key !== "sub");
@@ -70,7 +73,7 @@ function rescanSub(body: unknown): string | null {
   if (typeof fields.sub !== "string") throw new RequestError(400, "the subfolder must be text");
   const sub = fields.sub.trim().replace(/[\\/]+$/, "");
   if (!sub) return null;
-  const problem = rescanSubProblem(sub);
+  const problem = rescanSubProblem(sub, os);
   if (problem) throw new RequestError(400, problem);
   return sub;
 }
@@ -83,7 +86,7 @@ export interface FolderRescanDone {
 /** Asks the node's Syncthing to rescan one folder now, or only `sub` of it, as Syncthing's own Rescan does. */
 export async function rescanFolder(instance: ResolvedInstance, folderId: string, body: unknown): Promise<FolderRescanDone> {
   const local = requireLocal(instance);
-  const sub = rescanSub(body);
+  const sub = rescanSub(body, local.os);
   const folder = await knownFolder(local, folderId);
   if (folder.paused) throw new RequestError(409, `${folderName(folder)} is paused, so Syncthing does not scan it; resume it first`);
   const query = new URLSearchParams({ folder: folderId, ...(sub ? { sub } : {}) });

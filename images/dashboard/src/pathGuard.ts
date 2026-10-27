@@ -16,13 +16,25 @@ export function isAbsolutePath(path: string, os: NodeOs): boolean {
   return os === "windows" ? /^[A-Za-z]:[\\/]/.test(path) : path.startsWith("/");
 }
 
+function aliasName(names: string[]): string | null {
+  return names.filter((name) => name !== "" && name !== "." && name !== "..").find((name) => /~\d/.test(name) || /[. ]$/.test(name) || /[:*?"<>|]/.test(name)) ?? null;
+}
+
 /**
  * The first name after the drive that Windows may resolve to a different name than the one written: an 8.3
  * short name (`STORAG~1`), a trailing dot or space (dropped by Windows), or a reserved character (`:` opens a stream).
  */
 export function windowsAliasSegment(path: string): string | null {
-  const names = path.split(/[\\/]/).slice(1).filter((name) => name !== "" && name !== "." && name !== "..");
-  return names.find((name) => /~\d/.test(name) || /[. ]$/.test(name) || /[:*?"<>|]/.test(name)) ?? null;
+  return aliasName(path.split(/[\\/]/).slice(1));
+}
+
+/** As `windowsAliasSegment`, for a path relative to a folder, whose first name is no drive. */
+export function relativeWindowsAliasSegment(relative: string): string | null {
+  return aliasName(relative.split(/[\\/]/));
+}
+
+export function windowsAliasProblem(path: string, alias: string): string {
+  return `${path} names ${alias}, which Windows may read as another name (a short name, a trailing dot or space, or a reserved character)`;
 }
 
 /**
@@ -63,7 +75,7 @@ function holdsOtherNode(path: string, node: NodeRoot, nodes: NodeRoot[]): NodeRo
 export function folderPathProblem(path: string, node: NodeRoot, nodes: NodeRoot[]): string | null {
   if (!path.trim()) return "the folder path is missing";
   const alias = node.os === "windows" && isAbsolutePath(path, node.os) ? windowsAliasSegment(path) : null;
-  if (alias) return `${path} names ${alias}, which Windows may read as another name (a short name, a trailing dot or space, or a reserved character)`;
+  if (alias) return windowsAliasProblem(path, alias);
   if (!isInsideRoot(path, node.root, node.os)) return `${path} is outside ${node.name}'s root ${node.root}`;
   const inside = isInsideOtherNode(path, node, nodes);
   if (inside) return `${path} is inside ${inside.name}'s root ${inside.root}`;
