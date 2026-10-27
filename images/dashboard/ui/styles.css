@@ -497,6 +497,16 @@ a.button { display: inline-block; text-decoration: none; color: inherit; }
 .defaults-section[open] > summary { margin-bottom: 14px; }
 .defaults-section > .options-form + .options-form { margin-top: 18px; }
 .ignored-section > p { margin: 8px 0 4px; }
+.advanced-form { display: flex; flex-direction: column; gap: 10px; }
+.advanced-form > p { margin: 0; font-size: 13px; }
+.advanced-text {
+  padding: 8px 10px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--surface);
+  font: 12.5px/1.45 var(--mono); color: inherit; resize: vertical; width: 100%; min-width: 0; white-space: pre; overflow-x: auto;
+}
+.advanced-text:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.detail-inner > .advanced-section { margin: 4px 0 18px; }
+.restart-form { display: flex; flex-direction: column; gap: 10px; }
+.restart-form .notice { margin: 0; }
 .ignored-list { margin: 0; padding: 0; list-style: none; }
 .ignored-entry { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--line); }
 .ignored-entry > button { flex: none; white-space: nowrap; }

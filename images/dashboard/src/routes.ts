@@ -9,6 +9,7 @@ import { fileJoinRecords } from "./join.js";
 import { invalidateLocalNodes, nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
 import { activityRoutes, nodeLogRoutes } from "./routes/activity.js";
+import { advancedConfigRoutes } from "./routes/advancedConfig.js";
 import { deviceIndexRoutes } from "./routes/deviceIndex.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { folderActionRoutes } from "./routes/folderActions.js";
@@ -217,6 +218,7 @@ export const dashboardRoutes: AnyRoute[] = [
   ...pendingFolderRoutes(),
   ...optionsRoutes(),
   ...nodeSettingsRoutes(),
+  ...advancedConfigRoutes(),
   ...deviceRoutes(),
   ...nodeFolderRoutes(),
   ...folderIgnoreRoutes(),

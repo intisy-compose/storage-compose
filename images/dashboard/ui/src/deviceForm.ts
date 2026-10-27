@@ -16,6 +16,7 @@ import {
 } from "./api.js";
 import { arrayAutomationText, arraySharesElsewhere } from "./arrayConfirm.js";
 import { button, element, section } from "./dom.js";
+import { advancedEditor } from "./advancedEditor.js";
 import { controlId, registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
@@ -374,13 +375,22 @@ function foldersForm(node: StorageNode, form: DeviceFormState, name: string): HT
   );
 }
 
+/** After an advanced save the form reads the device again, unless it holds a change the person made. */
+function followAdvancedSave(form: DeviceFormState): void {
+  if (form.saving || JSON.stringify(form.saved) !== JSON.stringify(form.draft)) return;
+  form.saved = null;
+  form.draft = null;
+}
+
 function deviceSections(node: StorageNode, form: DeviceFormState, name: string): HTMLElement[] {
   if (form.removed) return [section("Removed", removedBody(node, name))];
   const isOtherLocalDevice = node.local && form.saved !== null && !isOwnDevice(node, form);
+  const advanced = node.local && form.saved !== null ? [advancedEditor(node.id, { kind: "device", id: form.deviceId }, () => followAdvancedSave(form))] : [];
   return [
     section("Device ID", element("code", { className: "device-id" }, form.deviceId)),
     section("Settings", formBody(node, form)),
     ...(isOtherLocalDevice ? [section("Folders", foldersForm(node, form, name)), section("Remove device", removeForm(node, form, name))] : []),
+    ...advanced,
   ];
 }
 

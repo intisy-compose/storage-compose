@@ -162,7 +162,7 @@ async function otherNodesAddresses(instance: LocalInstance, hostNodes: HostNode[
  * Refuses a listen address on a port another node of this host lists, `default` counting as 22000.
  * @implNote The nodes share the host's ports (the gateway's namespace for container nodes), so a second node on one would fail to listen.
  */
-async function refuseTakenPorts(instance: LocalInstance, addresses: string[], hostNodes: HostNode[]): Promise<void> {
+export async function refuseTakenPorts(instance: LocalInstance, addresses: string[], hostNodes: HostNode[]): Promise<void> {
   const listed = await otherNodesAddresses(instance, hostNodes);
   for (const address of addresses) {
     const port = listenPort(address);

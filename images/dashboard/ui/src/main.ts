@@ -1,6 +1,6 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
 import type { NodesResponse } from "./api.js";
-import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderChanges, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests, savedWriteCount } from "./api.js";
+import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderChanges, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests, fetchRestartState, savedWriteCount } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
 import { loadAddDeviceForm, renderAddDeviceForm } from "./addDeviceForm.js";
@@ -265,9 +265,17 @@ async function loadNodeOptions(nodeId: string): Promise<void> {
   }
 }
 
+async function loadRestartState(nodeId: string): Promise<void> {
+  try {
+    appState.restartStates.set(nodeId, await fetchRestartState(nodeId));
+  } catch (error) {
+    appState.restartStates.set(nodeId, { error: messageOf(error) });
+  }
+}
+
 /** @implNote Waits for the nodes, as they say which nodes are this host's. */
 async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
-  const loadNode = (nodeId: string) => Promise.all([loadNodeOptions(nodeId), openIgnoredNodeIds().includes(nodeId) ? loadIgnoredLists(nodeId) : null]);
+  const loadNode = (nodeId: string) => Promise.all([loadNodeOptions(nodeId), loadRestartState(nodeId), openIgnoredNodeIds().includes(nodeId) ? loadIgnoredLists(nodeId) : null]);
   await Promise.all([loadHostSettings(), nodesLoaded.then(() => Promise.all(readableLocalNodes().map((node) => loadNode(node.id))))]);
 }
 

@@ -6,6 +6,8 @@ services:
     image: ghcr.io/syncthing/syncthing:2.1.6
     container_name: storage-dashboard-test-peer
     network_mode: "service:gateway"
+    # Syncthing runs with --no-restart, so a restart from the dashboard exits it; Docker starts it again, as the nodes service does.
+    restart: on-failure
     entrypoint: ["/bin/sh", "/registry-entry.sh"]
     environment:
       STGUIADDRESS: 0.0.0.0:8389

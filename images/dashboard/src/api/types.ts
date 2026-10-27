@@ -694,6 +694,35 @@ export interface GeneralEditResponse {
   problem: string | null;
 }
 
+/** The Syncthing objects the advanced editor shows whole: a node's options, one of its folders or one of its devices. */
+export type AdvancedTarget = { kind: "options" } | { kind: "folder"; id: string } | { kind: "device"; id: string };
+
+/**
+ * `GET /api/nodes/<nodeId>/advanced/options|folders/<id>|devices/<id>`: the object as Syncthing has it, without any API key or password.
+ * Its `PATCH` takes only the keys the person changed and answers the same.
+ */
+export interface AdvancedConfig {
+  config: Record<string, unknown>;
+  /** Whether the node's Syncthing needs a restart before a saved change takes effect. */
+  restartRequired: boolean;
+}
+
+/** `GET /api/nodes/<nodeId>/restart-required`. */
+export interface NodeRestartState {
+  restartRequired: boolean;
+  /** Whether a restart needs the node's name typed, as for an array or the host's own native Syncthing. */
+  confirmRequired: boolean;
+}
+
+/** `POST /api/nodes/<nodeId>/restart`: `confirm` is the node's name, needed where `NodeRestartState.confirmRequired`. */
+export interface RestartBody {
+  confirm?: string;
+}
+
+export interface RestartAnswer {
+  restarting: true;
+}
+
 /** The folder settings a node's new folders start with, as Syncthing's Default Folder holds them; path, label and sharing are each folder's own. */
 export const folderDefaultKeys = ["type", "rescanIntervalS", "fsWatcherEnabled", "fsWatcherDelayS", "ignorePerms", "order", "minDiskFree", "maxConflicts", "syncOwnership", "syncXattrs", "versioning"] as const;
 export type FolderDefaultKey = (typeof folderDefaultKeys)[number];

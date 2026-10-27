@@ -6,7 +6,7 @@ import { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, 
 type SyncthingObject = Record<string, unknown>;
 
 /** @implNote Matches `encryptionPassword` too, the folder secret a device's share is encrypted with. */
-function isSecretKey(key: string): boolean {
+export function isSecretKey(key: string): boolean {
   const lower = key.toLowerCase();
   return lower === "apikey" || lower.endsWith("password");
 }

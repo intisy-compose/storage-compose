@@ -17,6 +17,7 @@ import {
   pullOrderTexts,
   saveFolderSettings,
 } from "./api.js";
+import { advancedEditor } from "./advancedEditor.js";
 import { arrayConfirmField, isArrayConfirmed } from "./arrayConfirm.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
@@ -366,7 +367,15 @@ function formHeader(form: EditFolderFormState, detail: FolderDetailResponse, cop
   );
 }
 
+/** After an advanced save the form fills again from the next folder read, unless it holds a change the person made. */
+function followAdvancedSave(form: EditFolderFormState): void {
+  if (form.saving || JSON.stringify(form.saved) !== JSON.stringify(form.draft)) return;
+  form.saved = null;
+  form.draft = null;
+}
+
 export function renderEditFolderForm(form: EditFolderFormState, detail: FolderDetailResponse): HTMLElement {
   const copy = copyOf(detail, form.nodeId);
-  return element("div", { className: "detail-inner" }, formHeader(form, detail, copy), ...formBody(form, copy));
+  const advanced = copy?.local ? advancedEditor(form.nodeId, { kind: "folder", id: form.folderId }, () => followAdvancedSave(form)) : null;
+  return element("div", { className: "detail-inner" }, formHeader(form, detail, copy), ...formBody(form, copy), advanced);
 }

@@ -1,4 +1,5 @@
 import type { HostSettings, InstanceGui, InstanceOptions, NodeOptionsResponse, PriorityBand, StorageNode } from "./api.js";
+import { advancedEditor } from "./advancedEditor.js";
 import { element, keyValueList } from "./dom.js";
 import { priorityUnsetText } from "./folderCondition.js";
 import { isNotConnected } from "./nodeStatus.js";
@@ -7,6 +8,7 @@ import { generalSettingsForm } from "./generalForm.js";
 import { ignoredSection } from "./ignoredSection.js";
 import { connectionOptionsForm } from "./optionsForm.js";
 import { applyTheme } from "./preferences.js";
+import { restartSection } from "./restartSection.js";
 import { requestRender } from "./renderRequest.js";
 import { appState, locationFor } from "./state.js";
 
@@ -51,7 +53,7 @@ function hostCard(settings: HostSettings): HTMLElement {
   );
 }
 
-/** The options neither the connections nor the general form changes. */
+/** The options neither the connections nor the general form changes; the advanced editor changes them. */
 function otherOptionsList(options: InstanceOptions): HTMLElement {
   return keyValueList([
     ["Always local", listText(options.alwaysLocalNets, "none")],
@@ -64,7 +66,7 @@ function guiList(gui: InstanceGui): HTMLElement {
     ["GUI address", gui.address],
     ["GUI TLS", onOff(gui.useTLS)],
     ["GUI login", gui.user ? `${gui.user} (${gui.authMode})` : `none (${gui.authMode})`],
-    ["Managed by", "the stack, so it is not changed here"],
+    ["Managed by", "the stack, so it is not changed here, nor in the advanced editor"],
   ]);
 }
 
@@ -72,7 +74,16 @@ function nodeBody(node: StorageNode, answer: NodeOptionsResponse | { error: stri
   if (isNotConnected(node)) return [element("p", { className: "muted" }, "Not connected, so its options cannot be read.")];
   if (!answer) return [element("p", { className: "muted" }, "Reading its options…")];
   if ("error" in answer) return [element("p", { className: "warning" }, answer.error)];
-  return [connectionOptionsForm(node, answer.options, localNodes().length), generalSettingsForm(node, answer.options), otherOptionsList(answer.options), guiList(answer.gui), defaultsSection(node), ignoredSection(node)];
+  return [
+    restartSection(node),
+    connectionOptionsForm(node, answer.options, localNodes().length),
+    generalSettingsForm(node, answer.options),
+    otherOptionsList(answer.options),
+    guiList(answer.gui),
+    defaultsSection(node),
+    ignoredSection(node),
+    advancedEditor(node.id, { kind: "options" }),
+  ];
 }
 
 function nodeCard(node: StorageNode): HTMLElement {
