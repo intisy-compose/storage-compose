@@ -14,6 +14,7 @@ const apiKey = "secret-api-key";
 const folderSecret = "folder-encryption-secret";
 const ownId = "D7E5AAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 const otherId = "OTHERAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+const auditFileRefusal = "auditFile is not set here: Syncthing keeps its own audit file in its home";
 
 type Config = Record<string, any>;
 
@@ -173,7 +174,7 @@ describe("the advanced config editor and restarts", () => {
     };
     const hostNodes: HostNode[] = ["d7e5", "5784", "fb98"].map((nodeId) => {
       const instance = instances[nodeId] as LocalInstance;
-      return { nodeId, name: instance.name, source: instance.source, instance, present: true };
+      return { nodeId, name: instance.name, source: instance.source, root: instance.root, instance, present: true };
     });
     const sources: AdvancedConfigSources = {
       resolve: async (nodeId) => instances[nodeId] ?? Promise.reject(new RequestError(404, `no node ${nodeId}`)),
@@ -266,7 +267,8 @@ describe("the advanced config editor and restarts", () => {
       ["options", { urAccepted: 3 }, "usage reporting is the person's own answer: give it in General's usage reports"],
       ["options", { urUniqueId: "abc" }, "usage reporting is the person's own answer: give it in General's usage reports"],
       ["options", { crURL: "https://elsewhere.example/crash" }, "crURL stays Syncthing's own: where a node sends reports or looks for releases is not changed here"],
-      ["options", { auditFile: "/etc/cron.d/audit" }, "auditFile: /etc/cron.d/audit is outside dashboard-test-peer's root /var/syncthing/data"],
+      ["options", { auditFile: "/etc/cron.d/audit" }, auditFileRefusal],
+      ["options", { auditFile: "/var/syncthing/data/audit.log" }, auditFileRefusal],
       ["options", { minHomeDiskFree: { value: 200, unit: "%" } }, /cannot be more than 100 %/],
       ["options", { madeUpOption: 1 }, "madeUpOption is not a setting of these options"],
       ["options", { keepTemporariesH: "24" }, "keepTemporariesH must be a number, as Syncthing has it"],
@@ -293,10 +295,27 @@ describe("the advanced config editor and restarts", () => {
     for (const node of [peer, array, pc]) assert.deepEqual(writesTo(node), []);
     assert.equal(effects.notes.length, 0);
 
-    const inRoot = await send("PATCH", "/api/nodes/d7e5/advanced/options", { auditFile: "/var/syncthing/data/audit.log", listenAddresses: ["tcp://:22003"] });
-    assert.equal(inRoot.status, 200, "an audit file inside the root and a free port in the rows pass");
+    const freePort = await send("PATCH", "/api/nodes/d7e5/advanced/options", { listenAddresses: ["tcp://:22003"] });
+    assert.equal(freePort.status, 200, "a free port in the rows passes");
     const refusedBySyncthing = await send("PATCH", "/api/nodes/d7e5/advanced/folders/dashboard-test-a", { maxConflicts: 11, markerName: ".stmarker" });
     assert.equal(refusedBySyncthing.status, 200);
+  });
+
+  it("a key the node's keeper rewrites at each start is refused, and an ordinary one still saves", async () => {
+    await refused("/api/nodes/fb98/advanced/options", { relaysEnabled: true, keepTemporariesH: 12 }, "relaysEnabled: set by the host agent at each start, so not changed here");
+    await refused("/api/nodes/fb98/advanced/options", { crashReportingEnabled: false, globalAnnounceEnabled: true }, "crashReportingEnabled, globalAnnounceEnabled: set by the host agent at each start, so not changed here");
+    await refused("/api/nodes/fb98/advanced/options", { urAccepted: -1 }, "urAccepted: set by the host agent at each start, so not changed here");
+    await refused(`/api/nodes/fb98/advanced/devices/${ownId}`, { name: "renamed" }, "name: set by the host agent at each start, so not changed here");
+    await refused("/api/nodes/5784/advanced/options", { listenAddresses: ["tcp://:22005"] }, "listenAddresses: set by the nodes service at each start, so not changed here");
+    for (const node of [array, pc]) assert.deepEqual(writesTo(node), []);
+
+    assert.equal((await send("PATCH", "/api/nodes/fb98/advanced/options", { keepTemporariesH: 12 })).status, 200);
+    assert.equal((await send("PATCH", `/api/nodes/fb98/advanced/devices/${otherId}`, { name: "renamed-other" })).status, 200, "only pc's own device name is the host agent's");
+    assert.equal((await send("PATCH", "/api/nodes/5784/advanced/options", { relaysEnabled: true })).status, 200, "the nodes service rewrites only the listen address");
+    assert.equal((await send("PATCH", `/api/nodes/5784/advanced/devices/${ownId}`, { name: "private-array-renamed" })).status, 200);
+    assert.equal((await send("PATCH", "/api/nodes/d7e5/advanced/options", { relaysEnabled: true, listenAddresses: ["tcp://:22006"] })).status, 200, "nothing rewrites the peer's");
+    assert.deepEqual(writesTo(pc).map((write) => write.body), [{ keepTemporariesH: 12 }, { name: "renamed-other" }]);
+    assert.deepEqual(writesTo(array).map((write) => write.body), [{ relaysEnabled: true }, { name: "private-array-renamed" }]);
   });
 
   it("restart required is reported per node", async () => {

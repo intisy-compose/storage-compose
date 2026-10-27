@@ -1,8 +1,8 @@
 import { deviceSettingLabels } from "../api/deviceText.js";
+import { keeperProblem } from "../api/keeperText.js";
 import { connectionOptionLabels, generalSettingLabels } from "../api/optionsText.js";
 import { type AdvancedTarget, type DeviceSettingsChange, type FolderSettingsChange, type FolderType, folderSettingLabels } from "../api/types.js";
-import { type LocalInstance } from "../instanceResolver.js";
-import { isInsideRoot } from "../pathGuard.js";
+import { type LocalInstance, settingsKeeperOf } from "../instanceResolver.js";
 import { deviceChangeProblem, folderChangeProblem, isSecretKey, minDiskFreeCheck, optionsChangeProblem } from "../syncthingConfig.js";
 import { arrayAutomationProblem } from "./devices.js";
 import { typeChangeProblem } from "./nodeFolders.js";
@@ -52,27 +52,24 @@ function picked(change: SyncthingObject, keys: readonly string[]): SyncthingObje
   return Object.fromEntries(Object.entries(change).filter(([key]) => keys.includes(key)));
 }
 
-function auditFileProblem(instance: LocalInstance, path: string): string | null {
-  if (!path) return null;
-  if (!instance.root) return `auditFile: ${instance.name} has no root, so no file of it is set here`;
-  return isInsideRoot(path, instance.root, instance.os) ? null : `auditFile: ${path} is outside ${instance.name}'s root ${instance.root}`;
-}
-
 /**
  * @implNote Usage reporting is consent each Syncthing asks for itself and the General form only sends an answer the person gave;
- * the report and release addresses decide where a node sends what it knows.
+ * the report and release addresses decide where a node sends what it knows; an audit file Syncthing appends to wherever it is
+ * pointed, a synced folder included, while without one it writes its own in its home.
  */
-function optionKeyProblem(instance: LocalInstance, key: string, value: unknown): string | null {
+function optionKeyProblem(key: string, value: unknown): string | null {
   if (usageReportKeys.has(key)) return "usage reporting is the person's own answer: give it in General's usage reports";
   if (reportAddressKeys.has(key)) return `${key} stays Syncthing's own: where a node sends reports or looks for releases is not changed here`;
-  if (key === "auditFile") return auditFileProblem(instance, value as string);
+  if (key === "auditFile") return "auditFile is not set here: Syncthing keeps its own audit file in its home";
   if (key === "minHomeDiskFree") return minDiskFreeCheck(value, generalSettingLabels.minHomeDiskFree);
   return null;
 }
 
 function optionsProblem(instance: LocalInstance, change: SyncthingObject): string | null {
+  const kept = keeperProblem(settingsKeeperOf(instance), Object.keys(change));
+  if (kept) return kept;
   for (const [key, value] of Object.entries(change)) {
-    const problem = optionKeyProblem(instance, key, value);
+    const problem = optionKeyProblem(key, value);
     if (problem) return problem;
   }
   const connection = picked(change, Object.keys(connectionOptionLabels));

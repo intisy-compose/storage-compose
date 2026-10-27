@@ -315,11 +315,29 @@ describe("a node's devices", () => {
     }
   });
 
+  it("renaming pc's own device is refused, as its host agent sets that name at each start", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects);
+    try {
+      const own = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(ownId)}`, { name: "pc-renamed" });
+      assert.equal(own.status, 400);
+      assert.deepEqual(await own.json(), { error: "Device name: set by the host agent at each start, so not changed here" });
+      assert.equal(writes.length, 0);
+      assert.deepEqual(effects.notes, []);
+
+      const other = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`, { name: "dashboard-test-renamed" });
+      assert.equal(other.status, 200, "another device's name stays the person's");
+      assert.deepEqual(writes.map((write) => write.body), [{ name: "dashboard-test-renamed" }]);
+    } finally {
+      dashboard.close();
+    }
+  });
+
   it("a Syncthing that stops answering between the read and the PATCH is 503 and nothing is written or entered", async () => {
     const effects = recordingEffects();
     const dashboard = await dashboardWith(effects);
     try {
-      dropAfter = 1;
+      dropAfter = 2;
       const answer = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`, { name: "dashboard-test-renamed" });
       assert.equal(answer.status, 503);
       assert.deepEqual(await answer.json(), { error: "pc's Syncthing is not answering" });
@@ -335,7 +353,7 @@ describe("a node's devices", () => {
     const effects = recordingEffects();
     const dashboard = await dashboardWith(effects);
     try {
-      dropAfter = 2;
+      dropAfter = 3;
       const answer = await patch(`${dashboard.url}/api/nodes/fb98/devices/${encodeURIComponent(peerId)}`, { name: "dashboard-test-renamed", maxSendKbps: 100 });
       assert.equal(answer.status, 200);
       const settings = (await answer.json()) as { name: string; maxSendKbps: number; addresses: string[] };

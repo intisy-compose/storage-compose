@@ -1,4 +1,19 @@
-import { type DiskFreeUnit, type GeneralEditResponse, type GeneralSettingsChange, type InstanceOptions, type StorageNode, type UsageReportingChoice, changedFields, diskFreeUnits, generalSettingLabels, saveGeneralSettings } from "./api.js";
+import {
+  type DiskFreeUnit,
+  type GeneralEditResponse,
+  type GeneralSettingsChange,
+  type InstanceOptions,
+  type SettingsKeeper,
+  type StorageNode,
+  type UsageReportingChoice,
+  changedFields,
+  diskFreeUnits,
+  generalSettingKeys,
+  generalSettingLabels,
+  isKeeperManaged,
+  keeperManagedText,
+  saveGeneralSettings,
+} from "./api.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element } from "./dom.js";
 import { type FieldForm, numberControl, selectControl, setting, textControl, toggleControl } from "./fieldKit.js";
@@ -103,31 +118,49 @@ function usageChoices(form: GeneralFormState): [GeneralValues["usageReporting"],
   return [...unanswered, ["declined", "Declined: sends nothing"], ["accepted", "Accepted: sends anonymous usage reports to data.syncthing.net"]];
 }
 
-function generalFields(form: GeneralFormState, nodeName: string): HTMLElement {
+function isKept(keeper: SettingsKeeper | null, field: keyof GeneralSettingsChange): boolean {
+  return isKeeperManaged(keeper, generalSettingKeys[field]);
+}
+
+function hintOf(keeper: SettingsKeeper | null, field: keyof GeneralSettingsChange, hint: string): string {
+  return keeper && isKept(keeper, field) ? `Read only: ${keeperManagedText(keeper)}.` : hint;
+}
+
+function generalFields(form: GeneralFormState, nodeName: string, keeper: SettingsKeeper | null): HTMLElement {
   const id = form.formId;
   return element(
     "div",
     { className: "form-fields device-fields" },
-    setting(id, "deviceName", generalSettingLabels.deviceName, textControl(form, "deviceName"), `The name other devices see for ${nodeName}.`),
+    setting(id, "deviceName", generalSettingLabels.deviceName, textControl(form, "deviceName", isKept(keeper, "deviceName")), hintOf(keeper, "deviceName", `The name other devices see for ${nodeName}.`)),
     element(
       "div",
       { className: "number-fields" },
       setting(id, "keepFree", generalSettingLabels.minHomeDiskFree, numberControl(form, "keepFree", 0, "any"), "Syncthing stops syncing when less is free where it keeps its database."),
       setting(id, "keepFreeUnit", "Unit", selectControl(form, "keepFreeUnit", diskFreeUnits.map((unit) => [unit, unit] as const))),
     ),
-    setting(id, "usageReporting", generalSettingLabels.usageReporting, selectControl(form, "usageReporting", usageChoices(form)), "The person decides; the dashboard never accepts for them."),
-    element("div", { className: "toggles" }, toggleControl(form, "crashReportingEnabled", generalSettingLabels.crashReportingEnabled, "sends a report to crash.syncthing.net when Syncthing crashes")),
+    setting(
+      id,
+      "usageReporting",
+      generalSettingLabels.usageReporting,
+      selectControl(form, "usageReporting", usageChoices(form), isKept(keeper, "usageReporting")),
+      hintOf(keeper, "usageReporting", "The person decides; the dashboard never accepts for them."),
+    ),
+    element(
+      "div",
+      { className: "toggles" },
+      toggleControl(form, "crashReportingEnabled", generalSettingLabels.crashReportingEnabled, hintOf(keeper, "crashReportingEnabled", "sends a report to crash.syncthing.net when Syncthing crashes"), isKept(keeper, "crashReportingEnabled")),
+    ),
   );
 }
 
-/** A local node's own device name, home disk reserve and the reports its Syncthing sends, as a form. */
-export function generalSettingsForm(node: StorageNode, options: InstanceOptions): HTMLElement {
+/** A local node's own device name, home disk reserve and the reports its Syncthing sends, as a form; what `keeper` rewrites at each start is read only. */
+export function generalSettingsForm(node: StorageNode, options: InstanceOptions, keeper: SettingsKeeper | null): HTMLElement {
   const form = formFor(node.id, options);
   return element(
     "div",
     { className: "device-form options-form", attributes: { id: form.formId } },
     element("h3", { className: "settings-subheading" }, "General"),
-    generalFields(form, node.name),
+    generalFields(form, node.name, keeper),
     resultLine(form.result),
     element(
       "div",

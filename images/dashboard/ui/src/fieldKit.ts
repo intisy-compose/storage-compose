@@ -18,12 +18,12 @@ export function setting(formId: string, field: string, label: string, control: H
   return element("label", { className: "setting", attributes: { for: controlId(formId, field) } }, element("span", {}, label), control, hint ? element("small", { className: "muted" }, hint) : null);
 }
 
-export function textControl<Values>(form: FieldForm<Values>, key: KeysOf<Values, string>): HTMLInputElement {
+export function textControl<Values>(form: FieldForm<Values>, key: KeysOf<Values, string>, locked = false): HTMLInputElement {
   const input = element("input", { attributes: { id: controlId(form.formId, key), autocomplete: "off" } });
   input.defaultValue = form.saved[key] as string;
   input.value = form.draft[key] as string;
   input.addEventListener("input", () => ((form.draft[key] as string) = input.value));
-  input.disabled = form.saving;
+  input.disabled = form.saving || locked;
   return input;
 }
 
@@ -51,7 +51,7 @@ export function listControl<Values>(form: FieldForm<Values>, key: KeysOf<Values,
   return area;
 }
 
-export function selectControl<Values, Choice extends string>(form: FieldForm<Values>, key: KeysOf<Values, Choice>, choices: readonly (readonly [Choice, string])[]): HTMLSelectElement {
+export function selectControl<Values, Choice extends string>(form: FieldForm<Values>, key: KeysOf<Values, Choice>, choices: readonly (readonly [Choice, string])[], locked = false): HTMLSelectElement {
   const select = element("select", { attributes: { id: controlId(form.formId, key) } });
   for (const [value, label] of choices) {
     const option = element("option", {}, label);
@@ -61,7 +61,7 @@ export function selectControl<Values, Choice extends string>(form: FieldForm<Val
   }
   select.value = form.draft[key] as Choice;
   select.addEventListener("change", () => ((form.draft[key] as Choice) = select.value as Choice));
-  select.disabled = form.saving;
+  select.disabled = form.saving || locked;
   return select;
 }
 

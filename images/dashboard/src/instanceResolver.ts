@@ -1,3 +1,4 @@
+import type { SettingsKeeper } from "./api/keeperText.js";
 import type { StorageNode } from "./api/types.js";
 import { arrayIds, arrayStatus } from "./arrayStatus.js";
 import { agentEntries, readHeartbeat } from "./hostAgent.js";
@@ -5,7 +6,7 @@ import { RequestError, UnconfirmedWrite } from "./http.js";
 import { statusRegistryEntries, syncthingEndpoint } from "./instances.js";
 import { fileJoinRecords } from "./join.js";
 import { otherHostNodes } from "./nodes.js";
-import { clusterArrayId, hostAgentHeartbeatFile, joinsFile, poolPath, registryDirectory } from "./settings.js";
+import { clusterArrayId, hostAgentHeartbeatFile, joinsFile, nodeVolumesDirectory, poolPath, registryDirectory } from "./settings.js";
 import { type SyncthingEndpoint, SyncthingClient, SyncthingUnavailable, listTimeoutMs } from "./syncthing.js";
 import { fetchTailnet } from "./tailnet.js";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -170,6 +171,18 @@ export async function resolveRemote(nodeId: string, sources: ResolverSources = d
 export function requireLocal(instance: ResolvedInstance): LocalInstance {
   if (instance.kind === "remote") throw new RequestError(409, `act on ${instance.host}'s dashboard`);
   return instance;
+}
+
+/**
+ * What rewrites some of the node's Syncthing settings at each start: the host agent for its Windows nodes, the nodes service for every
+ * array but the cluster and for each node volume it runs; nothing for the cluster, whose start script sets only its GUI, nor for any other Syncthing.
+ * @implNote The nodes service runs a registry node's Syncthing only when its root lies under the node volumes (`wanted_nodes` in images/nodes/nodes.sh);
+ * the test peer's root does not, as it runs its own.
+ */
+export function settingsKeeperOf(node: Pick<LocalInstance, "nodeId" | "source" | "root">): SettingsKeeper | null {
+  if (node.source === "host-agent") return "host-agent";
+  if (node.source === "array") return node.nodeId === clusterArrayId ? null : "nodes-service";
+  return node.root?.startsWith(nodeVolumesDirectory) ? "nodes-service" : null;
 }
 
 export function isArrayInstance(instance: LocalInstance): boolean {

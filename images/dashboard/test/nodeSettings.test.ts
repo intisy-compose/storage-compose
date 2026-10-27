@@ -103,6 +103,9 @@ interface FakeNode {
   requests: FakeRequest[];
   /** Set to refuse every options PATCH, as a Syncthing that fails mid-change does. */
   refuseOptions: boolean;
+  /** Set to drop the options PATCH and every later request, as a Syncthing that stops answering mid-change does. */
+  goesSilentOnOptions: boolean;
+  silent: boolean;
   close(): void;
 }
 
@@ -147,11 +150,13 @@ function answer(node: FakeNode, method: string, path: string, body: unknown): [n
 }
 
 async function fakeSyncthing(): Promise<FakeNode> {
-  const node: FakeNode = { url: "", config: wholeConfig(), requests: [], refuseOptions: false, close: () => {} };
+  const node: FakeNode = { url: "", config: wholeConfig(), requests: [], refuseOptions: false, goesSilentOnOptions: false, silent: false, close: () => {} };
   const server = createServer(async (request, response) => {
     const path = new URL(request.url ?? "/", "http://fake").pathname;
     const body = await requestBody(request);
     node.requests.push({ method: request.method ?? "", path, body });
+    node.silent ||= node.goesSilentOnOptions && request.method === "PATCH" && path === "/rest/config/options";
+    if (node.silent) return request.socket.destroy();
     const [status, reply] = request.headers["x-api-key"] === apiKey ? answer(node, request.method ?? "", path, body) : [403, { error: "forbidden" }];
     response.writeHead(status, { "Content-Type": "application/json" });
     response.end(reply === undefined || reply === null ? "" : JSON.stringify(reply));
@@ -171,6 +176,7 @@ const remote: RemoteInstance = { kind: "remote", nodeId: "p53n", name: "p53", ho
 describe("a node's general settings, defaults and ignored lists", () => {
   let peer: FakeNode;
   let array: FakeNode;
+  let pc: FakeNode;
   let effects: WriteEffects & { notes: WriteNote[]; invalidations: number };
   let dashboard: { url: string; close: () => void };
 
@@ -181,7 +187,13 @@ describe("a node's general settings, defaults and ignored lists", () => {
   beforeEach(async () => {
     peer = await fakeSyncthing();
     array = await fakeSyncthing();
-    const instances: Record<string, ResolvedInstance> = { d7e5: local("d7e5", "dashboard-test-peer", peer, "registry"), "5784": local("5784", "private-array", array, "array"), p53n: remote };
+    pc = await fakeSyncthing();
+    const instances: Record<string, ResolvedInstance> = {
+      d7e5: local("d7e5", "dashboard-test-peer", peer, "registry"),
+      "5784": local("5784", "private-array", array, "array"),
+      fb98: { ...local("fb98", "pc", pc, "host-agent"), root: "F:\\", os: "windows" },
+      p53n: remote,
+    };
     const sources: NodeSettingsSources = {
       resolve: async (nodeId) => instances[nodeId] ?? Promise.reject(new RequestError(404, `no node ${nodeId}`)),
       readBackDelaysMs: [5, 10],
@@ -194,7 +206,7 @@ describe("a node's general settings, defaults and ignored lists", () => {
   });
 
   afterEach(() => {
-    for (const closable of [peer, array, dashboard]) closable.close();
+    for (const closable of [peer, array, pc, dashboard]) closable.close();
   });
 
   function send(method: string, path: string, body?: unknown): Promise<Response> {
@@ -233,6 +245,36 @@ describe("a node's general settings, defaults and ignored lists", () => {
     const optionsOnly = await send("PATCH", "/api/nodes/d7e5/general", { crashReportingEnabled: false });
     assert.equal(optionsOnly.status, 502, "with nothing done, the failure is the answer");
     assert.equal(effects.notes.length, 1);
+  });
+
+  it("a rename whose options may not have been saved says so, as an options edit does", async () => {
+    peer.goesSilentOnOptions = true;
+    const answer = await send("PATCH", "/api/nodes/d7e5/general", { deviceName: "dashboard-test-renamed", crashReportingEnabled: false });
+    assert.equal(answer.status, 200);
+    const edit = (await answer.json()) as GeneralEditResponse;
+    assert.equal(edit.problem, "the other settings may not have been saved: dashboard-test-peer's Syncthing stopped answering during the change, so it may have been saved; check once dashboard-test-peer answers again");
+    assert.equal(edit.settings, null, "the node is not answering, so its settings cannot be read again");
+    assert.deepEqual(effects.notes.map((note) => note.text), ["dashboard-test-peer: renamed this node's device from 862540988a29 to dashboard-test-renamed"]);
+  });
+
+  it("a general setting the host agent rewrites at each start is refused, and an ordinary one still saves", async () => {
+    const refusals: [unknown, string][] = [
+      [{ deviceName: "pc-renamed" }, "Device name: set by the host agent at each start, so not changed here"],
+      [{ usageReporting: "declined" }, "Usage reports: set by the host agent at each start, so not changed here"],
+      [{ crashReportingEnabled: true, minHomeDiskFree: { value: 2, unit: "%" } }, "Crash reports: set by the host agent at each start, so not changed here"],
+    ];
+    for (const [body, message] of refusals) {
+      const refused = await send("PATCH", "/api/nodes/fb98/general", body);
+      assert.equal(refused.status, 400, JSON.stringify(body));
+      assert.equal(await error(refused), message);
+    }
+    assert.deepEqual(writesTo(pc), []);
+    assert.equal(effects.notes.length, 0);
+
+    assert.equal((await send("PATCH", "/api/nodes/fb98/general", { minHomeDiskFree: { value: 2, unit: "%" } })).status, 200);
+    assert.equal((await send("PATCH", "/api/nodes/5784/general", { deviceName: "private-array-renamed", crashReportingEnabled: false })).status, 200, "the nodes service rewrites only the listen address");
+    assert.deepEqual(writesTo(pc).map((write) => write.body), [{ minHomeDiskFree: { value: 2, unit: "%" } }]);
+    assert.equal(writesTo(array).length, 2);
   });
 
   it("a general change sends only the options it changed, and a name already so is not sent", async () => {

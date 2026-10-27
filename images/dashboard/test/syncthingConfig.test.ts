@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
+import { isKeeperManaged, keeperManagedKeys, keeperManagedText } from "../src/api/keeperText.js";
 import { applyToHostQuery, listenAddressProblem, perNodeListenText } from "../src/api/optionsText.js";
 import { type OptionsEditResponse, type Versioning, connectionOptionsOf } from "../src/api/types.js";
 import { folderSettings } from "../src/folderIndex.js";
 import { RequestError } from "../src/http.js";
-import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
+import { type LocalInstance, type LocalNodeSource, type RemoteInstance, type ResolvedInstance, settingsKeeperOf } from "../src/instanceResolver.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
 import { type HostNode, type OptionsRouteSources, editOptions, hostSettings, nodeOptions, optionsRoutes } from "../src/routes/options.js";
+import { clusterArrayId } from "../src/settings.js";
 import { parseLayout } from "../src/setupRepo.js";
 import { SyncthingClient, type SyncthingFolderSettings } from "../src/syncthing.js";
 import { changedFields, folderChangeProblem, instanceGui, instanceOptions, optionsChangeProblem, redactConfig } from "../src/syncthingConfig.js";
@@ -193,6 +195,7 @@ describe("a node's options", () => {
     assert.equal(answer.options.deviceName, "pc");
     assert.deepEqual(answer.options.listenAddresses, ["default"]);
     assert.equal(answer.gui.user, "admin");
+    assert.equal(answer.keeper, "host-agent", "the form shows what the host agent rewrites as read only");
     assert.doesNotMatch(JSON.stringify(answer), /apikey|password|secret-api-key|\$2a\$/i);
   });
 
@@ -322,10 +325,10 @@ describe("editing a node's connection options", () => {
   function hostNodes(arrayAttached: boolean): HostNode[] {
     const all = instances();
     return [
-      { nodeId: "5784", name: "private-array", source: "array", instance: arrayAttached ? (all["5784"] as LocalInstance) : null, present: arrayAttached },
-      { nodeId: "d7e5", name: "dashboard-test-peer", source: "registry", instance: all.d7e5 as LocalInstance, present: true },
-      { nodeId: "c3d4", name: "usb-drive", source: "registry", instance: null, present: false },
-      { nodeId: "fb98", name: "pc", source: "host-agent", instance: all.fb98 as LocalInstance, present: true },
+      { nodeId: "5784", name: "private-array", source: "array", root: "/mnt/storage/5784", instance: arrayAttached ? (all["5784"] as LocalInstance) : null, present: arrayAttached },
+      { nodeId: "d7e5", name: "dashboard-test-peer", source: "registry", root: "/var/syncthing/data", instance: all.d7e5 as LocalInstance, present: true },
+      { nodeId: "c3d4", name: "usb-drive", source: "registry", root: "/mnt/nodes/c3d4", instance: null, present: false },
+      { nodeId: "fb98", name: "pc", source: "host-agent", root: "F:\\", instance: all.fb98 as LocalInstance, present: true },
     ];
   }
 
@@ -392,6 +395,8 @@ describe("editing a node's connection options", () => {
         for (const write of writesTo(node)) assert.ok(!Object.hasOwn(write.body as object, "listenAddresses"), "no write carries listen addresses");
       }
       assert.deepEqual(writesTo(peer).map((write) => write.body), [{ relaysEnabled: true, maxSendKbps: 1000 }]);
+      assert.deepEqual(writesTo(pc).map((write) => write.body), [{ maxSendKbps: 1000 }], "pc's host agent keeps its relays");
+      assert.equal(edit.nodes[3].problem, "left out Relays: set by the host agent at each start");
       assert.deepEqual(pc.options.listenAddresses, ["tcp://100.75.76.90:22001"], "each node keeps its own port");
       assert.deepEqual(effects.notes.map((note) => note.text), [
         "dashboard-test-peer: changed connection options; relays on; send limit 1000 KiB/s",
@@ -467,10 +472,11 @@ describe("editing a node's connection options", () => {
           ["d7e5", "saved", null],
           ["5784", "skipped", arraySkipped],
           ["c3d4", "not connected", "usb-drive is not connected, so it was not changed"],
-          ["fb98", "saved", null],
+          ["fb98", "skipped", "left out NAT traversal: set by the host agent at each start"],
         ],
       );
       assert.deepEqual(array.requests, []);
+      assert.deepEqual(pc.requests, [], "a node left with nothing to change is sent nothing");
     } finally {
       dashboard.close();
     }
@@ -480,7 +486,7 @@ describe("editing a node's connection options", () => {
     pc.close();
     const dashboard = await dashboardWith(recordingEffects(), true);
     try {
-      const edit = (await (await patch(`${dashboard.url}/api/nodes/d7e5/options?${applyToHostQuery}`, { localAnnounceEnabled: false })).json()) as OptionsEditResponse;
+      const edit = (await (await patch(`${dashboard.url}/api/nodes/d7e5/options?${applyToHostQuery}`, { maxRecvKbps: 100 })).json()) as OptionsEditResponse;
       assert.deepEqual(
         edit.nodes.map((result) => [result.nodeId, result.outcome]),
         [
@@ -500,7 +506,7 @@ describe("editing a node's connection options", () => {
     const effects = recordingEffects();
     const dashboard = await dashboardWith(effects, true);
     try {
-      const edit = (await (await patch(`${dashboard.url}/api/nodes/fb98/options?${applyToHostQuery}`, { relaysEnabled: true })).json()) as OptionsEditResponse;
+      const edit = (await (await patch(`${dashboard.url}/api/nodes/fb98/options?${applyToHostQuery}`, { maxSendKbps: 100 })).json()) as OptionsEditResponse;
       const arrayResult = edit.nodes.find((result) => result.nodeId === "5784");
       assert.deepEqual(arrayResult, { nodeId: "5784", name: "private-array", outcome: "skipped", problem: arraySkipped, options: null });
       assert.deepEqual(array.requests, []);
@@ -557,6 +563,69 @@ describe("editing a node's connection options", () => {
 
   it("a node whose Syncthing does not answer is 503 and names it", async () => {
     pc.close();
-    await assert.rejects(editOptions(instances().fb98, { relaysEnabled: true }, async () => [], false), (error: Error & { status?: number }) => error.status === 503 && error.message === "pc's Syncthing is not answering");
+    await assert.rejects(editOptions(instances().fb98, { maxSendKbps: 100 }, async () => [], false), (error: Error & { status?: number }) => error.status === 503 && error.message === "pc's Syncthing is not answering");
+  });
+
+  it("a keeper-managed option is refused on the keeper's nodes and an ordinary one still saves", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects, true);
+    try {
+      const relays = await patch(`${dashboard.url}/api/nodes/fb98/options`, { relaysEnabled: false, maxSendKbps: 100 });
+      assert.equal(relays.status, 400);
+      assert.equal(((await relays.json()) as { error: string }).error, "Relays: set by the host agent at each start, so not changed here");
+      const pcListen = await patch(`${dashboard.url}/api/nodes/fb98/options`, { listenAddresses: ["tcp://:22004"], globalAnnounceEnabled: true });
+      assert.equal(((await pcListen.json()) as { error: string }).error, "Listen addresses, Global discovery: set by the host agent at each start, so not changed here");
+      const arrayListen = await patch(`${dashboard.url}/api/nodes/5784/options`, { listenAddresses: ["tcp://:22005"] });
+      assert.equal(arrayListen.status, 400);
+      assert.equal(((await arrayListen.json()) as { error: string }).error, "Listen addresses: set by the nodes service at each start, so not changed here");
+      const pcAll = await patch(`${dashboard.url}/api/nodes/fb98/options?${applyToHostQuery}`, { natEnabled: true });
+      assert.equal(pcAll.status, 400, "the node in the path is refused, apply to all or not");
+      assert.deepEqual(writesTo(pc), []);
+      assert.deepEqual(writesTo(array), []);
+      assert.deepEqual(writesTo(peer), []);
+      assert.deepEqual(effects.notes, []);
+
+      assert.equal((await patch(`${dashboard.url}/api/nodes/fb98/options`, { maxSendKbps: 100 })).status, 200);
+      assert.equal((await patch(`${dashboard.url}/api/nodes/5784/options`, { natEnabled: true })).status, 200);
+      assert.equal((await patch(`${dashboard.url}/api/nodes/d7e5/options`, { relaysEnabled: true, listenAddresses: ["tcp://:22006"] })).status, 200, "nothing rewrites the peer's settings");
+      assert.deepEqual(writesTo(pc).map((write) => write.body), [{ maxSendKbps: 100 }]);
+      assert.deepEqual(writesTo(array).map((write) => write.body), [{ natEnabled: true }]);
+      assert.deepEqual(writesTo(peer).map((write) => write.body), [{ relaysEnabled: true, listenAddresses: ["tcp://:22006"] }]);
+    } finally {
+      dashboard.close();
+    }
+  });
+});
+
+describe("which keeper rewrites a node's settings", () => {
+  const node = (source: LocalNodeSource, nodeId: string, root: string | null) => ({ source, nodeId, root });
+
+  it("names the host agent, the nodes service, or nothing, by where the node is known from", () => {
+    assert.equal(settingsKeeperOf(node("host-agent", "fb98", "F:\\")), "host-agent");
+    assert.equal(settingsKeeperOf(node("array", "5784", "/mnt/storage/5784")), "nodes-service");
+    assert.equal(settingsKeeperOf(node("registry", "c3d4", "/mnt/nodes/c3d4")), "nodes-service");
+    assert.equal(settingsKeeperOf(node("array", clusterArrayId, "/mnt/storage/pool")), null, "the cluster's own service sets only its GUI");
+    assert.equal(settingsKeeperOf(node("registry", "d7e5", "/var/syncthing/data")), null, "the test peer runs its own Syncthing");
+    assert.equal(settingsKeeperOf(node("registry", "e1e1", null)), null);
+  });
+
+  it("keeps one table, read by every route and form", () => {
+    assert.deepEqual([...keeperManagedKeys["host-agent"]].sort(), [
+      "autoUpgradeIntervalH",
+      "crashReportingEnabled",
+      "deviceName",
+      "globalAnnounceEnabled",
+      "listenAddresses",
+      "localAnnounceEnabled",
+      "natEnabled",
+      "relaysEnabled",
+      "startBrowser",
+      "urAccepted",
+    ]);
+    assert.deepEqual(keeperManagedKeys["nodes-service"], ["listenAddresses"]);
+    assert.equal(isKeeperManaged("host-agent", "urAccepted"), true);
+    assert.equal(isKeeperManaged("nodes-service", "relaysEnabled"), false);
+    assert.equal(isKeeperManaged(null, "listenAddresses"), false);
+    assert.equal(keeperManagedText("nodes-service"), "set by the nodes service at each start");
   });
 });

@@ -1,7 +1,8 @@
+import { generalSettingKeys, keeperProblem } from "../api/keeperText.js";
 import { generalSettingLabels } from "../api/optionsText.js";
 import type { GeneralEditResponse, GeneralSettingsChange, NodeOptionsResponse, UsageReportingChoice } from "../api/types.js";
-import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
+import { RequestError, UnconfirmedWrite, readBody, sendJson } from "../http.js";
+import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, settingsKeeperOf, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { SyncthingRefusal, refusalText } from "../syncthing.js";
 import { isChangeInPlace, minDiskFreeCheck } from "../syncthingConfig.js";
@@ -36,6 +37,11 @@ export function generalChangeProblem(change: unknown): string | null {
     if (problem) return problem;
   }
   return null;
+}
+
+function generalKeeperProblem(instance: LocalInstance, change: GeneralSettingsChange): string | null {
+  const fields = Object.keys(change) as (keyof GeneralSettingsChange)[];
+  return keeperProblem(settingsKeeperOf(instance), fields, (field) => generalSettingLabels[field as keyof GeneralSettingsChange], (field) => generalSettingKeys[field as keyof GeneralSettingsChange]);
 }
 
 interface OwnDevice {
@@ -116,8 +122,10 @@ export interface GeneralEdit {
   note: WriteNote | NothingWritten;
 }
 
-function failureText(error: unknown): string {
-  return error instanceof SyncthingRefusal ? refusalText(error) : (error as Error).message;
+/** The options' part of a general edit whose rename was saved: not saved, or, when the node stopped answering mid-write, maybe saved. */
+function optionsFailureText(error: unknown): string {
+  if (error instanceof UnconfirmedWrite) return `the other settings may not have been saved: ${error.message}`;
+  return `the other settings were not saved: ${error instanceof SyncthingRefusal ? refusalText(error) : (error as Error).message}`;
 }
 
 /** The node's options as they now stand; null when it stops answering, as Syncthing restarts after some changes. */
@@ -132,7 +140,7 @@ async function settingsNow(instance: LocalInstance): Promise<NodeOptionsResponse
  */
 export async function editGeneral(instance: ResolvedInstance, change: unknown, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<GeneralEdit> {
   const local = requireLocal(instance);
-  const problem = generalChangeProblem(change);
+  const problem = generalChangeProblem(change) ?? generalKeeperProblem(local, change as GeneralSettingsChange);
   if (problem) throw new RequestError(400, problem);
   const valid = change as GeneralSettingsChange;
   const parts = await optionParts(local, valid);
@@ -143,7 +151,7 @@ export async function editGeneral(instance: ResolvedInstance, change: unknown, r
     optionWords = await writeOptionParts(local, parts, readBackDelaysMs);
   } catch (error) {
     if (!renamed) throw error;
-    optionsProblem = `the other settings were not saved: ${failureText(error)}`;
+    optionsProblem = optionsFailureText(error);
   }
   const answer: GeneralEditResponse = { settings: await settingsNow(local), problem: optionsProblem };
   if (!renamed && !optionWords.length) return { answer, note: { nothingWritten: true } };

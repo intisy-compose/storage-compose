@@ -4,11 +4,14 @@ import {
   type InstanceOptions,
   type NodeOptionsEdit,
   type OptionsEditResponse,
+  type SettingsKeeper,
   type StorageNode,
   applyToHostLabel,
   changedFields,
   connectionOptionLabels,
   connectionOptionsOf,
+  isKeeperManaged,
+  keeperManagedText,
   listenAddressProblem,
   perNodeListenText,
   saveNodeOptions,
@@ -74,10 +77,19 @@ function listOf(text: string): string[] {
 interface FieldContext {
   formId: string;
   form: OptionsFormState;
+  keeper: SettingsKeeper | null;
+}
+
+function isLocked(context: FieldContext, key: ConnectionOptionKey): boolean {
+  return context.form.saving || isKeeperManaged(context.keeper, key);
+}
+
+function hintOf(context: FieldContext, key: ConnectionOptionKey, hint: string): string {
+  return context.keeper && isKeeperManaged(context.keeper, key) ? `Read only: ${keeperManagedText(context.keeper)}.` : hint;
 }
 
 function labelled(context: FieldContext, key: ConnectionOptionKey, control: HTMLElement, hint: string): HTMLElement {
-  return element("label", { className: "setting", attributes: { for: controlId(context.formId, key) } }, element("span", {}, connectionOptionLabels[key]), control, element("small", { className: "muted" }, hint));
+  return element("label", { className: "setting", attributes: { for: controlId(context.formId, key) } }, element("span", {}, connectionOptionLabels[key]), control, element("small", { className: "muted" }, hintOf(context, key, hint)));
 }
 
 function listInput(context: FieldContext, key: ListKey): HTMLTextAreaElement {
@@ -86,7 +98,7 @@ function listInput(context: FieldContext, key: ListKey): HTMLTextAreaElement {
   area.defaultValue = form.saved[key].join("\n");
   area.value = form.draft[key].join("\n");
   area.addEventListener("input", () => (form.draft[key] = listOf(area.value)));
-  area.disabled = form.saving;
+  area.disabled = isLocked(context, key);
   return area;
 }
 
@@ -96,7 +108,7 @@ function rateInput(context: FieldContext, key: RateKey): HTMLInputElement {
   input.defaultValue = String(form.saved[key]);
   input.value = String(form.draft[key]);
   input.addEventListener("input", () => (form.draft[key] = input.value === "" ? Number.NaN : Number(input.value)));
-  input.disabled = form.saving;
+  input.disabled = isLocked(context, key);
   return input;
 }
 
@@ -107,8 +119,8 @@ function toggle(context: FieldContext, key: ToggleKey, hint: string): HTMLElemen
   box.defaultChecked = form.saved[key];
   box.checked = form.draft[key];
   box.addEventListener("change", () => (form.draft[key] = box.checked));
-  box.disabled = form.saving;
-  return element("label", { className: "toggle", attributes: { for: id } }, box, element("span", {}, connectionOptionLabels[key], element("small", { className: "muted" }, ` ${hint}`)));
+  box.disabled = isLocked(context, key);
+  return element("label", { className: "toggle", attributes: { for: id } }, box, element("span", {}, connectionOptionLabels[key], element("small", { className: "muted" }, ` ${hintOf(context, key, hint)}`)));
 }
 
 /** @implNote The choice is the form's state, not unsaved input: its default follows it, so ticking it alone never holds the page still. */
@@ -123,7 +135,7 @@ function applyToHostToggle(context: FieldContext, nodeCount: number): HTMLElemen
     box.defaultChecked = box.checked;
   });
   box.disabled = form.saving || nodeCount < 2;
-  const hint = nodeCount < 2 ? "this host runs no other node" : "discovery, relays, NAT and limits; listen addresses stay this node's own, and an array is changed only on its own card";
+  const hint = nodeCount < 2 ? "this host runs no other node" : "discovery, relays, NAT and limits; listen addresses stay this node's own, an array is changed only on its own card, and a node is sent nothing its keeper sets at each start";
   return element("label", { className: "toggle", attributes: { for: id } }, box, element("span", {}, applyToHostLabel, element("small", { className: "muted" }, ` ${hint}`)));
 }
 
@@ -228,10 +240,13 @@ function revert(form: OptionsFormState): void {
   requestRender();
 }
 
-/** A local node's connection options as a form; `nodeCount` is how many nodes this host runs, for the apply-to-all choice. */
-export function connectionOptionsForm(node: StorageNode, options: InstanceOptions, nodeCount: number): HTMLElement {
+/**
+ * A local node's connection options as a form; `nodeCount` is how many nodes this host runs, for the apply-to-all choice, and the
+ * options `keeper` rewrites at each start are read only.
+ */
+export function connectionOptionsForm(node: StorageNode, options: InstanceOptions, nodeCount: number, keeper: SettingsKeeper | null): HTMLElement {
   const form = formFor(node.id, options);
-  const context: FieldContext = { formId: formIdOf(node.id), form };
+  const context: FieldContext = { formId: formIdOf(node.id), form, keeper };
   return element(
     "div",
     { className: "device-form options-form", attributes: { id: context.formId } },

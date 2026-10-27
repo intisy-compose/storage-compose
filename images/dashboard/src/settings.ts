@@ -27,6 +27,8 @@ export function discoveryPollSecondsOf(environment: Record<string, string | unde
 export const discoveryPollSeconds = discoveryPollSecondsOf(process.env);
 export const arraysStatusDirectory = `${statusDirectory}/arrays`;
 export const registryDirectory = `${statusDirectory}/nodes`;
+/** Where the nodes service mounts the drive and folder nodes whose Syncthing it runs, as their registry roots name them. */
+export const nodeVolumesDirectory = "/mnt/nodes";
 export const joinsFile = `${statusDirectory}/joins.json`;
 /** The dashboard's own memory of devices and drives; a cache in the `rebuilt` status volume. */
 export const seenDirectory = `${statusDirectory}/seen`;

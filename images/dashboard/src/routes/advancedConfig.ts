@@ -1,8 +1,9 @@
 import { deviceDisplayName, shortDeviceId } from "../api/deviceText.js";
+import { keeperProblem } from "../api/keeperText.js";
 import { generalSettingLabels } from "../api/optionsText.js";
 import type { AdvancedConfig, AdvancedTarget } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, localNodeInfos, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, localNodeInfos, requireLocal, resolveInstance, settingsKeeperOf, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { isChangeInPlace, redactConfig } from "../syncthingConfig.js";
 import { advancedChangeProblem, guiManagedText } from "./advancedGuards.js";
@@ -92,11 +93,17 @@ async function stateAfter(instance: LocalInstance, target: AdvancedTarget, expec
   }
 }
 
-/** The General form's rule for the node's own device: its name is what other devices show, so it is not emptied. */
+/**
+ * The General form's rules for the node's own device: its name is what other devices show, so it is not emptied, and it is not
+ * changed where the node's keeper sets it at each start.
+ */
 async function ownNameProblem(instance: LocalInstance, target: AdvancedTarget, change: SyncthingObject): Promise<string | null> {
-  if (target.kind !== "device" || typeof change.name !== "string" || change.name.trim()) return null;
+  if (target.kind !== "device" || !Object.hasOwn(change, "name")) return null;
+  const kept = keeperProblem(settingsKeeperOf(instance), ["name"], (field) => field, () => "deviceName");
+  const emptied = typeof change.name === "string" && !change.name.trim() ? `${generalSettingLabels.deviceName} cannot be empty: other devices show it` : null;
+  if (!kept && !emptied) return null;
   const ownId = await callSyncthing(instance, (client) => client.myId());
-  return ownId === target.id ? `${generalSettingLabels.deviceName} cannot be empty: other devices show it` : null;
+  return ownId === target.id ? (kept ?? emptied) : null;
 }
 
 export interface AdvancedEdit {

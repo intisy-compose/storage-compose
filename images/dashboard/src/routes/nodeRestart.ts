@@ -34,8 +34,9 @@ export interface NodeRestart {
 
 /**
  * Restarts the node's Syncthing, as its own Restart does.
- * @implNote Every node runs with `--no-restart`, so Syncthing exits after answering and its keeper starts it again: the nodes service,
- * the host agent's watcher, or Docker for the test peer. Until then a write to it answers 503 and the event feed follows the restart.
+ * @implNote The cluster's Syncthing runs under its own monitor process, which starts it again. Every other node runs with `--no-restart`,
+ * so it exits after answering and its keeper starts it again: the nodes service, the host agent's watcher (both rewriting the settings
+ * of `keeperManagedKeys` as they do), or Docker for the test peer. Until then a write to it answers 503 and the event feed follows the restart.
  */
 export async function restartNode(instance: ResolvedInstance, body: unknown): Promise<NodeRestart> {
   const local = requireLocal(instance);

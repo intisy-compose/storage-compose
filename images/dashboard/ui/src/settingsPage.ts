@@ -76,8 +76,8 @@ function nodeBody(node: StorageNode, answer: NodeOptionsResponse | { error: stri
   if ("error" in answer) return [element("p", { className: "warning" }, answer.error)];
   return [
     restartSection(node),
-    connectionOptionsForm(node, answer.options, localNodes().length),
-    generalSettingsForm(node, answer.options),
+    connectionOptionsForm(node, answer.options, localNodes().length, answer.keeper),
+    generalSettingsForm(node, answer.options, answer.keeper),
     otherOptionsList(answer.options),
     guiList(answer.gui),
     defaultsSection(node),

@@ -148,6 +148,7 @@ import { type ActivityFilters, activityRequestQuery, defaultActivityFilters, fol
 import { changesActivityType } from "../../src/api/types.js";
 
 export { connectionOptionKeys, connectionOptionsOf, deviceDefaultKeys, folderDefaultKeys } from "../../src/api/types.js";
+export { type SettingsKeeper, generalSettingKeys, isKeeperManaged, keeperManagedText } from "../../src/api/keeperText.js";
 export { applyToHostLabel, applyToHostQuery, connectionOptionLabels, discoveryServerProblem, generalSettingLabels, listenAddressProblem, perNodeListenText } from "../../src/api/optionsText.js";
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 

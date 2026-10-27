@@ -2,6 +2,7 @@
  * The dashboard's HTTP contract, shared by the server (`src/`) and the page (`ui/`).
  * Sizes are bytes, rates bytes per second, times ISO 8601 strings in UTC, percentages 0 to 100.
  */
+import type { SettingsKeeper } from "./keeperText.js";
 
 /** "device" is a Syncthing device no dashboard and no join record describes, so nothing says what node it holds. */
 export type NodeKind = "array" | "drive" | "folder" | "device";
@@ -625,10 +626,11 @@ export interface InstanceGui {
   managedBy: "stack";
 }
 
-/** `GET /api/nodes/<nodeId>/options`. */
+/** `GET /api/nodes/<nodeId>/options`; `keeper` rewrites some of these settings at each start, which the forms show read only. */
 export interface NodeOptionsResponse {
   options: InstanceOptions;
   gui: InstanceGui;
+  keeper: SettingsKeeper | null;
 }
 
 /** The options of Syncthing's own Connections settings, the ones the options form changes. */

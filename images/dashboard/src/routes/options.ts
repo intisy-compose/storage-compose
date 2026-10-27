@@ -1,7 +1,8 @@
+import { type SettingsKeeper, isKeeperManaged, keeperLeftOutText, keeperManagedKeys, keeperProblem } from "../api/keeperText.js";
 import { connectionOptionLabels, listenPort } from "../api/optionsText.js";
 import type { ConnectionOptionKey, ConnectionOptionsChange, HostSettings, InstanceOptions, NodeOptionsEdit, NodeOptionsResponse, OptionsEditOutcome, OptionsEditResponse } from "../api/types.js";
 import { RequestError, UnconfirmedWrite, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type LocalNodeInfo, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, localNodeInfos, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
+import { type LocalInstance, type LocalNodeInfo, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, localNodeInfos, requireLocal, resolveInstance, settingsKeeperOf, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, WriteNote, WriteOutcome } from "../routes.js";
 import { hostName, ntfyTopicSet, ntfyUrl, peerDashboards, setupRepoDirectory, tailnetHost } from "../settings.js";
 import { type SetupLayout, readLayout } from "../setupRepo.js";
@@ -13,11 +14,15 @@ function asObject(value: unknown): SyncthingObject {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as SyncthingObject) : {};
 }
 
+function keeperOf(value: unknown): SettingsKeeper | null {
+  return typeof value === "string" && Object.hasOwn(keeperManagedKeys, value) ? (value as SettingsKeeper) : null;
+}
+
 /** Another dashboard's answer, redacted and rebuilt field by field, as an older or newer one may send more. */
 function fromOtherDashboard(answer: unknown): NodeOptionsResponse {
   const redacted = asObject(redactConfig(answer));
   const options = asObject(redacted.options);
-  return { options: instanceOptions(options, typeof options.deviceName === "string" ? options.deviceName : ""), gui: instanceGui(asObject(redacted.gui)) };
+  return { options: instanceOptions(options, typeof options.deviceName === "string" ? options.deviceName : ""), gui: instanceGui(asObject(redacted.gui)), keeper: keeperOf(redacted.keeper) };
 }
 
 /**
@@ -33,7 +38,7 @@ export async function nodeOptions(instance: ResolvedInstance): Promise<NodeOptio
       client.devices(),
     ]);
     const deviceName = devices.find((device) => device.deviceID === ownId)?.name ?? "";
-    return { options: instanceOptions(options ?? {}, deviceName), gui: instanceGui(gui ?? {}) };
+    return { options: instanceOptions(options ?? {}, deviceName), gui: instanceGui(gui ?? {}), keeper: settingsKeeperOf(instance) };
   });
 }
 
@@ -118,6 +123,22 @@ function notChanged(node: Pick<HostNode, "nodeId" | "name">, outcome: OptionsEdi
   return { result: { nodeId: node.nodeId, name: node.name, outcome, problem, options: null }, note: null };
 }
 
+function optionName(key: string): string {
+  return connectionOptionLabels[key as ConnectionOptionKey] ?? key;
+}
+
+/** One node's part of an edit applied to the whole host: the change without what the node's keeper rewrites at each start. */
+async function editKeptHostNode(node: HostNode, change: ConnectionOptionsChange, readBackDelaysMs: readonly number[]): Promise<NodeEditDone> {
+  const keeper = settingsKeeperOf(node);
+  const managed = Object.keys(change).filter((key) => isKeeperManaged(keeper, key));
+  if (!keeper || !managed.length) return editHostNode(node, change, readBackDelaysMs);
+  const leftOut = keeperLeftOutText(keeper, managed.map(optionName));
+  const rest: ConnectionOptionsChange = Object.fromEntries(Object.entries(change).filter(([key]) => !managed.includes(key)));
+  if (!Object.keys(rest).length) return notChanged(node, "skipped", leftOut);
+  const done = await editHostNode(node, rest, readBackDelaysMs);
+  return { ...done, result: { ...done.result, problem: [done.result.problem, leftOut].filter(Boolean).join("; ") } };
+}
+
 /**
  * Another node of an edit applied to the whole host; an array is left out.
  * @implNote An array's options are changed only on its own card: the private array holds the PC's pending folders (HANDOFF decision 1),
@@ -125,7 +146,7 @@ function notChanged(node: Pick<HostNode, "nodeId" | "name">, outcome: OptionsEdi
  */
 async function editOtherHostNode(node: HostNode, change: ConnectionOptionsChange, readBackDelaysMs: readonly number[]): Promise<NodeEditDone> {
   if (node.source === "array") return notChanged(node, "skipped", `${node.name} is an array: change its options on its own card`);
-  return editHostNode(node, change, readBackDelaysMs);
+  return editKeptHostNode(node, change, readBackDelaysMs);
 }
 
 /** One node of an edit applied to the whole host: its failure is reported in the answer and does not stop the other nodes. */
@@ -139,7 +160,7 @@ async function editHostNode(node: HostNode, change: ConnectionOptionsChange, rea
   }
 }
 
-export type HostNode = Pick<LocalNodeInfo, "nodeId" | "name" | "source" | "instance" | "present">;
+export type HostNode = Pick<LocalNodeInfo, "nodeId" | "name" | "source" | "root" | "instance" | "present">;
 
 interface ListedAddress {
   nodeName: string;
@@ -182,8 +203,9 @@ function editOutcome(done: NodeEditDone[]): WriteOutcome {
 }
 
 /**
- * Sends the connection options the person changed to the node's Syncthing, or, with `hostNodes`, to every node of this host,
- * the node in the path first; each node is sent only the options it does not have yet. The host's nodes are listed only once the change is valid.
+ * Sends the connection options the person changed to the node's Syncthing, or, with `applyToHost`, to every node of this host but its arrays,
+ * the node in the path first; each node is sent only the options it does not have yet and its keeper does not rewrite.
+ * `hostNodes` is read only once the change is valid, and only when it is needed.
  * @implNote An edit for the whole host never carries listen addresses: each node listens on its own port from `access/PORTS.md`.
  */
 export async function editOptions(
@@ -197,12 +219,14 @@ export async function editOptions(
   const problem = optionsChangeProblem(change, applyToHost);
   if (problem) throw new RequestError(400, problem);
   const valid = change as ConnectionOptionsChange;
+  const kept = keeperProblem(settingsKeeperOf(local), Object.keys(valid), optionName);
+  if (kept) throw new RequestError(400, kept);
   if (!applyToHost) {
     if (valid.listenAddresses) await refuseTakenPorts(local, valid.listenAddresses, await hostNodes());
     const done = await editNodeOptions(local, valid, readBackDelaysMs);
     return { answer: { nodes: [done.result] }, outcome: editOutcome([done]) };
   }
-  const done = [await editHostNode({ nodeId: local.nodeId, name: local.name, source: local.source, instance: local, present: true }, valid, readBackDelaysMs)];
+  const done = [await editHostNode({ nodeId: local.nodeId, name: local.name, source: local.source, root: local.root, instance: local, present: true }, valid, readBackDelaysMs)];
   for (const node of (await hostNodes()).filter((candidate) => candidate.nodeId !== local.nodeId)) done.push(await editOtherHostNode(node, valid, readBackDelaysMs));
   return { answer: { nodes: done.map((entry) => entry.result) }, outcome: editOutcome(done) };
 }

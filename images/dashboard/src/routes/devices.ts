@@ -1,8 +1,10 @@
 import type { ServerResponse } from "node:http";
 import { deviceDisplayName, deviceSettingLabels, shortDeviceId } from "../api/deviceText.js";
+import { generalSettingKeys, keeperProblem } from "../api/keeperText.js";
+import { generalSettingLabels } from "../api/optionsText.js";
 import type { AddedDevice, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, NearbyDevice, NewDevice, RemoveDeviceBody } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, isArrayInstance, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, isArrayInstance, requireLocal, resolveInstance, settingsKeeperOf, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { SyncthingError } from "../syncthing.js";
 import { deviceChangeProblem, deviceSettings, isChangeInPlace, newDeviceProblem, redactConfig } from "../syncthingConfig.js";
@@ -97,13 +99,21 @@ export interface DeviceEdit {
   note: WriteNote;
 }
 
+/** Why the node's own device is not renamed here, or null: its keeper sets that name at each start. Reads the node's ID only when that could be so. */
+async function ownNameKeptProblem(instance: LocalInstance, deviceId: string, change: DeviceSettingsChange): Promise<string | null> {
+  if (change.name === undefined) return null;
+  const kept = keeperProblem(settingsKeeperOf(instance), ["deviceName"], () => generalSettingLabels.deviceName, () => generalSettingKeys.deviceName);
+  if (!kept) return null;
+  return (await callSyncthing(instance, (client) => client.myId())) === deviceId ? kept : null;
+}
+
 /**
  * Sends exactly the fields of `change` to the node's Syncthing, so a field the person did not touch
  * is never written back over a change made elsewhere meanwhile.
  */
 export async function editDevice(instance: ResolvedInstance, deviceId: string, change: unknown, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<DeviceEdit> {
   const local = requireLocal(instance);
-  const problem = deviceChangeProblem(change) ?? arrayAutomationProblem(local, change as DeviceSettingsChange);
+  const problem = deviceChangeProblem(change) ?? arrayAutomationProblem(local, change as DeviceSettingsChange) ?? (await ownNameKeptProblem(local, deviceId, change as DeviceSettingsChange));
   if (problem) throw new RequestError(400, problem);
   const valid = change as DeviceSettingsChange;
   const before = await configuredDevice(local, deviceId);
