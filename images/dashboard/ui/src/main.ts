@@ -1,6 +1,6 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
 import type { NodesResponse } from "./api.js";
-import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests, savedWriteCount } from "./api.js";
+import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderChanges, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests, savedWriteCount } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
 import { loadAddDeviceForm, renderAddDeviceForm } from "./addDeviceForm.js";
@@ -13,6 +13,7 @@ import { renderFolderDetail, renderFolderLoading, renderFolderNotFound } from ".
 import { openEditFolderForm, renderEditFolderForm } from "./folderEditForm.js";
 import { loadAddFolderForm, renderAddFolderForm } from "./folderForm.js";
 import { isFormOpen } from "./forms.js";
+import { loadNodeLog } from "./logTab.js";
 import { openListFromLocation } from "./itemList.js";
 import { renderItemNotFound } from "./itemNotFound.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
@@ -23,7 +24,7 @@ import { onRefreshRequested, onRenderRequested } from "./renderRequest.js";
 import { forgetLastAnswer, renderRequestsPage } from "./requestsPage.js";
 import { readableLocalNodes, renderSettingsPage } from "./settingsPage.js";
 import { renderMenu } from "./shell.js";
-import { activityPageSize, appState, explorerLocation, locationFor, readLocation, selectedItemId } from "./state.js";
+import { activityLocation, activityPageSize, appState, explorerLocation, locationFor, readLocation, selectedItemId } from "./state.js";
 
 const pollMilliseconds = 5000;
 
@@ -183,6 +184,19 @@ async function loadAddDevice(nodesLoaded: Promise<void>): Promise<void> {
   await loadAddDeviceForm(form, appState.data?.nodes.find((node) => node.id === form.nodeId));
 }
 
+/** Keeps the changes shown while they are read again, so the section never flicks to empty on a poll. */
+async function loadFolderChanges(): Promise<void> {
+  const folderId = appState.selectedFolderId;
+  if (!folderId) return;
+  if (appState.folderChanges?.folderId !== folderId) appState.folderChanges = { folderId, entries: null, error: null };
+  try {
+    const { entries } = await fetchFolderChanges(folderId);
+    if (appState.folderChanges?.folderId === folderId) appState.folderChanges = { folderId, entries, error: null };
+  } catch (error) {
+    if (appState.folderChanges?.folderId === folderId) appState.folderChanges = { ...appState.folderChanges, error: messageOf(error) };
+  }
+}
+
 async function loadFolderDetail(): Promise<void> {
   const folderId = appState.selectedFolderId;
   if (!folderId) return;
@@ -206,7 +220,7 @@ async function loadAddFolder(nodesLoaded: Promise<void>): Promise<void> {
 }
 
 async function loadFolders(nodesLoaded: Promise<void>): Promise<void> {
-  await Promise.all([loadExplorer(), loadFolderDetail(), loadAddFolder(nodesLoaded)]);
+  await Promise.all([loadExplorer(), loadFolderDetail(), loadFolderChanges(), loadAddFolder(nodesLoaded)]);
   const detail = appState.folderDetail;
   if (detail?.summary.id === appState.selectedFolderId && placeAtFolder(detail)) await loadExplorer();
 }
@@ -259,7 +273,7 @@ async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
 async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Promise<void> {
   if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm(), loadAddDevice(nodesLoaded)]);
   if (appState.page === "folders") await loadFolders(nodesLoaded);
-  if (appState.page === "activity") await loadActivity();
+  if (appState.page === "activity") await (appState.activityTab === "log" ? nodesLoaded.then(loadNodeLog) : loadActivity());
   if (appState.page === "requests") await loadRequests();
   if (appState.page === "settings") await loadSettings(nodesLoaded);
 }
@@ -278,6 +292,7 @@ async function refreshPage(): Promise<void> {
 const activityActions = {
   /** @implNote Renders even while the chosen filter keeps focus, which the poll waits out, so the new answer shows at once. */
   onFiltersChanged: () => {
+    writeActivityAddress();
     appState.activityLimit = activityPageSize;
     render();
     void loadPageData().then(render);
@@ -288,12 +303,24 @@ const activityActions = {
   },
 };
 
+/** @implNote Replaces the address rather than adding to the history, so Back leaves the page instead of stepping through every filter tried. */
+function writeActivityAddress(): void {
+  const address = activityLocation(appState.activityFilters);
+  if (location.hash !== address) history.replaceState(null, "", address);
+}
+
 function onLocationChange(): void {
   const previousItem = selectedItemId();
   const previousPage = appState.page;
+  const previousTab = appState.activityTab;
+  const previousLogNode = appState.nodeLog?.nodeId;
+  const previousFilters = appState.activityFilters;
   readLocation();
+  const filtersChanged = previousFilters !== appState.activityFilters;
+  if (filtersChanged) appState.activityLimit = activityPageSize;
+  if (appState.page === "activity" && appState.activityTab === "events") writeActivityAddress();
   if (previousPage === "requests" && appState.page !== "requests") forgetLastAnswer();
-  const isNewItem = previousItem !== selectedItemId() || previousPage !== appState.page;
+  const isNewItem = previousItem !== selectedItemId() || previousPage !== appState.page || previousTab !== appState.activityTab || previousLogNode !== appState.nodeLog?.nodeId;
   if (isNewItem) {
     appState.openForm = null;
     appState.notice = null;
@@ -305,7 +332,7 @@ function onLocationChange(): void {
   render();
   if (previousItem !== selectedItemId()) document.querySelector(".detail")?.scrollTo(0, 0);
   if (appState.page === "folders") void loadPageData().then(render);
-  else if (isNewItem) void refreshPage();
+  else if (isNewItem || filtersChanged) void refreshPage();
 }
 
 function closeSelection(): void {
@@ -324,6 +351,7 @@ function onKey(event: KeyboardEvent): void {
 
 applyTheme(appState.theme);
 readLocation();
+if (appState.page === "activity" && appState.activityTab === "events") writeActivityAddress();
 openListFromLocation();
 onRenderRequested(render);
 onRefreshRequested(() => void poll());

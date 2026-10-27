@@ -689,6 +689,18 @@ a.activity-entry:hover { background: var(--selection); }
 .activity-entry.level-error .activity-text { color: var(--bad); }
 .activity-source { font-size: 11px; }
 .activity-more { margin-top: 4px; }
+.activity-tabs { margin-top: 12px; }
+a.segment { text-decoration: none; }
+.log-line .activity-text { font-family: var(--mono); font-size: 12.5px; }
+.log-line.level-debug .activity-text { color: var(--text-muted); }
+.log-line.level-warning .activity-text { color: var(--warn); }
+.debug-facilities {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 16px;
+  padding: 10px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.debug-facility { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--text-muted); cursor: pointer; }
+.debug-facility code { color: var(--text); }
+.node-log .button-row { margin-top: 10px; }
 @media (max-width: 640px) {
   .activity-entry { grid-template-columns: 60px 12px minmax(0, 1fr); }
   .activity-source { display: none; }
@@ -757,3 +769,8 @@ a.activity-entry:hover { background: var(--selection); }
 .item-row.versions-file select { min-width: 0; max-width: 100%; }
 .item-row.versions-directory .link-button { text-align: left; }
 .versions-chosen { margin: 0 0 8px; padding-left: 18px; font-size: 13px; overflow-wrap: anywhere; }
+.change-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.change-line { display: flex; flex-direction: column; padding: 4px 0; border-top: 1px solid var(--line); }
+.change-line:first-child { border-top: 0; }
+.change-path { overflow-wrap: anywhere; font-size: 12.5px; }
+.change-line small { color: var(--text-faint); font-size: 12px; }

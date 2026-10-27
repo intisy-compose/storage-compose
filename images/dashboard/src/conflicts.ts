@@ -271,7 +271,8 @@ export class ConflictIndexes {
   /**
    * @implNote A node is gone only once two looks in a row did not keep it: one heartbeat that failed to read lists no
    * host agent node at all. A node known only from its stored files is looked at only when the files are read, at most once
-   * per `recheckMs` as `reconcile` runs with every `/api/nodes`, and its count starts over only when it is kept.
+   * per `recheckMs` as `reconcile` runs with every `/api/nodes`, and its count starts over only when it is kept, or when a read of the
+ * files finds it neither in memory nor in a file, as when its files were removed by hand.
    */
   private async forgetNodesNotKept(kept: ReadonlySet<string>): Promise<void> {
     if (!kept.size) return;
@@ -281,6 +282,7 @@ export class ConflictIndexes {
     for (const file of files) if (file.nodeId) known.add(file.nodeId);
     for (const nodeId of kept) this.missedReconciles.delete(nodeId);
     for (const nodeId of known) if (!kept.has(nodeId)) this.missedReconciles.set(nodeId, (this.missedReconciles.get(nodeId) ?? 0) + 1);
+    if (shouldReadFiles) for (const nodeId of [...this.missedReconciles.keys()]) if (!known.has(nodeId)) this.missedReconciles.delete(nodeId);
     const isGone = (nodeId: string | null) => nodeId === null || (this.missedReconciles.get(nodeId) ?? 0) >= 2;
     for (const index of this.indexes.values()) if (isGone(index.nodeId)) await this.forget(index);
     if (!shouldReadFiles) return;

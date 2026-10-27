@@ -1,6 +1,16 @@
-import type { FolderType, Versioning, VersioningType } from "./types.js";
+import { type FolderType, type Versioning, type VersioningType, listTimeoutMs } from "./types.js";
 
 export type VersioningParam = "cleanoutDays" | "keep" | "maxAge" | "command";
+
+/**
+ * How long a versions read waits for a free read slot when as many lists as allowed are being read.
+ * @implNote With the read itself it stays below what another host's dashboard waits for a forwarded list (`forwardedListTimeoutMs`,
+ * 5 s more than `listTimeoutMs`), so a busy host answers its own "being read right now" instead of the asking host timing out.
+ */
+export const versionsSlotWaitMs = 4_000;
+
+/** The longest a versions read takes: the wait for a slot, then Syncthing's walk of the versions. */
+export const versionsReadLongestSeconds = (versionsSlotWaitMs + listTimeoutMs) / 1000;
 
 export const versioningTypeTexts: Record<VersioningType, string> = {
   "": "none",

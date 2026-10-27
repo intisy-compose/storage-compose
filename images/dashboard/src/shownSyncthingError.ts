@@ -52,3 +52,26 @@ export function shownSyncthingError(error: string, ownLines: readonly string[] |
 export function reshownForwardedError(error: string): string {
   return shownSyncthingError(error, []);
 }
+
+/** What is shown instead of a text read without its folder's `.stignore` that could quote an ignore file, or of one whose node's secrets are not known. */
+export const hiddenUnscopedTexts = {
+  namesInclude: "error hidden: it mentions an include",
+  quotesPattern: "error hidden: it quotes an ignore pattern; the folder's ignore patterns show it",
+  secretsUnread: "error hidden: the node's secrets could not be read",
+} as const;
+
+const unscopedIncludeMention = /#include|\binclude (?:of|file)\b|\bincluded file/i;
+const quotesIgnorePattern = /invalid pattern|ignore (?:file|pattern)|\.stignore\b[^\n]*"/i;
+const longestShownText = 2000;
+
+/**
+ * Syncthing's text read where the folder's `.stignore` is not at hand: an event, a log line, a system error, a restore's per-file
+ * error or a refused request's answer; where the lines are at hand, `shownSyncthingError` shows more.
+ * @implNote Without them nothing tells whether the folder has an `#include`, so any text that names one (`#include`, `include of`,
+ * `include file`, `included file`) or could quote a line of an ignore file is replaced whole; every other text is shown as Syncthing wrote it, cut at 2000 characters.
+ */
+export function shownUnscopedText(text: string): string {
+  if (unscopedIncludeMention.test(text)) return hiddenUnscopedTexts.namesInclude;
+  if (quotesIgnorePattern.test(text)) return hiddenUnscopedTexts.quotesPattern;
+  return text.length > longestShownText ? `${text.slice(0, longestShownText)}…` : text;
+}
