@@ -16,6 +16,7 @@ import {
 } from "./api.js";
 import { arrayAutomationText, arraySharesElsewhere } from "./arrayConfirm.js";
 import { button, element, section } from "./dom.js";
+import { advancedEditor } from "./advancedEditor.js";
 import { controlId, registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
@@ -43,6 +44,8 @@ export interface SettingsContext {
   draft: DeviceSettings;
   /** On an array, introducer and accept folders automatically are only ever turned off. */
   isArray: boolean;
+  /** The node's defaults for new devices, which hold no name and are never paused. */
+  isDefaults?: boolean;
 }
 
 const arrayLockedToggles: readonly ToggleField[] = ["introducer", "autoAcceptFolders"];
@@ -123,7 +126,7 @@ export function settingFields(context: SettingsContext): HTMLElement {
   return element(
     "div",
     { className: "form-fields device-fields" },
-    labelled(context, "name", textInput(context, "name"), "Empty shows the short device ID."),
+    context.isDefaults ? null : labelled(context, "name", textInput(context, "name"), "Empty shows the short device ID."),
     labelled(context, "addresses", listInput(context, "addresses"), "One per line: dynamic, tcp://host:port, quic://host:port or relay://host:port?id=…"),
     labelled(context, "compression", compressionSelect(context)),
     element(
@@ -132,7 +135,7 @@ export function settingFields(context: SettingsContext): HTMLElement {
       toggle(context, "introducer", "adds the devices it shares folders with"),
       toggle(context, "autoAcceptFolders", "accepts the folders it offers"),
       toggle(context, "untrusted", "shares only encrypted folders with it"),
-      toggle(context, "paused", ""),
+      context.isDefaults ? null : toggle(context, "paused", ""),
       context.isArray ? element("small", { className: "muted" }, arrayAutomationText) : null,
     ),
     labelled(context, "allowedNetworks", listInput(context, "allowedNetworks"), "One network per line, such as 192.168.0.0/16; empty allows any."),
@@ -372,13 +375,22 @@ function foldersForm(node: StorageNode, form: DeviceFormState, name: string): HT
   );
 }
 
+/** After an advanced save the form reads the device again, unless it holds a change the person made. */
+function followAdvancedSave(form: DeviceFormState): void {
+  if (form.saving || JSON.stringify(form.saved) !== JSON.stringify(form.draft)) return;
+  form.saved = null;
+  form.draft = null;
+}
+
 function deviceSections(node: StorageNode, form: DeviceFormState, name: string): HTMLElement[] {
   if (form.removed) return [section("Removed", removedBody(node, name))];
   const isOtherLocalDevice = node.local && form.saved !== null && !isOwnDevice(node, form);
+  const advanced = node.local && form.saved !== null ? [advancedEditor(node.id, { kind: "device", id: form.deviceId }, () => followAdvancedSave(form))] : [];
   return [
     section("Device ID", element("code", { className: "device-id" }, form.deviceId)),
     section("Settings", formBody(node, form)),
     ...(isOtherLocalDevice ? [section("Folders", foldersForm(node, form, name)), section("Remove device", removeForm(node, form, name))] : []),
+    ...advanced,
   ];
 }
 

@@ -9,6 +9,7 @@ import { fileJoinRecords } from "./join.js";
 import { invalidateLocalNodes, nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
 import { activityRoutes, nodeLogRoutes } from "./routes/activity.js";
+import { advancedConfigRoutes } from "./routes/advancedConfig.js";
 import { deviceIndexRoutes } from "./routes/deviceIndex.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { folderActionRoutes } from "./routes/folderActions.js";
@@ -17,13 +18,14 @@ import { folderRoutes } from "./routes/folders.js";
 import { itemRoutes } from "./routes/items.js";
 import { localChangesRoutes } from "./routes/localChanges.js";
 import { nodeFolderRoutes } from "./routes/nodeFolders.js";
+import { nodeSettingsRoutes } from "./routes/nodeSettings.js";
 import { optionsRoutes } from "./routes/options.js";
 import { pendingRoutes } from "./routes/pending.js";
 import { pendingFolderRoutes } from "./routes/pendingFolders.js";
 import { treeRoutes } from "./routes/tree.js";
 import { versionRoutes } from "./routes/versions.js";
 import { arrayStatusDirectory, clusterArrayId, dashboardHosts, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
-import { SyncthingError, SyncthingRefusal, SyncthingUnavailable } from "./syncthing.js";
+import { SyncthingError, SyncthingRefusal, SyncthingUnavailable, refusalText } from "./syncthing.js";
 
 export const joinRecords = fileJoinRecords(joinsFile);
 
@@ -91,11 +93,14 @@ export interface NothingWritten {
   nothingWritten: true;
 }
 
+/** What a node write hands back: its note, one note for each node a write to several of them changed, or that it wrote nothing. */
+export type WriteOutcome = WriteNote | [WriteNote, ...WriteNote[]] | NothingWritten;
+
 /** A write to a node: it must answer with the note Activity records, or say outright that it wrote nothing, so a write that names nothing does not compile. */
 export interface NodeWriteRoute {
   method: WriteMethod;
   pattern: RegExp;
-  write: (context: RouteContext) => Promise<WriteNote | NothingWritten>;
+  write: (context: RouteContext) => Promise<WriteOutcome>;
 }
 
 export type AnyRoute = Route | NodeWriteRoute;
@@ -211,7 +216,9 @@ export const dashboardRoutes: AnyRoute[] = [
   ...deviceIndexRoutes(joinRecords),
   ...pendingRoutes(joinRecords),
   ...pendingFolderRoutes(),
-  ...optionsRoutes,
+  ...optionsRoutes(),
+  ...nodeSettingsRoutes(),
+  ...advancedConfigRoutes(),
   ...deviceRoutes(),
   ...nodeFolderRoutes(),
   ...folderIgnoreRoutes(),
@@ -237,14 +244,14 @@ function withText(note: WriteNote): WriteNote {
 }
 
 /** After a successful write: the shared local nodes build is dropped so the next read shows it, and a node write's note enters Activity. */
-export function settleWrite(method: string, statusCode: number, note: WriteNote | NothingWritten | null, effects: WriteEffects = liveWriteEffects): void {
+export function settleWrite(method: string, statusCode: number, outcome: WriteOutcome | null, effects: WriteEffects = liveWriteEffects): void {
   if (method === "GET" || method === "HEAD" || statusCode >= 400) return;
-  if (note && "nothingWritten" in note) return;
+  if (outcome && "nothingWritten" in outcome) return;
   effects.invalidate();
-  if (note) effects.record(withText(note));
+  for (const note of outcome === null ? [] : Array.isArray(outcome) ? outcome : [outcome]) effects.record(withText(note));
 }
 
-async function runRoute(candidate: AnyRoute, context: RouteContext): Promise<WriteNote | NothingWritten | null> {
+async function runRoute(candidate: AnyRoute, context: RouteContext): Promise<WriteOutcome | null> {
   if ("write" in candidate) return candidate.write(context);
   await candidate.handle(context);
   return null;
@@ -270,11 +277,6 @@ function errorStatus(error: unknown): number {
   if (error instanceof SyncthingUnavailable) return 503;
   if (error instanceof SyncthingError) return 502;
   return 500;
-}
-
-/** A refusal by Syncthing in words: its status, and its answer only as `SyncthingRefusal` shows it. */
-export function refusalText(refusal: SyncthingRefusal): string {
-  return `Syncthing refused the request (HTTP ${refusal.status})${refusal.shownBody ? `: ${refusal.shownBody}` : ""}`;
 }
 
 export function errorAnswer(error: unknown): ErrorAnswer {

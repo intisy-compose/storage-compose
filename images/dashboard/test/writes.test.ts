@@ -32,6 +32,24 @@ describe("a write through the dashboard", () => {
     assert.equal(forgetful.method, "PATCH");
   });
 
+  it("a write to several nodes enters each node's note and drops the shared build once", () => {
+    const effects = recorder();
+    const other: WriteNote = { nodeId: "d7e5", nodeName: "dashboard-test-peer", folderId: null, text: "dashboard-test-peer: changed connection options; relays on" };
+    settleWrite("PATCH", 200, [note, other], effects.effects);
+    assert.deepEqual(effects.recorded, [note, other]);
+    assert.equal(effects.invalidations(), 1);
+  });
+
+  it("a write to several nodes cannot answer with no note at all", () => {
+    const empty: NodeWriteRoute = {
+      method: "PATCH",
+      pattern: /^\/api\/nodes\/x$/,
+      // @ts-expect-error an empty list of notes would drop the shared build and name nothing
+      write: async () => [],
+    };
+    assert.equal(empty.method, "PATCH");
+  });
+
   it("a node write that wrote nothing enters nothing in Activity and keeps the shared build", () => {
     const effects = recorder();
     settleWrite("POST", 200, { nothingWritten: true }, effects.effects);

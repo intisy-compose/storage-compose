@@ -1,0 +1,172 @@
+import {
+  type DiskFreeUnit,
+  type GeneralEditResponse,
+  type GeneralSettingsChange,
+  type InstanceOptions,
+  type SettingsKeeper,
+  type StorageNode,
+  type UsageReportingChoice,
+  changedFields,
+  diskFreeUnits,
+  generalSettingKeys,
+  generalSettingLabels,
+  isKeeperManaged,
+  keeperManagedText,
+  saveGeneralSettings,
+} from "./api.js";
+import { editFailureNotice, resultLine } from "./deviceForm.js";
+import { button, element } from "./dom.js";
+import { type FieldForm, numberControl, selectControl, setting, textControl, toggleControl } from "./fieldKit.js";
+import { registerForm } from "./forms.js";
+import { requestRender } from "./renderRequest.js";
+import { appState, type Notice } from "./state.js";
+
+/** `usageReporting` is empty while the node's Syncthing has not been answered, which the form never sends. */
+interface GeneralValues {
+  deviceName: string;
+  keepFree: number;
+  keepFreeUnit: DiskFreeUnit;
+  usageReporting: UsageReportingChoice | "";
+  crashReportingEnabled: boolean;
+}
+
+interface GeneralFormState extends FieldForm<GeneralValues> {
+  result: Notice | null;
+}
+
+const forms = new Map<string, GeneralFormState>();
+
+function usageChoiceOf(urAccepted: number): GeneralValues["usageReporting"] {
+  if (urAccepted < 0) return "declined";
+  return urAccepted > 0 ? "accepted" : "";
+}
+
+function valuesOf(options: InstanceOptions): GeneralValues {
+  const unit = diskFreeUnits.includes(options.minHomeDiskFree.unit as DiskFreeUnit) ? (options.minHomeDiskFree.unit as DiskFreeUnit) : "%";
+  return { deviceName: options.deviceName, keepFree: options.minHomeDiskFree.value, keepFreeUnit: unit, usageReporting: usageChoiceOf(options.urAccepted), crashReportingEnabled: options.crashReportingEnabled };
+}
+
+function hasUnsavedChange(form: GeneralFormState): boolean {
+  return Object.keys(changedFields(form.saved, form.draft)).length > 0;
+}
+
+/** The node's form, following each read of its options while it holds nothing unsaved. */
+function formFor(nodeId: string, options: InstanceOptions): GeneralFormState {
+  const read = valuesOf(options);
+  const form = forms.get(nodeId);
+  if (!form) {
+    const formId = `general-form-${nodeId}`;
+    registerForm(formId);
+    const created: GeneralFormState = { formId, saved: read, draft: structuredClone(read), saving: false, result: null };
+    forms.set(nodeId, created);
+    return created;
+  }
+  if (!form.saving && !hasUnsavedChange(form)) {
+    form.saved = read;
+    form.draft = structuredClone(read);
+  }
+  return form;
+}
+
+/** The change as the server takes it: free space whole when either half changed, usage reporting only once answered. */
+function generalChangeOf(saved: GeneralValues, draft: GeneralValues): GeneralSettingsChange {
+  const changed = changedFields(saved, draft);
+  const change: GeneralSettingsChange = {};
+  if (changed.deviceName !== undefined) change.deviceName = draft.deviceName;
+  if (changed.keepFree !== undefined || changed.keepFreeUnit !== undefined) change.minHomeDiskFree = { value: draft.keepFree, unit: draft.keepFreeUnit };
+  if (changed.usageReporting) change.usageReporting = changed.usageReporting;
+  if (changed.crashReportingEnabled !== undefined) change.crashReportingEnabled = draft.crashReportingEnabled;
+  return change;
+}
+
+/**
+ * Takes the node's answer; a rename that was saved while the other settings were not says both, and the draft keeps what was not saved.
+ * @implNote The saved values follow the node's own answer, so the unsaved fields still differ from them and stay in the form.
+ */
+function settle(nodeId: string, form: GeneralFormState, answer: GeneralEditResponse): void {
+  if (answer.settings) appState.nodeOptions.set(nodeId, answer.settings);
+  const draft = form.draft;
+  if (answer.settings) form.saved = valuesOf(answer.settings.options);
+  form.draft = answer.problem ? draft : structuredClone(form.saved);
+  form.result = answer.problem ? { text: `Renamed; ${answer.problem}.`, tone: "warn" } : { text: "Saved.", tone: "ok" };
+}
+
+async function save(nodeId: string, form: GeneralFormState): Promise<void> {
+  const change = generalChangeOf(form.saved, form.draft);
+  if (Object.keys(change).length === 0) {
+    form.result = { text: "Nothing changed.", tone: "ok" };
+    return requestRender();
+  }
+  form.saving = true;
+  form.result = null;
+  requestRender();
+  const result = await saveGeneralSettings(nodeId, change);
+  form.saving = false;
+  if (result.ok) settle(nodeId, form, result.value);
+  else form.result = editFailureNotice(result);
+  requestRender();
+}
+
+function revert(form: GeneralFormState): void {
+  form.draft = structuredClone(form.saved);
+  form.result = null;
+  requestRender();
+}
+
+function usageChoices(form: GeneralFormState): [GeneralValues["usageReporting"], string][] {
+  const unanswered: [GeneralValues["usageReporting"], string][] = form.saved.usageReporting === "" ? [["", "Not answered yet: Syncthing sends nothing until it is"]] : [];
+  return [...unanswered, ["declined", "Declined: sends nothing"], ["accepted", "Accepted: sends anonymous usage reports to data.syncthing.net"]];
+}
+
+function isKept(keeper: SettingsKeeper | null, field: keyof GeneralSettingsChange): boolean {
+  return isKeeperManaged(keeper, generalSettingKeys[field]);
+}
+
+function hintOf(keeper: SettingsKeeper | null, field: keyof GeneralSettingsChange, hint: string): string {
+  return keeper && isKept(keeper, field) ? `Read only: ${keeperManagedText(keeper)}.` : hint;
+}
+
+function generalFields(form: GeneralFormState, nodeName: string, keeper: SettingsKeeper | null): HTMLElement {
+  const id = form.formId;
+  return element(
+    "div",
+    { className: "form-fields device-fields" },
+    setting(id, "deviceName", generalSettingLabels.deviceName, textControl(form, "deviceName", isKept(keeper, "deviceName")), hintOf(keeper, "deviceName", `The name other devices see for ${nodeName}.`)),
+    element(
+      "div",
+      { className: "number-fields" },
+      setting(id, "keepFree", generalSettingLabels.minHomeDiskFree, numberControl(form, "keepFree", 0, "any"), "Syncthing stops syncing when less is free where it keeps its database."),
+      setting(id, "keepFreeUnit", "Unit", selectControl(form, "keepFreeUnit", diskFreeUnits.map((unit) => [unit, unit] as const))),
+    ),
+    setting(
+      id,
+      "usageReporting",
+      generalSettingLabels.usageReporting,
+      selectControl(form, "usageReporting", usageChoices(form), isKept(keeper, "usageReporting")),
+      hintOf(keeper, "usageReporting", "The person decides; the dashboard never accepts for them."),
+    ),
+    element(
+      "div",
+      { className: "toggles" },
+      toggleControl(form, "crashReportingEnabled", generalSettingLabels.crashReportingEnabled, hintOf(keeper, "crashReportingEnabled", "sends a report to crash.syncthing.net when Syncthing crashes"), isKept(keeper, "crashReportingEnabled")),
+    ),
+  );
+}
+
+/** A local node's own device name, home disk reserve and the reports its Syncthing sends, as a form; what `keeper` rewrites at each start is read only. */
+export function generalSettingsForm(node: StorageNode, options: InstanceOptions, keeper: SettingsKeeper | null): HTMLElement {
+  const form = formFor(node.id, options);
+  return element(
+    "div",
+    { className: "device-form options-form", attributes: { id: form.formId } },
+    element("h3", { className: "settings-subheading" }, "General"),
+    generalFields(form, node.name, keeper),
+    resultLine(form.result),
+    element(
+      "div",
+      { className: "button-row" },
+      Object.assign(button(form.saving ? "Saving…" : "Save", () => void save(node.id, form), "button primary"), { disabled: form.saving }),
+      Object.assign(button("Revert", () => revert(form), "button ghost"), { disabled: form.saving }),
+    ),
+  );
+}

@@ -1,6 +1,6 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
 import type { NodesResponse } from "./api.js";
-import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderChanges, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests, savedWriteCount } from "./api.js";
+import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderChanges, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests, fetchRestartState, savedWriteCount } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
 import { loadAddDeviceForm, renderAddDeviceForm } from "./addDeviceForm.js";
@@ -22,6 +22,7 @@ import { applyTheme } from "./preferences.js";
 import { coalesceWhileRunning, readUntilSettled } from "./pollGuard.js";
 import { onRefreshRequested, onRenderRequested } from "./renderRequest.js";
 import { forgetLastAnswer, renderRequestsPage } from "./requestsPage.js";
+import { loadIgnoredLists, openIgnoredNodeIds } from "./ignoredSection.js";
 import { readableLocalNodes, renderSettingsPage } from "./settingsPage.js";
 import { renderMenu } from "./shell.js";
 import { activityLocation, activityPageSize, appState, explorerLocation, locationFor, readLocation, selectedItemId } from "./state.js";
@@ -264,9 +265,18 @@ async function loadNodeOptions(nodeId: string): Promise<void> {
   }
 }
 
+async function loadRestartState(nodeId: string): Promise<void> {
+  try {
+    appState.restartStates.set(nodeId, await fetchRestartState(nodeId));
+  } catch (error) {
+    appState.restartStates.set(nodeId, { error: messageOf(error) });
+  }
+}
+
 /** @implNote Waits for the nodes, as they say which nodes are this host's. */
 async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
-  await Promise.all([loadHostSettings(), nodesLoaded.then(() => Promise.all(readableLocalNodes().map((node) => loadNodeOptions(node.id))))]);
+  const loadNode = (nodeId: string) => Promise.all([loadNodeOptions(nodeId), loadRestartState(nodeId), openIgnoredNodeIds().includes(nodeId) ? loadIgnoredLists(nodeId) : null]);
+  await Promise.all([loadHostSettings(), nodesLoaded.then(() => Promise.all(readableLocalNodes().map((node) => loadNode(node.id))))]);
 }
 
 /** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */

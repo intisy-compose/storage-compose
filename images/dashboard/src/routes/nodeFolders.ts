@@ -481,7 +481,7 @@ function hasSharing(sharing: Sharing): boolean {
   return sharing.share.length + sharing.unshare.length > 0;
 }
 
-function typeChangeProblem(before: SyncthingFolderSettings, change: FolderSettingsChange): string | null {
+export function typeChangeProblem(before: Pick<SyncthingFolderSettings, "id" | "label" | "type">, change: FolderSettingsChange): string | null {
   const isEncrypted = before.type === "receiveencrypted";
   return isEncrypted && change.type !== undefined && change.type !== before.type ? `${folderName(before)} is receive encrypted, a type it keeps: it was given it by accepting an offer` : null;
 }

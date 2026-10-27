@@ -22,7 +22,8 @@ const changeAttempts = 2;
 /**
  * Replaces the node's whole Syncthing configuration with `change` of it; `change` answers null when the
  * configuration already holds what it would add, and nothing is written then.
- * @implNote Only for what Syncthing has no narrower endpoint for (ignored devices, a device's ignored folders). Its PUT
+ * @implNote Only for what Syncthing has no narrower endpoint for (ignored devices); a device's ignored folders have one,
+ * `PATCH /rest/config/devices/<id>`, measured on 2.1.6, though the folder ignore of an offer still writes them here. Its PUT
  * has no version check, so the config is read again just before the PUT: a change in between (Syncthing or another
  * browser) starts once more from the changed config, and a second one is a 409 with `conflict` and nothing written.
  * A lost answer counts as written once a fresh read holds the change, that is once `change` answers null for it.
