@@ -35,7 +35,7 @@ function outOfSyncText(copy: FolderCopy): string {
 function outOfSyncValue(copy: FolderCopy): HTMLElement | string {
   const text = outOfSyncText(copy);
   if (!copy.needItems) return text;
-  const target = { nodeId: copy.nodeId, folderId: copy.id, deviceId: null };
+  const target = { nodeId: copy.nodeId, folderId: copy.id, deviceId: null, failed: false };
   const control = button(text, () => toggleItemList(target), "link-button");
   control.title = isItemListOpen(target) ? "Close the list" : `List what ${copy.nodeName} still has to fetch`;
   control.setAttribute("aria-expanded", String(isItemListOpen(target)));
@@ -44,8 +44,24 @@ function outOfSyncValue(copy: FolderCopy): HTMLElement | string {
 
 function needPanel(copy: FolderCopy): HTMLElement | null {
   const list = appState.itemList;
-  if (!list || !isItemListOpen({ nodeId: copy.nodeId, folderId: copy.id, deviceId: null })) return null;
+  if (!list || !isItemListOpen({ nodeId: copy.nodeId, folderId: copy.id, deviceId: null, failed: false })) return null;
   return itemListPanel(list, `What ${copy.nodeName} still has to fetch`);
+}
+
+/** The count opens the list of the copy's failed items, each with Syncthing's error text. */
+function failedValue(copy: FolderCopy): HTMLElement | string {
+  if (!copy.errors) return "none";
+  const target = { nodeId: copy.nodeId, folderId: copy.id, deviceId: null, failed: true };
+  const control = button(plural(copy.errors, "item"), () => toggleItemList(target), "link-button tone-text-bad");
+  control.title = isItemListOpen(target) ? "Close the list" : `List what Syncthing could not sync on ${copy.nodeName}`;
+  control.setAttribute("aria-expanded", String(isItemListOpen(target)));
+  return control;
+}
+
+function failedPanel(copy: FolderCopy): HTMLElement | null {
+  const list = appState.itemList;
+  if (!list || !isItemListOpen({ nodeId: copy.nodeId, folderId: copy.id, deviceId: null, failed: true })) return null;
+  return itemListPanel(list, `Failed items on ${copy.nodeName}`);
 }
 
 function lastFileText(copy: FolderCopy): string {
@@ -61,7 +77,7 @@ function copyCard(copy: FolderCopy): HTMLElement {
     ["State", element("span", { className: `tone-text-${condition.tone}` }, condition.label)],
     ["Global", itemsText(copy)],
     ["Out of sync", outOfSyncValue(copy)],
-    ["Failed items", copy.errors ? element("span", { className: "tone-text-bad" }, plural(copy.errors, "item")) : "none"],
+    ["Failed items", failedValue(copy)],
   ];
   if (copy.type === "receiveonly") rows.push(["Changed here", plural(copy.localChanged, "item")]);
   rows.push(
@@ -80,6 +96,7 @@ function copyCard(copy: FolderCopy): HTMLElement {
     ),
     keyValueList(rows),
     needPanel(copy),
+    failedPanel(copy),
   );
 }
 

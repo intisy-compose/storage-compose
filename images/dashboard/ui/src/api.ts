@@ -28,6 +28,8 @@ export type {
   DriveSummary,
   EntryStatus,
   ErrorAnswer,
+  FailedItem,
+  FailedPage,
   FolderCopy,
   FolderDetailResponse,
   FolderFile,
@@ -98,7 +100,7 @@ export type {
   WarningLevel,
 } from "../../src/api/types.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
@@ -357,6 +359,11 @@ function pageQuery(page: number, perPage: number, extra: Record<string, string> 
 /** One page of what the node still has to fetch of the folder. */
 export function fetchNeedItems(nodeId: string, folderId: string, page: number, perPage: number): Promise<ReadResult<ItemsPage<NeedItem>>> {
   return readJson(`${folderApiPath(nodeId, folderId, "/need")}?${pageQuery(page, perPage)}`);
+}
+
+/** One page of the folder's failed items on the node. */
+export function fetchFailedItems(nodeId: string, folderId: string, page: number, perPage: number): Promise<ReadResult<FailedPage>> {
+  return readJson(`${folderApiPath(nodeId, folderId, "/errors")}?${pageQuery(page, perPage)}`);
 }
 
 /** One page of what `deviceId` still needs of the node's folder. */

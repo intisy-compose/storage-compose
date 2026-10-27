@@ -1,7 +1,7 @@
 import type { NodesResponse, Warning, WarningLevel } from "./api.js";
 import { element } from "./dom.js";
 import { formatAge } from "./format.js";
-import { locationFor } from "./state.js";
+import { failedItemsLocation, locationFor } from "./state.js";
 
 const levelGroups: { level: WarningLevel; heading: string }[] = [
   { level: "error", heading: "Errors" },
@@ -9,9 +9,10 @@ const levelGroups: { level: WarningLevel; heading: string }[] = [
   { level: "info", heading: "For your information" },
 ];
 
-/** Where an entry leads: an offer to Requests, a folder's problem to the folder, anything else to its node. */
+/** Where an entry leads: an offer to Requests, a folder's failed items to their list, any other folder problem to the folder, anything else to its node. */
 export function warningHref(warning: Warning): string | null {
   if (warning.kind === "pending-device" || warning.kind === "pending-folder") return locationFor("requests");
+  if (warning.kind === "folder-errors" && warning.folderId && warning.nodeId) return failedItemsLocation(warning.folderId, warning.nodeId);
   if (warning.folderId) return locationFor("folders", warning.folderId);
   return warning.nodeId ? locationFor("nodes", warning.nodeId) : null;
 }

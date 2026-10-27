@@ -1,9 +1,9 @@
-import { type FolderItem, type ItemsPage, type NeedItem, type NeedStage, defaultItemsPerPage, fetchNeedItems, fetchRemoteNeed, maxItemsPerPage } from "./api.js";
+import { type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type NeedStage, defaultItemsPerPage, fetchFailedItems, fetchNeedItems, fetchRemoteNeed, maxItemsPerPage } from "./api.js";
 import { button, element } from "./dom.js";
 import { formatBytes, formatDate } from "./format.js";
 import { hasNextPage, positionText, totalText } from "./itemPages.js";
 import { requestRender } from "./renderRequest.js";
-import { type ItemListState, type ItemListTarget, appState } from "./state.js";
+import { type ItemListState, type ItemListTarget, appState, failedItemsNodeInLocation } from "./state.js";
 
 const pageSizes = [...new Set([25, defaultItemsPerPage, maxItemsPerPage])].sort((left, right) => left - right);
 
@@ -11,10 +11,11 @@ const stageTexts: Record<NeedStage, string> = { progress: "being fetched", queue
 
 export function isItemListOpen(target: ItemListTarget): boolean {
   const list = appState.itemList;
-  return list !== null && list.nodeId === target.nodeId && list.folderId === target.folderId && list.deviceId === target.deviceId;
+  return list !== null && list.nodeId === target.nodeId && list.folderId === target.folderId && list.deviceId === target.deviceId && list.failed === target.failed;
 }
 
 function readPage(list: ItemListState) {
+  if (list.failed) return fetchFailedItems(list.nodeId, list.folderId, list.page, list.perPage);
   if (list.deviceId === null) return fetchNeedItems(list.nodeId, list.folderId, list.page, list.perPage);
   return fetchRemoteNeed(list.nodeId, list.folderId, list.deviceId, list.page, list.perPage);
 }
@@ -37,6 +38,14 @@ export function openItemList(target: ItemListTarget): void {
   void load(list);
 }
 
+/** Opens the failed items the address asks for (`&failed=<nodeId>` on a folder), unless that list is already open. */
+export function openFailedListFromLocation(): void {
+  const nodeId = failedItemsNodeInLocation();
+  if (!nodeId || !appState.selectedFolderId) return;
+  const target = { nodeId, folderId: appState.selectedFolderId, deviceId: null, failed: true };
+  if (!isItemListOpen(target)) openItemList(target);
+}
+
 export function closeItemList(): void {
   appState.itemList = null;
   requestRender();
@@ -56,7 +65,17 @@ function sizeText(item: FolderItem): string {
   return item.deleted ? "deleted" : formatBytes(item.size);
 }
 
-function itemRow(item: NeedItem | FolderItem): HTMLElement {
+function failedRow(item: FailedItem): HTMLElement {
+  return element(
+    "li",
+    { className: "item-row item-failed" },
+    element("span", { className: "item-name", title: item.path }, item.path),
+    element("small", { className: "item-error tone-text-bad" }, item.error),
+  );
+}
+
+function itemRow(item: NeedItem | FolderItem | FailedItem): HTMLElement {
+  if ("path" in item) return failedRow(item);
   const changedBy = item.modifiedBy ? `, by ${item.modifiedBy}` : "";
   return element(
     "li",
@@ -82,7 +101,7 @@ function sizeChoice(list: ItemListState): HTMLElement {
   return select;
 }
 
-function pager(list: ItemListState, page: ItemsPage<NeedItem | FolderItem>): HTMLElement {
+function pager(list: ItemListState, page: ItemsPage<NeedItem | FolderItem | FailedItem>): HTMLElement {
   const hasNext = hasNextPage(list, page);
   const previous = button("Previous", () => goToPage(list, list.page - 1), "button ghost");
   previous.disabled = list.loading || list.page <= 1;
@@ -98,6 +117,11 @@ function readingText(): string {
   return "Reading the items… for a folder with many items Syncthing can take up to 30 s.";
 }
 
+function emptyText(list: ItemListState): string {
+  if (list.page > 1) return "No items on this page.";
+  return list.failed ? "No failed items." : "Nothing is out of sync.";
+}
+
 function listBody(list: ItemListState): HTMLElement[] {
   const answer = list.answer;
   if (!answer) return [element("p", { className: "muted" }, readingText())];
@@ -106,7 +130,7 @@ function listBody(list: ItemListState): HTMLElement[] {
     return [element("p", { className: isRefusal ? "muted" : "tone-text-bad", attributes: { role: "status" } }, isRefusal ? `${answer.message}.` : `Could not be read: ${answer.message}`)];
   }
   const page = answer.value;
-  if (!page.items.length) return [element("p", { className: "muted" }, list.page > 1 ? "No items on this page." : "Nothing is out of sync."), pager(list, page)];
+  if (!page.items.length) return [element("p", { className: "muted" }, emptyText(list)), pager(list, page)];
   return [element("p", { className: "muted" }, totalText(list, page)), element("ol", { className: "item-list" }, ...page.items.map(itemRow)), pager(list, page)];
 }
 

@@ -951,6 +951,15 @@ export interface ItemsPage<T> {
   total: number | null;
 }
 
+/** One item Syncthing could not sync, with its error text as Syncthing gives it. */
+export interface FailedItem {
+  path: string;
+  error: string;
+}
+
+/** `GET /api/nodes/<nodeId>/folders/<folderId>/errors?page=&perPage=` answers `ItemsPage<FailedItem>`: the folder's failed items; `total` is Syncthing's count of them. */
+export type FailedPage = ItemsPage<FailedItem>;
+
 /** `GET /api/nodes/<nodeId>/folders/<folderId>/remote-need?device=&page=&perPage=`: what the device still needs of the node's folder. */
 export interface RemoteNeedPage extends ItemsPage<FolderItem> {
   device: FolderPeer;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
-import type { ItemsPage, NeedItem, RemoteNeedPage } from "../src/api/types.js";
+import type { FailedItem, ItemsPage, NeedItem, RemoteNeedPage } from "../src/api/types.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import { requestHandler } from "../src/routes.js";
@@ -17,6 +17,8 @@ const peerId = "PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6"
 const arrayId = "X7KCOB7-4ZJQ2RT-W352REX-D36FWRQ-YSGVXEA-6YA5PZK-PHYIU5M-32WVQQ4";
 const offeredId = "NICA6WR-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA";
 const leftId = "LEFTAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA";
+
+const lockError = String.raw`open C:\Documents\Projects\.idea\session.lock: The process cannot access the file because it is being used by another process.`;
 
 function reply(response: ServerResponse, body: unknown, status = 200): void {
   response.writeHead(status, { "Content-Type": "application/json" });
@@ -61,7 +63,7 @@ describe("out-of-sync items", () => {
     }
     if (url.pathname === "/rest/config/folders") return reply(response, [{ id: "documents", label: "Documents", path: "/var/syncthing/data/documents", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }, { deviceID: peerId }, { deviceID: offeredId }, { deviceID: leftId }] }]);
     if (folder !== "documents") return response.writeHead(404).end("no such folder\n");
-    if (url.pathname === "/rest/db/status") return reply(response, { needTotalItems: 918_733, needFiles: 918_000 });
+    if (url.pathname === "/rest/db/status") return reply(response, { needTotalItems: 918_733, needFiles: 918_000, errors: 652 });
     if (url.pathname === "/rest/db/completion") {
       const device = url.searchParams.get("device");
       if (device === offeredId) return reply(response, { completion: 0, needItems: 918_733, needBytes: 1e11, remoteState: "unknown", sequence: 0 });
@@ -69,6 +71,18 @@ describe("out-of-sync items", () => {
       return reply(response, { completion: 12.5, needItems: 4, needBytes: 4096, remoteState: "valid", sequence: 4711 });
     }
     if (page > 1) await slowPages;
+    if (url.pathname === "/rest/folder/errors") {
+      const failures = [
+        { path: "Projects/.idea/session.lock", error: lockError },
+        { path: "Projects/pattern.txt", error: 'invalid pattern "secret/included/**" in ignore file' },
+        { path: "Projects/other.txt", error: "failed to read #include ../../etc/private.stignore" },
+      ];
+      const errors = Array.from({ length: Math.min(perPage, 652) }, (_, index) => {
+        const position = (page - 1) * perPage + index;
+        return failures[position] ?? { path: `Projects/locked-${position}.bin`, error: "permission denied" };
+      });
+      return reply(response, { folder: "documents", page, perpage: perPage, errors });
+    }
     if (url.pathname === "/rest/db/need") {
       const names = Array.from({ length: perPage }, (_, index) => `Projects/report-${(page - 1) * perPage + index}.pdf`);
       return reply(response, {
@@ -85,6 +99,7 @@ describe("out-of-sync items", () => {
 
   const peerDashboard = createServer((request, response) => {
     peerDashboardPaths.push(request.url ?? "");
+    if ((request.url ?? "").includes("/errors")) return reply(response, { items: [{ path: "x.txt", error: 'invalid pattern "private/**"', apiKey: "leak" }], page: 2, perPage: 20, total: 21 });
     reply(response, { items: [{ name: "a.txt", size: 3, modified: "2026-10-21T10:00:00Z", deleted: false, modifiedBy: "p53", stage: "rest", apiKey: "leak" }], page: 2, perPage: 20, total: 21 });
   });
 
@@ -215,6 +230,40 @@ describe("out-of-sync items", () => {
     assert.deepEqual(body, { items: [{ name: "a.txt", size: 3, modified: "2026-10-21T10:00:00Z", deleted: false, modifiedBy: "p53", stage: "rest" }], page: 2, perPage: 20, total: 21 });
   });
 
+  it("failed items page and keep syncthing's error text", async () => {
+    const { status, body } = await getJson<ItemsPage<FailedItem>>("/api/nodes/d7e5/folders/documents/errors?perPage=20");
+    assert.equal(status, 200);
+    assert.deepEqual(asked.filter((path) => path.startsWith("/rest/folder/errors")), ["/rest/folder/errors?folder=documents&page=1&perpage=20"]);
+    assert.equal(body.total, 652);
+    assert.equal(body.perPage, 20);
+    assert.equal(body.items.length, 20);
+    assert.deepEqual(body.items[0], { path: "Projects/.idea/session.lock", error: lockError });
+    assert.deepEqual(body.items[3], { path: "Projects/locked-3.bin", error: "permission denied" });
+    releaseSlowPages();
+    const later = await getJson<ItemsPage<FailedItem>>("/api/nodes/d7e5/folders/documents/errors?page=3&perPage=20");
+    assert.equal(later.body.page, 3);
+    assert.equal(later.body.items[0].path, "Projects/locked-40.bin");
+    assert.ok(asked.includes("/rest/folder/errors?folder=documents&page=3&perpage=20"), asked.join(", "));
+    slowPages = new Promise<void>((resolve) => (releaseSlowPages = resolve));
+  });
+
+  it("failed items show nothing quoted from an included ignore file, and a missing folder or bad page is refused", async () => {
+    const { body } = await getJson<ItemsPage<FailedItem>>("/api/nodes/d7e5/folders/documents/errors?perPage=5");
+    assert.equal(body.items[1].error, "invalid pattern in an included file");
+    assert.equal(body.items[2].error, "Syncthing cannot read an included file");
+    assert.ok(!JSON.stringify(body).includes("secret/included"));
+    assert.equal((await getJson("/api/nodes/d7e5/folders/nosuch/errors")).status, 404);
+    assert.equal((await getJson("/api/nodes/d7e5/folders/documents/errors?page=0")).status, 400);
+    assert.ok(asked.every((path) => !path.includes("scan") && !path.includes("override")), "reading the list changes nothing");
+  });
+
+  it("another host's failed items are read from its dashboard and rebuilt field by field", async () => {
+    const { status, body } = await getJson<ItemsPage<FailedItem>>("/api/nodes/a1b2/folders/documents/errors?page=2&perPage=20");
+    assert.equal(status, 200);
+    assert.equal(peerDashboardPaths.at(-1), "/api/nodes/a1b2/folders/documents/errors?page=2&perPage=20&scope=local");
+    assert.deepEqual(body, { items: [{ path: "x.txt", error: "invalid pattern in an included file" }], page: 2, perPage: 20, total: 21 });
+  });
+
   it("a request already forwarded by another host is not forwarded again", async () => {
     const { status } = await getJson("/api/nodes/a1b2/folders/documents/need?scope=local");
     assert.equal(status, 404);
@@ -248,14 +297,18 @@ describe("item list pages", () => {
     assert.equal(positionText({ page: 1, perPage: 25, loading: true }, 29), "Reading…");
   });
 
+  it("the total of a failed list says Syncthing could not sync them", () => {
+    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null, failed: true }, pageOf(25, 652)), "652 items Syncthing could not sync.");
+  });
+
   it("the total names the device, and a page past the count says why it is there", () => {
-    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null }, pageOf(25, 29)), "29 items still to fetch.");
+    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null, failed: false }, pageOf(25, 29)), "29 items still to fetch.");
     assert.equal(
-      totalText({ page: 3, perPage: 25, deviceId: null }, { ...pageOf(4, 29), page: 3 }),
+      totalText({ page: 3, perPage: 25, deviceId: null, failed: false }, { ...pageOf(4, 29), page: 3 }),
       "29 items still to fetch. This page lies past that count: Syncthing lists items it is fetching or has queued again here.",
     );
     const remote = { ...pageOf(1, 1), device: { deviceId: "PBMD2SH", name: "pc" } };
-    assert.equal(totalText({ page: 1, perPage: 25, deviceId: "PBMD2SH" }, remote), "pc still needs 1 item of this folder.");
-    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null }, pageOf(0, null)), "How many in all could not be read.");
+    assert.equal(totalText({ page: 1, perPage: 25, deviceId: "PBMD2SH", failed: false }, remote), "pc still needs 1 item of this folder.");
+    assert.equal(totalText({ page: 1, perPage: 25, deviceId: null, failed: false }, pageOf(0, null)), "How many in all could not be read.");
   });
 });

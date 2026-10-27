@@ -1,4 +1,4 @@
-import { type FolderItem, type ItemsPage, type NeedItem, type ReadResult, defaultItemsPerPage } from "./api.js";
+import { type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type ReadResult, defaultItemsPerPage } from "./api.js";
 import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
@@ -162,6 +162,8 @@ export interface ItemListTarget {
   nodeId: string;
   folderId: string;
   deviceId: string | null;
+  /** The folder's failed items instead of what is out of sync; `deviceId` is null then. */
+  failed: boolean;
 }
 
 /** The one open item list and the page it shows; it keeps its last answer until the person pages or reads it again. */
@@ -169,7 +171,7 @@ export interface ItemListState extends ItemListTarget {
   page: number;
   perPage: number;
   loading: boolean;
-  answer: ReadResult<ItemsPage<NeedItem | FolderItem>> | null;
+  answer: ReadResult<ItemsPage<NeedItem | FolderItem | FailedItem>> | null;
 }
 
 /** The Folders page's file explorer: which node's view, which directory, and what the person opened in it. */
@@ -381,6 +383,18 @@ export function explorerLocation(folderId: string | null, node = appState.explor
 /** Whether the node is an array of this host's, where a folder is added, shared, accepted or ignored only with its ID typed. */
 export function isArrayNode(nodeId: string): boolean {
   return appState.data?.nodes.find((node) => node.id === nodeId)?.kind === "array";
+}
+
+/** The folder's detail with the list of `nodeId`'s failed items of it open. */
+export function failedItemsLocation(folderId: string, nodeId: string): string {
+  return `${explorerLocation(folderId)}&failed=${encodeURIComponent(nodeId)}`;
+}
+
+/** The node whose failed items the address asks to open, or null. */
+export function failedItemsNodeInLocation(): string | null {
+  const hash = location.hash;
+  const queryStart = hash.indexOf("?");
+  return queryStart < 0 ? null : new URLSearchParams(hash.slice(queryStart + 1)).get("failed");
 }
 
 /** The form that edits the folder's settings on the node `nodeId`, over the explorer where the folder's detail is open. */

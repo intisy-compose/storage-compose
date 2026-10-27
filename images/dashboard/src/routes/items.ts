@@ -1,6 +1,6 @@
 import { deviceDisplayName } from "../api/deviceText.js";
-import { type FolderItem, type FolderPeer, type ItemsPage, type NeedItem, type NeedStage, type RemoteNeedPage, defaultItemsPerPage, maxItemsPerPage } from "../api/types.js";
-import { needTotalOf } from "../folderLists.js";
+import { type FailedItem, type FailedPage, type FolderItem, type FolderPeer, type ItemsPage, type NeedItem, type NeedStage, type RemoteNeedPage, defaultItemsPerPage, maxItemsPerPage } from "../api/types.js";
+import { errorTotalOf, needTotalOf } from "../folderLists.js";
 import { RequestError, sendJson } from "../http.js";
 import { type LocalInstance, type RemoteInstance, type ResolvedInstance, callSyncthing, forwardRead, forwardedListTimeoutMs, resolveInstance } from "../instanceResolver.js";
 import type { Route } from "../routes.js";
@@ -61,6 +61,27 @@ async function localNeed(instance: LocalInstance, folderId: string, request: Pag
     ];
     const items = stages.flatMap(([stage, listed]) => (listed ?? []).map((item): NeedItem => ({ ...folderItem(item, devices), stage })));
     return { items, page: request.page, perPage: request.perPage, total: status ? needTotalOf(status) : null };
+  });
+}
+
+const includeMention = /#include/i;
+const quotedPattern = /invalid pattern "(?:[^"\\]|\\.)*"(?: in ignore file)?/g;
+
+/**
+ * Syncthing's error text for a failed item, as given.
+ * @implNote Nothing from an included ignore file is passed on: a pattern Syncthing quotes from one is replaced by words, and an error naming an include is replaced whole.
+ */
+export function shownFailure(error: string): string {
+  if (includeMention.test(error)) return "Syncthing cannot read an included file";
+  return error.replace(quotedPattern, "invalid pattern in an included file");
+}
+
+async function localErrors(instance: LocalInstance, folderId: string, request: PageRequest): Promise<FailedPage> {
+  return callSyncthing(instance, async (client) => {
+    await folderContext(instance, client, folderId);
+    const [answer, status] = await Promise.all([client.errorsPage(folderId, request.page, request.perPage), client.folderStatus(folderId).catch(() => null)]);
+    const items = (answer.errors ?? []).map((item): FailedItem => ({ path: item.path, error: shownFailure(item.error) }));
+    return { items, page: request.page, perPage: request.perPage, total: status ? errorTotalOf(status) : null };
   });
 }
 
@@ -128,6 +149,11 @@ function forwardedPage<T>(answer: unknown, request: PageRequest, item: (value: u
   };
 }
 
+function forwardedFailedItem(value: unknown): FailedItem {
+  const fields = fieldsOf(value);
+  return { path: String(fields.path ?? ""), error: shownFailure(String(fields.error ?? "")) };
+}
+
 function forwardedDevice(answer: unknown, deviceId: string): FolderPeer {
   const device = fieldsOf(fieldsOf(answer).device);
   return { deviceId, name: typeof device.name === "string" ? device.name : deviceDisplayName(null, deviceId) };
@@ -152,6 +178,13 @@ export async function needItems(instance: ResolvedInstance, folderId: string, re
   if (instance.kind === "local") return localNeed(instance, folderId, request);
   const answer = await forwardRead(instance, listPath(instance, folderId, "need", pageQuery(request)), forwardBudgetsMs.need);
   return forwardedPage(answer, request, forwardedNeedItem);
+}
+
+/** The items of the node's folder that Syncthing could not sync, one page of them, with its error text. */
+export async function failedItems(instance: ResolvedInstance, folderId: string, request: PageRequest): Promise<FailedPage> {
+  if (instance.kind === "local") return localErrors(instance, folderId, request);
+  const answer = await forwardRead(instance, listPath(instance, folderId, "errors", pageQuery(request)), forwardBudgetsMs.need);
+  return forwardedPage(answer, request, forwardedFailedItem);
 }
 
 /** What `deviceId` still needs of the node's folder, one page of it; a device the folder is not shared with is refused, naming it. */
@@ -205,6 +238,18 @@ export function itemRoutes(sources: ItemRouteSources = liveSources): Route[] {
         const instance = await resolveFor(sources, url, nodeId);
         const key = ["need", nodeId, folderId, request.page, request.perPage].join("\u0000");
         sendJson(response, 200, await shared(key, () => needItems(instance, folderId, request)));
+      },
+    },
+    {
+      method: "GET",
+      pattern: /^\/api\/nodes\/([^/]+)\/folders\/([^/]+)\/errors$/,
+      handle: async ({ response, url, params: [nodeSegment, folderSegment] }) => {
+        const nodeId = decodedSegment(nodeSegment, "node ID");
+        const folderId = decodedSegment(folderSegment, "folder ID");
+        const request = pageRequestOf(url);
+        const instance = await resolveFor(sources, url, nodeId);
+        const key = ["errors", nodeId, folderId, request.page, request.perPage].join("\u0000");
+        sendJson(response, 200, await shared(key, () => failedItems(instance, folderId, request)));
       },
     },
     {

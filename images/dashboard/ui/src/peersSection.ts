@@ -56,7 +56,7 @@ function isNeedOpenFor(node: StorageNode, peer: Peer): boolean {
 /** The completion opens what the device still needs; it sits beside the row, as a local node's row is a link to the device's form. */
 function completionButton(node: StorageNode, peer: Peer, displayName: string): HTMLButtonElement {
   const isOpen = isNeedOpenFor(node, peer);
-  const open = () => openItemList({ nodeId: node.id, folderId: firstFolderOf(node, peer), deviceId: peer.deviceId });
+  const open = () => openItemList({ nodeId: node.id, folderId: firstFolderOf(node, peer), deviceId: peer.deviceId, failed: false });
   const control = button(completionText(peer) || "items", isOpen ? closeItemList : open, `link-button peer-completion tone-text-${completionTone(peer)}`);
   control.title = isOpen ? "Close the list" : `List what ${displayName} still needs of ${node.name}'s folders`;
   control.setAttribute("aria-expanded", String(isOpen));
@@ -142,7 +142,7 @@ function folderChoice(node: StorageNode, peer: Peer | undefined, folderId: strin
     option.selected = option.defaultSelected = folder.id === folderId;
     select.append(option);
   }
-  select.addEventListener("change", () => openItemList({ nodeId: node.id, folderId: select.value, deviceId }));
+  select.addEventListener("change", () => openItemList({ nodeId: node.id, folderId: select.value, deviceId, failed: false }));
   return select;
 }
 
