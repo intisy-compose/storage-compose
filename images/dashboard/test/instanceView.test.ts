@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { after, before, describe, it, mock } from "node:test";
+import { after, before, describe, it } from "node:test";
+import { secretsClock } from "../src/nodeSecrets.js";
 import type { StorageNode } from "../src/api/types.js";
 import { systemErrorWarnings } from "../src/attention.js";
 import { type InstanceView, classifyConnections, instanceView } from "../src/syncthing.js";
@@ -271,15 +272,21 @@ describe("a system error while the node's configuration cannot be read", () => {
       await instanceView("view-secrets-kept", endpoint);
       answers.config = undefined;
       answers.systemErrors = [{ when: "2026-10-27T10:00:00Z", message: `GUI login with ${guiPasswordHash} rejected` }];
-      mock.timers.enable({ apis: ["Date"], now: Date.now() });
+      const realNow = secretsClock.now;
       try {
-        mock.timers.tick(61_000);
+        secretsClock.now = () => realNow() + 61_000;
         const view = (await instanceView("view-secrets-kept", endpoint))!;
         const warnings = systemErrorWarnings(pc, view.systemErrors, view.secrets);
         assert.ok(!JSON.stringify(warnings).includes(guiPasswordHash), JSON.stringify(warnings));
         assert.deepEqual(warnings.map((shown) => shown.text), ["pc's Syncthing: GUI login with [redacted] rejected"]);
+        const changedKey = "changed-api-key-0123456789";
+        answers.systemErrors = [{ when: "2026-10-27T10:00:01Z", message: `request with ${changedKey} refused` }];
+        const changed = (await instanceView("view-secrets-kept", { ...endpoint, apiKey: changedKey }))!;
+        const changedWarnings = systemErrorWarnings(pc, changed.systemErrors, changed.secrets);
+        assert.ok(!JSON.stringify(changedWarnings).includes(changedKey), JSON.stringify(changedWarnings));
+        assert.deepEqual(changedWarnings.map((shown) => shown.text), ["pc's Syncthing: request with [redacted] refused"]);
       } finally {
-        mock.timers.reset();
+        secretsClock.now = realNow;
       }
     });
   });

@@ -5,7 +5,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { after, describe, it, mock } from "node:test";
+import { after, describe, it } from "node:test";
+import { secretsClock } from "../src/nodeSecrets.js";
 import { deflateRawSync, gzipSync } from "node:zlib";
 import { type DebugFacilities, type NodeErrors, type NodeLog, type ParityJob, changeActivityTypes, listTimeoutMs } from "../src/api/types.js";
 import { versionsReadLongestSeconds, versionsSlotWaitMs } from "../src/api/versioningText.js";
@@ -424,13 +425,13 @@ describe("event feeds", () => {
     fake.emit({ type: "ConfigSaved", data: {} });
     await until(() => log.query({}).entries.length === 1, "the entry read with the configuration");
     fake.configFails = true;
-    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    const realNow = secretsClock.now;
     try {
-      mock.timers.tick(61_000);
+      secretsClock.now = () => realNow() + 61_000;
       fake.emit({ type: "ItemFinished", data: { folder: "documents", item: "a.txt", error: `login with ${guiPasswordHash} refused`, type: "file", action: "update" } });
       await until(() => log.query({}).entries.length === 2, "the entry read after the configuration failed");
     } finally {
-      mock.timers.reset();
+      secretsClock.now = realNow;
     }
     assert.ok(!JSON.stringify(log.query({})).includes(guiPasswordHash));
     assert.equal(texts(log)[0], "pc: Documents failed to sync a.txt (login with [redacted] refused)");
