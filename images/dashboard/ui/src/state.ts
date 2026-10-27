@@ -1,4 +1,5 @@
-import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
+import { type ConflictFile, type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type ReadResult, defaultItemsPerPage } from "./api.js";
+import type { ActivityFilters, ActivityResponse, FileVersion, VersionsPage, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -153,6 +154,55 @@ export interface FolderActionState {
   removeOpen: boolean;
   /** The folder's ID as typed to confirm the removal. */
   confirm: string;
+  /** The revert or override form is open. */
+  discardOpen: boolean;
+  /** The folder's ID as typed to confirm a revert or override. */
+  discardConfirm: string;
+  /** Syncthing's counts read as the revert or override form opened; null until read, or when the read failed. */
+  discardCounts: DiscardCounts | null;
+  discardCountsReading: boolean;
+  result: Notice | null;
+}
+
+/** What an item list lists: what is out of sync, the failed items, what was changed on a receive only node, or the conflict copies. */
+export type ItemListKind = "need" | "failed" | "local-changed" | "conflicts";
+
+/** Which item list is open: what a node still has to fetch of a folder, or with `deviceId` what that device still needs of it. */
+export interface ItemListTarget {
+  nodeId: string;
+  folderId: string;
+  /** Set only for a need list, naming the device whose need is listed. */
+  deviceId: string | null;
+  kind: ItemListKind;
+}
+
+/** The one open item list and the page it shows; it keeps its last answer until the person pages or reads it again. */
+export interface ItemListState extends ItemListTarget {
+  page: number;
+  perPage: number;
+  loading: boolean;
+  answer: ReadResult<ItemsPage<NeedItem | FolderItem | FailedItem | ConflictFile>> | null;
+}
+
+/** The open versions browser of one folder copy: where in the tree it is, the date filter, the versions chosen and the restore's confirmation. */
+export interface VersionsState {
+  nodeId: string;
+  folderId: string;
+  /** The directory shown, `/` separated, empty for the folder's root. */
+  prefix: string;
+  page: number;
+  perPage: number;
+  /** The date filter as its fields hold it, `YYYY-MM-DD`, empty for no bound. */
+  from: string;
+  to: string;
+  loading: boolean;
+  answer: ReadResult<VersionsPage> | null;
+  /** Each file chosen for a restore, with the version chosen for it. */
+  chosen: Map<string, FileVersion>;
+  confirmOpen: boolean;
+  /** The folder ID as typed on an array. */
+  confirm: string;
+  busy: boolean;
   result: Notice | null;
 }
 
@@ -209,6 +259,10 @@ export interface AppState {
   foldedSettings: Set<string>;
   /** By `<folder id>/<node id>`. */
   folderActions: Map<string, FolderActionState>;
+  itemList: ItemListState | null;
+  versions: VersionsState | null;
+  /** How many items a page of an item list holds; the person can change it in the list. */
+  itemsPerPage: number;
   activity: ActivityResponse | null;
   activityError: string | null;
   activityFilters: ActivityFilters;
@@ -253,6 +307,9 @@ export const appState: AppState = {
   explorer: emptyExplorer(allNodesView, ""),
   foldedSettings: new Set(),
   folderActions: new Map(),
+  itemList: null,
+  versions: null,
+  itemsPerPage: defaultItemsPerPage,
   activity: null,
   activityError: null,
   activityFilters: { node: "", folder: "", source: "", routine: false },
@@ -360,6 +417,41 @@ export function explorerLocation(folderId: string | null, node = appState.explor
 /** Whether the node is an array of this host's, where a folder is added, shared, accepted or ignored only with its ID typed. */
 export function isArrayNode(nodeId: string): boolean {
   return appState.data?.nodes.find((node) => node.id === nodeId)?.kind === "array";
+}
+
+/** The folder's detail with the list of `nodeId`'s failed items of it open. */
+export function failedItemsLocation(folderId: string, nodeId: string): string {
+  return `${explorerLocation(folderId)}&failed=${encodeURIComponent(nodeId)}`;
+}
+
+/** The folder's detail with the list of its conflict copies on `nodeId` open. */
+export function conflictsLocation(folderId: string, nodeId: string): string {
+  return `${explorerLocation(folderId)}&conflicts=${encodeURIComponent(nodeId)}`;
+}
+
+const itemListParams = ["failed", "conflicts"];
+
+/** The address without the list it asks to open; the rest is kept as written, as `path` keeps its slashes unencoded. */
+export function withoutItemListInHash(hash: string): string {
+  const queryStart = hash.indexOf("?");
+  if (queryStart < 0) return hash;
+  const kept = hash
+    .slice(queryStart + 1)
+    .split("&")
+    .filter((pair) => !itemListParams.includes(pair.split("=")[0]));
+  return kept.length ? `${hash.slice(0, queryStart)}?${kept.join("&")}` : hash.slice(0, queryStart);
+}
+
+/** The list the address asks to open (`&failed=<nodeId>` or `&conflicts=<nodeId>` on a folder), or null. */
+export function itemListInLocation(): { kind: "failed" | "conflicts"; nodeId: string } | null {
+  const hash = location.hash;
+  const queryStart = hash.indexOf("?");
+  if (queryStart < 0) return null;
+  const query = new URLSearchParams(hash.slice(queryStart + 1));
+  const failed = query.get("failed");
+  if (failed) return { kind: "failed", nodeId: failed };
+  const conflicts = query.get("conflicts");
+  return conflicts ? { kind: "conflicts", nodeId: conflicts } : null;
 }
 
 /** The form that edits the folder's settings on the node `nodeId`, over the explorer where the folder's detail is open. */

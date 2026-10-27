@@ -1,6 +1,7 @@
 import type { FolderCopy, FolderSummary, NodeFolder, StorageNode } from "./api.js";
 import { formatPercent, normaliseCompletion, plural } from "./format.js";
 import type { Tone } from "./nodeStatus.js";
+import type { FolderActionState } from "./state.js";
 
 export interface FolderCondition {
   rank: number;
@@ -57,4 +58,13 @@ export function rescanAllQuestion(node: Pick<StorageNode, "name" | "folders">): 
   const scanned = node.folders.filter((folder) => folder.state !== "paused");
   const items = scanned.reduce((total, folder) => total + folder.globalFiles + folder.globalDirectories, 0);
   return `Rescan all ${plural(scanned.length, "folder")} of ${node.name}, ${plural(items, "item")}?`;
+}
+
+/**
+ * Whether the action's node no longer has the folder and nothing of the action is still in use.
+ * @implNote A node can miss one read of its settings while it is slow, so an action still running, an open removal or a typed subfolder waits for the next read.
+ */
+export function isOrphanedAction(state: FolderActionState, nodeIdsWithSettings: string[]): boolean {
+  if (nodeIdsWithSettings.includes(state.nodeId)) return false;
+  return !state.busy && !state.removeOpen && !state.discardOpen && state.sub === "";
 }

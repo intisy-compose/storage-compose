@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { ParityJob } from "../src/api/types.js";
 import { ActivityLog, EventFeeds, type FeedInstance, ParityWatcher, failedItemsPerFolder } from "../src/eventFeed.js";
-import { SyncthingClient, type SyncthingEvent } from "../src/syncthing.js";
+import { ConflictIndexes } from "../src/conflicts.js";
+import { type BrowseEntry, type FolderStatus, SyncthingClient, type SyncthingEvent, type SyncthingFolderConfig } from "../src/syncthing.js";
 import { until } from "./until.js";
 
 const pcDevice = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 const arrayDevice = "ARRAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
-const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20 };
+const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20, bufferSize: 3 };
 
 /** A Syncthing that answers `/rest/events` like the real one: only events after `since`, or an empty list after a short wait. */
 class FakeSyncthing {
@@ -39,6 +43,7 @@ class FakeSyncthing {
         if (answered) return;
         answered = true;
         clearTimeout(timer);
+        this.waiting = this.waiting.filter((wake) => wake !== answerOnce);
         reply(answer());
       };
       const timer = setTimeout(answerOnce, 30);
@@ -55,6 +60,13 @@ class FakeSyncthing {
     for (const event of events) this.events.push({ id: this.events.length + 1, time: new Date(Date.now() + this.events.length).toISOString(), ...event });
     const waiting = this.waiting.splice(0);
     for (const wake of waiting) wake();
+  }
+
+  /** Cuts the open long poll off, as a network failure would, without a restart; waits for one to be open, so a poll always fails. */
+  async dropOpenPoll(): Promise<void> {
+    await until(() => this.waiting.length > 0, "a long poll to cut off");
+    this.waiting = [];
+    this.server.closeAllConnections();
   }
 
   /** Starts again: new start time, IDs from 1, and the open long poll cut off. */
@@ -120,6 +132,85 @@ describe("event feeds", () => {
     assert.equal(failed.folderId, "documents");
     assert.equal(failed.type, "item-failed");
     assert.equal(failed.level, "warning");
+  });
+
+  it("an index update reaches the listener and stays out of Activity, and a restart is told", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    const heard: string[] = [];
+    const feeds = new EventFeeds(log, feedOptions, { event: (nodeId, event) => heard.push(`${nodeId}:${event.type}`), mayHaveMissed: (nodeId) => heard.push(`${nodeId}:restarted`) });
+    feedSets.push(feeds);
+    feeds.reconcile([feed]);
+    fake.emit({ type: "LocalIndexUpdated", data: { folder: "documents", items: 1, filenames: ["a.sync-conflict-20261027-110000-TUH2R66.txt"], sequence: 9 } }, scanned("documents", "idle"));
+    await until(() => heard.length === 2, "both events at the listener");
+    assert.deepEqual(heard, ["pc:LocalIndexUpdated", "pc:StateChanged"]);
+    await until(() => log.query({}).entries.length === 1, "the state change in Activity");
+    assert.deepEqual(texts(log), ["pc: Documents is idle"]);
+    fake.restart();
+    fake.emit(scanned("documents", "scanning"));
+    await until(() => heard.includes("pc:restarted"), "the restart at the listener");
+    assert.equal(heard.filter((entry) => entry === "pc:restarted").length, 1, "the first start of a feed is no restart");
+  });
+
+  it("a poll that fills syncthing's buffer, and one that failed and answers again, may have missed events", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    const missed: string[] = [];
+    const feeds = new EventFeeds(log, feedOptions, { event: () => {}, mayHaveMissed: (nodeId) => missed.push(nodeId) });
+    feedSets.push(feeds);
+    feeds.reconcile([feed]);
+    fake.emit(scanned("documents", "scanning"), scanned("documents", "idle"));
+    await until(() => log.query({}).entries.length === 2, "two events");
+    assert.deepEqual(missed, [], "fewer than the buffer holds");
+    fake.emit(scanned("documents", "scanning"), scanned("documents", "idle"), scanned("documents", "syncing"));
+    await until(() => missed.length === 1, "a full buffer told");
+    await fake.dropOpenPoll();
+    fake.emit(scanned("documents", "idle"));
+    await until(() => missed.length === 2, "the failed poll told once it answers again");
+  });
+
+  it("a failed poll whose recovered batch moved the sequence does not start a running conflict sweep again", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const directory = await mkdtemp(join(tmpdir(), "feed-conflicts-"));
+    let sequence = 40;
+    const roots: string[] = [];
+    let release = () => {};
+    const hold = new Promise<void>((resolve) => (release = resolve));
+    const reader = {
+      browse: async (_folderId: string, prefix: string): Promise<BrowseEntry[]> => {
+        if (prefix === "") roots.push(prefix);
+        await hold;
+        return [];
+      },
+      file: async () => null,
+      folderStatus: async (): Promise<FolderStatus> => ({ state: "idle", globalBytes: 0, needBytes: 0, sequence }),
+      folders: async (): Promise<SyncthingFolderConfig[]> => [{ id: "documents", label: "Documents", path: "/x", type: "sendreceive", paused: false, devices: [] }],
+    };
+    const indexes = new ConflictIndexes({ directory, recheckMs: 0, browsePauseMs: 0, report: () => {} });
+    const feeds = new EventFeeds(new ActivityLog(100), feedOptions, {
+      event: (nodeId, event) => indexes.takeEvent(nodeId, event),
+      mayHaveMissed: (nodeId, isRestart) => indexes.mayHaveMissedUpdates(nodeId, isRestart),
+    });
+    feedSets.push(feeds);
+    try {
+      await indexes.reconcile([{ nodeId: "pc", client: reader }]);
+      await until(() => roots.length === 1, "the sweep to read the root");
+      feeds.reconcile([feed]);
+      fake.emit(scanned("documents", "idle"));
+      await until(() => fake.sinceSeen.some((since) => since >= 1), "the feed to take the first event");
+      await fake.dropOpenPoll();
+      sequence = 41;
+      fake.emit({ type: "LocalIndexUpdated", data: { folder: "documents", items: 1, filenames: ["a.txt"], sequence: 41 } });
+      await until(() => fake.sinceSeen.some((since) => since >= 2), "the recovered poll");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      release();
+      await indexes.idle();
+      assert.deepEqual(roots, [""], "the batch brought the index to the folder's sequence, so the sweep went on");
+      assert.equal(indexes.list("pc", "documents")?.complete, true);
+    } finally {
+      indexes.stop();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("a restart resets since without losing new events", async () => {

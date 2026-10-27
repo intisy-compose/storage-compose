@@ -50,6 +50,8 @@ interface FakeInstance {
   fileDelayMs: number;
   errorsDelayMs: number;
   browseDelayMs: number;
+  statusDelayMs: number;
+  errorsFail: boolean;
   failingFile: string | null;
 }
 
@@ -100,6 +102,7 @@ describe("tree listing of one node", () => {
   let fileFixture: { global: Record<string, unknown>; local: Record<string, unknown> };
   let fileRequests: string[];
   let browseRequests: string[];
+  let errorsRequests = 0;
   let inFlight = 0;
   let mostInFlight = 0;
   let nodeCount = 0;
@@ -161,13 +164,15 @@ describe("tree listing of one node", () => {
           return reply(response, instance.pending);
         case "/rest/db/status":
           if (!folder) return reply(response, "no such folder", 404);
-          return reply(response, { ...statusFixture, errors: folder.errors?.length ?? 0, pullErrors: folder.errors?.length ?? 0, needFiles: folder.need?.length ?? 0, needTotalItems: folder.need?.length ?? 0, ...folder.status });
+          return void delayed(instance.statusDelayMs, () => reply(response, { ...statusFixture, errors: folder.errors?.length ?? 0, pullErrors: folder.errors?.length ?? 0, needFiles: folder.need?.length ?? 0, needTotalItems: folder.need?.length ?? 0, ...folder.status }));
         case "/rest/db/browse":
           browseRequests.push(`${folder?.id}:${requestUrl.searchParams.get("prefix") ?? ""}:${requestUrl.searchParams.get("levels")}`);
           return void delayed(instance.browseDelayMs, () => reply(response, folder?.browse[requestUrl.searchParams.get("prefix") ?? ""] ?? []));
         case "/rest/db/file":
           return void serveFile(requestUrl, response);
         case "/rest/folder/errors":
+          errorsRequests += 1;
+          if (instance.errorsFail) return reply(response, "database is locked", 500);
           return void delayed(instance.errorsDelayMs, () => reply(response, { errors: (folder?.errors ?? []).map((path) => ({ path, error: "denied" })), page: 1, perpage: 100 }));
         case "/rest/db/need":
           return reply(response, { progress: [], queued: [], rest: (folder?.need ?? []).map((name) => ({ name })) });
@@ -194,10 +199,13 @@ describe("tree listing of one node", () => {
       fileDelayMs: 0,
       errorsDelayMs: 0,
       browseDelayMs: 0,
+      statusDelayMs: 0,
+      errorsFail: false,
       failingFile: null,
     };
     fileRequests = [];
     browseRequests = [];
+    errorsRequests = 0;
     inFlight = 0;
     mostInFlight = 0;
     nodeCount += 1;
@@ -334,12 +342,60 @@ describe("tree listing of one node", () => {
     assert.equal(stateOf(after.entries.find((entry) => entry.name === "Recipes")).status, "failed");
   });
 
-  it("a first read of the lists that takes too long shows the folder's counts with a note", async () => {
-    instance.errorsDelayMs = 400;
-    const listing = await treeListing(node.nodeId, "Documents", 1, sources({ firstListsWaitMs: 50 }));
-    assert.deepEqual(stateOf(listing.entries.find((entry) => entry.name === "Recipes")), { status: "failed", detail: "too many failed items to place" });
+  it("a first read of the lists that takes too long shows its rows as still being read with a note", async () => {
+    instance.errorsDelayMs = 2000;
+    const listing = await treeListing(node.nodeId, "Documents", 1, sources({ firstListsWaitMs: 800 }));
+    assert.deepEqual(stateOf(listing.entries.find((entry) => entry.name === "Recipes")), { status: "unknown", detail: "still being read" });
     assert.ok(listing.notes.some((note) => note.includes("still being read")), listing.notes.join("; "));
-    await wait(500);
+    await until(() => delayedAnswers === 0, "the slow lists");
+  });
+
+  it("a failed first read of the lists says so, and the next listing neither waits for it nor reads it again", async () => {
+    instance.errorsFail = true;
+    const listing = await treeListing(node.nodeId, "Documents", 1, sources());
+    assert.deepEqual(stateOf(listing.entries.find((entry) => entry.name === "Recipes")), { status: "unknown", detail: "where its folder's items are could not be read" });
+    assert.ok(
+      listing.notes.some((note) => note.startsWith("Documents: 0 items outstanding and 1 failed in this folder; where they are could not be read: ")),
+      listing.notes.join("; "),
+    );
+    const readsBefore = errorsRequests;
+    const started = Date.now();
+    const again = await treeListing(node.nodeId, "Documents", 1, sources());
+    assert.ok(Date.now() - started < 1000, `${Date.now() - started} ms`);
+    assert.equal(stateOf(again.entries.find((entry) => entry.name === "Recipes")).status, "unknown");
+    assert.equal(errorsRequests, readsBefore, "the failed read is not tried again on every listing");
+  });
+
+  it("a folder status that takes too long shows the folder as still being read instead of waiting for it", async () => {
+    instance.statusDelayMs = 2000;
+    const started = Date.now();
+    const listing = await treeListing(node.nodeId, "", 1, sources({ firstListsWaitMs: 300 }));
+    assert.ok(Date.now() - started < 1500, `${Date.now() - started} ms`);
+    assert.deepEqual(stateOf(listing.entries.find((entry) => entry.name === "Documents")), { status: "unknown", detail: "still being read" });
+    await until(() => delayedAnswers === 0, "the slow status");
+  });
+
+  it("a slow folder status and slow lists share one wait, not one each", async () => {
+    instance.folders = instance.folders.filter((folder) => folder.id === "documents");
+    instance.statusDelayMs = 1000;
+    instance.errorsDelayMs = 3000;
+    const started = Date.now();
+    const listing = await treeListing(node.nodeId, "Documents", 1, sources({ firstListsWaitMs: 1200 }));
+    assert.ok(Date.now() - started < 1900, `${Date.now() - started} ms, where a wait for the status and then one for the lists takes 2200`);
+    assert.deepEqual(stateOf(listing.entries.find((entry) => entry.name === "Recipes")), { status: "unknown", detail: "still being read" });
+    await until(() => delayedAnswers === 0, "the slow status and lists");
+  });
+
+  it("a first browse that takes too long lists nothing yet and says the contents are still being read", async () => {
+    instance.browseDelayMs = 2000;
+    const started = Date.now();
+    const listing = await treeListing(node.nodeId, "Documents", 1, sources({ firstListsWaitMs: 300 }));
+    assert.ok(Date.now() - started < 1500, `${Date.now() - started} ms`);
+    assert.ok(!listing.entries.some((entry) => entry.name === "Recipes"));
+    assert.ok(listing.notes.includes("Documents: its contents on pc are still being read"), listing.notes.join("; "));
+    await until(() => delayedAnswers === 0, "the slow browse");
+    const later = await treeListing(node.nodeId, "Documents", 1, sources());
+    assert.ok(later.entries.some((entry) => entry.name === "Recipes"));
   });
 
   it("a global change with the same local sequence re-reads the directory", async () => {
@@ -631,7 +687,7 @@ describe("tree listing of all nodes", () => {
     assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
     assert.ok(listing.notes.includes("pc is still reading Documents"), listing.notes.join("; "));
     await until(() => delayedAnswers === 0, "the slow browse");
-    const later = await allNodesListing("Documents", 1, "all", allSources(nodes, { listingBudgetMs: 200 }));
+    const later = await allNodesListing("Documents", 1, "all", allSources(nodes));
     assert.deepEqual(names(later.entries), ["Recipes", "Taxes", "notes.txt"]);
   });
 

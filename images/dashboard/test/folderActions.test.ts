@@ -6,9 +6,11 @@ import type { FolderRescan, FolderSettings, RemovedFolder } from "../src/api/typ
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
-import { folderActionRoutes, pauseFolder, removeFolder, rescanAll, rescanFolder, rescanSubProblem } from "../src/routes/folderActions.js";
+import { folderSubpathProblem } from "../src/pathGuard.js";
+import { folderActionRoutes, pauseFolder, removeFolder, rescanAll, rescanFolder } from "../src/routes/folderActions.js";
 import { SyncthingClient } from "../src/syncthing.js";
-import { copyCondition, nodeFolderState, rescanAllQuestion, worstCondition } from "../ui/src/folderCondition.js";
+import { copyCondition, isOrphanedAction, nodeFolderState, rescanAllQuestion, worstCondition } from "../ui/src/folderCondition.js";
+import type { FolderActionState } from "../ui/src/state.js";
 import type { FolderCopy, FolderSummary, NodeFolder, StorageNode } from "../src/api/types.js";
 import { until } from "./until.js";
 
@@ -159,7 +161,7 @@ describe("pause, resume, rescan and remove a folder", () => {
     for (const body of [null, [], { sub: 1 }, { folder: "x" }]) {
       await assert.rejects(rescanFolder(peer(), "dashboard-test-c", body), { status: 400 }, JSON.stringify(body));
     }
-    assert.equal(rescanSubProblem("a..b/c", "linux"), null, "a name holding two dots is no climb");
+    assert.equal(folderSubpathProblem("a..b/c", "linux"), null, "a name holding two dots is no climb");
     await assert.rejects(rescanFolder(peer(), "dashboard-test-p", {}), { status: 409, message: "dashboard-test-p is paused, so Syncthing does not scan it; resume it first" });
     assert.deepEqual(writes(), []);
   });
@@ -169,8 +171,8 @@ describe("pause, resume, rescan and remove a folder", () => {
     for (const sub of ["PROGRA~1/x", "photos/2024.", "photos/2024 /x", "photos:hidden", "a\\b?"]) {
       await assert.rejects(rescanFolder(windowsPeer, "dashboard-test-c", { sub }), (error: Error & { status?: number }) => error.status === 400 && /Windows may read as another name/.test(error.message), JSON.stringify(sub));
     }
-    assert.match(rescanSubProblem("photos/STORAG~1", "windows") ?? "", /^photos\/STORAG~1 names STORAG~1, which Windows may read as another name/);
-    assert.equal(rescanSubProblem("photos/STORAG~1", "linux"), null, "a Linux node reads the name as written");
+    assert.match(folderSubpathProblem("photos/STORAG~1", "windows") ?? "", /^photos\/STORAG~1 names STORAG~1, which Windows may read as another name/);
+    assert.equal(folderSubpathProblem("photos/STORAG~1", "linux"), null, "a Linux node reads the name as written");
     assert.deepEqual(writes(), []);
     await rescanFolder(windowsPeer, "dashboard-test-c", { sub: "photos\\2024" });
     assert.equal(writes().length, 1);
@@ -279,5 +281,21 @@ describe("a paused folder reads plainly as paused", () => {
     const node = { name: "pc", folders: [folder("idle", 900000, 20733), folder("idle", 3, 1), folder("paused", 50, 5)] } as StorageNode;
     assert.equal(rescanAllQuestion(node), "Rescan all 2 folders of pc, 920,737 items?");
     assert.equal(rescanAllQuestion({ name: "d7e5", folders: [folder("idle", 1, 0)] } as StorageNode), "Rescan all 1 folder of d7e5, 1 item?");
+  });
+});
+
+describe("a folder action whose node misses its settings", () => {
+  const idle: FolderActionState = { folderId: "dashboard-test-c", nodeId: "d7e5", busy: false, sub: "", removeOpen: false, confirm: "", discardOpen: false, discardConfirm: "", discardCounts: null, discardCountsReading: false, result: { text: "Removed Test C from dashboard-test-peer's Syncthing.", tone: "ok" } };
+
+  it("keeps a running action, an open removal and a typed subfolder for the next poll", () => {
+    assert.equal(isOrphanedAction({ ...idle, busy: true }, []), false);
+    assert.equal(isOrphanedAction({ ...idle, removeOpen: true, confirm: "Test" }, []), false);
+    assert.equal(isOrphanedAction({ ...idle, sub: "photos/2024" }, []), false);
+    assert.equal(isOrphanedAction({ ...idle, discardOpen: true, discardConfirm: "dashboard-test-c" }, []), false);
+  });
+
+  it("takes an idle action's result once its node no longer has the folder", () => {
+    assert.equal(isOrphanedAction(idle, []), true);
+    assert.equal(isOrphanedAction(idle, ["d7e5"]), false, "the node still has the folder");
   });
 });

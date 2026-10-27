@@ -30,6 +30,7 @@ export const registryDirectory = `${statusDirectory}/nodes`;
 export const joinsFile = `${statusDirectory}/joins.json`;
 /** The dashboard's own memory of devices and drives; a cache in the `rebuilt` status volume. */
 export const seenDirectory = `${statusDirectory}/seen`;
+export const conflictsDirectory = `${statusDirectory}/conflicts`;
 export const publicDirectory = new URL("../public/", import.meta.url).pathname;
 export const port = Number(process.env.PORT ?? 8080);
 /** The join port inside the stack: the gateway forwards /api/join on 443 here with a PROXY protocol header. */
@@ -104,6 +105,22 @@ export function activityBufferSize(environment: Record<string, string | undefine
 }
 
 export const activitySettings = { bufferSize: activityBufferSize(process.env) };
+
+/** CONFLICT_SWEEP_PAUSE_MS and CONFLICT_RECHECK_HOURS from config.env: the pause between two directory reads of a conflict sweep, and how often every folder's conflict index is checked against its Syncthing. */
+export function conflictSweepSettings(environment: Record<string, string | undefined>): { browsePauseMs: number; verifyEveryMs: number } {
+  const pause = Number(environment.CONFLICT_SWEEP_PAUSE_MS);
+  const browsePauseMs = environment.CONFLICT_SWEEP_PAUSE_MS && Number.isFinite(pause) && pause >= 0 ? Math.floor(pause) : 10;
+  return { browsePauseMs, verifyEveryMs: positiveNumber(environment.CONFLICT_RECHECK_HOURS, 24) * 3_600_000 };
+}
+
+export const conflictSettings = conflictSweepSettings(process.env);
+
+/** VERSIONS_LIST_MAX_MB from config.env: how much of a folder's versions list, which Syncthing answers whole, the dashboard reads before it refuses to list them. */
+export function versionsListMaxBytes(environment: Record<string, string | undefined>): number {
+  return Math.round(positiveNumber(environment.VERSIONS_LIST_MAX_MB, 16) * 1_000_000);
+}
+
+export const versionsSettings = { listMaxBytes: versionsListMaxBytes(process.env) };
 
 /** EXPLORER_NEED_LIMIT from config.env: above this many outstanding or failed items a folder's list is not placed in the tree. */
 export function explorerNeedLimit(environment: Record<string, string | undefined>): number {

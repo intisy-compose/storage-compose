@@ -65,6 +65,13 @@ describe("instance resolver", () => {
         response.writeHead(409, { "Content-Type": "application/json" });
         return response.end(JSON.stringify({ error: "no folder dashboard-test-x on p53-data" }));
       }
+      if (request.url?.startsWith("/api/slow")) {
+        setTimeout(() => {
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({ items: ["late"] }));
+        }, 300);
+        return;
+      }
       if (request.url?.startsWith("/api/broken")) {
         response.writeHead(500, { "Content-Type": "text/plain" });
         return response.end("panic");
@@ -176,6 +183,13 @@ describe("instance resolver", () => {
     assert(instance.kind === "remote");
     assert.deepEqual(await resolver.forwardRead(instance, "/api/nodes/a1b2/need?page=2"), { items: [] });
     assert.equal(dashboardPaths.at(-1), "/api/nodes/a1b2/need?page=2&scope=local");
+  });
+
+  it("a remote read waits as long as its caller allows: past the timeout it is 504, within it the answer", async () => {
+    const instance = await resolver.resolveInstance("a1b2", sources);
+    assert(instance.kind === "remote");
+    await assert.rejects(resolver.forwardRead(instance, "/api/slow", 100), { status: 504, message: "p53's dashboard did not answer within 0.1 s" });
+    assert.deepEqual(await resolver.forwardRead(instance, "/api/slow", 2000), { items: ["late"] });
   });
 
   it("a remote refusal keeps the peer dashboard's status and error", async () => {

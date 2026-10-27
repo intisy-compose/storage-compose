@@ -37,6 +37,17 @@ export function windowsAliasProblem(path: string, alias: string): string {
   return `${path} names ${alias}, which Windows may read as another name (a short name, a trailing dot or space, or a reserved character)`;
 }
 
+const controlCharacter = /[\u0000-\u001f\u007f-\u009f]/;
+
+/** Why `relative` is no path inside a folder on a node of `os`, or null: it must name something below the folder's path, as written. */
+export function folderSubpathProblem(relative: string, os: NodeOs): string | null {
+  if (controlCharacter.test(relative)) return `${JSON.stringify(relative)} holds a control character`;
+  if (/^[\\/]/.test(relative) || /^[A-Za-z]:/.test(relative)) return `${relative} is not inside the folder: give a path below the folder's own, such as photos/2024`;
+  if (relative.split(/[\\/]/).some((segment) => segment === "..")) return `${relative} climbs out of the folder with ..; give a path below the folder's own`;
+  const alias = os === "windows" ? relativeWindowsAliasSegment(relative) : null;
+  return alias ? windowsAliasProblem(relative, alias) : null;
+}
+
 /**
  * Whether `path` is the root or below it once `..` is resolved; case-insensitive and either slash on Windows,
  * where a name Windows may resolve to another one is refused because only the written names are compared.

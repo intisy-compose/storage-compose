@@ -118,6 +118,8 @@ describe("join admission", () => {
     assert.equal(response.devices.length, 1);
     assert.equal(response.devices[0].name, "private-array");
     assert.deepEqual(instance.devices.map((device) => device.deviceID), [p53Id]);
+    assert.equal(instance.devices[0].introducer, false, "sent explicitly, never left to syncthing's defaults");
+    assert.equal(instance.devices[0].autoAcceptFolders, false, "sent explicitly, never left to syncthing's defaults");
     assert.deepEqual(instance.shares.sort(), [`documents-github:${p53Id}`, `documents:${p53Id}`, `projects:${p53Id}`]);
     assert.equal(records.p53.syncthingDeviceId, p53Id);
     assert.deepEqual(commits, [`p53 ${p53Id}`]);

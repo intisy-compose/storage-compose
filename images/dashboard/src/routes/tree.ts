@@ -1,5 +1,5 @@
 import { RequestError, sendJson } from "../http.js";
-import { type LocalNodeInfo, type ResolverSources, defaultResolverSources, findLocalNode, forwardRead, localNodeInfos, readDashboard, resolveRemote } from "../instanceResolver.js";
+import { type LocalNodeInfo, type ResolverSources, defaultResolverSources, findLocalNode, forwardRead, forwardedListTimeoutMs, localNodeInfos, readDashboard, resolveRemote } from "../instanceResolver.js";
 import type { Route } from "../routes.js";
 import { cachedOtherHostNodes } from "../nodes.js";
 import { explorerSettings, hostName, peerDashboards } from "../settings.js";
@@ -35,7 +35,7 @@ export async function treeResponse(request: TreeRequest, sources: TreeRouteSourc
   if (request.scope === "local") throw new RequestError(404, `no node ${request.node} on this host`);
   const instance = await resolveRemote(request.node, sources.resolver);
   const query = new URLSearchParams({ node: request.node, path: request.path, page: String(request.page) });
-  return forwardRead(instance, `/api/tree?${query.toString()}`);
+  return forwardRead(instance, `/api/tree?${query.toString()}`, forwardedListTimeoutMs);
 }
 
 function otherHostOf(dashboardUrl: string): OtherHost {

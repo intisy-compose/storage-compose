@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ScopedShare, SharedRead } from "../src/sharedRead.js";
+import { KeyedSharedReads, ScopedShare, SharedRead } from "../src/sharedRead.js";
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {
   let resolve!: (value: T) => void;
@@ -82,5 +82,26 @@ describe("a share by scope", () => {
     assert.equal(await share.read("local", start), 2);
     share.invalidate();
     assert.equal(await share.read("all", start), 3);
+  });
+});
+
+describe("shared reads by key", () => {
+  it("past the limit the least recently used settled reads go, and one still being read is never dropped", async () => {
+    const reads = new KeyedSharedReads<string>(60_000, 2);
+    const slow = deferred<string>();
+    const first = reads.read("slow", () => slow.promise);
+    await reads.read("a", async () => "a");
+    await reads.read("b", async () => "b");
+    await reads.read("a", async () => assert.fail("a is shared"));
+    await reads.read("c", async () => "c");
+    assert.deepEqual(reads.keys(), ["slow", "a", "c"], "b was the least recently used settled read; slow is still being read");
+    let restarted = false;
+    const again = reads.read("slow", async () => {
+      restarted = true;
+      return "second";
+    });
+    slow.resolve("slow");
+    assert.deepEqual([await first, await again], ["slow", "slow"]);
+    assert.equal(restarted, false, "no second read of slow started beside the first");
   });
 });

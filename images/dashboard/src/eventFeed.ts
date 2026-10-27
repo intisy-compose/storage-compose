@@ -1,7 +1,8 @@
 import { deviceDisplayName } from "./api/deviceText.js";
 import { type ActivityEntry, type ActivityLevel, type ActivityResponse, type ActivitySource, type ParityJob, routineActivityTypes } from "./api/types.js";
 import { arrayIds, arrayStatus } from "./arrayStatus.js";
-import { localInstances } from "./instanceResolver.js";
+import { conflictIndexes } from "./conflicts.js";
+import { localNodeInfos } from "./instanceResolver.js";
 import { recentLog, runningJob } from "./parity.js";
 import { activitySettings } from "./settings.js";
 import type { SyncthingClient, SyncthingEvent } from "./syncthing.js";
@@ -112,9 +113,23 @@ export interface FeedOptions {
   requestTimeoutMs: number;
   /** The pause before asking an instance that did not answer again. */
   retryMs: number;
+  /** Syncthing's event buffer per subscription; a poll answering this many events may have lost older ones. */
+  bufferSize: number;
 }
 
-export const defaultFeedOptions: FeedOptions = { waitSeconds: 50, requestTimeoutMs: 60_000, retryMs: 5_000 };
+/** Hears every event a feed reads, besides Activity, and each time events may have been lost; `conflicts.ts` keeps its index current from it. */
+export interface FeedListener {
+  event(nodeId: string, event: SyncthingEvent): void;
+  /**
+   * After the instance restarted (`isRestart`), a poll that filled Syncthing's buffer, or a poll that failed and then answered again.
+   * @implNote Syncthing keeps no events of a run from before the first request after it started, and keeps only `bufferSize` events per subscription.
+   */
+  mayHaveMissed(nodeId: string, isRestart: boolean): void;
+}
+
+const quietListener: FeedListener = { event: () => {}, mayHaveMissed: () => {} };
+
+export const defaultFeedOptions: FeedOptions = { waitSeconds: 50, requestTimeoutMs: 60_000, retryMs: 5_000, bufferSize: 1000 };
 
 export const followedEventTypes = [
   "StateChanged",
@@ -123,6 +138,7 @@ export const followedEventTypes = [
   "FolderPaused",
   "FolderResumed",
   "ItemFinished",
+  "LocalIndexUpdated",
   "LocalChangeDetected",
   "RemoteChangeDetected",
   "DeviceConnected",
@@ -327,6 +343,7 @@ export const failedItemsPerFolder = 20;
 class InstanceFeed {
   private stopped = false;
   private namesRead = false;
+  private pollFailed = false;
   private readonly context: EventContext;
 
   constructor(
@@ -334,6 +351,7 @@ class InstanceFeed {
     private readonly position: FeedPosition,
     private readonly log: ActivityLog,
     private readonly options: FeedOptions,
+    private readonly listener: FeedListener,
   ) {
     this.context = { nodeName: instance.name, deviceNames: new Map(), folderLabels: new Map(), completions: position.completions };
   }
@@ -354,10 +372,14 @@ class InstanceFeed {
         if (mayHaveRestarted) await this.followRestart();
         const events = await this.instance.client.events(this.position.since, followedEventTypes, this.options.waitSeconds, this.options.requestTimeoutMs);
         if (this.stopped) return;
+        const mayHaveMissed = this.pollFailed || events.length >= this.options.bufferSize;
+        this.pollFailed = false;
         this.take(events);
+        if (mayHaveMissed) this.listener.mayHaveMissed(this.instance.nodeId, false);
         mayHaveRestarted = events.length === 0;
       } catch {
         mayHaveRestarted = true;
+        this.pollFailed = true;
         await delay(this.options.retryMs);
       }
     }
@@ -368,7 +390,7 @@ class InstanceFeed {
     const client = this.instance.client;
     const startTime = await client.startTime();
     const isNewRun = this.position.startTime !== startTime;
-    if (isNewRun && this.position.startTime !== null) this.forgetRun();
+    if (isNewRun && this.position.startTime !== null) this.forgetRun(true);
     this.position.startTime = startTime;
     if (!isNewRun && this.namesRead) return;
     this.namesRead = true;
@@ -377,15 +399,17 @@ class InstanceFeed {
     this.context.folderLabels = namesFrom(folders, "id", "label");
   }
 
-  private forgetRun(): void {
+  private forgetRun(isRestart = false): void {
+    if (isRestart) this.listener.mayHaveMissed(this.instance.nodeId, true);
     this.position.since = 0;
     this.context.completions.clear();
   }
 
   private take(events: SyncthingEvent[]): void {
-    if (events.some((event) => event.id <= this.position.since)) this.forgetRun();
+    if (events.some((event) => event.id <= this.position.since)) this.forgetRun(true);
     for (const event of events) {
       if (event.type === "ConfigSaved") this.learnNames(event.data);
+      this.listener.event(this.instance.nodeId, event);
       const entry = eventEntry(event, this.instance.nodeId, this.context);
       if (entry && !this.isRepeat(entry)) this.enter(entry);
       this.position.since = Math.max(this.position.since, event.id);
@@ -417,6 +441,7 @@ export class EventFeeds {
   constructor(
     private readonly log: ActivityLog,
     private readonly options: FeedOptions = defaultFeedOptions,
+    private readonly listener: FeedListener = quietListener,
   ) {}
 
   reconcile(instances: FeedInstance[]): void {
@@ -434,7 +459,7 @@ export class EventFeeds {
       }
       const position = this.positions.get(instance.nodeId) ?? { since: 0, startTime: null, completions: new Map() };
       this.positions.set(instance.nodeId, position);
-      const feed = new InstanceFeed(instance, position, this.log, this.options);
+      const feed = new InstanceFeed(instance, position, this.log, this.options, this.listener);
       this.feeds.set(instance.nodeId, feed);
       void feed.run();
     }
@@ -557,16 +582,24 @@ export class ParityWatcher {
 }
 
 export const activityLog = new ActivityLog(activitySettings.bufferSize);
-const eventFeeds = new EventFeeds(activityLog);
+const eventFeeds = new EventFeeds(activityLog, defaultFeedOptions, {
+  event: (nodeId, event) => conflictIndexes.takeEvent(nodeId, event),
+  mayHaveMissed: (nodeId, isRestart) => conflictIndexes.mayHaveMissedUpdates(nodeId, isRestart),
+});
 const reconcileMilliseconds = 60_000;
 const parityTickMilliseconds = 15_000;
 
 let reconciling: Promise<void> | null = null;
 
-/** Starts a feed for each instance that appeared since the last call and stops the feed of each one gone. */
+/** Starts a feed for each instance that appeared since the last call and stops the feed of each one gone; the conflict index follows the same instances. */
 export function refreshEventFeeds(): Promise<void> {
-  reconciling ??= localInstances()
-    .then((instances) => eventFeeds.reconcile(instances))
+  reconciling ??= localNodeInfos()
+    .then((infos) => {
+      const instances = infos.flatMap((info) => (info.instance ? [info.instance] : []));
+      const kept = new Set(infos.filter((info) => info.remember || info.instance).map((info) => info.nodeId));
+      eventFeeds.reconcile(instances);
+      void conflictIndexes.reconcile(instances, kept).catch((error: Error) => console.error(`conflicts: the folders could not be followed: ${error.message}`));
+    })
     .catch((error: Error) => console.error(`activity: the instances could not be listed: ${error.message}`))
     .finally(() => {
       reconciling = null;

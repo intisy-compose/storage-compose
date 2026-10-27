@@ -14,11 +14,14 @@ import { deviceRoutes } from "./routes/devices.js";
 import { folderActionRoutes } from "./routes/folderActions.js";
 import { folderIgnoreRoutes } from "./routes/folderIgnores.js";
 import { folderRoutes } from "./routes/folders.js";
+import { itemRoutes } from "./routes/items.js";
+import { localChangesRoutes } from "./routes/localChanges.js";
 import { nodeFolderRoutes } from "./routes/nodeFolders.js";
 import { optionsRoutes } from "./routes/options.js";
 import { pendingRoutes } from "./routes/pending.js";
 import { pendingFolderRoutes } from "./routes/pendingFolders.js";
 import { treeRoutes } from "./routes/tree.js";
+import { versionRoutes } from "./routes/versions.js";
 import { arrayStatusDirectory, clusterArrayId, dashboardHosts, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
 import { SyncthingError, SyncthingUnavailable } from "./syncthing.js";
 
@@ -211,6 +214,9 @@ export const dashboardRoutes: AnyRoute[] = [
   ...deviceRoutes(),
   ...nodeFolderRoutes(),
   ...folderIgnoreRoutes(),
+  ...itemRoutes(),
+  ...localChangesRoutes(),
+  ...versionRoutes(),
   ...folderActionRoutes(),
   { pattern: hostWritePattern(/^\/api\/join$/), handle: async () => joinElsewhere() },
 ];
