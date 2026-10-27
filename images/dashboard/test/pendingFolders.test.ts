@@ -336,6 +336,22 @@ describe("answering a folder offered to a node", () => {
     assert.doesNotMatch(JSON.stringify(result), new RegExp(`${apiKey}|folder-secret|\\$2a\\$`));
   });
 
+  it("ignoring on an array without the typed id is 400, and an array is never asked before the ID is typed", async () => {
+    const refusal = (error: Refusal) => error.status === 400 && error.message === "type the folder ID documents to ignore it on private-array, an array";
+    await assert.rejects(ignorePendingFolder(array(), "documents", { offeredBy: offererId }), refusal);
+    await assert.rejects(ignorePendingFolder(array(), "documents", { offeredBy: offererId, confirm: "Documents" }), refusal);
+    await assert.rejects(ignorePendingFolder(array(), "documents", { offeredBy: offererId, confirm: 1 }), refusal);
+    assert.deepEqual(received, [], "an array is never asked before the ID is typed");
+
+    await ignorePendingFolder(array(), "documents", { offeredBy: offererId, confirm: "documents" });
+    assert.deepEqual(writesSent(), ["PUT /rest/config"]);
+  });
+
+  it("dismissing on an array needs nothing typed: the offer is listed again when next offered", async () => {
+    await dismissPendingFolder(array(), "documents", { offeredBy: offererId });
+    assert.deepEqual(writesSent(), [`DELETE /rest/cluster/pending/folders?folder=documents&device=${offererId}`]);
+  });
+
   it("a folder the device's offers of are ignored already is answered as such, with nothing written", async () => {
     const offerer = (config.devices as Record<string, unknown>[])[1];
     offerer.ignoredFolders = [{ time: "2026-10-26T08:00:00Z", id: "dashboard-test-b", label: "dashboard-test-b" }];
@@ -385,7 +401,12 @@ describe("answering a folder offered to a node", () => {
       const defaults = await fetch(`${dashboard}/api/nodes/a3f9/pending/folders/documents/defaults?offeredBy=${offererId}`);
       assert.equal(defaults.status, 200);
       assert.equal(((await defaults.json()) as { confirmRequired: boolean }).confirmRequired, true);
+      received.length = 0;
       assert.equal((await post("a3f9", "documents", "accept", acceptBody({ path: "/mnt/a3f9/pool/Documents", type: "receiveonly", versioning: staggered }))).status, 400);
+      const arrayIgnore = await post("a3f9", "documents", "ignore", { offeredBy: offererId });
+      assert.equal(arrayIgnore.status, 400);
+      assert.equal(((await arrayIgnore.json()) as { error: string }).error, "type the folder ID documents to ignore it on private-array, an array");
+      assert.deepEqual(received, [], "an array is never asked before the ID is typed");
       assert.equal((await post("d7e5", "dashboard-test-b", "dismiss", { offeredBy: otherId })).status, 200);
       assert.equal((await post("d7e5", "dashboard-test-b", "ignore", { offeredBy: offererId })).status, 200);
       assert.equal((await post("d7e5", "dashboard-test-a", "accept", acceptBody())).status, 201);

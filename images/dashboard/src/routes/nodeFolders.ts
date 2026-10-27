@@ -1,10 +1,10 @@
 import { deviceDisplayName, shortDeviceId } from "../api/deviceText.js";
-import { type FolderPathCheck, type FolderSettings, type FolderSettingsChange, type FolderShare, type FolderSharingChange, type FolderType, type NewFolder, type NewFolderDefaults, type Versioning, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "../api/types.js";
+import { type FolderEditBody, type FolderPathCheck, type FolderSettings, type FolderSettingsChange, type FolderShare, type FolderSharingChange, type FolderType, type NewFolder, type NewFolderDefaults, type Versioning, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "../api/types.js";
 import { ignoreLinesProblem } from "../api/ignorePatterns.js";
 import { versioningWords, versionsPathLabel } from "../api/versioningText.js";
 import { folderSettings } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, localNodeInfos, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, arrayConfirmProblem, callSyncthing, defaultReadBackDelaysMs, isArrayInstance, localNodeInfos, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import { type NodeRoot, folderPathProblem, isAbsolutePath, isInsideOtherNode, isInsideRoot, isStrictlyBelow, pathUnderRoot } from "../pathGuard.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import type { SyncthingDeviceConfig, SyncthingFolderSettings } from "../syncthing.js";
@@ -17,7 +17,9 @@ type SyncthingObject = Record<string, unknown>;
 
 const folderTypes = Object.keys(folderTypeTexts) as FolderType[];
 
-const newFolderKeys: readonly (keyof NewFolder)[] = ["id", "label", "path", "type", "paused", "ignores"];
+const newFolderKeys: readonly (keyof NewFolder)[] = ["id", "label", "path", "type", "paused", "ignores", "confirm"];
+
+const confirmTypeProblem = "the confirmation must be the folder ID as text";
 
 function asObject(value: unknown): SyncthingObject {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as SyncthingObject) : {};
@@ -34,6 +36,7 @@ export function newFolderProblem(body: unknown): string | null {
   if (fields.label !== undefined && typeof fields.label !== "string") return "Label must be text";
   if (fields.type !== undefined && !folderTypes.includes(fields.type as FolderType)) return `Type must be ${folderTypes.join(", ")}`;
   if (fields.paused !== undefined && typeof fields.paused !== "boolean") return "Paused must be on or off";
+  if (fields.confirm !== undefined && typeof fields.confirm !== "string") return confirmTypeProblem;
   if (fields.ignores === undefined) return null;
   if (!Array.isArray(fields.ignores) || !fields.ignores.every((line) => typeof line === "string")) return "the ignore patterns must be a list of lines";
   return ignoreLinesProblem(fields.ignores);
@@ -230,11 +233,17 @@ export async function createFolder(instance: ResolvedInstance, request: NewFolde
   return { instance: local, added: await settingsAfter(local, folder.id, config), folder, ignores: { lines: ignores.length, keptPaused } };
 }
 
-/** Adds a folder typed into the add form. */
+/**
+ * Adds a folder typed into the add form; on an array only with its ID typed, checked before any request.
+ * @implNote An add alone can share the folder: the node's default devices may list another device.
+ */
 export async function addFolder(instance: ResolvedInstance, body: unknown, nodes: NodeRoot[]): Promise<FolderAddition> {
   const problem = newFolderProblem(body);
   if (problem) throw new RequestError(400, problem);
-  const created = await createFolder(instance, body as NewFolder, nodes);
+  const { confirm, ...request } = body as NewFolder;
+  const confirmProblem = arrayConfirmProblem(requireLocal(instance), request.id.trim(), confirm, "add it");
+  if (confirmProblem) throw new RequestError(400, confirmProblem);
+  const created = await createFolder(instance, request, nodes);
   const { instance: local, folder, ignores } = created;
   return { added: created.added, note: { nodeId: local.nodeId, nodeName: local.name, folderId: folder.id, text: folderAddText(local.name, folder, ignores) } };
 }
@@ -451,17 +460,28 @@ export interface FolderEdit {
   note: WriteNote | NothingWritten;
 }
 
+/** The edit's change apart from the typed confirmation, which is no setting of the folder. */
+function withoutConfirm(body: unknown): { change: unknown; confirm: unknown } {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return { change: body, confirm: undefined };
+  const { confirm, ...change } = body as FolderEditBody;
+  return { change, confirm };
+}
+
 /**
- * Sends exactly the fields of `change` to the node's Syncthing, so a setting the person did not touch is never written
- * back over a change made elsewhere meanwhile; a new path is judged like an add's and sent as checked.
+ * Sends exactly the fields of the change to the node's Syncthing, so a setting the person did not touch is never written
+ * back over a change made elsewhere meanwhile; a new path is judged like an add's and sent as checked. On an array a
+ * change that shares the folder with a device needs the folder ID typed, checked before any request.
  * @implNote Syncthing does not move the files: the folder rescans at the new path. Sharing sends the devices list as
  * read last (see `settledSharing`) with only the shared and unshared devices changed.
  */
-export async function editFolder(instance: ResolvedInstance, folderId: string, change: unknown, nodes: NodeRoot[], readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<FolderEdit> {
+export async function editFolder(instance: ResolvedInstance, folderId: string, body: unknown, nodes: NodeRoot[], readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<FolderEdit> {
   const local = requireLocal(instance);
-  const problem = folderChangeProblem(change);
+  const { change, confirm } = withoutConfirm(body);
+  const problem = folderChangeProblem(change) ?? (confirm !== undefined && typeof confirm !== "string" ? confirmTypeProblem : null);
   if (problem) throw new RequestError(400, problem);
   const { devices: sharingChange, ...valid } = change as FolderSettingsChange;
+  const confirmProblem = sharingChange?.share?.length ? arrayConfirmProblem(local, folderId, confirm, "share it") : null;
+  if (confirmProblem) throw new RequestError(400, confirmProblem);
   const moved: SettingsChange = valid.path === undefined ? valid : { ...valid, path: guardedPath(local, valid.path, nodes) };
   const folders = await configuredFolders(local);
   const listed = folders.find((folder) => folder.id === folderId);
@@ -531,7 +551,8 @@ export async function newFolderDefaults(instance: ResolvedInstance, under: strin
   const derived = folderIdFromLabel(placed.name);
   const id = derived && !folders.some((folder) => folder.id === derived) ? derived : await randomFolderId(local);
   const devices = Array.isArray(defaults.devices) ? defaults.devices : [];
-  return { settings: folderSettings({ ...defaults, devices, id, label: placed.name, path: placed.path } as unknown as SyncthingFolderSettings), ignores, root: node.root, placementProblem: placed.problem };
+  const settings = folderSettings({ ...defaults, devices, id, label: placed.name, path: placed.path } as unknown as SyncthingFolderSettings);
+  return { settings, ignores, root: node.root, placementProblem: placed.problem, confirmRequired: isArrayInstance(local) };
 }
 
 /** The root with its separator, which Syncthing's browse lists the inside of rather than completing it as a name. */

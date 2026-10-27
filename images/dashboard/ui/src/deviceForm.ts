@@ -14,6 +14,7 @@ import {
   saveDeviceSettings,
   saveFolderSettings,
 } from "./api.js";
+import { arraySharesElsewhere } from "./arrayConfirm.js";
 import { button, element, section } from "./dom.js";
 import { registerForm } from "./forms.js";
 import { icon } from "./icons.js";
@@ -353,6 +354,7 @@ function revertSharing(form: DeviceFormState): void {
 }
 
 function foldersForm(node: StorageNode, form: DeviceFormState, name: string): HTMLElement {
+  if (node.kind === "array") return arraySharesElsewhere(node);
   const choices = folderChoices(node, form, name);
   if (choices.length === 0) return element("p", { className: "muted" }, `${node.name} has no folder yet.`);
   return element(

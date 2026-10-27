@@ -17,6 +17,7 @@ import {
   pullOrderTexts,
   saveFolderSettings,
 } from "./api.js";
+import { arrayConfirmField, isArrayConfirmed } from "./arrayConfirm.js";
 import { controlId, editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
 import { plural } from "./format.js";
@@ -24,7 +25,7 @@ import { registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
 import { type SharingChoice, clearSharing, folderSharingChange, hasSharingChanges, sharingList } from "./sharingFields.js";
-import { type EditFolderFormState, appState, explorerLocation } from "./state.js";
+import { type EditFolderFormState, appState, explorerLocation, isArrayNode } from "./state.js";
 import { hasUnsavedIgnores, ignoresSection, loadIgnores, unsavedIgnoresText } from "./ignoresSection.js";
 import { versioningSection } from "./versioningSection.js";
 
@@ -257,14 +258,25 @@ function deviceChoices(form: EditFolderFormState): SharingChoice[] {
   return choices.sort((first, second) => first.label.localeCompare(second.label));
 }
 
+/** On an array a new share is saved only with the folder ID typed, as the server checks it. */
+function needsShareConfirm(form: EditFolderFormState): boolean {
+  return isArrayNode(form.nodeId) && form.sharing.share.size > 0;
+}
+
+function isShareConfirmed(form: EditFolderFormState): boolean {
+  return !needsShareConfirm(form) || isArrayConfirmed(form.confirm, form.folderId);
+}
+
+function shareConfirmField(form: EditFolderFormState): HTMLElement | null {
+  if (!isArrayNode(form.nodeId)) return null;
+  const nodeName = nodeOf(form.nodeId)?.name ?? form.nodeId;
+  return element("div", { className: "form-fields device-fields" }, arrayConfirmField({ formId, nodeName, doing: "share it", folderId: () => form.folderId, showsId: true, typed: form.confirm, disabled: form.saving, onInput: (typed) => (form.confirm = typed) }));
+}
+
 function sharingSection(form: EditFolderFormState): HTMLElement {
   const choices = deviceChoices(form);
-  return section(
-    "Sharing",
-    choices.length
-      ? sharingList(formId, "Shared with", form.sharing, choices, form.saving, () => (form.result = null))
-      : element("p", { className: "muted" }, "This node has no other device yet; add one on its Nodes page to share the folder with it."),
-  );
+  if (!choices.length) return section("Sharing", element("p", { className: "muted" }, "This node has no other device yet; add one on its Nodes page to share the folder with it."));
+  return section("Sharing", element("div", {}, sharingList(formId, "Shared with", form.sharing, choices, form.saving, () => (form.result = null)), shareConfirmField(form)));
 }
 
 /** The folder detail shows the saved settings and sharing at once, rather than after the next poll. */
@@ -284,6 +296,7 @@ async function save(form: EditFolderFormState): Promise<void> {
   if (!form.saved || !form.draft) return;
   const change = changedFields(form.saved, form.draft) as FolderSettingsChange;
   if (hasSharingChanges(form.sharing)) change.devices = folderSharingChange(form.sharing);
+  const confirm = needsShareConfirm(form) ? { confirm: form.confirm } : {};
   if (Object.keys(change).length === 0) {
     form.result = hasUnsavedIgnores(form) ? { text: unsavedIgnoresText, tone: "warn" } : { text: "Nothing changed.", tone: "ok" };
     return requestRender();
@@ -291,13 +304,14 @@ async function save(form: EditFolderFormState): Promise<void> {
   form.saving = true;
   form.result = null;
   requestRender();
-  const result = await saveFolderSettings(form.nodeId, form.folderId, change);
+  const result = await saveFolderSettings(form.nodeId, form.folderId, { ...change, ...confirm });
   form.saving = false;
   if (result.ok) {
     form.saved = result.value;
     form.draft = structuredClone(result.value);
     form.pathCheck = null;
     clearSharing(form.sharing);
+    form.confirm = "";
     form.result = hasUnsavedIgnores(form) ? { text: `Saved. ${unsavedIgnoresText}`, tone: "warn" } : { text: "Saved.", tone: "ok" };
     showSavedInDetail(form, result.value);
   } else {
@@ -312,6 +326,7 @@ function revert(form: EditFolderFormState): void {
   form.ignores.result = null;
   form.pathCheck = null;
   clearSharing(form.sharing);
+  form.confirm = "";
   form.result = null;
   requestRender();
 }
@@ -332,7 +347,7 @@ function formBody(form: EditFolderFormState, copy: FolderCopy | undefined): HTML
       element(
         "div",
         { className: "button-row" },
-        Object.assign(button(form.saving ? "Saving…" : "Save", () => void save(form), "button primary"), { disabled: form.saving }),
+        Object.assign(button(form.saving ? "Saving…" : "Save", () => void save(form), "button primary"), { disabled: form.saving || !isShareConfirmed(form) }),
         Object.assign(button("Revert", () => revert(form), "button ghost"), { disabled: form.saving }),
       ),
     ),

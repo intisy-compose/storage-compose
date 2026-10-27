@@ -2,7 +2,7 @@ import type { ServerResponse } from "node:http";
 import { deviceDisplayName, deviceSettingLabels, shortDeviceId } from "../api/deviceText.js";
 import type { AddedDevice, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, NearbyDevice, NewDevice, RemoveDeviceBody } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, isArrayInstance, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { SyncthingError } from "../syncthing.js";
 import { deviceChangeProblem, deviceSettings, isChangeInPlace, newDeviceProblem, redactConfig } from "../syncthingConfig.js";
@@ -224,6 +224,12 @@ async function planAdd(instance: LocalInstance, request: NewDevice): Promise<Add
   return { deviceId, config: { ...defaults, ...change, deviceID: deviceId }, change, folderIds };
 }
 
+/** @implNote A share on an array needs the folder ID typed (`arrayConfirmProblem`), which the add's list of folders has no place for. */
+function arraySharesProblem(instance: LocalInstance, request: NewDevice): string | null {
+  if (!isArrayInstance(instance) || !request.shareFolders?.length) return null;
+  return `on ${instance.name}, an array, a folder is shared only from its own settings, where its ID is typed: add the device, then share each folder there`;
+}
+
 /**
  * Adds a device to the node's Syncthing, every setting the person left out taken from Syncthing's own
  * defaults, then shares the chosen folders with it.
@@ -232,7 +238,7 @@ async function planAdd(instance: LocalInstance, request: NewDevice): Promise<Add
  */
 export async function addDevice(instance: ResolvedInstance, body: unknown): Promise<DeviceAddition> {
   const local = requireLocal(instance);
-  const problem = newDeviceProblem(body);
+  const problem = newDeviceProblem(body) ?? arraySharesProblem(local, body as NewDevice);
   if (problem) throw new RequestError(400, problem);
   const plan = await planAdd(local, body as NewDevice);
   await callSyncthing(local, (client) => client.request("POST", "/config/devices", plan.config));

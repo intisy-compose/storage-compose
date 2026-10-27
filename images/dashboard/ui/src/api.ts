@@ -36,6 +36,7 @@ export type {
   FolderPeer,
   FolderRescan,
   FolderSettings,
+  FolderEditBody,
   FolderSettingsChange,
   FolderShare,
   FolderSharingChange,
@@ -92,7 +93,7 @@ export type {
   WarningLevel,
 } from "../../src/api/types.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderSettings, FolderSettingsChange, FolderRescan, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
@@ -252,9 +253,9 @@ export function acceptPendingFolder(offer: PendingFolderOffer, body: AcceptFolde
   return sendWrite(pendingFolderPath(offer, "accept"), "POST", body);
 }
 
-/** The device's offers of the folder are not listed again, as Syncthing's own Ignore. */
-export function ignorePendingFolder(offer: PendingFolderOffer): Promise<SaveResult<IgnoredFolderOffer>> {
-  return sendWrite(pendingFolderPath(offer, "ignore"), "POST", { offeredBy: offer.offeredBy });
+/** The device's offers of the folder are not listed again, as Syncthing's own Ignore; `confirm` is the folder ID typed on an array. */
+export function ignorePendingFolder(offer: PendingFolderOffer, confirm: string | null = null): Promise<SaveResult<IgnoredFolderOffer>> {
+  return sendWrite(pendingFolderPath(offer, "ignore"), "POST", { offeredBy: offer.offeredBy, ...(confirm === null ? {} : { confirm }) });
 }
 
 /** Drops the offer; it is listed again when the device next offers the folder. */
@@ -284,7 +285,7 @@ export function addFolder(nodeId: string, folder: NewFolder): Promise<SaveResult
 }
 
 /** Sends only `change`; the node's answer is the folder as it now stands. */
-export function saveFolderSettings(nodeId: string, folderId: string, change: FolderSettingsChange): Promise<SaveResult<FolderSettings>> {
+export function saveFolderSettings(nodeId: string, folderId: string, change: FolderEditBody): Promise<SaveResult<FolderSettings>> {
   return sendWrite(nodeApiPath(nodeId, `folders/${encodeURIComponent(folderId)}`), "PATCH", change);
 }
 

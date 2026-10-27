@@ -168,8 +168,13 @@ describe("adding a folder to a node", () => {
     return { kind: "local", nodeId: "d7e5", name: "dashboard-test-peer", client: new SyncthingClient({ url: syncthingUrl, apiKey }), root: "/var/syncthing/data", os: "linux", threshold: 0, source: "registry" };
   }
 
+  function arrayNode(): LocalInstance {
+    return { kind: "local", nodeId: "a3f9", name: "private-array", client: new SyncthingClient({ url: syncthingUrl, apiKey }), root: "/mnt/a3f9/pool", os: "linux", threshold: 0, source: "array" };
+  }
+
   const roots: NodeRoot[] = [
     { nodeId: "fb98", name: "pc", root: "F:\\", os: "windows" },
+    { nodeId: "a3f9", name: "private-array", root: "/mnt/a3f9/pool", os: "linux" },
     { nodeId: "a1b2", name: "stick", root: "F:\\.storage\\stick", os: "windows" },
     { nodeId: "d7e5", name: "dashboard-test-peer", root: "/var/syncthing/data", os: "linux" },
   ];
@@ -950,5 +955,68 @@ describe("adding a folder to a node", () => {
     } finally {
       dashboard.close();
     }
+  });
+
+  function arrayFolder(): Record<string, unknown> {
+    return { ...syncthingDefaults, id: "dashboard-test-r", label: "Test R", path: "/mnt/a3f9/pool/dashboard-test-r" };
+  }
+
+  it("an array is never asked before the ID is typed: adding, and sharing through the router", async () => {
+    folders = [...folders, arrayFolder()];
+    const effects = recordingEffects();
+    const resolve = async (nodeId: string): Promise<ResolvedInstance> => (nodeId === "a3f9" ? arrayNode() : peer());
+    const dashboard = await dashboardWith(effects, resolve);
+    try {
+      const nodePath = `${dashboard.url}/api/nodes/a3f9`;
+      const newFolder = { id: "dashboard-test-s", path: "/mnt/a3f9/pool/dashboard-test-s" };
+      for (const confirm of [undefined, "Dashboard-test-s", " dashboard-test-s", "dashboard-test-r"]) {
+        const refused = await post(`${nodePath}/folders`, { ...newFolder, ...(confirm === undefined ? {} : { confirm }) });
+        assert.equal(refused.status, 400, String(confirm));
+        assert.equal(((await refused.json()) as { error: string }).error, "type the folder ID dashboard-test-s to add it on private-array, an array");
+      }
+      const share = { devices: { share: [{ deviceId: laptopId }] } };
+      for (const confirm of [undefined, "Test R", "dashboard-test-s"]) {
+        const refused = await patch(`${nodePath}/folders/dashboard-test-r`, { ...share, ...(confirm === undefined ? {} : { confirm }) });
+        assert.equal(refused.status, 400, String(confirm));
+        assert.equal(((await refused.json()) as { error: string }).error, "type the folder ID dashboard-test-r to share it on private-array, an array");
+      }
+      assert.equal((await patch(`${nodePath}/folders/dashboard-test-r`, { ...share, confirm: 7 })).status, 400);
+      assert.equal(received.length, 0, "an array is never asked before the ID is typed");
+      assert.equal(effects.notes.length, 0);
+
+      const added = await post(`${nodePath}/folders`, { ...newFolder, confirm: "dashboard-test-s" });
+      assert.equal(added.status, 201);
+      const posted = received.find((entry) => entry.method === "POST" && entry.path === "/rest/config/folders")?.body as Record<string, unknown>;
+      assert.equal("confirm" in posted, false, "the confirmation never reaches Syncthing");
+      assert.equal(posted.id, "dashboard-test-s");
+
+      const shared = await patch(`${nodePath}/folders/dashboard-test-r`, { ...share, confirm: "dashboard-test-r" });
+      assert.equal(shared.status, 200);
+      assert.deepEqual(
+        (patchedBodies().at(-1) as { devices: { deviceID: string }[] }).devices.map((device) => device.deviceID),
+        [ownId, laptopId],
+      );
+      assert.deepEqual(effects.notes.map((note) => note.text), ["private-array: added folder dashboard-test-s at /mnt/a3f9/pool/dashboard-test-s", "private-array: changed folder Test R; shared with laptop"]);
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("on an array, a change that shares with no device needs nothing typed", async () => {
+    folders = [...folders, { ...arrayFolder(), devices: [{ deviceID: ownId, introducedBy: "", encryptionPassword: "" }, { deviceID: laptopId, introducedBy: "", encryptionPassword: "" }] }];
+    await editFolder(arrayNode(), "dashboard-test-r", { label: "Renamed", devices: { share: [], unshare: [laptopId] } }, roots);
+    assert.deepEqual(patchedBodies(), [{ label: "Renamed", devices: [{ deviceID: ownId, introducedBy: "", encryptionPassword: "" }] }]);
+  });
+
+  it("a node that is not an array takes an add and a share without anything typed, and a confirmation is no setting of its folder", async () => {
+    await addFolder(peer(), { id: "dashboard-test-a", path: "/var/syncthing/data/dashboard-test-a", confirm: "dashboard-test-a" }, roots);
+    assert.equal("confirm" in (received.find((entry) => entry.method === "POST")?.body as object), false);
+    await editFolder(peer(), "dashboard-test-e", { devices: { share: [{ deviceId: laptopId }] } }, roots);
+    assert.equal(patchedBodies().length, 1);
+  });
+
+  it("the add form is told when the folder ID must be typed", async () => {
+    assert.equal((await newFolderDefaults(arrayNode(), "dashboard-test-s", roots)).confirmRequired, true);
+    assert.equal((await newFolderDefaults(peer(), "dashboard-test-a", roots)).confirmRequired, false);
   });
 });

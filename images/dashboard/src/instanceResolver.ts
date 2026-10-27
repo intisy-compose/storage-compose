@@ -18,7 +18,7 @@ export type LocalInstance = {
   root: string | null;
   os: "linux" | "windows";
   threshold: number;
-  /** An array's folders are accepted with the stricter defaults of `acceptFolderDefaults`. */
+  /** An array takes folders only under the stricter rules of `arrayConfirmProblem` and `acceptFolderDefaults`. */
   source: LocalNodeSource;
 };
 
@@ -164,6 +164,19 @@ export async function resolveRemote(nodeId: string, sources: ResolverSources = d
 export function requireLocal(instance: ResolvedInstance): LocalInstance {
   if (instance.kind === "remote") throw new RequestError(409, `act on ${instance.host}'s dashboard`);
   return instance;
+}
+
+export function isArrayInstance(instance: LocalInstance): boolean {
+  return instance.source === "array";
+}
+
+/**
+ * The array guard: on an array a folder is added, accepted, shared or ignored only with its ID typed exactly; `doing` names the act (`accept it`).
+ * @implNote The PC's folders are offered to the private array and wait there for the human partner's go-ahead (HANDOFF decision 1),
+ * so no such act on an array is one click; callers run this before any request to the node.
+ */
+export function arrayConfirmProblem(instance: LocalInstance, folderId: string, confirm: unknown, doing: string): string | null {
+  return isArrayInstance(instance) && confirm !== folderId ? `type the folder ID ${folderId} to ${doing} on ${instance.name}, an array` : null;
 }
 
 /** Runs one exchange with the node's Syncthing; an instance that does not answer becomes a 503 naming the node. */

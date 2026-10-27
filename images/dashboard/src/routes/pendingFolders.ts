@@ -3,7 +3,7 @@ import { type AcceptFolderBody, type AcceptFolderDefaults, type FolderOfferAnswe
 import { versioningWords } from "../api/versioningText.js";
 import { folderSettings, offersOf } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, requireLocal } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, arrayConfirmProblem, callSyncthing, isArrayInstance, requireLocal } from "../instanceResolver.js";
 import { type NodeRoot, folderPathProblem, pathUnderRoot } from "../pathGuard.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import type { SyncthingFolderSettings } from "../syncthing.js";
@@ -43,19 +43,6 @@ function acceptProblem(body: unknown): string | null {
   return folderChangeProblem({ versioning: fields.versioning });
 }
 
-function isArray(instance: LocalInstance): boolean {
-  return instance.source === "array";
-}
-
-/**
- * The array guard: an array is accepted onto only with the folder ID typed exactly.
- * @implNote The PC's folders are offered to the private array and wait there for the human partner's go-ahead (HANDOFF decision 1),
- * so an accept on an array is never one click; this runs before any request to the node.
- */
-function arrayConfirmProblem(instance: LocalInstance, folderId: string, confirm: string | undefined): string | null {
-  return isArray(instance) && confirm !== folderId ? `type the folder ID ${folderId} to accept it on ${instance.name}, an array` : null;
-}
-
 /** The device's offer of the folder as the node lists it; one that is not pending is 404. */
 async function pendingOffer(instance: LocalInstance, folderId: string, offeredBy: string): Promise<PendingFolderOffer> {
   const [pending, devices] = await Promise.all([callSyncthing(instance, (client) => client.pendingFolders()), callSyncthing(instance, (client) => client.devices())]);
@@ -77,13 +64,13 @@ function typeProblem(offer: PendingFolderOffer, type: FolderType): string | null
 
 function defaultType(instance: LocalInstance, offer: PendingFolderOffer, nodeDefault: unknown): FolderType {
   if (offer.receiveEncrypted) return "receiveencrypted";
-  if (isArray(instance)) return "receiveonly";
+  if (isArrayInstance(instance)) return "receiveonly";
   return nodeDefault === "sendonly" || nodeDefault === "receiveonly" ? nodeDefault : "sendreceive";
 }
 
 /** @implNote External versioning is never offered by the dashboard (plan call 9), so a node default of it opens the form with none. */
 function defaultVersioning(instance: LocalInstance, nodeDefault: Versioning): Versioning {
-  if (isArray(instance)) return arrayVersioning;
+  if (isArrayInstance(instance)) return arrayVersioning;
   return nodeDefault.type === "external" ? { type: "", params: {}, cleanupIntervalS: nodeDefault.cleanupIntervalS, fsPath: "" } : nodeDefault;
 }
 
@@ -107,7 +94,7 @@ export async function acceptFolderDefaults(instance: ResolvedInstance, folderId:
   const base = folderSettings({ ...nodeDefaults, id: folderId, label: offer.label, path, devices } as unknown as SyncthingFolderSettings);
   const settings: FolderSettings = { ...base, type: defaultType(local, offer, nodeDefaults.type), versioning: defaultVersioning(local, base.versioning) };
   const node: NodeRoot = { nodeId: local.nodeId, name: local.name, root, os: local.os };
-  return { offer, settings, root, confirmRequired: isArray(local), placementProblem: folderPathProblem(path, node, nodes) };
+  return { offer, settings, root, confirmRequired: isArrayInstance(local), placementProblem: folderPathProblem(path, node, nodes) };
 }
 
 export interface FolderAcceptance {
@@ -133,7 +120,7 @@ export async function acceptPendingFolder(instance: ResolvedInstance, folderId: 
   const problem = acceptProblem(body);
   if (problem) throw new RequestError(400, problem);
   const request = body as AcceptFolderBody;
-  const confirmProblem = arrayConfirmProblem(local, folderId, request.confirm);
+  const confirmProblem = arrayConfirmProblem(local, folderId, request.confirm, "accept it");
   if (confirmProblem) throw new RequestError(400, confirmProblem);
   guardNewFolderPath(local, request.path, nodes);
   const offeredBy = request.offeredBy.trim();
@@ -172,12 +159,15 @@ export interface FolderOfferIgnore {
 
 /**
  * Ignores one device's offers of the folder, as Syncthing's own Ignore does; another device offering it is still listed.
+ * On an array only with the folder ID typed, checked before any request.
  * @implNote Syncthing keeps ignored folders in the device's entry and has no endpoint for them alone, so the whole
  * configuration is written back as read, every other field and secret included, and never returned.
  */
 export async function ignorePendingFolder(instance: ResolvedInstance, folderId: string, body: unknown, now: () => Date = () => new Date()): Promise<FolderOfferIgnore> {
   const local = requireLocal(instance);
   const { offeredBy } = offerAnswerBody(body);
+  const confirmProblem = arrayConfirmProblem(local, folderId, asObject(body).confirm, "ignore it");
+  if (confirmProblem) throw new RequestError(400, confirmProblem);
   const offer = await pendingOffer(local, folderId, offeredBy);
   const conflict = `${local.name}'s configuration changed twice while ${offerLabel(offer)} from ${offer.offeredByName} was being ignored; nothing was written, try again`;
   const outcome = await changeWholeConfig(local, (config) => withIgnoredFolder(config, offer, now(), local.name), conflict);

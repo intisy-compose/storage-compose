@@ -463,6 +463,17 @@ describe("a node's devices", () => {
     assert.deepEqual(writes, []);
   });
 
+  it("on an array the add shares no folder, refused before any request: each is shared from its own settings, where its ID is typed", async () => {
+    const array: LocalInstance = { ...pc(), nodeId: "a3f9", name: "private-array", root: "/mnt/a3f9/pool", os: "linux", source: "array" };
+    await assert.rejects(addDevice(array, { deviceId: newId, shareFolders: ["dashboard-test-a"] }), {
+      status: 400,
+      message: "on private-array, an array, a folder is shared only from its own settings, where its ID is typed: add the device, then share each folder there",
+    });
+    assert.equal(arrivals, 0, "an array is never asked before the ID is typed");
+    await addDevice(array, { deviceId: newId, shareFolders: [] });
+    assert.deepEqual(writes.map((write) => `${write.method} ${write.path}`), ["POST /rest/config/devices"]);
+  });
+
   it("a share that fails after the device is added still reports and enters the add", async () => {
     dropAfter = 5;
     const result = await addDevice(pc(), { deviceId: newId, name: "dashboard-test-device", shareFolders: ["dashboard-test-a"] });

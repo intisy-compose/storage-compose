@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { devicesFixture } from "./devices.mjs";
+import { folderDefaultsFixture, folderDetailFixture } from "./folders.mjs";
 import { nodesFixture } from "./nodes.mjs";
 import { acceptDefaultsFixture, requestsFixture } from "./requests.mjs";
 import { treeFixture } from "./tree.mjs";
@@ -48,6 +49,19 @@ async function route(request, response) {
   if (request.method === "GET" && offerDefaults) {
     const defaults = acceptDefaultsFixture(decodeURIComponent(offerDefaults[1]), decodeURIComponent(offerDefaults[2]), url.searchParams.get("offeredBy"));
     return defaults ? sendJson(response, 200, defaults) : sendJson(response, 404, { error: "no such offer" });
+  }
+  const nodeRead = path.match(/^\/api\/nodes\/([^/]+)\/(folder-defaults|folder-path-check|browse)$/);
+  if (request.method === "GET" && nodeRead) {
+    const nodes = nodesFixture(startedAt).nodes;
+    if (nodeRead[2] === "browse") return sendJson(response, 200, []);
+    if (nodeRead[2] === "folder-path-check") return sendJson(response, 200, { path: url.searchParams.get("path") ?? "", problem: null, warning: null });
+    const defaults = folderDefaultsFixture(nodes, decodeURIComponent(nodeRead[1]), url.searchParams.get("under") ?? "");
+    return defaults ? sendJson(response, 200, defaults) : sendJson(response, 404, { error: "no such local node" });
+  }
+  const folderRead = path.match(/^\/api\/folders\/([^/]+)$/);
+  if (request.method === "GET" && folderRead) {
+    const detail = folderDetailFixture(nodesFixture(startedAt).nodes, decodeURIComponent(folderRead[1]));
+    return detail ? sendJson(response, 200, detail) : sendJson(response, 404, { error: "no such folder" });
   }
   const scoped = path.match(/^\/api\/arrays\/([^/]+)\/(sync|scrub|add|rebuild|remove|accept-smart)$/);
   if (request.method === "POST" && scoped) return handleAction(decodeURIComponent(scoped[1]), scoped[2], request, response);

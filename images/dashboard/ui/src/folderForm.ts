@@ -1,4 +1,5 @@
 import { type FolderSettings, type FolderType, type StorageNode, addFolder, browseFolderPaths, checkFolderPath, fetchFolderDefaults, folderTypeTexts, ignoreLinesOf, ignoreLinesProblem } from "./api.js";
+import { arrayConfirmField, isArrayConfirmed } from "./arrayConfirm.js";
 import { controlId, resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
 import { draftOf, newFolderBody, treePathOf } from "./folderDraft.js";
@@ -95,7 +96,7 @@ function suggestionOptions(suggestions: string[]): HTMLOptionElement[] {
 }
 
 function chooseNode(form: AddFolderFormState, nodeId: string): void {
-  Object.assign(form, { nodeId: nodeId || null, defaults: null, draft: null, pathCheck: null, suggestions: [], loadError: null, result: null, added: null });
+  Object.assign(form, { nodeId: nodeId || null, defaults: null, draft: null, pathCheck: null, suggestions: [], loadError: null, confirm: "", result: null, added: null });
   requestRender();
   void loadAddFolderForm(form).then(requestRender);
 }
@@ -214,7 +215,8 @@ async function submit(form: AddFolderFormState): Promise<void> {
   form.saving = true;
   form.result = null;
   requestRender();
-  const result = await addFolder(nodeId, newFolderBody(defaults.settings, draft, defaults.ignores));
+  const confirm = defaults.confirmRequired ? { confirm: form.confirm } : {};
+  const result = await addFolder(nodeId, { ...newFolderBody(defaults.settings, draft, defaults.ignores), ...confirm });
   form.saving = false;
   if (result.ok) {
     form.added = result.value;
@@ -236,7 +238,22 @@ function actions(form: AddFolderFormState): HTMLElement {
   if (added) {
     return element("div", { className: "button-row" }, element("a", { className: "button primary", attributes: { href: explorerLocation(added.id, form.nodeId ?? appState.explorer.node, parentOf(treePathOf(added.path, form.defaults?.root ?? "") ?? form.under)) } }, `Open ${added.label || added.id}`));
   }
-  return element("div", { className: "button-row" }, Object.assign(button(form.saving ? "Adding…" : "Add", () => void submit(form), "button primary"), { disabled: form.saving }));
+  return element("div", { className: "button-row" }, Object.assign(button(form.saving ? "Adding…" : "Add", () => void submit(form), "button primary"), { disabled: form.saving || !isAddConfirmed(form) }));
+}
+
+function typedFolderId(form: AddFolderFormState): string {
+  return form.draft?.id.trim() ?? "";
+}
+
+function isAddConfirmed(form: AddFolderFormState): boolean {
+  return !form.defaults?.confirmRequired || isArrayConfirmed(form.confirm, typedFolderId(form));
+}
+
+function confirmField(form: AddFolderFormState): HTMLElement | null {
+  const node = addableNodes().find((candidate) => candidate.id === form.nodeId);
+  if (!form.defaults?.confirmRequired || !node) return null;
+  const disabled = form.saving || form.added !== null;
+  return element("div", { className: "form-fields device-fields" }, arrayConfirmField({ formId, nodeName: node.name, doing: "add it", folderId: () => typedFolderId(form), showsId: false, typed: form.confirm, disabled, onInput: (typed) => (form.confirm = typed) }));
 }
 
 function settingsFields(form: AddFolderFormState): (HTMLElement | null)[] {
@@ -255,6 +272,7 @@ function settingsFields(form: AddFolderFormState): (HTMLElement | null)[] {
       ignoresField(form),
     ),
     element("div", { className: "toggles" }, pausedField(form)),
+    confirmField(form),
     resultLine(form.result),
     actions(form),
   ];

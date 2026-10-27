@@ -118,6 +118,8 @@ export interface AddFolderFormState {
   /** Directories the node completes the typed path to. */
   suggestions: string[];
   loadError: string | null;
+  /** The folder ID as typed to confirm the add on an array. */
+  confirm: string;
   saving: boolean;
   result: Notice | null;
   added: FolderSettings | null;
@@ -134,6 +136,8 @@ export interface EditFolderFormState {
   pathCheck: { typed: string; check: FolderPathCheck } | null;
   /** The node's devices ticked or unticked for the folder. */
   sharing: SharingDraft;
+  /** The folder ID as typed to confirm a share on an array. */
+  confirm: string;
   ignores: IgnoresDraft;
   saving: boolean;
   result: Notice | null;
@@ -266,7 +270,7 @@ const pages: PageId[] = ["nodes", "folders", "attention", "activity", "requests"
 const addFolderFlag = "folder";
 
 function emptyAddFolderForm(node: string, under: string): AddFolderFormState {
-  return { nodeId: node === allNodesView ? null : node, openedFrom: node, under, defaults: null, draft: null, pathCheck: null, suggestions: [], loadError: null, saving: false, result: null, added: null };
+  return { nodeId: node === allNodesView ? null : node, openedFrom: node, under, defaults: null, draft: null, pathCheck: null, suggestions: [], loadError: null, confirm: "", saving: false, result: null, added: null };
 }
 
 /** Keeps the open add form, and what was typed into it, while the address names the same view and directory. */
@@ -279,7 +283,7 @@ function readAddFolderForm(adding: boolean, node: string, under: string): void {
 function readEditFolderForm(folderId: string | null, nodeId: string | null): void {
   const open = appState.editFolderForm;
   if (!folderId || !nodeId) appState.editFolderForm = null;
-  else if (open?.folderId !== folderId || open.nodeId !== nodeId) appState.editFolderForm = { folderId, nodeId, saved: null, draft: null, pathCheck: null, sharing: emptySharing(), ignores: emptyIgnores(), saving: false, result: null };
+  else if (open?.folderId !== folderId || open.nodeId !== nodeId) appState.editFolderForm = { folderId, nodeId, saved: null, draft: null, pathCheck: null, sharing: emptySharing(), confirm: "", ignores: emptyIgnores(), saving: false, result: null };
 }
 
 function readExplorerLocation(query: URLSearchParams): void {
@@ -351,6 +355,11 @@ export function explorerLocation(folderId: string | null, node = appState.explor
   const base = locationFor("folders", folderId);
   if (!folderId && node === allNodesView && !path) return base;
   return `${base}?node=${encodeURIComponent(node)}&path=${encodePath(path)}`;
+}
+
+/** Whether the node is an array of this host's, where a folder is added, shared, accepted or ignored only with its ID typed. */
+export function isArrayNode(nodeId: string): boolean {
+  return appState.data?.nodes.find((node) => node.id === nodeId)?.kind === "array";
 }
 
 /** The form that edits the folder's settings on the node `nodeId`, over the explorer where the folder's detail is open. */

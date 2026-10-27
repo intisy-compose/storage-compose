@@ -1,4 +1,5 @@
 import { type AddedDevice, type NearbyDevice, type StorageNode, addDevice, changedFields, checkDeviceId, deviceDisplayName, fetchDeviceDefaults, fetchNearbyDevices, qrCodeUrl, shareFoldersLabel, shortDeviceId } from "./api.js";
+import { arraySharesElsewhere } from "./arrayConfirm.js";
 import { controlId, nodeFormHeader, resultLine, settingFields } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
 import { registerForm } from "./forms.js";
@@ -136,6 +137,7 @@ function folderChoice(form: AddDeviceFormState, folderId: string, label: string,
 }
 
 function shareFoldersField(node: StorageNode, form: AddDeviceFormState): HTMLElement {
+  if (node.kind === "array") return element("fieldset", { className: "share-folders" }, element("legend", {}, shareFoldersLabel), arraySharesElsewhere(node));
   const choices = node.folders.length ? node.folders.map((folder) => folderChoice(form, folder.id, folder.label, folder.path)) : [element("small", { className: "muted" }, `${node.name} has no folders yet.`)];
   return element("fieldset", { className: "share-folders" }, element("legend", {}, shareFoldersLabel), ...choices);
 }

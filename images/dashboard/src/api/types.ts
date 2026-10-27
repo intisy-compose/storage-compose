@@ -498,6 +498,8 @@ export interface AcceptFolderBody {
 /** `POST .../pending/folders/<folderId>/ignore` and `/dismiss`: the device whose offer is answered. */
 export interface FolderOfferAnswerBody {
   offeredBy: string;
+  /** The folder ID typed; required to ignore on an array. */
+  confirm?: string;
 }
 
 /** The offer that was ignored; `alreadyIgnored` when the device's offers of the folder were ignored already and nothing was written. */
@@ -804,6 +806,9 @@ export type FolderSettingsChange = Partial<
   Pick<FolderSettings, "label" | "path" | "type" | "rescanIntervalS" | "fsWatcherEnabled" | "fsWatcherDelayS" | "ignorePerms" | "order" | "minDiskFree" | "maxConflicts" | "syncOwnership" | "syncXattrs" | "versioning">
 > & { devices?: FolderSharingChange };
 
+/** The body of a folder edit: the change, and on an array the folder ID typed (`confirm`) when it shares the folder with a device. */
+export type FolderEditBody = FolderSettingsChange & { confirm?: string };
+
 /** Each editable folder setting as the form labels it; a refusal names the setting the same way. */
 export const folderSettingLabels: Record<keyof FolderSettingsChange, string> = {
   label: "Label",
@@ -839,6 +844,8 @@ export interface NewFolder {
   paused?: boolean;
   /** The folder's ignore patterns; when absent, the node's defaults. */
   ignores?: string[];
+  /** The folder ID typed; required on an array (`NewFolderDefaults.confirmRequired`). */
+  confirm?: string;
 }
 
 /** `GET /api/nodes/<nodeId>/folders/<folderId>/ignores`, and the answer of its `PUT`: the folder's `.stignore` on that node. */
@@ -899,6 +906,8 @@ export interface NewFolderDefaults {
   root: string;
   /** Why the directory the form was opened at cannot be the folder, so the root is offered instead; null when it can. */
   placementProblem: string | null;
+  /** Set on an array: `confirm` must be the folder ID. */
+  confirmRequired: boolean;
 }
 
 /** `GET /api/nodes/<nodeId>/folder-path-check?path=`: how the add would judge a typed path. */

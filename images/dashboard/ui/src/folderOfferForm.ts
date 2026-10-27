@@ -1,10 +1,11 @@
 import { type AcceptFolderDefaults, type FolderSettings, type FolderType, type PendingFolderOffer, type RequestsResponse, acceptPendingFolder, dismissPendingFolder, editableFolderTypes, fetchAcceptFolderDefaults, folderSettingLabels, folderTypeTexts, ignorePendingFolder } from "./api.js";
+import { arrayConfirmField, isArrayConfirmed } from "./arrayConfirm.js";
 import { controlId } from "./deviceForm.js";
 import { button, element } from "./dom.js";
 import { registerForm } from "./forms.js";
 import { requestRender } from "./renderRequest.js";
 import { type AnswerResult, type FolderAnswer, folderAnswerKey, freshFolderAnswer, ignoreClick, isAcceptConfirmed, pruneAnswers } from "./requestAnswers.js";
-import { locationFor } from "./state.js";
+import { isArrayNode, locationFor } from "./state.js";
 import { versioningSection } from "./versioningSection.js";
 
 const answers = new Map<string, FolderAnswer>();
@@ -77,7 +78,7 @@ async function ignore(offer: PendingFolderOffer, report: Report): Promise<void> 
   if (ignoreClick(answer) === "ask") return requestRender();
   answer.busy = true;
   requestRender();
-  const result = await ignorePendingFolder(offer);
+  const result = await ignorePendingFolder(offer, isArrayNode(offer.nodeId) ? answer.confirm : null);
   if (!result.ok) {
     answer.confirmingIgnore = false;
     return finish(offer, report, { text: `Not ignored: ${result.message}`, tone: "bad", link: null }, false);
@@ -137,18 +138,8 @@ function typeField(formId: string, offer: PendingFolderOffer, answer: FolderAnsw
   return labelled(formId, "type", folderSettingLabels.type, select, hint);
 }
 
-function confirmField(formId: string, offer: PendingFolderOffer, answer: FolderAnswer): HTMLElement {
-  const input = element("input", { attributes: { id: controlId(formId, "confirm"), autocomplete: "off", spellcheck: "false" } });
-  input.defaultValue = "";
-  input.value = answer.confirm;
-  input.disabled = answer.busy;
-  input.addEventListener("input", () => {
-    const wasConfirmed = isAcceptConfirmed(answer, offer.folderId, true);
-    answer.confirm = input.value;
-    if (wasConfirmed !== isAcceptConfirmed(answer, offer.folderId, true)) requestRender();
-  });
-  const text = element("span", {}, "Type the folder ID ", element("code", {}, offer.folderId), ` to accept it on ${offer.nodeName}`);
-  return element("label", { className: "setting", attributes: { for: controlId(formId, "confirm") } }, text, input, element("small", { className: "muted" }, `${offer.nodeName} is an array: an accepted folder starts syncing into it at once.`));
+function confirmField(formId: string, offer: PendingFolderOffer, answer: FolderAnswer, doing: string): HTMLElement {
+  return arrayConfirmField({ formId, nodeName: offer.nodeName, doing, folderId: () => offer.folderId, showsId: true, typed: answer.confirm, disabled: answer.busy, onInput: (typed) => (answer.confirm = typed) });
 }
 
 function acceptForm(formId: string, offer: PendingFolderOffer, answer: FolderAnswer, report: Report): HTMLElement {
@@ -161,7 +152,7 @@ function acceptForm(formId: string, offer: PendingFolderOffer, answer: FolderAns
     { className: "accept-folder" },
     element("div", { className: "form-fields device-fields" }, pathField(formId, answer, defaults, draft), typeField(formId, offer, answer, defaults, draft)),
     versioningSection({ saved: defaults.settings, draft, saving: answer.busy }, formId),
-    defaults.confirmRequired ? element("div", { className: "form-fields device-fields" }, confirmField(formId, offer, answer)) : null,
+    defaults.confirmRequired ? element("div", { className: "form-fields device-fields" }, confirmField(formId, offer, answer, "accept it")) : null,
     element(
       "div",
       { className: "button-row" },
@@ -171,10 +162,12 @@ function acceptForm(formId: string, offer: PendingFolderOffer, answer: FolderAns
   );
 }
 
+/** On an array the second click needs the folder ID typed too, as the server checks it. */
 function ignoreButtons(offer: PendingFolderOffer, answer: FolderAnswer, report: Report): HTMLButtonElement[] {
   if (!answer.confirmingIgnore) return [answerButton("Ignore", `${offer.nodeName} never lists ${offer.offeredByName}'s offer of this folder again (Syncthing's Ignore)`, () => ignore(offer, report), "button", answer.busy)];
+  const isUnconfirmed = isArrayNode(offer.nodeId) && !isArrayConfirmed(answer.confirm, offer.folderId);
   return [
-    answerButton(`Ignore ${offerName(offer)} from ${offer.offeredByName}? It stays ignored until un-ignored in Settings`, "Click again to ignore", () => ignore(offer, report), "button danger", answer.busy),
+    answerButton(`Ignore ${offerName(offer)} from ${offer.offeredByName}? It stays ignored until un-ignored in Settings`, "Click again to ignore", () => ignore(offer, report), "button danger", answer.busy || isUnconfirmed),
     Object.assign(
       button(
         "Keep it",
@@ -201,5 +194,6 @@ export function folderOfferAnswer(offer: PendingFolderOffer, report: Report): HT
     ...ignoreButtons(offer, answer, report),
     answerButton("Dismiss", "Drop this offer; it is listed again when the device next offers the folder", () => dismiss(offer, report), "button ghost", answer.busy),
   );
-  return element("div", { className: "request-answer request-answer-folder", attributes: { id: formId } }, answer.open ? acceptForm(formId, offer, answer, report) : null, buttons);
+  const ignoreConfirm = answer.confirmingIgnore && !answer.open && isArrayNode(offer.nodeId) ? element("div", { className: "form-fields device-fields" }, confirmField(formId, offer, answer, "ignore it")) : null;
+  return element("div", { className: "request-answer request-answer-folder", attributes: { id: formId } }, answer.open ? acceptForm(formId, offer, answer, report) : null, ignoreConfirm, buttons);
 }
