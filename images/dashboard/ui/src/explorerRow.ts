@@ -108,7 +108,7 @@ function nameCell(entry: TreeEntry): HTMLElement {
     { className: "explorer-name" },
     icon(entry.kind === "directory" ? "folders" : "file", "icon explorer-icon"),
     label,
-    entry.folder ? element("span", { className: "chip chip-link", title: `Syncthing folder ${entry.folder.label}` }, entry.folder.id) : null,
+    entry.folder ? element("span", { className: "chip chip-link explorer-folder-chip", title: `Syncthing folder ${entry.folder.label || entry.folder.id}` }, entry.folder.id) : null,
   );
 }
 

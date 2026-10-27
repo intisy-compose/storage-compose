@@ -1,5 +1,9 @@
 const registeredForms = new Set<string>();
 
+export function controlId(owner: string, field: string): string {
+  return `${owner}-${field}`;
+}
+
 /**
  * Marks the element with this ID as a form the poll must not rebuild while it is in use.
  * @implNote A control must set both `value` and `defaultValue` when rendered, or it counts as unsaved and the poll freezes.

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { deviceDisplayName, listedAddresses } from "./api/deviceText.js";
 import { connectionKind } from "./connectionKind.js";
+import { effectiveSharing, sharedDevices } from "./syncthingConfig.js";
 import type { FolderFile, FolderPeer, FolderType, NodeFolder, NodeSync, Peer, RemoteState, SyncthingDevice, SyncthingInstance } from "./api/types.js";
 
 export interface SyncthingEndpoint {
@@ -56,6 +57,7 @@ export interface SyncthingDeviceConfig {
   name: string;
   addresses: string[];
   paused?: boolean;
+  untrusted?: boolean;
 }
 
 interface ConnectionTotals {
@@ -300,13 +302,13 @@ export class SyncthingClient {
     return this.request("GET", `/db/localchanged?${pageQuery(folderId, page, perPage)}`, undefined, listTimeoutMs);
   }
 
+  /** Shares the folder with the device unencrypted, as a folder edit's sharing does; false when the instance has no such folder. */
   async shareFolder(folderId: string, deviceId: string): Promise<boolean> {
     const folder = (await this.folders()).find((entry) => entry.id === folderId);
     if (!folder) return false;
-    if (folder.devices.some((entry) => entry.deviceID === deviceId)) return true;
-    await this.request("PATCH", `/config/folders/${encodeURIComponent(folderId)}`, {
-      devices: [...folder.devices, { deviceID: deviceId }],
-    });
+    const sharing = effectiveSharing(folder.devices, { share: [{ deviceId }] });
+    if (sharing.share.length === 0) return true;
+    await this.request("PATCH", `/config/folders/${encodeURIComponent(folderId)}`, { devices: sharedDevices(folder.devices, sharing) });
     return true;
   }
 }
@@ -474,6 +476,7 @@ function peerOf({ device, connection, rate, lastSeen, sharedFolders, completion 
     name: device.name,
     connected: connection?.connected ?? false,
     paused: device.paused ?? false,
+    untrusted: device.untrusted ?? false,
     connectionType: connection?.connected ? connection.type : null,
     connectionKind: null,
     address: connection?.connected ? connection.address : null,

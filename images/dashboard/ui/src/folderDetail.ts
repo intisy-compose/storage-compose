@@ -1,17 +1,11 @@
-import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type FolderType, type PendingFolderOffer, deviceDisplayName } from "./api.js";
+import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type PendingFolderOffer, deviceDisplayName, folderTypeTexts, versioningWords } from "./api.js";
 import { element, keyValueList, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, formatPercent, normaliseCompletion, plural } from "./format.js";
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
+import { folderActions, orphanedActionResults } from "./folderActions.js";
 import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./folderCondition.js";
 import { icon } from "./icons.js";
-import { appState, explorerLocation, locationFor } from "./state.js";
-
-const typeTexts: Record<FolderType, string> = {
-  sendreceive: "send and receive",
-  sendonly: "send only",
-  receiveonly: "receive only",
-  receiveencrypted: "receive encrypted",
-};
+import { appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
 
 function onOff(value: boolean): string {
   return value ? "on" : "off";
@@ -45,7 +39,7 @@ function copyCard(copy: FolderCopy): HTMLElement {
   const condition = copyCondition(copy);
   const rows: [string, HTMLElement | string][] = [
     ["Path", element("code", {}, copy.path)],
-    ["Type", typeTexts[copy.type] ?? copy.type],
+    ["Type", folderTypeTexts[copy.type] ?? copy.type],
     ["State", element("span", { className: `tone-text-${condition.tone}` }, condition.label)],
     ["Global", itemsText(copy)],
     ["Out of sync", outOfSyncText(copy)],
@@ -70,27 +64,23 @@ function copyCard(copy: FolderCopy): HTMLElement {
   );
 }
 
+/** An offer to a node of this host is answered on the Requests page; another host's on that host's dashboard. */
 function offerLine(offer: PendingFolderOffer): HTMLElement {
+  const isLocal = appState.data?.nodes.find((node) => node.id === offer.nodeId)?.local === true;
   return element(
     "p",
     { className: "offer-line" },
     `offered by ${offer.offeredByName}, not accepted on ${offer.nodeName}`,
     element("small", {}, `since ${formatDate(offer.time)}${offer.receiveEncrypted ? ", encrypted" : ""}`),
+    isLocal ? element("a", { className: "button ghost", attributes: { href: locationFor("requests") } }, "Accept, ignore or dismiss") : null,
   );
-}
-
-function versioningText(settings: FolderSettings): string {
-  const versioning = settings.versioning;
-  if (!versioning.type) return "none";
-  const params = Object.entries(versioning.params).map(([key, value]) => `${key} ${value}`);
-  return [versioning.type, ...params, `cleaned every ${seconds(versioning.cleanupIntervalS)}`].join(", ");
 }
 
 function settingsRows(settings: FolderSettings, names: Map<string, string>): [string, HTMLElement | string][] {
   return [
     ["Label", settings.label || "none"],
     ["Path", element("code", {}, settings.path)],
-    ["Type", typeTexts[settings.type] ?? settings.type],
+    ["Type", folderTypeTexts[settings.type] ?? settings.type],
     ["Paused", settings.paused ? "yes" : "no"],
     ["Full rescan", `every ${seconds(settings.rescanIntervalS)}`],
     ["Watch for changes", settings.fsWatcherEnabled ? `on, ${settings.fsWatcherDelayS} s delay` : "off"],
@@ -100,22 +90,41 @@ function settingsRows(settings: FolderSettings, names: Map<string, string>): [st
     ["Conflict copies kept", settings.maxConflicts < 0 ? "unlimited" : String(settings.maxConflicts)],
     ["Sync ownership", onOff(settings.syncOwnership)],
     ["Sync extended attributes", onOff(settings.syncXattrs)],
-    ["Versioning", versioningText(settings)],
+    ["Versioning", versioningWords(settings.versioning)],
     ["Devices", settings.devices.map((device) => `${deviceDisplayName(names.get(device.deviceId), device.deviceId)}${device.encrypted ? " (encrypted)" : ""}`).join(", ")],
   ];
 }
 
+/** Each copy's node names its own device, which no `sharedWith` lists. */
 function deviceNames(summary: FolderSummary): Map<string, string> {
   const names = new Map<string, string>();
   for (const copy of summary.copies) for (const peer of copy.sharedWith) names.set(peer.deviceId, peer.name);
+  for (const copy of summary.copies) {
+    const ownId = appState.data?.nodes.find((node) => node.id === copy.nodeId)?.syncthing?.deviceId;
+    if (ownId) names.set(ownId, copy.nodeName);
+  }
   for (const offer of summary.offers) names.set(offer.offeredBy, offer.offeredByName);
   return names;
 }
 
+/** Only this host's copies are edited here; another host's are edited on its own dashboard. */
+function editLink(summary: FolderSummary, copy: FolderCopy | undefined): HTMLElement | null {
+  if (!copy?.local) return null;
+  return element("div", { className: "button-row" }, element("a", { className: "button", attributes: { href: editFolderLocation(summary.id, copy.nodeId) } }, "Edit settings"));
+}
+
 function settingsBlock(summary: FolderSummary, nodeId: string, settings: FolderSettings): HTMLElement {
   const key = `${summary.id}/${nodeId}`;
-  const nodeName = summary.copies.find((copy) => copy.nodeId === nodeId)?.nodeName ?? nodeId;
-  const block = element("details", { className: "settings-block" }, element("summary", {}, `On ${nodeName}`), keyValueList(settingsRows(settings, deviceNames(summary))));
+  const copy = summary.copies.find((candidate) => candidate.nodeId === nodeId);
+  const heading = `On ${copy?.nodeName ?? nodeId}${settings.paused ? ", paused" : ""}`;
+  const block = element(
+    "details",
+    { className: "settings-block" },
+    element("summary", {}, heading),
+    keyValueList(settingsRows(settings, deviceNames(summary))),
+    editLink(summary, copy),
+    copy?.local ? folderActions(copy, settings) : null,
+  );
   block.open = !appState.foldedSettings.has(key);
   block.addEventListener("toggle", () => {
     if (block.open) appState.foldedSettings.delete(key);
@@ -133,6 +142,7 @@ function settingsSection(summary: FolderSummary, detail: FolderDetailResponse | 
   const entries = Object.entries(detail.settings);
   return section(
     "Settings",
+    ...orphanedActionResults(summary.id, Object.keys(detail.settings)),
     entries.length ? element("div", { className: "settings-blocks" }, ...entries.map(([nodeId, settings]) => settingsBlock(summary, nodeId, settings))) : element("p", { className: "muted" }, "No node answered with its settings."),
   );
 }
@@ -171,6 +181,7 @@ export function renderFolderNotFound(folderId: string, error: string): HTMLEleme
   return element(
     "div",
     { className: "detail-inner detail-empty" },
+    ...orphanedActionResults(folderId, []),
     element("p", {}, `Folder ${folderId} could not be shown: ${error}`),
     element("a", { attributes: { href: explorerLocation(null) } }, "Close"),
   );

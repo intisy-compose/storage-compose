@@ -314,6 +314,8 @@ describe("answering a device that asks to connect", () => {
   /** Runs before each full-config read is answered, so a test can change the config between reads as Syncthing changing itself would. */
   let beforeConfigRead: (read: number) => void = () => {};
   let configReads = 0;
+  /** Overrides of the node's `/rest/config/defaults/device`. */
+  let deviceDefaults: Record<string, unknown> = {};
   let url = "";
   const syncthing = createServer(async (request, response) => {
     const parsed = new URL(request.url ?? "/", "http://fake");
@@ -339,7 +341,7 @@ describe("answering a device that asks to connect", () => {
         delete pending[(body as { deviceID: string }).deviceID];
         return reply(response, null);
       case "GET /rest/config/defaults/device":
-        return reply(response, { deviceID: "", name: "", addresses: ["dynamic"], compression: "metadata", introducer: false, paused: false, autoAcceptFolders: false, untrusted: false, numConnections: 0, ignoredFolders: [] });
+        return reply(response, { deviceID: "", name: "", addresses: ["dynamic"], compression: "metadata", introducer: false, paused: false, autoAcceptFolders: false, untrusted: false, numConnections: 0, ignoredFolders: [], ...deviceDefaults });
       case "GET /rest/config/folders":
         return reply(response, []);
       case "GET /rest/svc/deviceid":
@@ -350,7 +352,7 @@ describe("answering a device that asks to connect", () => {
   });
 
   function peer(): LocalInstance {
-    return { kind: "local", nodeId: "d7e5", name: "dashboard-test-peer", client: new SyncthingClient({ url, apiKey }), root: "/var/syncthing", os: "linux", threshold: 0 };
+    return { kind: "local", nodeId: "d7e5", name: "dashboard-test-peer", client: new SyncthingClient({ url, apiKey }), root: "/var/syncthing", os: "linux", threshold: 0, source: "registry" };
   }
 
   const remote: RemoteInstance = { kind: "remote", nodeId: "a1b2", name: "p53-data", host: "p53", dashboardUrl: "http://127.0.0.1:1" };
@@ -377,6 +379,7 @@ describe("answering a device that asks to connect", () => {
 
   beforeEach(() => {
     received.length = 0;
+    deviceDefaults = {};
     configReads = 0;
     beforeConfigRead = () => {};
     pending = { [strangerId]: laptopOffer(), [secondStrangerId]: { time: "2026-10-26T09:05:00Z", name: "phone", address: "192.168.1.21:22000" } };
@@ -386,6 +389,15 @@ describe("answering a device that asks to connect", () => {
 
   after(() => {
     syncthing.close();
+  });
+
+  it("accepting on an array never takes introducer or accept folders automatically from the node's defaults", async () => {
+    deviceDefaults = { introducer: true, autoAcceptFolders: true };
+    const array: LocalInstance = { ...peer(), nodeId: "a3f9", name: "private-array", root: "/mnt/a3f9/pool", source: "array" };
+    await acceptPendingDevice(array, strangerId, { name: "laptop", recordInSetup: false }, null);
+    const added = received.find((entry) => entry.method === "POST")?.body as Record<string, unknown>;
+    assert.equal(added.introducer, false);
+    assert.equal(added.autoAcceptFolders, false);
   });
 
   it("accepting adds the device with its offered name", async () => {

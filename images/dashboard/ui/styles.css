@@ -461,6 +461,11 @@ a.button { display: inline-block; text-decoration: none; color: inherit; }
 .share-folders legend { padding: 0; margin-bottom: 4px; font-size: 13px; }
 .share-folders .toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .share-folders .toggle input { width: auto; height: auto; }
+.share-choice { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.share-choice .toggle small { overflow-wrap: anywhere; }
+.share-choice > small, .share-password { margin-left: 24px; }
+.share-password small { font-size: 11.5px; }
+.share-password .setting-input input { flex: 1; min-width: 0; }
 .add-device { display: inline-block; text-decoration: none; }
 .peer-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
 .peer-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -530,8 +535,9 @@ a.button { display: inline-block; text-decoration: none; color: inherit; }
 .explorer-chevron:hover { background: var(--line); color: var(--text); }
 .explorer-chevron .icon { width: 15px; height: 15px; transition: transform 0.12s; }
 .explorer-chevron.open .icon { transform: rotate(90deg); }
-.explorer-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.explorer-name > a, .explorer-name > span:not(.chip) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-name { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
+.explorer-name > a, .explorer-name > span:not(.chip) { flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.explorer-folder-chip { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .explorer-open { font-weight: 500; }
 .explorer-open:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .explorer-icon { color: var(--text-faint); width: 17px; height: 17px; }
@@ -581,13 +587,27 @@ a.button { display: inline-block; text-decoration: none; color: inherit; }
 .copy-card h4 small { color: var(--text-faint); font-weight: 400; }
 .offer-line { margin: 0 0 8px; display: flex; flex-direction: column; }
 .offer-line small { color: var(--text-faint); font-size: 12px; }
+.offer-line .button { align-self: flex-start; margin-top: 4px; }
 .settings-blocks { display: flex; flex-direction: column; gap: 8px; }
 .settings-block { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; }
 .settings-block summary { cursor: pointer; font-weight: 500; }
 .settings-block[open] summary { margin-bottom: 8px; }
+.folder-actions { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.folder-actions .button-row { margin-top: 0; }
+.rescan-row { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+.rescan-row input { flex: 1; height: 32px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--surface); min-width: 0; }
+.rescan-row input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.folder-actions .notice { margin: 8px 0 0; }
 
 .setting > span { font-weight: 500; }
 .setting-input { display: flex; gap: 8px; }
+.setting-hints { display: flex; flex-direction: column; gap: 2px; }
+.setting-hints small { font-size: 11.5px; }
+.ignore-expanded {
+  margin: 4px 0 6px; padding: 6px 8px; list-style: none; max-height: 180px; overflow: auto;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sunken); font-size: 12px;
+}
+.ignore-expanded li { padding: 1px 0; overflow-wrap: anywhere; }
 
 /* Narrower screens: menu becomes an icon rail, the detail slides over the list. */
 @media (max-width: 1180px) {
@@ -689,6 +709,9 @@ a.activity-entry:hover { background: var(--selection); }
 .request-answer .button-row { margin-top: 0; }
 .request-name { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
 .request-name input { min-width: 200px; }
+.request-answer-folder { flex-direction: column; align-items: stretch; }
+.accept-folder { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.accept-folder .detail-section h3 { margin-top: 0; }
 .request-result { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; max-width: 760px; margin-bottom: 12px; }
 .request-result .notice { margin: 0; }
 .settings-heading { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 16px; margin: 0; }

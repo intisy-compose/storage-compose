@@ -1,13 +1,14 @@
 import type { StorageNode } from "./api/types.js";
 import { arrayIds, arrayStatus } from "./arrayStatus.js";
 import { agentEntries, readHeartbeat } from "./hostAgent.js";
-import { RequestError } from "./http.js";
+import { RequestError, UnconfirmedWrite } from "./http.js";
 import { statusRegistryEntries, syncthingEndpoint } from "./instances.js";
 import { fileJoinRecords } from "./join.js";
 import { otherHostNodes } from "./nodes.js";
 import { clusterArrayId, hostAgentHeartbeatFile, joinsFile, poolPath, registryDirectory } from "./settings.js";
 import { type SyncthingEndpoint, SyncthingClient, SyncthingUnavailable } from "./syncthing.js";
 import { fetchTailnet } from "./tailnet.js";
+import { setTimeout as sleep } from "node:timers/promises";
 
 export type LocalInstance = {
   kind: "local";
@@ -17,6 +18,8 @@ export type LocalInstance = {
   root: string | null;
   os: "linux" | "windows";
   threshold: number;
+  /** An array takes folders only under the stricter rules of `arrayConfirmProblem` and `acceptFolderDefaults`. */
+  source: LocalNodeSource;
 };
 
 /** A node of another host, read through that host's dashboard; `dashboardUrl` is null for a device no dashboard reported. */
@@ -91,7 +94,7 @@ async function registryNode(nodeId: string, sources: ResolverSources): Promise<L
 
 async function toInstance(node: LocalNode): Promise<LocalInstance | null> {
   const endpoint = node.present ? await node.endpoint() : null;
-  return endpoint ? { kind: "local", nodeId: node.nodeId, name: node.name, client: new SyncthingClient(endpoint), root: node.root, os: node.os, threshold: node.threshold } : null;
+  return endpoint ? { kind: "local", nodeId: node.nodeId, name: node.name, client: new SyncthingClient(endpoint), root: node.root, os: node.os, threshold: node.threshold, source: node.source } : null;
 }
 
 /** A node of this host whether or not its Syncthing can be addressed; `instance` is null while it cannot. */
@@ -163,6 +166,19 @@ export function requireLocal(instance: ResolvedInstance): LocalInstance {
   return instance;
 }
 
+export function isArrayInstance(instance: LocalInstance): boolean {
+  return instance.source === "array";
+}
+
+/**
+ * The array guard: on an array a folder is added, accepted, shared or ignored only with its ID typed exactly; `doing` names the act (`accept it`).
+ * @implNote The PC's folders are offered to the private array and wait there for the human partner's go-ahead (HANDOFF decision 1),
+ * so no such act on an array is one click; callers run this before any request to the node.
+ */
+export function arrayConfirmProblem(instance: LocalInstance, folderId: string, confirm: unknown, doing: string): string | null {
+  return isArrayInstance(instance) && confirm !== folderId ? `type the folder ID ${folderId} to ${doing} on ${instance.name}, an array` : null;
+}
+
 /** Runs one exchange with the node's Syncthing; an instance that does not answer becomes a 503 naming the node. */
 export async function callSyncthing<T>(instance: LocalInstance, call: (client: SyncthingClient) => Promise<T>): Promise<T> {
   try {
@@ -170,6 +186,59 @@ export async function callSyncthing<T>(instance: LocalInstance, call: (client: S
   } catch (error) {
     if (error instanceof SyncthingUnavailable) throw notAnswering(instance.name);
     throw error;
+  }
+}
+
+function isNotAnsweringError(error: unknown): boolean {
+  return error instanceof RequestError && error.status === 503;
+}
+
+/** The waits between read-backs of a write whose answer was lost: 7.5 s in all, about as long as Syncthing takes to restart. */
+export const defaultReadBackDelaysMs: readonly number[] = [500, 1000, 2000, 4000];
+
+type ReadBack = "in-place" | "missing" | "no-answer";
+
+async function readBackOnce(isInPlace: () => Promise<boolean>): Promise<ReadBack> {
+  try {
+    return (await isInPlace()) ? "in-place" : "missing";
+  } catch {
+    return "no-answer";
+  }
+}
+
+/** Reads the change back until it is found in place or the waits run out; a node that answered at least once without it has not saved it. */
+async function readBack(isInPlace: () => Promise<boolean>, delaysMs: readonly number[]): Promise<ReadBack> {
+  let outcome = await readBackOnce(isInPlace);
+  let isAnsweredMissing = outcome === "missing";
+  for (const delay of delaysMs) {
+    if (outcome === "in-place") return outcome;
+    await sleep(delay);
+    outcome = await readBackOnce(isInPlace);
+    isAnsweredMissing ||= outcome === "missing";
+  }
+  if (outcome === "in-place") return outcome;
+  return isAnsweredMissing ? "missing" : "no-answer";
+}
+
+/**
+ * Sends one write to the node's Syncthing; when its answer is lost, `isInPlace` reads whether the change took effect.
+ * The read-back is retried after each of `delaysMs` while it fails or finds the change missing. A change found in place
+ * counts as saved, one found missing is the 503 of a node that does not answer, and one never read back is an `UnconfirmedWrite`.
+ * @implNote Syncthing restarts after some config changes and can drop the answer of a write it applied, so a lost answer is never taken for "not saved".
+ */
+export async function writeConfirmed(
+  instance: LocalInstance,
+  write: (client: SyncthingClient) => Promise<unknown>,
+  isInPlace: () => Promise<boolean>,
+  delaysMs: readonly number[] = defaultReadBackDelaysMs,
+): Promise<void> {
+  try {
+    await callSyncthing(instance, write);
+  } catch (error) {
+    if (!isNotAnsweringError(error)) throw error;
+    const outcome = await readBack(isInPlace, delaysMs);
+    if (outcome === "missing") throw error;
+    if (outcome === "no-answer") throw new UnconfirmedWrite(instance.name);
   }
 }
 

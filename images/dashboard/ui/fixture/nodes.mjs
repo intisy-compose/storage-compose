@@ -27,7 +27,7 @@ function syncthing(seed, overrides = {}) {
 
 function connectedPeer(seed, name, connectionKind, address, connectionType = "tcp-client") {
   return {
-    deviceId: deviceId(seed), name, connected: true, paused: false, connectionType, connectionKind, address, version: "v2.0.10",
+    deviceId: deviceId(seed), name, connected: true, paused: false, untrusted: false, connectionType, connectionKind, address, version: "v2.0.10",
     inRate: 1.2e5, outRate: 3e4, lastSeen: ago(0), completion: 100, needBytes: 0, remoteState: "valid", folders: ["documents"],
   };
 }
