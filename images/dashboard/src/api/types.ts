@@ -363,6 +363,51 @@ export interface ActivityResponse {
   cursor: string;
 }
 
+export const logLevels = ["debug", "info", "warning", "error"] as const;
+
+export type LogLevel = (typeof logLevels)[number];
+
+/** One line of a node's Syncthing log; `message` has passed the dashboard's redaction of Syncthing's texts. */
+export interface LogMessage {
+  when: string;
+  level: LogLevel;
+  message: string;
+}
+
+/** `GET /api/nodes/<nodeId>/log?since=<instant>`: what the node's Syncthing keeps of its log in memory, oldest first. */
+export interface NodeLog {
+  messages: LogMessage[];
+}
+
+/** One error the node's Syncthing reported, as its own page shows it in a red banner. */
+export interface NodeError {
+  when: string;
+  message: string;
+}
+
+/** `GET /api/nodes/<nodeId>/errors`; `POST /api/nodes/<nodeId>/errors/clear` (local nodes only) clears them and answers what is left. */
+export interface NodeErrors {
+  errors: NodeError[];
+}
+
+/** One of Syncthing's log facilities (a package); `debug` while it logs at debug level. */
+export interface DebugFacility {
+  name: string;
+  description: string;
+  debug: boolean;
+}
+
+/** `GET /api/nodes/<nodeId>/debug`; the POST (local nodes only) takes a `DebugChange` and answers the facilities as they now stand. */
+export interface DebugFacilities {
+  facilities: DebugFacility[];
+}
+
+/** The facilities to turn debug logging on and off for; every one not named stays as it is. */
+export interface DebugChange {
+  enable: string[];
+  disable: string[];
+}
+
 /** `GET /api/nodes`; `GET /api/nodes?scope=local` leaves the other hosts out, which is what hosts ask each other. */
 export interface NodesResponse {
   host: HostInfo;
@@ -946,6 +991,9 @@ export interface NeedItem extends FolderItem {
 /** What a page of an item list holds unless the person asks for another size, and the most it may hold: Syncthing walks the whole list for each page. */
 export const defaultItemsPerPage = 50;
 export const maxItemsPerPage = 100;
+
+/** How long a node's Syncthing gets to answer an item list or the versions list; a folder with 900,000 items takes far longer than the 4 s the rest of the API gets. */
+export const listTimeoutMs = 30_000;
 
 /**
  * One page of an item list; `total` is the count of the whole list, null when it could not be read.

@@ -389,6 +389,29 @@ describe("conflict index", () => {
     assert.ok((await readdir(path)).includes("fb98-documents.json"));
   });
 
+  it("a node whose files were removed by hand loses its count, so files that come back get two scans again", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    let clock = 1_000_000;
+    const { indexes, path } = await indexesIn(undefined, { recheckMs: 150, now: () => clock });
+    const oldFile = join(path, "zz99-old.json");
+    const writeOld = () => writeFile(oldFile, JSON.stringify({ nodeId: "zz99", folderId: "old", sequence: 1, sweptAt: "", conflicts: [] }));
+    const scanFiles = async () => {
+      clock += 200;
+      await indexes.reconcile([{ nodeId: "fb98", client: reader }], new Set(["fb98"]));
+      await indexes.idle();
+    };
+    await writeOld();
+    await scanFiles();
+    await rm(oldFile);
+    await scanFiles();
+    await writeOld();
+    await scanFiles();
+    assert.ok((await readdir(path)).includes("zz99-old.json"), "the scan that found the file again is its first");
+    await scanFiles();
+    assert.ok(!(await readdir(path)).includes("zz99-old.json"), "the second scan that did not keep it deletes it");
+  });
+
   it("a sequence that moves while a sweep runs starts it again from the root", async () => {
     const reader = new FakeReader();
     documentsTree(reader);

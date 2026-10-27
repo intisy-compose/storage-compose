@@ -52,6 +52,8 @@ interface FakeInstance {
   browseDelayMs: number;
   statusDelayMs: number;
   errorsFail: boolean;
+  /** What Syncthing answers with the failed read of the errors list. */
+  errorsFailText: string;
   failingFile: string | null;
 }
 
@@ -172,7 +174,7 @@ describe("tree listing of one node", () => {
           return void serveFile(requestUrl, response);
         case "/rest/folder/errors":
           errorsRequests += 1;
-          if (instance.errorsFail) return reply(response, "database is locked", 500);
+          if (instance.errorsFail) return reply(response, instance.errorsFailText, 500);
           return void delayed(instance.errorsDelayMs, () => reply(response, { errors: (folder?.errors ?? []).map((path) => ({ path, error: "denied" })), page: 1, perpage: 100 }));
         case "/rest/db/need":
           return reply(response, { progress: [], queued: [], rest: (folder?.need ?? []).map((name) => ({ name })) });
@@ -201,6 +203,7 @@ describe("tree listing of one node", () => {
       browseDelayMs: 0,
       statusDelayMs: 0,
       errorsFail: false,
+      errorsFailText: "database is locked",
       failingFile: null,
     };
     fileRequests = [];
@@ -366,6 +369,15 @@ describe("tree listing of one node", () => {
     assert.equal(errorsRequests, readsBefore, "the failed read is not tried again on every listing");
   });
 
+  it("a failed read of the lists is noted through the redaction, never with Syncthing's raw answer", async () => {
+    instance.errorsFail = true;
+    instance.errorsFailText = "failed to load #include ../../config/config.xml";
+    const listing = await treeListing(node.nodeId, "Documents", 1, sources());
+    const note = listing.notes.find((candidate) => candidate.startsWith("Documents: "));
+    assert.ok(note?.endsWith("where they are could not be read: GET /folder/errors?folder=documents&page=1&perpage=100: HTTP 500 Syncthing cannot read an included file"), note);
+    assert.ok(!JSON.stringify(listing).includes("config.xml"));
+  });
+
   it("a folder status that takes too long shows the folder as still being read instead of waiting for it", async () => {
     instance.statusDelayMs = 2000;
     const started = Date.now();
@@ -394,8 +406,10 @@ describe("tree listing of one node", () => {
     assert.ok(!listing.entries.some((entry) => entry.name === "Recipes"));
     assert.ok(listing.notes.includes("Documents: its contents on pc are still being read"), listing.notes.join("; "));
     await until(() => delayedAnswers === 0, "the slow browse");
+    const browsesBefore = browseRequests.length;
     const later = await treeListing(node.nodeId, "Documents", 1, sources());
     assert.ok(later.entries.some((entry) => entry.name === "Recipes"));
+    assert.equal(browseRequests.length, browsesBefore, "the slow browse's answer is reused, not read again");
   });
 
   it("a global change with the same local sequence re-reads the directory", async () => {
@@ -687,8 +701,10 @@ describe("tree listing of all nodes", () => {
     assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
     assert.ok(listing.notes.includes("pc is still reading Documents"), listing.notes.join("; "));
     await until(() => delayedAnswers === 0, "the slow browse");
+    const browsesBefore = browseRequests.length;
     const later = await allNodesListing("Documents", 1, "all", allSources(nodes));
     assert.deepEqual(names(later.entries), ["Recipes", "Taxes", "notes.txt"]);
+    assert.equal(browseRequests.length, browsesBefore, "the slow browse's answer is reused, not read again");
   });
 
   it("a slow other host is not reported as unreachable", async () => {

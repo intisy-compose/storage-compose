@@ -104,4 +104,12 @@ describe("shared reads by key", () => {
     assert.deepEqual([await first, await again], ["slow", "slow"]);
     assert.equal(restarted, false, "no second read of slow started beside the first");
   });
+
+  it("a failed read trims the reads past the limit too", async () => {
+    const reads = new KeyedSharedReads<string>(60_000, 1);
+    await reads.read("a", async () => "a");
+    await reads.read("b", async () => Promise.reject(new Error("unreadable"))).catch(() => undefined);
+    await reads.read("c", async () => Promise.reject(new Error("unreadable"))).catch(() => undefined);
+    assert.deepEqual(reads.keys(), ["c"], "only the newest settled or failed read is kept");
+  });
 });

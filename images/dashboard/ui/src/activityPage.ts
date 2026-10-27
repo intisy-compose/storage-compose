@@ -1,8 +1,9 @@
 import { type ActivityEntry, type ActivityFilters, type ActivityLevel, type ActivitySource, routineActivityTypes } from "./api.js";
 import { button, element } from "./dom.js";
 import { registerForm } from "./forms.js";
+import { renderLogTab } from "./logTab.js";
 import type { Tone } from "./nodeStatus.js";
-import { appState, locationFor } from "./state.js";
+import { type ActivityTab, appState, locationFor, logTabSegment } from "./state.js";
 
 const sourceLabels: Record<ActivitySource, string> = { syncthing: "Syncthing", parity: "Parity", dashboard: "Dashboard" };
 const levelTones: Record<ActivityLevel, Tone> = { error: "bad", warning: "warn", info: "muted" };
@@ -136,13 +137,20 @@ export interface ActivityPageActions {
   onMore: () => void;
 }
 
+const tabSummaries: Record<ActivityTab, string> = {
+  events: "Syncthing events, parity jobs and the changes made here, newest first. Each entry opens its folder or node.",
+  log: "Each node's Syncthing log and errors, its debug logging and its support bundle.",
+};
+
+function tabs(): HTMLElement {
+  const tab = (value: ActivityTab, label: string, href: string) =>
+    element("a", { className: value === appState.activityTab ? "segment on" : "segment", attributes: { href, "aria-current": value === appState.activityTab ? "page" : "false" } }, label);
+  return element("nav", { className: "segmented activity-tabs", attributes: { "aria-label": "Activity views" } }, tab("events", "Events", locationFor("activity")), tab("log", "Log", locationFor("activity", logTabSegment)));
+}
+
 export function renderActivityPage(actions: ActivityPageActions): HTMLElement {
-  const header = element(
-    "header",
-    { className: "page-header" },
-    element("h1", {}, "Activity"),
-    element("p", { className: "page-summary" }, "Syncthing events, parity jobs and the changes made here, newest first. Each entry opens its folder or node."),
-  );
+  const header = element("header", { className: "page-header" }, element("h1", {}, "Activity"), element("p", { className: "page-summary" }, tabSummaries[appState.activityTab]), tabs());
+  if (appState.activityTab === "log") return element("div", { className: "page activity-page" }, header, renderLogTab());
   const response = appState.activity;
   if (!response) {
     const status = appState.activityError ? element("div", { className: "warning level-error" }, `Activity could not be read: ${appState.activityError}`) : element("p", { className: "muted" }, "Loading activity…");

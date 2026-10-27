@@ -153,6 +153,18 @@ describe("attention", () => {
     assert.equal(warnings[0].text, "pc's Syncthing: folder documents: insufficient space");
   });
 
+  it("a system error that names an include or quotes a pattern is hidden, in its text and its ID", () => {
+    const warnings = systemErrorWarnings(node({}), [
+      { when: "2026-10-21T10:00:00Z", message: "loading ignores: #include ../../config/config.xml" },
+      { when: "2026-10-21T10:00:01Z", message: 'invalid pattern "secret-line" in ignore file' },
+    ]);
+    assert.deepEqual(
+      warnings.map((entry) => entry.text),
+      ["pc's Syncthing: Syncthing cannot read an included file", "pc's Syncthing: error hidden: it quotes an ignore pattern; the folder's ignore patterns show it"],
+    );
+    assert.ok(!JSON.stringify(warnings).includes("config.xml") && !JSON.stringify(warnings).includes("secret-line"));
+  });
+
   it("pending offers are info entries", async () => {
     const array = node({ id: "5784", name: "private-array", peers: [peer({ deviceId: pcId, name: "pc" })] });
     const warnings = pendingWarnings(array, await client.pendingDevices(), await client.pendingFolders());

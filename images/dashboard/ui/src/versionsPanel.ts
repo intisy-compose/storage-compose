@@ -1,4 +1,4 @@
-import { type FileVersion, type FolderCopy, type VersionsPage, defaultItemsPerPage, fetchVersions, maxItemsPerPage, restoreConsequences, restoreVersions, versioningWords } from "./api.js";
+import { type FileVersion, type FolderCopy, type VersionsPage, defaultItemsPerPage, fetchVersions, maxItemsPerPage, restoreConsequences, restoreVersions, versioningWords, versionsReadLongestSeconds } from "./api.js";
 import { arrayConfirmField, isArrayConfirmed } from "./arrayConfirm.js";
 import { button, element } from "./dom.js";
 import { formatBytes, formatCount, plural } from "./format.js";
@@ -255,7 +255,7 @@ function levelBody(state: VersionsState, copy: FolderCopy, page: VersionsPage, f
 
 function panelBody(state: VersionsState, copy: FolderCopy, formId: string): HTMLElement[] {
   const answer = state.answer;
-  if (!answer) return [element("p", { className: "muted" }, "Reading the versions… Syncthing lists every kept version at once, which can take up to 30 s.")];
+  if (!answer) return [element("p", { className: "muted" }, `Reading the versions… Syncthing lists every kept version at once, which can take up to ${versionsReadLongestSeconds} s while other lists are being read.`)];
   if (!answer.ok) {
     const isRefusal = answer.status >= 400 && answer.status < 500;
     const again = button(state.loading ? "Reading…" : "Read again", () => void load(state), "button ghost");

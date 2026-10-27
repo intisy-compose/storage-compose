@@ -13,6 +13,7 @@ import { renderFolderDetail, renderFolderLoading, renderFolderNotFound } from ".
 import { openEditFolderForm, renderEditFolderForm } from "./folderEditForm.js";
 import { loadAddFolderForm, renderAddFolderForm } from "./folderForm.js";
 import { isFormOpen } from "./forms.js";
+import { loadNodeLog } from "./logTab.js";
 import { openListFromLocation } from "./itemList.js";
 import { renderItemNotFound } from "./itemNotFound.js";
 import { renderEmptyDetail, renderNodeDetail } from "./nodeDetail.js";
@@ -259,7 +260,7 @@ async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
 async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Promise<void> {
   if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm(), loadAddDevice(nodesLoaded)]);
   if (appState.page === "folders") await loadFolders(nodesLoaded);
-  if (appState.page === "activity") await loadActivity();
+  if (appState.page === "activity") await (appState.activityTab === "log" ? nodesLoaded.then(loadNodeLog) : loadActivity());
   if (appState.page === "requests") await loadRequests();
   if (appState.page === "settings") await loadSettings(nodesLoaded);
 }
@@ -291,9 +292,11 @@ const activityActions = {
 function onLocationChange(): void {
   const previousItem = selectedItemId();
   const previousPage = appState.page;
+  const previousTab = appState.activityTab;
+  const previousLogNode = appState.nodeLog?.nodeId;
   readLocation();
   if (previousPage === "requests" && appState.page !== "requests") forgetLastAnswer();
-  const isNewItem = previousItem !== selectedItemId() || previousPage !== appState.page;
+  const isNewItem = previousItem !== selectedItemId() || previousPage !== appState.page || previousTab !== appState.activityTab || previousLogNode !== appState.nodeLog?.nodeId;
   if (isNewItem) {
     appState.openForm = null;
     appState.notice = null;

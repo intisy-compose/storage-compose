@@ -4,6 +4,7 @@ import { arrayIds, arrayStatus } from "./arrayStatus.js";
 import { conflictIndexes } from "./conflicts.js";
 import { localNodeInfos } from "./instanceResolver.js";
 import { recentLog, runningJob } from "./parity.js";
+import { shownUnscopedText } from "./shownSyncthingError.js";
 import { activitySettings } from "./settings.js";
 import type { SyncthingClient, SyncthingEvent } from "./syncthing.js";
 
@@ -167,6 +168,11 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/** An error text an event carries, as the page may see it. */
+function errorText(value: unknown): string {
+  return shownUnscopedText(text(value));
+}
+
 /** The name the event itself reports first, then the configured one, then the short ID. */
 function deviceName(context: EventContext, deviceId: unknown, reported?: unknown): string {
   const id = text(deviceId);
@@ -193,7 +199,7 @@ function stateChanged(context: EventContext, data: EventData): Described | null 
   const to = text(data.to);
   if (waitingStates.has(to)) return null;
   const folder = folderName(context, data.folder);
-  const error = text(data.error);
+  const error = errorText(data.error);
   const words = error ? `stopped: ${error}` : (stateWords[to] ?? `is ${to}`);
   return { folderId: text(data.folder), type: "state-changed", level: error || to === "error" ? "error" : "info", text: `${folder} ${words}` };
 }
@@ -215,12 +221,12 @@ function folderErrors(context: EventContext, data: EventData): Described | null 
   if (!errors.length) return null;
   const [first] = errors;
   const count = errors.length === 1 ? "1 item" : `${errors.length} items`;
-  const words = `${folderName(context, data.folder)} failed to sync ${count}, first ${text(first.path)} (${text(first.error)})`;
+  const words = `${folderName(context, data.folder)} failed to sync ${count}, first ${text(first.path)} (${errorText(first.error)})`;
   return { folderId: text(data.folder), type: "folder-errors", level: "warning", text: words };
 }
 
 function itemFinished(context: EventContext, data: EventData): Described | null {
-  const error = text(data.error);
+  const error = errorText(data.error);
   if (!error) return null;
   return { folderId: text(data.folder), type: "item-failed", level: "warning", text: `${folderName(context, data.folder)} failed to sync ${text(data.item)} (${error})` };
 }
@@ -277,7 +283,7 @@ function describeEvent(event: SyncthingEvent, context: EventContext): Described 
     case "DeviceConnected":
       return { folderId: null, type: "device-connected", level: "info", text: `connected to ${context.deviceNames.get(text(data.id)) || text(data.deviceName) || device()} (${text(data.addr)})` };
     case "DeviceDisconnected":
-      return { folderId: null, type: "device-disconnected", level: "info", text: `lost ${device()}${text(data.error) ? ` (${text(data.error)})` : ""}` };
+      return { folderId: null, type: "device-disconnected", level: "info", text: `lost ${device()}${text(data.error) ? ` (${errorText(data.error)})` : ""}` };
     case "DevicePaused":
       return { folderId: null, type: "device-paused", level: "info", text: `${device()} paused` };
     case "DeviceResumed":
@@ -289,7 +295,7 @@ function describeEvent(event: SyncthingEvent, context: EventContext): Described 
     case "ConfigSaved":
       return { folderId: null, type: "config-saved", level: "info", text: "configuration saved" };
     case "Failure":
-      return { folderId: null, type: "failure", level: "error", text: `failure: ${typeof event.data === "string" ? event.data : JSON.stringify(event.data)}` };
+      return { folderId: null, type: "failure", level: "error", text: `failure: ${shownUnscopedText(typeof event.data === "string" ? event.data : JSON.stringify(event.data))}` };
     default:
       return null;
   }

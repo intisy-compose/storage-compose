@@ -48,7 +48,7 @@ export class SharedRead<T> {
 }
 
 /**
- * Reads shared by key, such as each page of a list, with at most `maxSettled` settled ones kept.
+ * Reads shared by key, such as each page of a list, with at most `maxSettled` settled or failed ones kept.
  * @implNote Past the limit the least recently used settled read goes first; one still being read is never dropped, so a page asked
  * for again while it is read never starts a second read beside the first.
  */
@@ -66,10 +66,8 @@ export class KeyedSharedReads<T> {
     this.reads.delete(key);
     this.reads.set(key, entry);
     const value = entry.read(start);
-    value.then(
-      () => this.dropOverLimit(),
-      () => undefined,
-    );
+    const settle = () => this.dropOverLimit();
+    value.then(settle, settle);
     return value;
   }
 

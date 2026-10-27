@@ -13,6 +13,9 @@ export type {
   ArrayMember,
   ArrayState,
   ConnectionKind,
+  DebugChange,
+  DebugFacilities,
+  DebugFacility,
   DeviceCompression,
   DeviceIdCheck,
   DeviceSettings,
@@ -109,17 +112,22 @@ export type {
   Warning,
   WarningKind,
   WarningLevel,
+  LogLevel,
+  LogMessage,
+  NodeError,
+  NodeErrors,
+  NodeLog,
 } from "../../src/api/types.js";
 import type { LocalChangesAction } from "../../src/api/localChangesText.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, ConflictsPage, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, RestoredVersions, RestoreVersionsBody, TreeListing, VersionsPage } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, DebugChange, DebugFacilities, NodeErrors, NodeLog, AddedDevice, ArrayAction, ArrayActionBody, ConflictsPage, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, RestoredVersions, RestoreVersionsBody, TreeListing, VersionsPage } from "../../src/api/types.js";
 
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
 export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
 export { ignoreLinesOf, ignoreLinesProblem } from "../../src/api/ignorePatterns.js";
-export { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, isKeptBySyncthing, offeredVersioningTypes, restoreConsequences, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versioningWords, versionsPathLabel } from "../../src/api/versioningText.js";
+export { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, isKeptBySyncthing, offeredVersioningTypes, restoreConsequences, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versioningWords, versionsPathLabel, versionsReadLongestSeconds } from "../../src/api/versioningText.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 export { type LocalChangesAction, discardedCount, localChangesFolderType, overrideLossText, revertLossText } from "../../src/api/localChangesText.js";
 
@@ -436,7 +444,7 @@ export function fetchTree(node: string, path: string, page: number): Promise<Tre
   return getJson(`api/tree?${query.toString()}`);
 }
 
-export { routineActivityTypes } from "../../src/api/types.js";
+export { logLevels, routineActivityTypes } from "../../src/api/types.js";
 
 export interface ActivityFilters {
   node: string;
@@ -444,6 +452,32 @@ export interface ActivityFilters {
   source: string;
   /** Scans and file changes are shown only when this is on. */
   routine: boolean;
+}
+
+export function fetchNodeLog(nodeId: string, since: string | null): Promise<NodeLog> {
+  return getJson(`${nodeApiPath(nodeId, "log")}${since ? `?since=${encodeURIComponent(since)}` : ""}`);
+}
+
+export function fetchNodeErrors(nodeId: string): Promise<NodeErrors> {
+  return getJson(nodeApiPath(nodeId, "errors"));
+}
+
+export function fetchDebugFacilities(nodeId: string): Promise<DebugFacilities> {
+  return getJson(nodeApiPath(nodeId, "debug"));
+}
+
+export function clearNodeErrors(nodeId: string): Promise<SaveResult<NodeErrors>> {
+  return sendWrite(nodeApiPath(nodeId, "errors/clear"), "POST");
+}
+
+/** Sends only the facilities whose debug logging changes; the answer is every facility as it now stands. */
+export function saveDebugFacilities(nodeId: string, change: DebugChange): Promise<SaveResult<DebugFacilities>> {
+  return sendWrite(nodeApiPath(nodeId, "debug"), "POST", change);
+}
+
+/** The node's support bundle, which the dashboard hands out only once it found no password or API key in it. */
+export function supportBundleUrl(nodeId: string): string {
+  return nodeApiPath(nodeId, "support-bundle");
 }
 
 export function fetchActivity(filters: ActivityFilters, limit: number): Promise<ActivityResponse> {

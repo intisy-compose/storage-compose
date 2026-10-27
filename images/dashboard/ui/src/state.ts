@@ -1,5 +1,5 @@
 import { type ConflictFile, type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type ReadResult, defaultItemsPerPage } from "./api.js";
-import type { ActivityFilters, ActivityResponse, FileVersion, VersionsPage, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, DebugFacilities, LogLevel, LogMessage, NodeErrors, FileVersion, VersionsPage, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -227,6 +227,29 @@ export function emptyExplorer(node: string, path: string): ExplorerState {
   return { node, path, listing: null, pages: 1, error: null, expanded: new Set(), children: new Map(), childErrors: new Map(), selectedPath: null, search: "", placeAtFolder: false };
 }
 
+export type ActivityTab = "events" | "log";
+
+/** The Log tab: one node's log, its errors and its debug facilities, each with why it could not be read. */
+export interface NodeLogState {
+  nodeId: string;
+  /** The least level shown; the person can change it. */
+  minimumLevel: LogLevel;
+  messages: LogMessage[] | null;
+  logError: string | null;
+  errors: NodeErrors | null;
+  errorsError: string | null;
+  debug: DebugFacilities | null;
+  debugError: string | null;
+  busy: boolean;
+  result: Notice | null;
+}
+
+export const defaultLogLevel: LogLevel = "info";
+
+export function emptyNodeLog(nodeId: string, minimumLevel: LogLevel = defaultLogLevel): NodeLogState {
+  return { nodeId, minimumLevel, messages: null, logError: null, errors: null, errorsError: null, debug: null, debugError: null, busy: false, result: null };
+}
+
 export interface AppState {
   page: PageId;
   selectedNodeId: string | null;
@@ -268,6 +291,9 @@ export interface AppState {
   activityFilters: ActivityFilters;
   /** How many entries the page asks for; "Show older entries" raises it by `activityPageSize`. */
   activityLimit: number;
+  activityTab: ActivityTab;
+  /** Null until the Log tab has a node to show. */
+  nodeLog: NodeLogState | null;
   requests: RequestsResponse | null;
   requestsError: string | null;
   hostSettings: HostSettings | null;
@@ -314,6 +340,8 @@ export const appState: AppState = {
   activityError: null,
   activityFilters: { node: "", folder: "", source: "", routine: false },
   activityLimit: activityPageSize,
+  activityTab: "events",
+  nodeLog: null,
   requests: null,
   requestsError: null,
   hostSettings: null,
@@ -383,6 +411,18 @@ function readNodesSelection(itemId: string | null, subItemId: string | null, dev
   readDeviceForm(appState.selectedNodeId, subItemId === "devices" ? deviceId : null);
 }
 
+/** The address segment of the Activity page's Log tab: `#/activity/log`, with `?node=<id>` for the node it shows. */
+export const logTabSegment = "log";
+
+export function logLocation(nodeId: string): string {
+  return `${locationFor("activity", logTabSegment)}?node=${encodeURIComponent(nodeId)}`;
+}
+
+/** Keeps the Log tab's node, and what was read of it, while the address names the same node. */
+function readLogNode(nodeId: string | null): void {
+  if (nodeId && appState.nodeLog?.nodeId !== nodeId) appState.nodeLog = emptyNodeLog(nodeId, appState.nodeLog?.minimumLevel);
+}
+
 export function readLocation(): void {
   const hash = location.hash.replace(/^#\/?/, "");
   const queryStart = hash.indexOf("?");
@@ -393,6 +433,8 @@ export function readLocation(): void {
   const selected = itemId ? decodeURIComponent(itemId) : null;
   readNodesSelection(appState.page === "nodes" ? selected : null, subItemId ? decodeURIComponent(subItemId) : null, deviceId ? decodeURIComponent(deviceId) : null);
   appState.selectedFolderId = appState.page === "folders" ? selected : null;
+  appState.activityTab = appState.page === "activity" && itemId === logTabSegment ? "log" : "events";
+  if (appState.activityTab === "log") readLogNode(query.get("node"));
   if (appState.page === "folders") readExplorerLocation(query);
   else {
     appState.addFolderForm = null;
