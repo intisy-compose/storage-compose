@@ -372,17 +372,17 @@ describe("conflict index", () => {
   it("a node known only from its stored files is deleted after two file scans that did not keep it", async () => {
     const reader = new FakeReader();
     documentsTree(reader);
-    const { indexes, path } = await indexesIn(undefined, { recheckMs: 150 });
+    let clock = 1_000_000;
+    const { indexes, path } = await indexesIn(undefined, { recheckMs: 150, now: () => clock });
     await writeFile(join(path, "zz99-old.json"), JSON.stringify({ nodeId: "zz99", folderId: "old", sequence: 1, sweptAt: "", conflicts: [] }));
-    const started = Date.now();
-    let rounds = 0;
-    while (Date.now() - started < 400) {
+    const round = async () => {
       await indexes.reconcile([{ nodeId: "fb98", client: reader }], new Set(["fb98"]));
       await indexes.idle();
-      rounds += 1;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.ok(rounds > 6, `${rounds} rounds, most of them without a file scan`);
+      clock += 10;
+    };
+    for (let count = 0; count < 15; count += 1) await round();
+    assert.ok((await readdir(path)).includes("zz99-old.json"), "one file scan and 14 rounds without one");
+    await round();
     assert.ok(!(await readdir(path)).includes("zz99-old.json"), "rounds that did not read the files do not start its count over");
     assert.ok((await readdir(path)).includes("fb98-documents.json"));
   });

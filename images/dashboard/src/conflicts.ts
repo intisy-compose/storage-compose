@@ -67,6 +67,7 @@ export interface ConflictIndexOptions {
   /** The most conflict copies kept per folder; beyond it the folder says there are more. */
   maxConflicts: number;
   report: (message: string) => void;
+  now: () => number;
 }
 
 const defaultOptions: ConflictIndexOptions = {
@@ -79,6 +80,7 @@ const defaultOptions: ConflictIndexOptions = {
   retryMaxMs: 6 * 3_600_000,
   maxConflicts: 1000,
   report: (message) => console.error(message),
+  now: Date.now,
 };
 
 interface StoredIndex {
@@ -246,10 +248,10 @@ export class ConflictIndexes {
       this.clients.set(instance.nodeId, instance.client);
       if (this.isVerifyDue(instance.nodeId)) this.mayHaveMissedUpdates(instance.nodeId);
       const checked = this.checkedAt.get(instance.nodeId);
-      if (checked === undefined || Date.now() - checked >= this.options.recheckMs) {
+      if (checked === undefined || this.options.now() - checked >= this.options.recheckMs) {
         const folders = await instance.client.folders().catch(() => null);
         if (!folders) continue;
-        this.checkedAt.set(instance.nodeId, Date.now());
+        this.checkedAt.set(instance.nodeId, this.options.now());
         await this.followFolders(instance, folders);
       }
       this.startSweeps(instance.nodeId);
@@ -260,10 +262,10 @@ export class ConflictIndexes {
   private isVerifyDue(nodeId: string): boolean {
     const verified = this.verifiedAt.get(nodeId);
     if (verified === undefined) {
-      this.verifiedAt.set(nodeId, Date.now());
+      this.verifiedAt.set(nodeId, this.options.now());
       return false;
     }
-    return Date.now() - verified >= this.options.verifyEveryMs;
+    return this.options.now() - verified >= this.options.verifyEveryMs;
   }
 
   /**
@@ -274,7 +276,7 @@ export class ConflictIndexes {
   private async forgetNodesNotKept(kept: ReadonlySet<string>): Promise<void> {
     if (!kept.size) return;
     const known = new Set([...this.indexes.values()].map((index) => index.nodeId));
-    const shouldReadFiles = Date.now() - this.filesCheckedAt >= this.options.recheckMs;
+    const shouldReadFiles = this.options.now() - this.filesCheckedAt >= this.options.recheckMs;
     const files = shouldReadFiles ? await this.storedFiles() : [];
     for (const file of files) if (file.nodeId) known.add(file.nodeId);
     for (const nodeId of kept) this.missedReconciles.delete(nodeId);
@@ -282,7 +284,7 @@ export class ConflictIndexes {
     const isGone = (nodeId: string | null) => nodeId === null || (this.missedReconciles.get(nodeId) ?? 0) >= 2;
     for (const index of this.indexes.values()) if (isGone(index.nodeId)) await this.forget(index);
     if (!shouldReadFiles) return;
-    this.filesCheckedAt = Date.now();
+    this.filesCheckedAt = this.options.now();
     for (const file of files) if (isGone(file.nodeId)) await rm(file.path, { force: true });
     for (const nodeId of [...this.missedReconciles.keys()]) if (isGone(nodeId)) this.missedReconciles.delete(nodeId);
   }
@@ -349,7 +351,7 @@ export class ConflictIndexes {
 
   private nextSweep(nodeId: string): FolderIndex | undefined {
     if (!this.clients.has(nodeId) || this.stopped) return undefined;
-    const now = Date.now();
+    const now = this.options.now();
     return this.indexesOf(nodeId).find((index) => index.needsSweep && index.retryAt <= now);
   }
 
@@ -384,7 +386,7 @@ export class ConflictIndexes {
     } catch (error) {
       index.needsSweep = true;
       index.failures += 1;
-      index.retryAt = Date.now() + retryDelayMs(index.failures, this.options.retryFirstMs, this.options.retryMaxMs);
+      index.retryAt = this.options.now() + retryDelayMs(index.failures, this.options.retryFirstMs, this.options.retryMaxMs);
       if (!this.stopped) this.options.report(`conflicts: ${index.folderId} on ${index.nodeId} could not be searched (try ${index.failures}): ${(error as Error).message}`);
     }
   }
@@ -410,7 +412,7 @@ export class ConflictIndexes {
    * missed. A folder that cannot be read now is left as it is. Only a restart ends the wait after a failed sweep.
    */
   private async verify(nodeId: string, isRestart: boolean): Promise<void> {
-    this.verifiedAt.set(nodeId, Date.now());
+    this.verifiedAt.set(nodeId, this.options.now());
     for (const index of this.indexesOf(nodeId)) {
       if (isRestart) {
         index.failures = 0;
