@@ -1,6 +1,7 @@
 import { type FolderIgnores, type FolderType, fetchFolderIgnores, ignoreLinesOf, ignoreLinesProblem, saveFolderIgnores } from "./api.js";
 import { controlId, editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
+import { areIgnoresUnsaved } from "./folderDraft.js";
 import { plural } from "./format.js";
 import { requestRender } from "./renderRequest.js";
 import type { EditFolderFormState, IgnoresDraft } from "./state.js";
@@ -34,6 +35,13 @@ export async function loadIgnores(form: EditFolderFormState): Promise<void> {
     requestRender();
   }
 }
+
+/** The textarea holds patterns that differ from the node's file as last read or saved. */
+export function hasUnsavedIgnores(form: EditFolderFormState): boolean {
+  return areIgnoresUnsaved(form.ignores.text, form.ignores.opened?.lines ?? null);
+}
+
+export const unsavedIgnoresText = "The ignore patterns are not saved yet; they are saved with Save patterns.";
 
 function savedNotice(saved: FolderIgnores): IgnoresDraft["result"] {
   return saved.error ? { text: "Saved, but Syncthing cannot use these patterns; see below.", tone: "bad" } : { text: "Saved. Syncthing rescans the folder with them.", tone: "ok" };
@@ -96,6 +104,12 @@ function expandedList(opened: FolderIgnores): HTMLElement[] {
   ];
 }
 
+/** A file written elsewhere with a line the dashboard refuses, such as an outside `#include`, cannot be saved from here as it stands. */
+function refusedLineNotice(opened: FolderIgnores): HTMLElement | null {
+  const problem = ignoreLinesProblem(opened.lines);
+  return problem ? element("p", { className: "notice tone-text-warn", attributes: { role: "status" } }, `The patterns cannot be saved from here until that line is removed: ${problem}.`) : null;
+}
+
 function syncthingError(opened: FolderIgnores): HTMLElement | null {
   return opened.error ? element("p", { className: "notice tone-text-bad", attributes: { role: "alert" } }, `Syncthing cannot use these patterns, so the folder does not sync until they are fixed: ${opened.error}`) : null;
 }
@@ -114,6 +128,7 @@ function editor(form: EditFolderFormState, formId: string, opened: FolderIgnores
         typedProblem(ignores) ?? element("small", { className: "muted" }, "Saved on their own with the button below; an included file must lie inside the folder."),
       ),
     ),
+    refusedLineNotice(opened),
     syncthingError(opened),
     ...expandedList(opened),
     resultLine(ignores.result),

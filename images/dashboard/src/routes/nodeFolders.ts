@@ -89,8 +89,12 @@ export async function checkFolderPath(instance: ResolvedInstance, typed: string,
   const problem = folderPathProblem(typed.trim(), node, nodes);
   if (problem) return { path: typed.trim(), problem, warning: null };
   const path = checkedPath(typed.trim(), node);
-  const folders = (await configuredFolders(local)).filter((folder) => folder.id !== editedFolderId);
-  return { path, problem: samePathProblem(local, folders, path, node), warning: overlapWarning(folders, path, node) };
+  const configured = await configuredFolders(local);
+  const edited = configured.find((folder) => folder.id === editedFolderId);
+  const folders = configured.filter((folder) => folder !== edited);
+  const isMoved = edited !== undefined && !isSamePath(edited.path, path, node);
+  const conflict = samePathProblem(local, folders, path, node) ?? (isMoved ? movedFolderVersionsProblem(path, configured, edited.id, false, node) : null);
+  return { path, problem: conflict, warning: overlapWarning(folders, path, node) };
 }
 
 function withOwnDevice(devices: unknown, ownId: string): unknown[] {
@@ -126,14 +130,14 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Writes the new folder's patterns, then resumes it unless the person added it paused; null once it runs as asked, else why it stays paused. */
-async function startWithIgnores(instance: LocalInstance, folder: NewFolder, lines: string[]): Promise<string | null> {
+/** Writes the new folder's patterns, then resumes it unless it was asked to start paused; null once it runs as asked, else why it stays paused. */
+async function startWithIgnores(instance: LocalInstance, folder: NewFolder, lines: string[], startsPaused: boolean): Promise<string | null> {
   try {
     await writeIgnoreLines(instance, folder.id, lines);
   } catch (error) {
     return `kept paused, as its ignore patterns were not saved: ${messageOf(error)}`;
   }
-  if (folder.paused) return null;
+  if (startsPaused) return null;
   try {
     await callSyncthing(instance, (client) => client.request("PATCH", `/config/folders/${encodeURIComponent(folder.id)}`, { paused: false }));
     return null;
@@ -184,7 +188,8 @@ export async function addFolder(instance: ResolvedInstance, body: unknown, nodes
   const holdsIgnores = ignores.length > 0;
   const config: SyncthingObject = { ...defaults, label: "", ...folder, ...(holdsIgnores ? { paused: true } : {}), devices: withOwnDevice(defaults.devices, ownId) };
   await callSyncthing(local, (client) => client.request("POST", "/config/folders", config));
-  const keptPaused = holdsIgnores ? await startWithIgnores(local, folder, ignores) : null;
+  const startsPaused = folder.paused ?? defaults.paused === true;
+  const keptPaused = holdsIgnores ? await startWithIgnores(local, folder, ignores, startsPaused) : null;
   const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId: folder.id, text: folderAddText(local.name, folder, { lines: ignores.length, keptPaused }) };
   return { added: await settingsAfter(local, folder.id, config), note };
 }

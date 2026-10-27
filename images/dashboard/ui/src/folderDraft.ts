@@ -7,6 +7,11 @@ export function draftOf(settings: FolderSettings, ignores: readonly string[] = [
   return { id: settings.id, label: settings.label, path: settings.path, type: settings.type, paused: settings.paused, ignores: ignores.join("\n") };
 }
 
+/** Whether the typed patterns differ from the node's file as last read or saved; nothing is unsaved before it was read. */
+export function areIgnoresUnsaved(text: string, opened: readonly string[] | null): boolean {
+  return opened !== null && !isSameLines(ignoreLinesOf(text), opened);
+}
+
 function isSameLines(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((line, index) => line === right[index]);
 }

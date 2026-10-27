@@ -11,8 +11,8 @@ export class RequestError extends Error {
 
 /** A write whose answer was lost and whose effect could not be read back either, so it may have been saved. */
 export class UnconfirmedWrite extends RequestError {
-  constructor(nodeName: string) {
-    super(503, `${nodeName}'s Syncthing stopped answering during the change, so it may have been saved; check once ${nodeName} answers again`);
+  constructor(nodeName: string, message = `${nodeName}'s Syncthing stopped answering during the change, so it may have been saved; check once ${nodeName} answers again`) {
+    super(503, message);
   }
 }
 

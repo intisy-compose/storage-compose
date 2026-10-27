@@ -25,7 +25,7 @@ import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
 import { type SharingChoice, clearSharing, folderSharingChange, hasSharingChanges, sharingList } from "./sharingFields.js";
 import { type EditFolderFormState, appState, explorerLocation } from "./state.js";
-import { ignoresSection, loadIgnores } from "./ignoresSection.js";
+import { hasUnsavedIgnores, ignoresSection, loadIgnores, unsavedIgnoresText } from "./ignoresSection.js";
 import { versioningSection } from "./versioningSection.js";
 
 const formId = "edit-folder-form";
@@ -285,7 +285,7 @@ async function save(form: EditFolderFormState): Promise<void> {
   const change = changedFields(form.saved, form.draft) as FolderSettingsChange;
   if (hasSharingChanges(form.sharing)) change.devices = folderSharingChange(form.sharing);
   if (Object.keys(change).length === 0) {
-    form.result = { text: "Nothing changed.", tone: "ok" };
+    form.result = hasUnsavedIgnores(form) ? { text: unsavedIgnoresText, tone: "warn" } : { text: "Nothing changed.", tone: "ok" };
     return requestRender();
   }
   form.saving = true;
@@ -298,7 +298,7 @@ async function save(form: EditFolderFormState): Promise<void> {
     form.draft = structuredClone(result.value);
     form.pathCheck = null;
     clearSharing(form.sharing);
-    form.result = { text: "Saved.", tone: "ok" };
+    form.result = hasUnsavedIgnores(form) ? { text: `Saved. ${unsavedIgnoresText}`, tone: "warn" } : { text: "Saved.", tone: "ok" };
     showSavedInDetail(form, result.value);
   } else {
     form.result = editFailureNotice(result);

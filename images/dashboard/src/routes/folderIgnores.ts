@@ -1,6 +1,6 @@
-import { ignoreLinesProblem, ignoresChangeWords } from "../api/ignorePatterns.js";
+import { ignoreLinesProblem, ignoresChangeWords, isIncludeLine } from "../api/ignorePatterns.js";
 import type { FolderIgnores, IgnoresChange } from "../api/types.js";
-import { RequestError, readBody, sendJson } from "../http.js";
+import { RequestError, UnconfirmedWrite, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import type { SyncthingFolderConfig } from "../syncthing.js";
@@ -44,16 +44,22 @@ function patternCore(pattern: string): string {
 
 function isPatternLine(line: string): boolean {
   const trimmed = line.trim();
-  return trimmed !== "" && !trimmed.startsWith("//") && !trimmed.startsWith("#include");
+  return trimmed !== "" && !trimmed.startsWith("//") && !isIncludeLine(trimmed);
 }
 
 function lineCores(lines: readonly string[]): Set<string> {
   return new Set(lines.filter(isPatternLine).map(patternCore));
 }
 
-/** Syncthing's error with any pattern quoted from an included file replaced by words. */
-function shownError(error: string | null, cores: ReadonlySet<string>): string | null {
+const invalidPatternError = /invalid pattern "/;
+
+/**
+ * Syncthing's error with any pattern quoted from an included file replaced by words.
+ * @implNote In a file with an `#include`, an error of any other shape could quote an included line, so it is replaced whole.
+ */
+function shownError(error: string | null, lines: readonly string[], cores: ReadonlySet<string>): string | null {
   if (!error) return null;
+  if (lines.some(isIncludeLine) && !invalidPatternError.test(error)) return "Syncthing cannot read an included file";
   return error.replace(/invalid pattern "((?:[^"\\]|\\.)*)"(?: in ignore file)?/g, (whole, pattern: string) => (cores.has(patternCore(pattern)) ? whole : "invalid pattern in an included file"));
 }
 
@@ -68,7 +74,7 @@ export function shownIgnores(answer: SyncthingIgnores): FolderIgnores {
   const cores = lineCores(lines);
   const expanded = answer.expanded ?? [];
   const shown = expanded.filter((pattern) => cores.has(patternCore(pattern)));
-  return { lines, expanded: shown, hiddenIncluded: expanded.length - shown.length, error: shownError(answer.error, cores) };
+  return { lines, expanded: shown, hiddenIncluded: expanded.length - shown.length, error: shownError(answer.error, lines, cores) };
 }
 
 async function knownFolder(instance: LocalInstance, folderId: string): Promise<SyncthingFolderConfig> {
@@ -140,7 +146,8 @@ export async function saveIgnores(instance: ResolvedInstance, folderId: string, 
     async () => isSameLines((await local.client.request<SyncthingIgnores>("GET", ignoresPath(folderId))).ignore ?? [], lines),
     readBackDelaysMs,
   );
-  const after = answer ?? (await syncthingIgnores(local, folderId).catch((): SyncthingIgnores => ({ ignore: lines, expanded: [], error: null })));
+  const after = answer ?? (await syncthingIgnores(local, folderId).catch(() => null));
+  if (!after) throw new UnconfirmedWrite(local.name, `${local.name}: the patterns were saved; could not read back how Syncthing reads them`);
   return { ignores: shownIgnores(after), note: { nodeId: local.nodeId, nodeName: local.name, folderId, text: ignoresEditText(local.name, folderName(folder), before, lines) } };
 }
 

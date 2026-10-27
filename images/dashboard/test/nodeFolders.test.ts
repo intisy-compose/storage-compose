@@ -288,10 +288,26 @@ describe("adding a folder to a node", () => {
   });
 
   it("an #include outside the folder in a new folder's patterns is 400 before anything is read", async () => {
-    for (const ignores of [["#include ../../config/config.xml"], ["#include C:\\Windows\\win.ini"], ["*.tmp\n#include /etc/passwd"], "*.tmp", [1]]) {
+    const includes = ["#include ../../config/config.xml", "#include C:\\Windows\\win.ini", "#includeX ../../config/config.xml", "#include\tsub/x ../../config/config.xml", "#include  ../x", "#include\t../x", "#include"];
+    for (const ignores of [...includes.map((line) => ["*.tmp", line]), ["*.tmp\n#include /etc/passwd"], "*.tmp", [1]]) {
       await assert.rejects(addFolder(peer(), { id: "dashboard-test-a", path: "/var/syncthing/data/dashboard-test-a", ignores }, roots), (error: Error & { status?: number }) => error.status === 400, JSON.stringify(ignores));
     }
     assert.deepEqual(received, []);
+  });
+
+  it("a new folder the node's defaults start paused stays paused once its patterns are written", async () => {
+    defaultIgnores = ["*.tmp"];
+    syncthingDefaults.paused = true;
+    try {
+      const offered = await newFolderDefaults(peer(), "dashboard-test-a", roots);
+      received.length = 0;
+      const addition = await addFolder(peer(), newFolderBody(offered.settings, draftOf(offered.settings, offered.ignores), offered.ignores), roots);
+      assert.deepEqual(writes(), ["POST /rest/config/folders", "POST /rest/db/ignores?folder=dashboard-test-a"], "no resume");
+      assert.equal(addition.added.paused, true);
+      assert.doesNotMatch(addition.note.text, /kept paused/);
+    } finally {
+      syncthingDefaults.paused = false;
+    }
   });
 
   it("a new folder whose patterns cannot be written stays paused and its activity entry says why", async () => {
@@ -781,7 +797,11 @@ describe("adding a folder to a node", () => {
       ["/var/syncthing/data/archive/f-versions/inner", "Path: /var/syncthing/data/archive/f-versions/inner is inside the versions path /var/syncthing/data/archive/f-versions of folder dashboard-test-f, so its files would mix with versions"],
       ["/var/syncthing/data/e-versions/inner", "Path: /var/syncthing/data/e-versions/inner is inside its own versions path /var/syncthing/data/e-versions, so its files would mix with versions"],
     ];
-    for (const [path, message] of refusals) await assert.rejects(editFolder(peer(), "dashboard-test-e", { path }, roots), refusedVersionsPath(message), path);
+    for (const [path, message] of refusals) {
+      await assert.rejects(editFolder(peer(), "dashboard-test-e", { path }, roots), refusedVersionsPath(message), path);
+      assert.equal((await checkFolderPath(peer(), path, roots, "dashboard-test-e")).problem, message, `the live check agrees for ${path}`);
+    }
+    assert.equal((await checkFolderPath(peer(), "/var/syncthing/data/archive", roots)).problem, null, "a new folder is not judged by the rule for moves");
     versionedAs("dashboard-test-e", { type: "simple", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "versions" });
     await assert.rejects(editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/moved" }, roots), refusedVersionsPath("Path: /var/syncthing/data/moved would hold its own versions path /var/syncthing/data/moved/versions, so those versions would sync as its files"));
     assert.deepEqual(patchedBodies(), []);

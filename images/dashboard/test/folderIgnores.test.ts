@@ -4,7 +4,8 @@ import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { ignoreLinesOf, ignoreLinesProblem, ignoresChangeWords } from "../src/api/ignorePatterns.js";
 import type { FolderIgnores } from "../src/api/types.js";
-import { RequestError } from "../src/http.js";
+import { RequestError, UnconfirmedWrite } from "../src/http.js";
+import { areIgnoresUnsaved } from "../ui/src/folderDraft.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
 import { folderIgnoreRoutes, readIgnores, saveIgnores } from "../src/routes/folderIgnores.js";
@@ -53,8 +54,14 @@ describe("a folder's ignore patterns", () => {
   /** Lines another browser writes at the next read of the patterns, as a change racing the form. */
   let concurrentLines: string[] | null = null;
   let loseWriteAnswer = false;
+  /** Once the patterns were written, how many reads still answer before the fake stops answering. */
+  let readsLeftAfterWrite: number | null = null;
+  let written = false;
+  /** An error Syncthing gives whatever the file holds, such as a missing include. */
+  let forcedError: string | null = null;
 
   function syncthingError(): string | null {
+    if (forcedError) return forcedError;
     const all = (lines ?? []).flatMap((line) => (line.startsWith("#include ") ? (includedFiles[line.slice(9)] ?? []) : [line]));
     const invalid = all.find((line) => line.includes("[") && !line.includes("]"));
     return invalid ? `invalid pattern ${JSON.stringify(invalid)} in ignore file: parse error: unexpected end of input` : null;
@@ -80,11 +87,16 @@ describe("a folder's ignore patterns", () => {
     if (request.method === "GET" && url.pathname === "/rest/config/folders") return reply(response, folders);
     if (url.pathname === "/rest/db/ignores" && !folders.some((folder) => folder.id === url.searchParams.get("folder"))) return reply(response, { ignore: null, expanded: null, error: `folder ${url.searchParams.get("folder")} does not exist` });
     if (request.method === "GET" && url.pathname === "/rest/db/ignores") {
+      if (written && readsLeftAfterWrite !== null) {
+        if (readsLeftAfterWrite === 0) return request.socket.destroy();
+        readsLeftAfterWrite -= 1;
+      }
       if (concurrentLines) [lines, concurrentLines] = [concurrentLines, null];
       return reply(response, ignoresAnswer());
     }
     if (request.method === "POST" && url.pathname === "/rest/db/ignores") {
       lines = (body as { ignore: string[] }).ignore;
+      written = true;
       if (loseWriteAnswer) return request.socket.destroy();
       return reply(response, ignoresAnswer());
     }
@@ -119,6 +131,9 @@ describe("a folder's ignore patterns", () => {
     includedFiles = {};
     concurrentLines = null;
     loseWriteAnswer = false;
+    readsLeftAfterWrite = null;
+    written = false;
+    forcedError = null;
   });
 
   after(() => {
@@ -152,7 +167,42 @@ describe("a folder's ignore patterns", () => {
       await assert.rejects(saveIgnores(peer(), "dashboard-test-a", { lines: ["*.tmp", include], opened: [] }), (error: Error & { status?: number }) => error.status === 400 && error.message === `${include.trim()} refers to a file outside the folder; an included file must lie inside it`, include);
     }
     assert.deepEqual(received, []);
-    for (const include of ["#include .stignore-shared", "#include sub/../shared.txt", "#include ./a/b/c.txt"]) assert.equal(ignoreLinesProblem([include]), null, include);
+    for (const include of ["#include .stignore-shared", "#include sub/../shared.txt", "#include ./a/b/c.txt", "#includeX shared.txt"]) assert.equal(ignoreLinesProblem([include]), null, include);
+  });
+
+  it("an #include is read as Syncthing reads it: the path follows the first space, whatever precedes it", async () => {
+    const outside = ["#includeX ../../config/config.xml", "#include\tsub/x ../../config/config.xml", "#include  ../x", "#include \t ../x", "\t#include ../x", "#include-shared /etc/passwd"];
+    for (const include of outside) {
+      await assert.rejects(saveIgnores(peer(), "dashboard-test-a", { lines: [include], opened: [] }), { status: 400, message: `${include.trim()} refers to a file outside the folder; an included file must lie inside it` }, JSON.stringify(include));
+    }
+    for (const include of ["#include", "#include\t../x", "#includeX"]) {
+      await assert.rejects(saveIgnores(peer(), "dashboard-test-a", { lines: [include], opened: [] }), { status: 400, message: `${include.trim()} names no file: an include is #include, a space and a path inside the folder` }, JSON.stringify(include));
+    }
+    assert.deepEqual(received, []);
+  });
+
+  it("an error syncthing gives for a file with an #include is not passed on unless it is a pattern of the file's own", async () => {
+    lines = ["*.tmp", "#include missing.txt"];
+    forcedError = "failed to load include file missing.txt: <apikey>secret-api-key</apikey>";
+    assert.equal((await readIgnores(peer(), "dashboard-test-a")).error, "Syncthing cannot read an included file");
+    lines = ["*.tmp"];
+    forcedError = "folder marker missing";
+    assert.equal((await readIgnores(peer(), "dashboard-test-a")).error, "folder marker missing", "without an include the error is Syncthing's own");
+  });
+
+  it("a lost answer whose read-back holds the patterns but whose next read fails says the state is unknown", async () => {
+    loseWriteAnswer = true;
+    readsLeftAfterWrite = 1;
+    await assert.rejects(saveIgnores(peer(), "dashboard-test-a", { lines: ["*.tmp"], opened: [] }, fastReadBacks), (error: Error & { status?: number }) => {
+      assert.ok(error instanceof UnconfirmedWrite);
+      return error.status === 503 && error.message === "dashboard-test-peer: the patterns were saved; could not read back how Syncthing reads them";
+    });
+  });
+
+  it("the edit form knows when typed patterns are not saved yet", () => {
+    assert.equal(areIgnoresUnsaved("*.tmp\n", ["*.tmp"]), false);
+    assert.equal(areIgnoresUnsaved("*.tmp\n*.bak", ["*.tmp"]), true);
+    assert.equal(areIgnoresUnsaved("", null), false, "nothing is unsaved before the file was read");
   });
 
   it("patterns from an included file are counted, never shown, and its invalid pattern is not quoted", async () => {

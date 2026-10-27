@@ -5,9 +5,21 @@ export function ignoreLinesOf(text: string): string[] {
   return lines;
 }
 
-function includedPath(line: string): string | null {
-  const match = line.trim().match(/^#include(?:\s+(.*))?$/);
-  return match ? (match[1] ?? "").trim() : null;
+/** An `#include` line read as Syncthing 2.1.6 reads it: the trimmed line starts with `#include`, the path is what follows its first space. */
+interface IncludeLine {
+  /** Null when the line has no space, which Syncthing refuses as an include without a path. */
+  path: string | null;
+}
+
+function includeOf(line: string): IncludeLine | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("#include")) return null;
+  const space = trimmed.indexOf(" ");
+  return { path: space === -1 ? null : trimmed.slice(space + 1).trim() };
+}
+
+export function isIncludeLine(line: string): boolean {
+  return includeOf(line) !== null;
 }
 
 function isOutsideFolder(path: string): boolean {
@@ -22,17 +34,19 @@ function isOutsideFolder(path: string): boolean {
 }
 
 /**
- * Why the lines cannot be saved, or null: an `#include` of a file outside the folder, or a line holding a line break.
+ * Why the lines cannot be saved, or null: an `#include` without a path or of a file outside the folder, or a line holding a line break.
  * @implNote Syncthing 2.1.6 reads an included file from anywhere the node can, so `#include ../../config/config.xml`
  * would turn the node's configuration, API key included, into patterns; both separators count, as a Windows node reads either.
  */
 export function ignoreLinesProblem(lines: readonly string[]): string | null {
   if (lines.some((line) => /[\r\n]/.test(line))) return "an ignore pattern cannot hold a line break";
-  const outside = lines.find((line) => {
-    const path = includedPath(line);
-    return path !== null && isOutsideFolder(path);
-  });
-  return outside === undefined ? null : `${outside.trim()} refers to a file outside the folder; an included file must lie inside it`;
+  for (const line of lines) {
+    const include = includeOf(line);
+    if (!include) continue;
+    if (include.path === null) return `${line.trim()} names no file: an include is #include, a space and a path inside the folder`;
+    if (isOutsideFolder(include.path)) return `${line.trim()} refers to a file outside the folder; an included file must lie inside it`;
+  }
+  return null;
 }
 
 const listedChanges = 5;
