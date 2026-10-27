@@ -159,6 +159,8 @@ export class ConflictIndexes {
   private readonly sweeps = new Map<string, Promise<void>>();
   private readonly updates = new Map<string, Promise<void>>();
   private reconciling: Promise<void> | null = null;
+  /** Per node, how many reconciles in a row did not keep it. */
+  private readonly missedReconciles = new Map<string, number>();
   private filesCheckedAt = Number.NEGATIVE_INFINITY;
   private stopped = false;
 
@@ -202,10 +204,13 @@ export class ConflictIndexes {
     this.queue(nodeId, () => this.applyIndexUpdate(nodeId, data), "an index update could not be read");
   }
 
-  /** Checks each of the node's folders against its current sequence, as updates may be missing from the feed. */
-  mayHaveMissedUpdates(nodeId: string): void {
+  /**
+   * Checks each of the node's folders against its current sequence, as updates may be missing from the feed.
+   * @param isRestart true when the instance restarted, which also ends the wait of folders whose sweep failed.
+   */
+  mayHaveMissedUpdates(nodeId: string, isRestart = false): void {
     if (this.stopped) return;
-    this.queue(nodeId, () => this.verify(nodeId), "could not be checked for missed updates");
+    this.queue(nodeId, () => this.verify(nodeId, isRestart), "could not be checked for missed updates");
   }
 
   /** Resolves once no sweep and no index update is running. */
@@ -261,17 +266,29 @@ export class ConflictIndexes {
     return Date.now() - verified >= this.options.verifyEveryMs;
   }
 
-  /** @implNote The stored files are read at most once per `recheckMs`, as `reconcile` runs with every `/api/nodes`. */
+  /**
+   * @implNote A node is gone only once two reconciles in a row did not keep it: one heartbeat that failed to read lists no
+   * host agent node at all. The stored files are read at most once per `recheckMs`, as `reconcile` runs with every `/api/nodes`.
+   */
   private async forgetNodesNotKept(kept: ReadonlySet<string>): Promise<void> {
     if (!kept.size) return;
-    for (const index of this.indexes.values()) if (!kept.has(index.nodeId)) await this.forget(index);
-    if (Date.now() - this.filesCheckedAt < this.options.recheckMs) return;
+    const known = new Set([...this.indexes.values()].map((index) => index.nodeId));
+    const shouldReadFiles = Date.now() - this.filesCheckedAt >= this.options.recheckMs;
+    const files = shouldReadFiles ? await this.storedFiles() : [];
+    for (const file of files) if (file.nodeId) known.add(file.nodeId);
+    for (const nodeId of [...this.missedReconciles.keys()]) if (kept.has(nodeId) || !known.has(nodeId)) this.missedReconciles.delete(nodeId);
+    for (const nodeId of known) if (!kept.has(nodeId)) this.missedReconciles.set(nodeId, (this.missedReconciles.get(nodeId) ?? 0) + 1);
+    const isGone = (nodeId: string | null) => nodeId === null || (this.missedReconciles.get(nodeId) ?? 0) >= 2;
+    for (const index of this.indexes.values()) if (isGone(index.nodeId)) await this.forget(index);
+    if (!shouldReadFiles) return;
     this.filesCheckedAt = Date.now();
-    for (const name of await readdir(this.options.directory).catch(() => [] as string[])) {
-      if (!name.endsWith(".json")) continue;
-      const stored = await readStored(join(this.options.directory, name));
-      if (!stored || !kept.has(stored.nodeId)) await rm(join(this.options.directory, name), { force: true });
-    }
+    for (const file of files) if (isGone(file.nodeId)) await rm(file.path, { force: true });
+  }
+
+  /** The stored index files, each with the node it names, null for a file that does not read as an index. */
+  private async storedFiles(): Promise<{ path: string; nodeId: string | null }[]> {
+    const names = (await readdir(this.options.directory).catch(() => [] as string[])).filter((name) => name.endsWith(".json"));
+    return Promise.all(names.map(async (name) => ({ path: join(this.options.directory, name), nodeId: (await readStored(join(this.options.directory, name)))?.nodeId ?? null })));
   }
 
   private async followFolders(instance: ConflictInstance, folders: SyncthingFolderConfig[]): Promise<void> {
@@ -385,17 +402,23 @@ export class ConflictIndexes {
     }
   }
 
-  /** @implNote A sweep under way is dropped, not resumed: the updates it was waiting for may be among those missed. */
-  private async verify(nodeId: string): Promise<void> {
+  /**
+   * @implNote A folder still at the index's sequence missed nothing, so its sweep, under way or waiting after a failure,
+   * goes on where it was. One that moved starts its sweep again, as the updates its sweep relied on may be among those
+   * missed. A folder that cannot be read now is left as it is. Only a restart ends the wait after a failed sweep.
+   */
+  private async verify(nodeId: string, isRestart: boolean): Promise<void> {
     this.verifiedAt.set(nodeId, Date.now());
     for (const index of this.indexesOf(nodeId)) {
+      if (isRestart) {
+        index.failures = 0;
+        index.retryAt = 0;
+      }
       if (index.needsSweep && !index.sweep) continue;
       const status = await this.client(nodeId).folderStatus(index.folderId).catch(() => null);
-      if (!index.sweep && status && (status.sequence ?? 0) === index.sequence) continue;
+      if (!status || (status.sequence ?? 0) === index.sequence) continue;
       index.sweep = null;
       index.needsSweep = true;
-      index.failures = 0;
-      index.retryAt = 0;
     }
     this.startSweeps(nodeId);
   }
@@ -419,9 +442,18 @@ export class ConflictIndexes {
       else index.conflicts.delete(path);
       changed = true;
     }
-    if (isShortList(data, filenames)) await this.verify(nodeId);
+    if (index.more && index.conflicts && index.conflicts.size < this.options.maxConflicts) this.searchForLeftOut(index);
+    if (isShortList(data, filenames)) await this.verify(nodeId, false);
     else if (changed) this.write(index);
     else this.writeLater(index);
+  }
+
+  /** Copies left out at the cap may fit now; only a sweep can name them. */
+  private searchForLeftOut(index: FolderIndex): void {
+    index.more = false;
+    if (index.sweep) return;
+    index.needsSweep = true;
+    this.startSweeps(index.nodeId);
   }
 
   private writeLater(index: FolderIndex): void {

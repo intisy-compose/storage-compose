@@ -303,6 +303,93 @@ describe("conflict index", () => {
     assert.equal(indexes.list("fb98", "documents")?.complete, true);
   });
 
+  it("a folder in backoff stays in backoff across a failed poll", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    reader.failOnce.add("documents:big");
+    const { indexes } = await indexesIn(undefined, { retryFirstMs: 60_000, retryMaxMs: 600_000 });
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    const readsBefore = reader.asked.filter((entry) => entry.startsWith("documents:")).length;
+    indexes.mayHaveMissedUpdates("fb98");
+    await indexes.idle();
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    assert.equal(reader.asked.filter((entry) => entry.startsWith("documents:")).length, readsBefore, "the wait after the failure still holds");
+    assert.equal(indexes.list("fb98", "documents")?.complete, false);
+  });
+
+  it("a restart of the instance ends the wait after a failed sweep", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    reader.failOnce.add("documents:big");
+    const { indexes } = await indexesIn(undefined, { retryFirstMs: 60_000, retryMaxMs: 600_000 });
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    indexes.mayHaveMissedUpdates("fb98", true);
+    await indexes.idle();
+    assert.equal(indexes.list("fb98", "documents")?.complete, true);
+    assert.equal(reader.asked.filter((entry) => entry === "documents::0").length, 1, "and the sweep goes on from where it failed");
+  });
+
+  it("a running sweep whose folder kept its sequence keeps its remaining directories across a failed poll", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    reader.trees.delete("music");
+    let release = () => {};
+    reader.hold = new Promise((resolve) => (release = resolve));
+    const { indexes } = await indexesIn();
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await until(() => reader.inFlight === 1, "the sweep to read the root");
+    indexes.mayHaveMissedUpdates("fb98");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    reader.hold = null;
+    await indexes.idle();
+    assert.deepEqual(reader.asked, ["documents::0", "documents:big:0", "documents:small:0", "documents:big/deep:0"], "the root is read once");
+    assert.equal(indexes.count("fb98", "documents"), 2);
+  });
+
+  it("a node missing from one reconcile only is kept, missing from two it is deleted", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    const { indexes, path } = await indexesIn();
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    await indexes.reconcile([], new Set(["5784"]));
+    await indexes.idle();
+    assert.deepEqual((await readdir(path)).sort(), ["fb98-documents.json", "fb98-music.json"], "one read without pc (a heartbeat that failed to read) deletes nothing");
+    assert.equal(indexes.count("fb98", "documents"), 2);
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }], new Set(["fb98"]));
+    await indexes.reconcile([], new Set(["5784"]));
+    await indexes.idle();
+    assert.equal((await readdir(path)).length, 2, "seen again in between, so the count starts over");
+    await indexes.reconcile([], new Set(["5784"]));
+    await indexes.idle();
+    assert.deepEqual(await readdir(path), []);
+  });
+
+  it("a folder brought back under the cap by an update no longer says there are more, and is searched for the copies left out", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    reader.trees.get("documents")!.set("small", [file("b.txt"), file("b.sync-conflict-20260606-110111-H3SXFPD.txt", 4)]);
+    const { indexes } = await indexesIn(undefined, { maxConflicts: 2 });
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    assert.equal(indexes.count("fb98", "documents"), 2);
+    assert.equal(indexes.hasMore("fb98", "documents"), true);
+    const kept = indexes.list("fb98", "documents")!.conflicts[0].path;
+    const directory = kept.includes("/") ? kept.slice(0, kept.lastIndexOf("/")) : "";
+    const tree = reader.trees.get("documents")!;
+    tree.set(directory, tree.get(directory)!.filter((entry) => !kept.endsWith(entry.name)));
+    reader.files.set(`documents:${kept}`, indexFile(1, true));
+    reader.sequences.set("documents", 41);
+    indexes.takeEvent("fb98", indexUpdated("documents", 41, [kept]));
+    await indexes.idle();
+    assert.equal(indexes.hasMore("fb98", "documents"), false);
+    assert.equal(indexes.count("fb98", "documents"), 2, "the copy left out before is found");
+  });
+
   it("the sweep pauses between two directory reads", async () => {
     const reader = new FakeReader();
     documentsTree(reader);
@@ -359,9 +446,11 @@ describe("conflict index", () => {
     await indexes.idle();
     await writeFile(join(path, "zz99-old.json"), JSON.stringify({ nodeId: "zz99", folderId: "old", sequence: 1, sweptAt: "", conflicts: [] }));
     await indexes.reconcile([], new Set(["fb98", "5784"]));
+    await indexes.reconcile([], new Set(["fb98", "5784"]));
     await indexes.idle();
     assert.deepEqual((await readdir(path)).sort(), ["fb98-documents.json", "fb98-music.json"], "fb98 is detached but kept; zz99 is gone");
     assert.equal(indexes.count("fb98", "documents"), 2);
+    await indexes.reconcile([], new Set(["5784"]));
     await indexes.reconcile([], new Set(["5784"]));
     await indexes.idle();
     assert.deepEqual(await readdir(path), []);

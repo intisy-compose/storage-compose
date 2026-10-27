@@ -121,10 +121,10 @@ export interface FeedOptions {
 export interface FeedListener {
   event(nodeId: string, event: SyncthingEvent): void;
   /**
-   * After the instance restarted, a poll that filled Syncthing's buffer, or a poll that failed and then answered again.
+   * After the instance restarted (`isRestart`), a poll that filled Syncthing's buffer, or a poll that failed and then answered again.
    * @implNote Syncthing keeps no events of a run from before the first request after it started, and keeps only `bufferSize` events per subscription.
    */
-  mayHaveMissed(nodeId: string): void;
+  mayHaveMissed(nodeId: string, isRestart: boolean): void;
 }
 
 const quietListener: FeedListener = { event: () => {}, mayHaveMissed: () => {} };
@@ -372,7 +372,7 @@ class InstanceFeed {
         if (mayHaveRestarted) await this.followRestart();
         const events = await this.instance.client.events(this.position.since, followedEventTypes, this.options.waitSeconds, this.options.requestTimeoutMs);
         if (this.stopped) return;
-        if (this.pollFailed || events.length >= this.options.bufferSize) this.listener.mayHaveMissed(this.instance.nodeId);
+        if (this.pollFailed || events.length >= this.options.bufferSize) this.listener.mayHaveMissed(this.instance.nodeId, false);
         this.pollFailed = false;
         this.take(events);
         mayHaveRestarted = events.length === 0;
@@ -399,7 +399,7 @@ class InstanceFeed {
   }
 
   private forgetRun(isRestart = false): void {
-    if (isRestart) this.listener.mayHaveMissed(this.instance.nodeId);
+    if (isRestart) this.listener.mayHaveMissed(this.instance.nodeId, true);
     this.position.since = 0;
     this.context.completions.clear();
   }
@@ -583,7 +583,7 @@ export class ParityWatcher {
 export const activityLog = new ActivityLog(activitySettings.bufferSize);
 const eventFeeds = new EventFeeds(activityLog, defaultFeedOptions, {
   event: (nodeId, event) => conflictIndexes.takeEvent(nodeId, event),
-  mayHaveMissed: (nodeId) => conflictIndexes.mayHaveMissedUpdates(nodeId),
+  mayHaveMissed: (nodeId, isRestart) => conflictIndexes.mayHaveMissedUpdates(nodeId, isRestart),
 });
 const reconcileMilliseconds = 60_000;
 const parityTickMilliseconds = 15_000;
