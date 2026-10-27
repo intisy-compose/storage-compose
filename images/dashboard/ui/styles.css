@@ -596,6 +596,11 @@ a.button { display: inline-block; text-decoration: none; color: inherit; }
 .setting-input { display: flex; gap: 8px; }
 .setting-hints { display: flex; flex-direction: column; gap: 2px; }
 .setting-hints small { font-size: 11.5px; }
+.ignore-expanded {
+  margin: 4px 0 6px; padding: 6px 8px; list-style: none; max-height: 180px; overflow: auto;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--surface-sunken); font-size: 12px;
+}
+.ignore-expanded li { padding: 1px 0; overflow-wrap: anywhere; }
 
 /* Narrower screens: menu becomes an icon rail, the detail slides over the list. */
 @media (max-width: 1180px) {

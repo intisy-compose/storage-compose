@@ -101,6 +101,12 @@ describe("adding a folder to a node", () => {
   let storedPath = (path: string) => path;
   /** Devices another browser shares `dashboard-test-e` with, one at each read of that folder before a write, as a change racing the edit. */
   let concurrentShares: string[] = [];
+  /** The node's default ignore patterns, as `/rest/config/defaults/ignores` answers. */
+  let defaultIgnores: string[] = [];
+  /** Each folder's `.stignore` as written through `/rest/db/ignores`. */
+  let ignoreFiles: Record<string, string[]> = {};
+  /** Answers an ignore write with Syncthing's 500, as a folder whose directory cannot be written. */
+  let failIgnoreWrite = false;
   const fastReadBacks = [5, 10, 20];
   const syncthing = createServer(async (request, response) => {
     openRequests += 1;
@@ -115,6 +121,13 @@ describe("adding a folder to a node", () => {
     const body = request.method === "POST" || request.method === "PATCH" ? await bodyOf(request) : null;
     received.push({ method: request.method ?? "", path: `${url.pathname}${url.search}`, body });
     if (request.method === "GET" && url.pathname === "/rest/config/defaults/folder") return reply(response, syncthingDefaults);
+    if (request.method === "GET" && url.pathname === "/rest/config/defaults/ignores") return reply(response, { lines: defaultIgnores });
+    if (request.method === "POST" && url.pathname === "/rest/db/ignores") {
+      if (failIgnoreWrite) return reply(response, "permission denied", 500);
+      const folderId = url.searchParams.get("folder") ?? "";
+      ignoreFiles[folderId] = (body as { ignore: string[] }).ignore;
+      return reply(response, { ignore: ignoreFiles[folderId], expanded: [], error: null });
+    }
     if (request.method === "GET" && url.pathname === "/rest/config/folders") return reply(response, folders);
     if (request.method === "GET" && url.pathname === "/rest/config/devices") return reply(response, configuredDevices);
     if (request.method === "GET" && url.pathname === "/rest/system/status") return reply(response, { myID: ownId });
@@ -175,6 +188,9 @@ describe("adding a folder to a node", () => {
     dropAfterWrite = 0;
     storedPath = (path) => path;
     concurrentShares = [];
+    defaultIgnores = [];
+    ignoreFiles = {};
+    failIgnoreWrite = false;
     folders = [
       { ...syncthingDefaults, id: "documents", label: "Documents", path: "F:\\Documents" },
       { ...syncthingDefaults, id: "dashboard-test-e", label: "Test A", path: "/var/syncthing/data/dashboard-test-e" },
@@ -232,6 +248,59 @@ describe("adding a folder to a node", () => {
     }
     const posted = received.find((entry) => entry.method === "POST")?.body as { devices: { deviceID: string }[] };
     assert.deepEqual(posted.devices.map((device) => device.deviceID), [ownId]);
+  });
+
+  function writes(): string[] {
+    return received.filter((entry) => entry.method !== "GET").map((entry) => `${entry.method} ${entry.path}`);
+  }
+
+  it("a new folder starts with the node's default ignore patterns, added paused and resumed once they are written", async () => {
+    defaultIgnores = ["*.tmp", "(?d).DS_Store"];
+    assert.deepEqual((await newFolderDefaults(peer(), "dashboard-test-a", roots)).ignores, defaultIgnores, "the add form offers them");
+    const addition = await addFolder(peer(), { id: "dashboard-test-a", path: "/var/syncthing/data/dashboard-test-a" }, roots);
+    assert.deepEqual(writes(), ["POST /rest/config/folders", "POST /rest/db/ignores?folder=dashboard-test-a", "PATCH /rest/config/folders/dashboard-test-a"]);
+    assert.equal((received.find((entry) => entry.method === "POST")?.body as { paused: boolean }).paused, true);
+    assert.deepEqual(ignoreFiles["dashboard-test-a"], defaultIgnores);
+    assert.deepEqual(received.find((entry) => entry.method === "PATCH")?.body, { paused: false });
+    assert.equal(addition.added.paused, false);
+    assert.equal(addition.note.text, "dashboard-test-peer: added folder dashboard-test-a at /var/syncthing/data/dashboard-test-a; 2 lines of ignore patterns");
+  });
+
+  it("the form's ignore patterns replace the defaults, none writes none, and a folder added paused stays paused", async () => {
+    defaultIgnores = ["*.tmp"];
+    await addFolder(peer(), { id: "dashboard-test-a", path: "/var/syncthing/data/dashboard-test-a", ignores: ["*.bak"], paused: true }, roots);
+    assert.deepEqual(ignoreFiles["dashboard-test-a"], ["*.bak"]);
+    assert.deepEqual(writes(), ["POST /rest/config/folders", "POST /rest/db/ignores?folder=dashboard-test-a"]);
+    received.length = 0;
+    await addFolder(peer(), { id: "dashboard-test-b", path: "/var/syncthing/data/dashboard-test-b", ignores: [] }, roots);
+    assert.deepEqual(writes(), ["POST /rest/config/folders"]);
+    assert.equal((received.find((entry) => entry.method === "POST")?.body as { paused: boolean; ignores?: unknown }).paused, false);
+    assert.equal("ignores" in (received.find((entry) => entry.method === "POST")?.body as object), false, "the patterns never enter the folder's configuration");
+  });
+
+  it("the add form sends ignore patterns only when they differ from the node's defaults", () => {
+    const offered = folderSettings({ ...syncthingDefaults, id: "dashboard-test-a", path: "/var/syncthing/data/dashboard-test-a" } as unknown as SyncthingFolderSettings);
+    const draft = draftOf(offered, ["*.tmp"]);
+    assert.equal(draft.ignores, "*.tmp");
+    assert.equal("ignores" in newFolderBody(offered, { ...draft, ignores: "*.tmp\n\n" }, ["*.tmp"]), false);
+    assert.deepEqual(newFolderBody(offered, { ...draft, ignores: "*.tmp\r\n*.bak" }, ["*.tmp"]).ignores, ["*.tmp", "*.bak"]);
+    assert.deepEqual(newFolderBody(offered, { ...draft, ignores: "" }, ["*.tmp"]).ignores, [], "clearing the defaults sends no patterns");
+  });
+
+  it("an #include outside the folder in a new folder's patterns is 400 before anything is read", async () => {
+    for (const ignores of [["#include ../../config/config.xml"], ["#include C:\\Windows\\win.ini"], ["*.tmp\n#include /etc/passwd"], "*.tmp", [1]]) {
+      await assert.rejects(addFolder(peer(), { id: "dashboard-test-a", path: "/var/syncthing/data/dashboard-test-a", ignores }, roots), (error: Error & { status?: number }) => error.status === 400, JSON.stringify(ignores));
+    }
+    assert.deepEqual(received, []);
+  });
+
+  it("a new folder whose patterns cannot be written stays paused and its activity entry says why", async () => {
+    defaultIgnores = ["*.tmp"];
+    failIgnoreWrite = true;
+    const addition = await addFolder(peer(), { id: "dashboard-test-a", path: "/var/syncthing/data/dashboard-test-a" }, roots);
+    assert.equal(addition.added.paused, true);
+    assert.deepEqual(writes(), ["POST /rest/config/folders", "POST /rest/db/ignores?folder=dashboard-test-a"]);
+    assert.match(addition.note.text, /; 1 line of ignore patterns; kept paused, as its ignore patterns were not saved: POST \/db\/ignores\?folder=dashboard-test-a: HTTP 500/);
   });
 
   it("an ID or a path the node already has is 409 and nothing is added", async () => {
@@ -700,6 +769,29 @@ describe("adding a folder to a node", () => {
     assert.equal(patchedBodies().length, 1, "the folder's old path is free once the edit moves it");
     await editFolder(peer(), "dashboard-test-e", { versioning: staggered }, roots);
     assert.equal(patchedBodies().length, 2, "the empty path, the folder's own .stversions, is always allowed");
+  });
+
+  it("a moved folder may not be, hold or sit inside a versions path, its own included, refused before anything is written", async () => {
+    folders = [...folders, { ...syncthingDefaults, id: "dashboard-test-f", label: "", path: "/var/syncthing/data/dashboard-test-f" }];
+    versionedAs("dashboard-test-f", { type: "simple", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "/var/syncthing/data/archive/f-versions" });
+    versionedAs("dashboard-test-e", { type: "trashcan", params: { cleanoutDays: "0" }, cleanupIntervalS: 3600, fsPath: "/var/syncthing/data/e-versions" });
+    const refusals: [string, string][] = [
+      ["/var/syncthing/data/archive/f-versions", "Path: /var/syncthing/data/archive/f-versions is the versions path /var/syncthing/data/archive/f-versions of folder dashboard-test-f, so versions and files would mix"],
+      ["/var/syncthing/data/archive", "Path: /var/syncthing/data/archive would hold the versions path /var/syncthing/data/archive/f-versions of folder dashboard-test-f, so those versions would sync as its files"],
+      ["/var/syncthing/data/archive/f-versions/inner", "Path: /var/syncthing/data/archive/f-versions/inner is inside the versions path /var/syncthing/data/archive/f-versions of folder dashboard-test-f, so its files would mix with versions"],
+      ["/var/syncthing/data/e-versions/inner", "Path: /var/syncthing/data/e-versions/inner is inside its own versions path /var/syncthing/data/e-versions, so its files would mix with versions"],
+    ];
+    for (const [path, message] of refusals) await assert.rejects(editFolder(peer(), "dashboard-test-e", { path }, roots), refusedVersionsPath(message), path);
+    versionedAs("dashboard-test-e", { type: "simple", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "versions" });
+    await assert.rejects(editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/moved" }, roots), refusedVersionsPath("Path: /var/syncthing/data/moved would hold its own versions path /var/syncthing/data/moved/versions, so those versions would sync as its files"));
+    assert.deepEqual(patchedBodies(), []);
+
+    versionedAs("dashboard-test-e", { type: "trashcan", params: { cleanoutDays: "0" }, cleanupIntervalS: 3600, fsPath: "/var/syncthing/data/e-versions" });
+    await editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/e-versions/inner", versioning: { type: "", params: {}, cleanupIntervalS: 3600, fsPath: "" } }, roots);
+    assert.equal(patchedBodies().length, 1, "an edit that also turns versioning off leaves its old versions path behind");
+    versionedAs("dashboard-test-f", { type: "", params: {}, cleanupIntervalS: 3600, fsPath: "/var/syncthing/data/archive/f-versions" });
+    await editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/archive" }, roots);
+    assert.equal(patchedBodies().length, 2, "a versions path left over from versioning that is off holds nothing");
   });
 
   it("external versioning is refused before anything is read, and a folder that has it can leave it", async () => {

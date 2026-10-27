@@ -1,5 +1,6 @@
 import { deviceDisplayName, shortDeviceId } from "../api/deviceText.js";
 import { type FolderPathCheck, type FolderSettings, type FolderSettingsChange, type FolderShare, type FolderSharingChange, type FolderType, type NewFolder, type NewFolderDefaults, type Versioning, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "../api/types.js";
+import { ignoreLinesProblem } from "../api/ignorePatterns.js";
 import { versioningWords, versionsPathLabel } from "../api/versioningText.js";
 import { folderSettings } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
@@ -10,12 +11,13 @@ import type { SyncthingDeviceConfig, SyncthingFolderSettings } from "../syncthin
 import { effectiveSharing, folderChangeProblem, isChangeInPlace, sharedDevices } from "../syncthingConfig.js";
 import { otherFoldersGroup, relativeToRoot } from "../treePaths.js";
 import { decodedSegment } from "./devices.js";
+import { defaultIgnoreLines, writeIgnoreLines } from "./folderIgnores.js";
 
 type SyncthingObject = Record<string, unknown>;
 
 const folderTypes = Object.keys(folderTypeTexts) as FolderType[];
 
-const newFolderKeys: readonly (keyof NewFolder)[] = ["id", "label", "path", "type", "paused"];
+const newFolderKeys: readonly (keyof NewFolder)[] = ["id", "label", "path", "type", "paused", "ignores"];
 
 function asObject(value: unknown): SyncthingObject {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as SyncthingObject) : {};
@@ -32,7 +34,9 @@ export function newFolderProblem(body: unknown): string | null {
   if (fields.label !== undefined && typeof fields.label !== "string") return "Label must be text";
   if (fields.type !== undefined && !folderTypes.includes(fields.type as FolderType)) return `Type must be ${folderTypes.join(", ")}`;
   if (fields.paused !== undefined && typeof fields.paused !== "boolean") return "Paused must be on or off";
-  return null;
+  if (fields.ignores === undefined) return null;
+  if (!Array.isArray(fields.ignores) || !fields.ignores.every((line) => typeof line === "string")) return "the ignore patterns must be a list of lines";
+  return ignoreLinesProblem(fields.ignores);
 }
 
 interface RootedInstance {
@@ -98,11 +102,44 @@ function folderName(folder: Pick<SyncthingFolderSettings, "id" | "label">): stri
   return folder.label || folder.id;
 }
 
-/** What an add did, in words: `pc: added folder Projects (projects) at F:\Projects; send only`. */
-export function folderAddText(nodeName: string, folder: NewFolder): string {
+/** How the add's ignore patterns went: how many lines it started with, and why it stayed paused when they could not be set. */
+interface AddedIgnores {
+  lines: number;
+  keptPaused: string | null;
+}
+
+const noIgnores: AddedIgnores = { lines: 0, keptPaused: null };
+
+/** What an add did, in words: `pc: added folder Projects (projects) at F:\Projects; send only; 2 lines of ignore patterns`. */
+export function folderAddText(nodeName: string, folder: NewFolder, ignores: AddedIgnores = noIgnores): string {
   const named = folder.label && folder.label !== folder.id ? `${folder.label} (${folder.id})` : folder.id;
-  const details = [...(folder.type ? [folderTypeTexts[folder.type]] : []), ...(folder.paused ? ["paused"] : [])];
+  const details = [
+    ...(folder.type ? [folderTypeTexts[folder.type]] : []),
+    ...(folder.paused ? ["paused"] : []),
+    ...(ignores.lines ? [`${ignores.lines} ${ignores.lines === 1 ? "line" : "lines"} of ignore patterns`] : []),
+    ...(ignores.keptPaused ? [ignores.keptPaused] : []),
+  ];
   return [`${nodeName}: added folder ${named} at ${folder.path}`, ...details].join("; ");
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Writes the new folder's patterns, then resumes it unless the person added it paused; null once it runs as asked, else why it stays paused. */
+async function startWithIgnores(instance: LocalInstance, folder: NewFolder, lines: string[]): Promise<string | null> {
+  try {
+    await writeIgnoreLines(instance, folder.id, lines);
+  } catch (error) {
+    return `kept paused, as its ignore patterns were not saved: ${messageOf(error)}`;
+  }
+  if (folder.paused) return null;
+  try {
+    await callSyncthing(instance, (client) => client.request("PATCH", `/config/folders/${encodeURIComponent(folder.id)}`, { paused: false }));
+    return null;
+  } catch (error) {
+    return `kept paused, as it could not be resumed once its ignore patterns were saved: ${messageOf(error)}`;
+  }
 }
 
 /** The folder as the node now has it; the change is already written, so a read that fails answers what was sent. */
@@ -123,23 +160,32 @@ export interface FolderAddition {
  * Adds a folder to the node's Syncthing, every setting the person left out taken from Syncthing's own defaults.
  * @implNote The path is judged against the node's root and the other nodes' roots before any Syncthing call,
  * as adding a folder makes Syncthing create and scan its directory; the path sent is the one judged.
- * The node's own default versioning is copied unjudged: its admin set it in the node's configuration.
+ * The node's own default versioning and default ignore patterns are copied unjudged: its admin set them in the node's configuration.
+ * A folder with ignore patterns is created paused and resumed once they are written, as Syncthing's own page does, so its
+ * first scan already skips what they ignore; when they cannot be written it stays paused and the note says why.
  */
 export async function addFolder(instance: ResolvedInstance, body: unknown, nodes: NodeRoot[]): Promise<FolderAddition> {
   const problem = newFolderProblem(body);
   if (problem) throw new RequestError(400, problem);
   const { instance: local, node } = rooted(instance);
-  const request = body as NewFolder;
+  const { ignores: typedIgnores, ...request } = body as NewFolder;
   const pathProblem = folderPathProblem(request.path.trim(), node, nodes);
   if (pathProblem) throw new RequestError(400, pathProblem);
   const folder: NewFolder = { ...request, id: request.id.trim(), path: checkedPath(request.path.trim(), node) };
-  const [folders, defaults, ownId] = await Promise.all([configuredFolders(local), syncthingDefaults(local), callSyncthing(local, (client) => client.myId())]);
+  const [folders, defaults, ownId, ignores] = await Promise.all([
+    configuredFolders(local),
+    syncthingDefaults(local),
+    callSyncthing(local, (client) => client.myId()),
+    typedIgnores ?? defaultIgnoreLines(local),
+  ]);
   if (folders.some((existing) => existing.id === folder.id)) throw new RequestError(409, `${local.name} already has folder ${folder.id}`);
   const samePath = samePathProblem(local, folders, folder.path, node);
   if (samePath) throw new RequestError(409, samePath);
-  const config: SyncthingObject = { ...defaults, label: "", ...folder, devices: withOwnDevice(defaults.devices, ownId) };
+  const holdsIgnores = ignores.length > 0;
+  const config: SyncthingObject = { ...defaults, label: "", ...folder, ...(holdsIgnores ? { paused: true } : {}), devices: withOwnDevice(defaults.devices, ownId) };
   await callSyncthing(local, (client) => client.request("POST", "/config/folders", config));
-  const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId: folder.id, text: folderAddText(local.name, folder) };
+  const keptPaused = holdsIgnores ? await startWithIgnores(local, folder, ignores) : null;
+  const note: WriteNote = { nodeId: local.nodeId, nodeName: local.name, folderId: folder.id, text: folderAddText(local.name, folder, { lines: ignores.length, keptPaused }) };
   return { added: await settingsAfter(local, folder.id, config), note };
 }
 
@@ -226,6 +272,26 @@ function versionsPathFolderProblem(fsPath: string, folders: SyncthingFolderSetti
     if (isSamePath(fsPath, path, node)) return `${versionsPathLabel}: ${fsPath} is the path of ${named}, so its versions would sync as that folder's files`;
     if (isStrictlyBelow(fsPath, path, node.os)) return `${versionsPathLabel}: ${fsPath} is inside ${named}, so its versions would sync as that folder's files`;
     if (isStrictlyBelow(path, fsPath, node.os)) return `${versionsPathLabel}: ${fsPath} holds ${named}, so that folder's files would mix with versions`;
+  }
+  return null;
+}
+
+/**
+ * Why the folder cannot move to `newPath` beside the node's versions paths, or null: a path equal to, holding or inside a
+ * folder's versions path (its own included, read from `newPath` when relative) would mix versions with the folder's files.
+ * @implNote The edited folder is skipped when the edit sets its versioning too: `versionsPathFolderProblem` judges that one.
+ */
+function movedFolderVersionsProblem(newPath: string, folders: SyncthingFolderSettings[], folderId: string, editsVersioning: boolean, node: NodeRoot): string | null {
+  for (const folder of folders) {
+    const isEdited = folder.id === folderId;
+    const typed = folder.versioning?.fsPath?.trim() ?? "";
+    if ((isEdited && editsVersioning) || !folder.versioning?.type || !typed) continue;
+    const versionsPath = versionsPathOf(typed, isEdited ? newPath : folder.path, node);
+    const named = isEdited ? `its own versions path ${versionsPath}` : `the versions path ${versionsPath} of folder ${folderName(folder)}`;
+    const label = folderSettingLabels.path;
+    if (isSamePath(newPath, versionsPath, node)) return `${label}: ${newPath} is ${named}, so versions and files would mix`;
+    if (isStrictlyBelow(versionsPath, newPath, node.os)) return `${label}: ${newPath} would hold ${named}, so those versions would sync as its files`;
+    if (isStrictlyBelow(newPath, versionsPath, node.os)) return `${label}: ${newPath} is inside ${named}, so its files would mix with versions`;
   }
   return null;
 }
@@ -354,6 +420,9 @@ export async function editFolder(instance: ResolvedInstance, folderId: string, c
   const settings: SettingsChange = moved.versioning === undefined ? moved : { ...moved, versioning: guardedVersioning(local, moved.versioning, folderPath, nodes) };
   const versionsProblem = settings.versioning ? versionsPathFolderProblem(settings.versioning.fsPath, folders, folderId, folderPath, rooted(local).node) : null;
   if (versionsProblem) throw new RequestError(400, versionsProblem);
+  const isMoved = settings.path !== undefined && !isSamePath(listed.path, settings.path, rooted(local).node);
+  const movedProblem = isMoved ? movedFolderVersionsProblem(folderPath, folders, folderId, settings.versioning !== undefined, rooted(local).node) : null;
+  if (movedProblem) throw new RequestError(400, movedProblem);
   const typeProblem = typeChangeProblem(listed, settings);
   if (typeProblem) throw new RequestError(400, typeProblem);
   const samePath = settings.path === undefined ? null : otherFolderAtPath(local, folders, folderId, settings.path);
@@ -407,12 +476,12 @@ function placedPath(under: string, node: NodeRoot, nodes: NodeRoot[]): Placement
 /** A new folder as the node's Syncthing would make it, at the tree path `under`, named and identified after that directory. */
 export async function newFolderDefaults(instance: ResolvedInstance, under: string, nodes: NodeRoot[]): Promise<NewFolderDefaults> {
   const { instance: local, node } = rooted(instance);
-  const [defaults, folders] = await Promise.all([syncthingDefaults(local), configuredFolders(local)]);
+  const [defaults, folders, ignores] = await Promise.all([syncthingDefaults(local), configuredFolders(local), defaultIgnoreLines(local)]);
   const placed = placedPath(under, node, nodes);
   const derived = folderIdFromLabel(placed.name);
   const id = derived && !folders.some((folder) => folder.id === derived) ? derived : await randomFolderId(local);
   const devices = Array.isArray(defaults.devices) ? defaults.devices : [];
-  return { settings: folderSettings({ ...defaults, devices, id, label: placed.name, path: placed.path } as unknown as SyncthingFolderSettings), root: node.root, placementProblem: placed.problem };
+  return { settings: folderSettings({ ...defaults, devices, id, label: placed.name, path: placed.path } as unknown as SyncthingFolderSettings), ignores, root: node.root, placementProblem: placed.problem };
 }
 
 /** The root with its separator, which Syncthing's browse lists the inside of rather than completing it as a name. */

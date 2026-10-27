@@ -29,6 +29,7 @@ export type {
   FolderCopy,
   FolderDetailResponse,
   FolderFile,
+  FolderIgnores,
   FolderPathCheck,
   FolderPeer,
   FolderSettings,
@@ -40,6 +41,7 @@ export type {
   FolderType,
   HostSettings,
   IgnoredDevice,
+  IgnoresChange,
   InstanceConnection,
   InstanceGui,
   InstanceOptions,
@@ -83,12 +85,13 @@ export type {
   WarningLevel,
 } from "../../src/api/types.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderPathCheck, FolderSettings, FolderSettingsChange, RemoveDeviceBody, HostSettings, IgnoredDevice, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderSettings, FolderSettingsChange, RemoveDeviceBody, HostSettings, IgnoredDevice, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, pullOrderTexts, topDirectoryDefault } from "../../src/api/types.js";
 
 export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
+export { ignoreLinesOf, ignoreLinesProblem } from "../../src/api/ignorePatterns.js";
 export { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, isKeptBySyncthing, offeredVersioningTypes, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versioningWords, versionsPathLabel } from "../../src/api/versioningText.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
 
@@ -252,6 +255,20 @@ export function addFolder(nodeId: string, folder: NewFolder): Promise<SaveResult
 /** Sends only `change`; the node's answer is the folder as it now stands. */
 export function saveFolderSettings(nodeId: string, folderId: string, change: FolderSettingsChange): Promise<SaveResult<FolderSettings>> {
   return sendWrite(nodeApiPath(nodeId, `folders/${encodeURIComponent(folderId)}`), "PATCH", change);
+}
+
+function ignoresPath(nodeId: string, folderId: string): string {
+  return nodeApiPath(nodeId, `folders/${encodeURIComponent(folderId)}/ignores`);
+}
+
+export function fetchFolderIgnores(nodeId: string, folderId: string): Promise<FolderIgnores> {
+  return getJson(ignoresPath(nodeId, folderId));
+}
+
+/** Replaces the folder's patterns with `lines`, refused when the node's file is no longer `opened`; the answer is the file as it now stands. */
+export function saveFolderIgnores(nodeId: string, folderId: string, lines: string[], opened: string[]): Promise<SaveResult<FolderIgnores>> {
+  const change: IgnoresChange = { lines, opened };
+  return sendWrite(ignoresPath(nodeId, folderId), "PUT", change);
 }
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {

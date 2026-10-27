@@ -1,9 +1,14 @@
+import { ignoreLinesOf } from "../../src/api/ignorePatterns.js";
 import type { FolderSettings, NewFolder, Versioning, VersioningType } from "../../src/api/types.js";
 import { type VersioningParam, versioningParamKeys } from "../../src/api/versioningText.js";
 import type { FolderDraft } from "./state.js";
 
-export function draftOf(settings: FolderSettings): FolderDraft {
-  return { id: settings.id, label: settings.label, path: settings.path, type: settings.type, paused: settings.paused };
+export function draftOf(settings: FolderSettings, ignores: readonly string[] = []): FolderDraft {
+  return { id: settings.id, label: settings.label, path: settings.path, type: settings.type, paused: settings.paused, ignores: ignores.join("\n") };
+}
+
+function isSameLines(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((line, index) => line === right[index]);
 }
 
 /**
@@ -18,17 +23,20 @@ export function treePathOf(path: string, root: string): string | null {
 }
 
 /**
- * The new folder as sent: ID, label and path always, the other settings only where they differ from the offered defaults.
+ * The new folder as sent: ID, label and path always, the other settings only where they differ from the offered defaults;
+ * ignore patterns left as offered are not sent, so the node applies its own defaults.
  * @implNote The offered label is the directory's name, not Syncthing's default (empty), so it is always sent like the ID.
  */
-export function newFolderBody(offered: FolderSettings, draft: FolderDraft): NewFolder {
+export function newFolderBody(offered: FolderSettings, draft: FolderDraft, offeredIgnores: readonly string[] = []): NewFolder {
   const defaults = draftOf(offered);
+  const ignores = ignoreLinesOf(draft.ignores);
   return {
     id: draft.id.trim(),
     label: draft.label,
     path: draft.path.trim(),
     ...(draft.type !== defaults.type ? { type: draft.type } : {}),
     ...(draft.paused !== defaults.paused ? { paused: draft.paused } : {}),
+    ...(isSameLines(ignores, offeredIgnores) ? {} : { ignores }),
   };
 }
 

@@ -1,11 +1,11 @@
-import { type FolderType, type StorageNode, addFolder, browseFolderPaths, checkFolderPath, fetchFolderDefaults, folderTypeTexts } from "./api.js";
+import { type FolderSettings, type FolderType, type StorageNode, addFolder, browseFolderPaths, checkFolderPath, fetchFolderDefaults, folderTypeTexts, ignoreLinesOf, ignoreLinesProblem } from "./api.js";
 import { controlId, resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
 import { draftOf, newFolderBody, treePathOf } from "./folderDraft.js";
 import { registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
-import { type AddFolderFormState, type FolderDraft, appState, explorerLocation } from "./state.js";
+import { type AddFolderFormState, type FolderDraft, type Notice, appState, explorerLocation } from "./state.js";
 
 const formId = "add-folder-form";
 registerForm(formId);
@@ -44,7 +44,7 @@ export async function loadAddFolderForm(form: AddFolderFormState): Promise<void>
     const defaults = await fetchFolderDefaults(nodeId, form.under);
     if (form.nodeId !== nodeId) return;
     form.defaults = defaults;
-    form.draft = draftOf(defaults.settings);
+    form.draft = draftOf(defaults.settings, defaults.ignores);
     form.loadError = null;
     void runPathCheck(form, defaults.settings.path);
   } catch (error) {
@@ -178,6 +178,31 @@ function pausedField(form: AddFolderFormState): HTMLElement {
   return element("label", { className: "toggle", attributes: { for: id } }, box, element("span", {}, "Start paused", element("small", { className: "muted" }, " Syncthing neither scans nor syncs it until resumed")));
 }
 
+function ignoresField(form: AddFolderFormState): HTMLElement {
+  const { defaults, draft } = form as { defaults: NonNullable<AddFolderFormState["defaults"]>; draft: FolderDraft };
+  const id = controlId(formId, "ignores");
+  const area = element("textarea", { attributes: { id, rows: "4", spellcheck: "false" } });
+  area.defaultValue = defaults.ignores.join("\n");
+  area.value = draft.ignores;
+  area.disabled = form.saving || form.added !== null;
+  area.addEventListener("input", () => (draft.ignores = area.value));
+  area.addEventListener("change", () => {
+    forgetLastAttempt(form);
+    requestRender();
+  });
+  const problem = ignoreLinesProblem(ignoreLinesOf(draft.ignores));
+  const hint = problem
+    ? element("small", { className: "tone-text-bad" }, `${problem}.`)
+    : element("small", { className: "muted" }, defaults.ignores.length ? "The node's default patterns; the folder is added paused and resumed once they are written." : "One pattern per line, as in .stignore; empty ignores nothing.");
+  return element("label", { className: "setting", attributes: { for: id } }, element("span", {}, "Ignore patterns"), area, hint);
+}
+
+function addedText(added: FolderSettings, draft: FolderDraft): Notice {
+  const named = `${added.label || added.id} at ${added.path}`;
+  if (added.paused && !draft.paused) return { text: `Added folder ${named}, but it stays paused: its ignore patterns could not be set. Activity says why; set them in its settings, then resume it.`, tone: "warn" };
+  return { text: `Added folder ${named}.`, tone: "ok" };
+}
+
 function forgetLastAttempt(form: AddFolderFormState): void {
   if (form.added) return;
   form.result = null;
@@ -189,11 +214,11 @@ async function submit(form: AddFolderFormState): Promise<void> {
   form.saving = true;
   form.result = null;
   requestRender();
-  const result = await addFolder(nodeId, newFolderBody(defaults.settings, draft));
+  const result = await addFolder(nodeId, newFolderBody(defaults.settings, draft, defaults.ignores));
   form.saving = false;
   if (result.ok) {
     form.added = result.value;
-    form.result = { text: `Added folder ${result.value.label || result.value.id} at ${result.value.path}.`, tone: "ok" };
+    form.result = addedText(result.value, draft);
   } else {
     form.result = { text: `Not added: ${result.message}`, tone: "bad" };
   }
@@ -227,6 +252,7 @@ function settingsFields(form: AddFolderFormState): (HTMLElement | null)[] {
       textField(form, "id", "Folder ID", "The same on every device that shares the folder; it cannot be changed later."),
       pathField(form),
       typeField(form),
+      ignoresField(form),
     ),
     element("div", { className: "toggles" }, pausedField(form)),
     resultLine(form.result),

@@ -11,6 +11,7 @@ import { type Job, isJobRunning, parityState, recentLog, startJob } from "./pari
 import { activityRoutes } from "./routes/activity.js";
 import { deviceIndexRoutes } from "./routes/deviceIndex.js";
 import { deviceRoutes } from "./routes/devices.js";
+import { folderIgnoreRoutes } from "./routes/folderIgnores.js";
 import { folderRoutes } from "./routes/folders.js";
 import { nodeFolderRoutes } from "./routes/nodeFolders.js";
 import { optionsRoutes } from "./routes/options.js";
@@ -206,6 +207,7 @@ export const dashboardRoutes: AnyRoute[] = [
   ...optionsRoutes,
   ...deviceRoutes(),
   ...nodeFolderRoutes(),
+  ...folderIgnoreRoutes(),
   { pattern: hostWritePattern(/^\/api\/join$/), handle: async () => joinElsewhere() },
 ];
 

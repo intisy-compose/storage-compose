@@ -801,11 +801,34 @@ export interface NewFolder {
   path: string;
   type?: FolderType;
   paused?: boolean;
+  /** The folder's ignore patterns; when absent, the node's defaults. */
+  ignores?: string[];
+}
+
+/** `GET /api/nodes/<nodeId>/folders/<folderId>/ignores`, and the answer of its `PUT`: the folder's `.stignore` on that node. */
+export interface FolderIgnores {
+  /** The file's lines as written. */
+  lines: string[];
+  /** The patterns Syncthing matches, each line expanded; those that came only from included files are left out. */
+  expanded: string[];
+  /** How many expanded patterns came from included files and are not shown, as an included file is not the dashboard's to show. */
+  hiddenIncluded: number;
+  /** Why Syncthing cannot use the patterns; while set, the folder does not sync. */
+  error: string | null;
+}
+
+/** `PUT /api/nodes/<nodeId>/folders/<folderId>/ignores`: the whole new file, and the lines the form opened with. */
+export interface IgnoresChange {
+  lines: string[];
+  /** The file as the form read it; when the node's file differs by now, nothing is written. */
+  opened: string[];
 }
 
 /** `GET /api/nodes/<nodeId>/folder-defaults?under=<tree path>`: a new folder as the node's Syncthing would make it, placed at that directory. */
 export interface NewFolderDefaults {
   settings: FolderSettings;
+  /** The node's default ignore patterns, which a new folder starts with. */
+  ignores: string[];
   /** The node's root, inside which the path must stay. */
   root: string;
   /** Why the directory the form was opened at cannot be the folder, so the root is offered instead; null when it can. */

@@ -1,4 +1,4 @@
-import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, AddedDevice, DeviceIdCheck, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -31,6 +31,21 @@ export interface SharingDraft {
 
 export function emptySharing(): SharingDraft {
   return { share: new Map(), unshare: new Set(), revealed: new Set() };
+}
+
+/** The folder's ignore patterns in its edit form, read and saved on their own. */
+export interface IgnoresDraft {
+  /** As the node answered when the section opened or as the last save answered; a save is refused once the node's file differs from it. */
+  opened: FolderIgnores | null;
+  text: string;
+  loading: boolean;
+  loadError: string | null;
+  saving: boolean;
+  result: Notice | null;
+}
+
+export function emptyIgnores(): IgnoresDraft {
+  return { opened: null, text: "", loading: false, loadError: null, saving: false, result: null };
 }
 
 /** The form of `#/nodes/<nodeId>/devices/<deviceId>`: one device as one node's Syncthing has it. */
@@ -83,6 +98,8 @@ export interface FolderDraft {
   path: string;
   type: FolderType;
   paused: boolean;
+  /** The ignore patterns as typed, one per line. */
+  ignores: string;
 }
 
 /** The form of `#/folders?node=&path=&add=folder`: a folder to add to one node, placed at the explorer's directory by default. */
@@ -117,6 +134,7 @@ export interface EditFolderFormState {
   pathCheck: { typed: string; check: FolderPathCheck } | null;
   /** The node's devices ticked or unticked for the folder. */
   sharing: SharingDraft;
+  ignores: IgnoresDraft;
   saving: boolean;
   result: Notice | null;
 }
@@ -245,7 +263,7 @@ function readAddFolderForm(adding: boolean, node: string, under: string): void {
 function readEditFolderForm(folderId: string | null, nodeId: string | null): void {
   const open = appState.editFolderForm;
   if (!folderId || !nodeId) appState.editFolderForm = null;
-  else if (open?.folderId !== folderId || open.nodeId !== nodeId) appState.editFolderForm = { folderId, nodeId, saved: null, draft: null, pathCheck: null, sharing: emptySharing(), saving: false, result: null };
+  else if (open?.folderId !== folderId || open.nodeId !== nodeId) appState.editFolderForm = { folderId, nodeId, saved: null, draft: null, pathCheck: null, sharing: emptySharing(), ignores: emptyIgnores(), saving: false, result: null };
 }
 
 function readExplorerLocation(query: URLSearchParams): void {

@@ -25,6 +25,7 @@ import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
 import { type SharingChoice, clearSharing, folderSharingChange, hasSharingChanges, sharingList } from "./sharingFields.js";
 import { type EditFolderFormState, appState, explorerLocation } from "./state.js";
+import { ignoresSection, loadIgnores } from "./ignoresSection.js";
 import { versioningSection } from "./versioningSection.js";
 
 const formId = "edit-folder-form";
@@ -57,6 +58,7 @@ export function openEditFolderForm(form: EditFolderFormState, detail: FolderDeta
   if (form.saved || !settings) return;
   form.saved = structuredClone(settings);
   form.draft = structuredClone(settings);
+  if (copyOf(detail, form.nodeId)?.local && settings.type !== "receiveencrypted") void loadIgnores(form);
 }
 
 function copyOf(detail: FolderDetailResponse, nodeId: string): FolderCopy | undefined {
@@ -306,6 +308,8 @@ async function save(form: EditFolderFormState): Promise<void> {
 
 function revert(form: EditFolderFormState): void {
   if (form.saved) form.draft = structuredClone(form.saved);
+  if (form.ignores.opened) form.ignores.text = form.ignores.opened.lines.join("\n");
+  form.ignores.result = null;
   form.pathCheck = null;
   clearSharing(form.sharing);
   form.result = null;
@@ -322,6 +326,7 @@ function formBody(form: EditFolderFormState, copy: FolderCopy | undefined): HTML
       generalSection(form, copy),
       sharingSection(form),
       versioningSection(form, formId),
+      ignoresSection(form, formId, form.saved.type),
       advancedSection(form),
       resultLine(form.result),
       element(
