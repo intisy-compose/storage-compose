@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ConflictsPage, NodeFolder, StorageNode } from "../src/api/types.js";
 import { conflictWarnings } from "../src/attention.js";
-import { type ConflictReader, ConflictIndexes, conflictFile, conflictNameOf } from "../src/conflicts.js";
+import { type ConflictIndexOptions, type ConflictReader, ConflictIndexes, conflictFile, conflictNameOf, retryDelayMs } from "../src/conflicts.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import { requestHandler } from "../src/routes.js";
@@ -44,15 +44,20 @@ class FakeReader implements ConflictReader {
   readonly files = new Map<string, IndexFile | null>();
   readonly sequences = new Map<string, number>();
   readonly paused = new Set<string>();
+  /** Directories whose next read fails, once each. */
+  readonly failOnce = new Set<string>();
+  readonly startedAt: number[] = [];
   hold: Promise<void> | null = null;
 
   async browse(folderId: string, prefix: string, levels: number): Promise<BrowseEntry[]> {
     this.asked.push(`${folderId}:${prefix}:${levels}`);
+    this.startedAt.push(Date.now());
     this.inFlight += 1;
     this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
     try {
       await new Promise((resolve) => setTimeout(resolve, 2));
       if (this.hold) await this.hold;
+      if (this.failOnce.delete(`${folderId}:${prefix}`)) throw new Error(`${prefix} timed out`);
       return this.trees.get(folderId)?.get(prefix) ?? [];
     } finally {
       this.inFlight -= 1;
@@ -80,10 +85,10 @@ function indexUpdated(folder: string, sequence: number, filenames: string[]): Sy
 const scratch: string[] = [];
 const indexSets: ConflictIndexes[] = [];
 
-async function indexesIn(directoryPath?: string): Promise<{ indexes: ConflictIndexes; path: string }> {
+async function indexesIn(directoryPath?: string, options: Partial<ConflictIndexOptions> = {}): Promise<{ indexes: ConflictIndexes; path: string }> {
   const path = directoryPath ?? (await mkdtemp(join(tmpdir(), "conflicts-")));
   if (!directoryPath) scratch.push(path);
-  const indexes = new ConflictIndexes({ directory: path, recheckMs: 0, sequenceWriteDelayMs: 5 });
+  const indexes = new ConflictIndexes({ directory: path, recheckMs: 0, sequenceWriteDelayMs: 5, browsePauseMs: 0, report: () => {}, ...options });
   indexSets.push(indexes);
   return { indexes, path };
 }
@@ -102,6 +107,7 @@ describe("conflict names", () => {
     assert.deepEqual(conflictNameOf("a.sync-conflict-20260606-110111-TUH2R66.tar.gz"), { original: "a.tar.gz", shortDeviceId: "TUH2R66" });
     assert.equal(conflictNameOf("notes.txt"), null);
     assert.equal(conflictNameOf("notes.sync-conflict-2026-bad.txt"), null);
+    assert.equal(conflictNameOf("notes.sync-conflict-20260606-110111-TUH2R66x"), null, "after the device ID only an extension may follow");
     assert.equal(conflictNameOf("dir.sync-conflict-20260606-110111-TUH2R66/inside.txt"), null, "only the last segment names a conflict copy");
     const devices = [{ deviceID: pcId, name: "pc" }, { deviceID: laptopId, name: "" }];
     assert.deepEqual(conflictFile({ path: "a/b.sync-conflict-20260606-110111-H3SXFPD.txt", size: 5, modified: "2026-06-06T11:01:11Z" }, devices), {
@@ -131,7 +137,7 @@ describe("conflict index", () => {
     reader.sequences.set("music", 3);
   }
 
-  it("the sweep goes one top directory at a time", async () => {
+  it("the sweep lists one directory per call, one call at a time on the instance", async () => {
     const reader = new FakeReader();
     documentsTree(reader);
     const { indexes, path } = await indexesIn();
@@ -146,6 +152,7 @@ describe("conflict index", () => {
     assert.equal(reader.maxInFlight, 1, "one directory at a time, and one folder's sweep at a time on the instance");
     assert.deepEqual(indexes.list("fb98", "documents"), {
       complete: true,
+      more: false,
       conflicts: [
         { path: "big/deep/save.sync-conflict-20260606-110249-TUH2R66.bmp", size: 7, modified: "2026-10-27T10:00:00+01:00" },
         { path: "top.sync-conflict-20260606-110111-H3SXFPD.txt", size: 3, modified: "2026-10-27T10:00:00+01:00" },
@@ -167,7 +174,7 @@ describe("conflict index", () => {
     const { indexes } = await indexesIn();
     await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
     assert.equal(indexes.count("fb98", "documents"), null);
-    assert.deepEqual(indexes.list("fb98", "documents"), { complete: false, conflicts: [] });
+    assert.deepEqual(indexes.list("fb98", "documents"), { complete: false, more: false, conflicts: [] });
     release();
     await indexes.idle();
     assert.equal(indexes.count("fb98", "documents"), 2);
@@ -219,7 +226,7 @@ describe("conflict index", () => {
     await indexes.idle();
     assert.equal(documentsReads(), sweptBefore, "Syncthing 2.1.6 moved the sequence from 10 to 13 for one pulled item");
     reader.sequences.set("documents", 50);
-    indexes.instanceRestarted("fb98");
+    indexes.mayHaveMissedUpdates("fb98");
     await indexes.idle();
     assert.equal(documentsReads(), sweptBefore * 2, "documents moved past the index while the restart hid its updates");
     assert.equal(musicReads(), 1, "music did not move, so it is not read again");
@@ -245,6 +252,143 @@ describe("conflict index", () => {
     assert.equal(again.count("fb98", "documents"), 2, "the stored copies are shown while the folder is read again");
     await again.idle();
     assert.equal(reader.asked.filter((entry) => entry.startsWith("documents:")).length, 4);
+  });
+
+  it("an index that is not complete is never stored, so a stale one is swept again after a restart", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    const { indexes, path } = await indexesIn();
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    indexes.stop();
+    reader.sequences.set("documents", 41);
+    let release = () => {};
+    reader.hold = new Promise((resolve) => (release = resolve));
+    const { indexes: stale } = await indexesIn(path);
+    await stale.reconcile([{ nodeId: "fb98", client: reader }]);
+    await until(() => reader.inFlight === 1, "the new sweep to start");
+    reader.sequences.set("documents", 42);
+    stale.takeEvent("fb98", indexUpdated("documents", 42, ["x.txt"]));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    stale.stop();
+    release();
+    reader.hold = null;
+    const stored = JSON.parse(await readFile(join(path, "fb98-documents.json"), "utf8")) as { sequence: number };
+    assert.equal(stored.sequence, 40, "the index under a sweep is not written with the update's sequence");
+    reader.asked.length = 0;
+    const { indexes: restarted } = await indexesIn(path);
+    await restarted.reconcile([{ nodeId: "fb98", client: reader }]);
+    await restarted.idle();
+    assert.equal(reader.asked.filter((entry) => entry.startsWith("documents:")).length, 4, "still stale, so swept again");
+  });
+
+  it("a failed sweep waits, doubling, and goes on from the directories still to read", async () => {
+    assert.deepEqual([1, 2, 3, 4, 10].map((failures) => retryDelayMs(failures, 300_000, 21_600_000)), [300_000, 600_000, 1_200_000, 2_400_000, 21_600_000]);
+    const reader = new FakeReader();
+    documentsTree(reader);
+    reader.failOnce.add("documents:big");
+    const { indexes } = await indexesIn(undefined, { retryFirstMs: 150, retryMaxMs: 1000 });
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    assert.deepEqual(reader.asked.filter((entry) => entry.startsWith("documents:")), ["documents::0", "documents:big:0"]);
+    assert.equal(indexes.list("fb98", "documents")?.complete, false);
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    assert.equal(reader.asked.filter((entry) => entry.startsWith("documents:")).length, 2, "no new try before the wait is over");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    assert.deepEqual(reader.asked.filter((entry) => entry.startsWith("documents:")), ["documents::0", "documents:big:0", "documents:big:0", "documents:small:0", "documents:big/deep:0"], "the root is not read again");
+    assert.equal(indexes.count("fb98", "documents"), 2);
+    assert.equal(indexes.list("fb98", "documents")?.complete, true);
+  });
+
+  it("the sweep pauses between two directory reads", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    reader.trees.delete("music");
+    const { indexes } = await indexesIn(undefined, { browsePauseMs: 40 });
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    const gaps = reader.startedAt.slice(1).map((time, index) => time - reader.startedAt[index]);
+    assert.equal(gaps.length, 3);
+    assert.ok(gaps.every((gap) => gap >= 38), `gaps ${gaps.join(", ")} ms`);
+  });
+
+  it("the periodic check sweeps a folder whose sequence moved and leaves the others", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    const { indexes } = await indexesIn(undefined, { verifyEveryMs: 0 });
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    reader.asked.length = 0;
+    reader.sequences.set("documents", 45);
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    assert.equal(reader.asked.filter((entry) => entry.startsWith("documents:")).length, 4);
+    assert.equal(reader.asked.filter((entry) => entry.startsWith("music:")).length, 0);
+    const { indexes: daily } = await indexesIn(undefined, { verifyEveryMs: 86_400_000 });
+    await daily.reconcile([{ nodeId: "fb98", client: reader }]);
+    await daily.idle();
+    reader.asked.length = 0;
+    reader.sequences.set("documents", 46);
+    await daily.reconcile([{ nodeId: "fb98", client: reader }]);
+    await daily.idle();
+    assert.equal(reader.asked.length, 0, "a day has not passed");
+  });
+
+  it("at most the set number of copies is kept, and the folder says there are more", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    const { indexes, path } = await indexesIn(undefined, { maxConflicts: 1 });
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    assert.equal(indexes.count("fb98", "documents"), 1);
+    assert.equal(indexes.hasMore("fb98", "documents"), true);
+    assert.equal(indexes.list("fb98", "documents")?.more, true);
+    const stored = JSON.parse(await readFile(join(path, "fb98-documents.json"), "utf8")) as { more: boolean; conflicts: unknown[] };
+    assert.equal(stored.conflicts.length, 1);
+    assert.equal(stored.more, true);
+  });
+
+  it("the indexes of a node the host no longer keeps are deleted, those of a detached node are kept", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    const { indexes, path } = await indexesIn();
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    await writeFile(join(path, "zz99-old.json"), JSON.stringify({ nodeId: "zz99", folderId: "old", sequence: 1, sweptAt: "", conflicts: [] }));
+    await indexes.reconcile([], new Set(["fb98", "5784"]));
+    await indexes.idle();
+    assert.deepEqual((await readdir(path)).sort(), ["fb98-documents.json", "fb98-music.json"], "fb98 is detached but kept; zz99 is gone");
+    assert.equal(indexes.count("fb98", "documents"), 2);
+    await indexes.reconcile([], new Set(["5784"]));
+    await indexes.idle();
+    assert.deepEqual(await readdir(path), []);
+    assert.equal(indexes.list("fb98", "documents"), null);
+  });
+
+  it("an update naming a directory adds nothing, and one naming fewer items than it counts is checked by sequence", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    const { indexes } = await indexesIn();
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    const folderName = "odd.sync-conflict-20261027-110000-TUH2R66";
+    reader.files.set(`documents:${folderName}`, { ...indexFile(0), global: { ...indexFile(0).global, type: directory } });
+    reader.sequences.set("documents", 41);
+    indexes.takeEvent("fb98", indexUpdated("documents", 41, [folderName]));
+    await indexes.idle();
+    assert.equal(indexes.count("fb98", "documents"), 2);
+    reader.asked.length = 0;
+    reader.sequences.set("documents", 43);
+    indexes.takeEvent("fb98", { id: 43, time: "", type: "LocalIndexUpdated", data: { folder: "documents", items: 2, filenames: ["a.txt"], sequence: 43 } });
+    await indexes.idle();
+    assert.equal(reader.asked.length, 0, "the folder is at the update's sequence, so nothing was missed");
+    reader.sequences.set("documents", 50);
+    indexes.takeEvent("fb98", { id: 44, time: "", type: "LocalIndexUpdated", data: { folder: "documents", items: 2, filenames: ["a.txt"], sequence: 44 } });
+    await indexes.idle();
+    assert.equal(reader.asked.filter((entry) => entry.startsWith("documents:")).length, 4, "the folder moved on past the short update, so it is read again");
   });
 
   it("a copy changed while the sweep runs is taken from the event, and a folder removed from the config is forgotten", async () => {
@@ -305,6 +449,8 @@ describe("conflicts on Attention", () => {
     assert.equal(warnings[0].folderId, "documents");
     assert.equal(warnings[0].text, "Documents on pc: 3 sync conflicts");
     assert.equal(warningHref(warnings[0]), "#/folders/documents?node=all&path=&conflicts=fb98");
+    const capped = conflictWarnings({ ...node, folders: [folder({ conflicts: 1000, conflictsMore: true })] } as StorageNode);
+    assert.equal(capped[0].text, "Documents on pc: more than 1000 sync conflicts");
   });
 });
 
@@ -314,7 +460,7 @@ describe("the conflicts route", () => {
   let peerDashboardUrl = "";
   const peerPaths: string[] = [];
   const reader = new FakeReader();
-  const indexes = new ConflictIndexes({ directory: join(tmpdir(), "conflicts-route-unused"), recheckMs: 0, sequenceWriteDelayMs: 5 });
+  const indexes = new ConflictIndexes({ directory: join(tmpdir(), "conflicts-route-unused"), recheckMs: 0, sequenceWriteDelayMs: 5, browsePauseMs: 0, report: () => {} });
   indexSets.push(indexes);
 
   function reply(response: ServerResponse, body: unknown, status = 200): void {
@@ -331,7 +477,7 @@ describe("the conflicts route", () => {
 
   const peerDashboard: Server = createServer((request, response) => {
     peerPaths.push(request.url ?? "");
-    reply(response, { items: [{ path: "p.sync-conflict-20260606-110111-H3SXFPD.txt", original: "p.txt", size: 2, modified: "x", device: "pc", apiKey: "leak" }], page: 1, perPage: 50, total: 1, complete: false });
+    reply(response, { items: [{ path: "p.sync-conflict-20260606-110111-H3SXFPD.txt", original: "p.txt", size: 2, modified: "x", device: "pc", apiKey: "leak" }], page: 1, perPage: 50, total: 1, complete: false, more: true });
   });
 
   function local(): LocalInstance {
@@ -381,6 +527,7 @@ describe("the conflicts route", () => {
       perPage: 2,
       total: 3,
       complete: true,
+      more: false,
     });
     const first = (await (await fetch(`${dashboardUrl}/api/nodes/fb98/folders/documents/conflicts`)).json()) as ConflictsPage;
     assert.equal(first.items[1].device, "laptop");
@@ -390,6 +537,6 @@ describe("the conflicts route", () => {
     assert.equal((await fetch(`${dashboardUrl}/api/nodes/fb98/folders/nothing/conflicts`)).status, 404);
     const forwarded = (await (await fetch(`${dashboardUrl}/api/nodes/a1b2/folders/documents/conflicts?page=1&perPage=50`)).json()) as ConflictsPage;
     assert.deepEqual(peerPaths, ["/api/nodes/a1b2/folders/documents/conflicts?page=1&perPage=50&scope=local"]);
-    assert.deepEqual(forwarded, { items: [{ path: "p.sync-conflict-20260606-110111-H3SXFPD.txt", original: "p.txt", size: 2, modified: "x", device: "pc" }], page: 1, perPage: 50, total: 1, complete: false });
+    assert.deepEqual(forwarded, { items: [{ path: "p.sync-conflict-20260606-110111-H3SXFPD.txt", original: "p.txt", size: 2, modified: "x", device: "pc" }], page: 1, perPage: 50, total: 1, complete: false, more: true });
   });
 });

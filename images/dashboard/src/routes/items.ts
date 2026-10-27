@@ -229,10 +229,10 @@ export async function remoteNeedItems(instance: ResolvedInstance, folderId: stri
 async function localConflicts(instance: LocalInstance, folderId: string, request: PageRequest, indexes: ConflictIndexes): Promise<ConflictsPage> {
   return callSyncthing(instance, async (client) => {
     const { devices } = await folderContext(instance, client, folderId);
-    const listed = indexes.list(instance.nodeId, folderId) ?? { conflicts: [], complete: false };
+    const listed = indexes.list(instance.nodeId, folderId) ?? { conflicts: [], complete: false, more: false };
     const start = (request.page - 1) * request.perPage;
     const items = listed.conflicts.slice(start, start + request.perPage).map((stored) => conflictFile(stored, devices));
-    return { items, page: request.page, perPage: request.perPage, total: listed.complete || listed.conflicts.length ? listed.conflicts.length : null, complete: listed.complete };
+    return { items, page: request.page, perPage: request.perPage, total: listed.complete || listed.conflicts.length ? listed.conflicts.length : null, complete: listed.complete, more: listed.more };
   });
 }
 
@@ -251,7 +251,7 @@ function forwardedConflict(value: unknown): ConflictFile {
 export async function conflictItems(instance: ResolvedInstance, folderId: string, request: PageRequest, indexes: ConflictIndexes = conflictIndexes): Promise<ConflictsPage> {
   if (instance.kind === "local") return localConflicts(instance, folderId, request, indexes);
   const answer = await forwardRead(instance, listPath(instance, folderId, "conflicts", pageQuery(request)), forwardBudgetsMs.need);
-  return { ...forwardedPage(answer, request, forwardedConflict), complete: fieldsOf(answer).complete === true };
+  return { ...forwardedPage(answer, request, forwardedConflict), complete: fieldsOf(answer).complete === true, more: fieldsOf(answer).more === true };
 }
 
 const recentReadMs = 2_000;

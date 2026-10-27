@@ -90,7 +90,7 @@ export function conflictWarnings(node: StorageNode): Warning[] {
         id: `conflicts:${node.id}:${folder.id}`,
         level: "warning",
         kind: "conflicts",
-        text: `${folder.label || folder.id} on ${node.name}: ${plural(folder.conflicts!, "sync conflict")}`,
+        text: `${folder.label || folder.id} on ${node.name}: ${folder.conflictsMore ? `more than ${folder.conflicts} sync conflicts` : plural(folder.conflicts!, "sync conflict")}`,
         nodeId: node.id,
         folderId: folder.id,
       }),

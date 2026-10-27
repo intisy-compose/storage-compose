@@ -53,6 +53,8 @@ interface LocalNode {
   present: boolean;
   /** False for the cluster while this host has no description of it, so it counts only once its Syncthing answers. */
   described: boolean;
+  /** False for a registry entry that asks not to be remembered once it leaves. */
+  remember: boolean;
   endpoint: () => Promise<SyncthingEndpoint | null>;
 }
 
@@ -68,6 +70,7 @@ async function arrayNode(nodeId: string, sources: ResolverSources): Promise<Loca
     threshold: status?.description?.node.threshold ?? 0,
     present: status?.present ?? true,
     described: status !== null,
+    remember: true,
     endpoint: () => syncthingEndpoint(nodeId, undefined, sources.registryDirectory),
   };
 }
@@ -84,6 +87,7 @@ async function registryNodes(sources: ResolverSources): Promise<LocalNode[]> {
     threshold: entry.threshold,
     present: entry.present,
     described: true,
+    remember: entry.remember !== false,
     endpoint: () => syncthingEndpoint(entry.id, entry, sources.registryDirectory),
   }));
 }
@@ -106,11 +110,13 @@ export interface LocalNodeInfo {
   os: LocalInstance["os"];
   threshold: number;
   present: boolean;
+  /** False for a registry entry that asks not to be remembered once it leaves. */
+  remember: boolean;
   instance: LocalInstance | null;
 }
 
 async function toInfo(local: LocalNode): Promise<LocalNodeInfo> {
-  return { nodeId: local.nodeId, source: local.source, name: local.name, root: local.root, os: local.os, threshold: local.threshold, present: local.present, instance: await toInstance(local) };
+  return { nodeId: local.nodeId, source: local.source, name: local.name, root: local.root, os: local.os, threshold: local.threshold, present: local.present, remember: local.remember, instance: await toInstance(local) };
 }
 
 /** Every node of this host, the cluster first: each array, the cluster, registry entries and host agent nodes. */

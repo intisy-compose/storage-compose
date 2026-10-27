@@ -69,7 +69,7 @@ function conflictsValue(copy: FolderCopy): HTMLElement | string {
   const count = copy.conflicts ?? null;
   if (count === null) return copy.local ? "not searched yet" : "not counted";
   if (!count) return "none";
-  return listToggle(copy, "conflicts", conflictCopies(count), `List the conflict copies on ${copy.nodeName}`, "link-button tone-text-warn");
+  return listToggle(copy, "conflicts", conflictCopies(count, copy.conflictsMore === true), `List the conflict copies on ${copy.nodeName}`, "link-button tone-text-warn");
 }
 
 function lastFileText(copy: FolderCopy): string {

@@ -9,7 +9,7 @@ import { until } from "./until.js";
 
 const pcDevice = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 const arrayDevice = "ARRAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
-const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20 };
+const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20, bufferSize: 3 };
 
 /** A Syncthing that answers `/rest/events` like the real one: only events after `since`, or an empty list after a short wait. */
 class FakeSyncthing {
@@ -55,6 +55,12 @@ class FakeSyncthing {
     for (const event of events) this.events.push({ id: this.events.length + 1, time: new Date(Date.now() + this.events.length).toISOString(), ...event });
     const waiting = this.waiting.splice(0);
     for (const wake of waiting) wake();
+  }
+
+  /** Cuts the open long poll off, as a network failure would, without a restart. */
+  dropConnections(): void {
+    this.waiting = [];
+    this.server.closeAllConnections();
   }
 
   /** Starts again: new start time, IDs from 1, and the open long poll cut off. */
@@ -126,7 +132,7 @@ describe("event feeds", () => {
     const { fake, feed } = await instance("pc", "pc");
     const log = new ActivityLog(100);
     const heard: string[] = [];
-    const feeds = new EventFeeds(log, feedOptions, { event: (nodeId, event) => heard.push(`${nodeId}:${event.type}`), restarted: (nodeId) => heard.push(`${nodeId}:restarted`) });
+    const feeds = new EventFeeds(log, feedOptions, { event: (nodeId, event) => heard.push(`${nodeId}:${event.type}`), mayHaveMissed: (nodeId) => heard.push(`${nodeId}:restarted`) });
     feedSets.push(feeds);
     feeds.reconcile([feed]);
     fake.emit({ type: "LocalIndexUpdated", data: { folder: "documents", items: 1, filenames: ["a.sync-conflict-20261027-110000-TUH2R66.txt"], sequence: 9 } }, scanned("documents", "idle"));
@@ -138,6 +144,23 @@ describe("event feeds", () => {
     fake.emit(scanned("documents", "scanning"));
     await until(() => heard.includes("pc:restarted"), "the restart at the listener");
     assert.equal(heard.filter((entry) => entry === "pc:restarted").length, 1, "the first start of a feed is no restart");
+  });
+
+  it("a poll that fills syncthing's buffer, and one that failed and answers again, may have missed events", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    const missed: string[] = [];
+    const feeds = new EventFeeds(log, feedOptions, { event: () => {}, mayHaveMissed: (nodeId) => missed.push(nodeId) });
+    feedSets.push(feeds);
+    feeds.reconcile([feed]);
+    fake.emit(scanned("documents", "scanning"), scanned("documents", "idle"));
+    await until(() => log.query({}).entries.length === 2, "two events");
+    assert.deepEqual(missed, [], "fewer than the buffer holds");
+    fake.emit(scanned("documents", "scanning"), scanned("documents", "idle"), scanned("documents", "syncing"));
+    await until(() => missed.length === 1, "a full buffer told");
+    fake.dropConnections();
+    fake.emit(scanned("documents", "idle"));
+    await until(() => missed.length === 2, "the failed poll told once it answers again");
   });
 
   it("a restart resets since without losing new events", async () => {

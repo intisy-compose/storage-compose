@@ -115,7 +115,7 @@ function arrayWarnings(status: ArrayStatus, node: StorageNode): Warning[] {
 
 /** Each folder's count of conflict copies, as far as the folder has been searched. */
 function withConflictCounts(node: StorageNode): StorageNode {
-  return { ...node, folders: node.folders.map((folder) => ({ ...folder, conflicts: conflictIndexes.count(node.id, folder.id) })) };
+  return { ...node, folders: node.folders.map((folder) => ({ ...folder, conflicts: conflictIndexes.count(node.id, folder.id), conflictsMore: conflictIndexes.hasMore(node.id, folder.id) })) };
 }
 
 /** What a node's own Syncthing and its space say needs a person. */

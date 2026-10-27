@@ -106,6 +106,15 @@ export function activityBufferSize(environment: Record<string, string | undefine
 
 export const activitySettings = { bufferSize: activityBufferSize(process.env) };
 
+/** CONFLICT_SWEEP_PAUSE_MS and CONFLICT_RECHECK_HOURS from config.env: the pause between two directory reads of a conflict sweep, and how often every folder's conflict index is checked against its Syncthing. */
+export function conflictSweepSettings(environment: Record<string, string | undefined>): { browsePauseMs: number; verifyEveryMs: number } {
+  const pause = Number(environment.CONFLICT_SWEEP_PAUSE_MS);
+  const browsePauseMs = environment.CONFLICT_SWEEP_PAUSE_MS && Number.isFinite(pause) && pause >= 0 ? Math.floor(pause) : 50;
+  return { browsePauseMs, verifyEveryMs: positiveNumber(environment.CONFLICT_RECHECK_HOURS, 24) * 3_600_000 };
+}
+
+export const conflictSettings = conflictSweepSettings(process.env);
+
 /** EXPLORER_NEED_LIMIT from config.env: above this many outstanding or failed items a folder's list is not placed in the tree. */
 export function explorerNeedLimit(environment: Record<string, string | undefined>): number {
   return Math.max(1, Math.floor(positiveNumber(environment.EXPLORER_NEED_LIMIT, 20_000)));

@@ -229,6 +229,8 @@ export interface NodeFolder {
   localChanged: number;
   /** Conflict copies Syncthing kept in the folder; null until the folder has been searched for them, or from a dashboard that does not count them. */
   conflicts: number | null;
+  /** True when the folder holds more conflict copies than `conflicts` counts, as the index keeps only so many. */
+  conflictsMore?: boolean;
   sharedWith: FolderPeer[];
 }
 
@@ -985,10 +987,11 @@ export interface ConflictFile {
 
 /**
  * `GET /api/nodes/<nodeId>/folders/<folderId>/conflicts?page=&perPage=`: the folder's conflict copies, listed only; keeping one is a file operation on the node.
- * `complete` is false while the folder is still being searched, so more may follow.
+ * `complete` is false while the folder is still being searched, so more may follow; `more` is true when the folder holds more than `total` copies.
  */
 export interface ConflictsPage extends ItemsPage<ConflictFile> {
   complete: boolean;
+  more: boolean;
 }
 
 /** `GET /api/nodes/<nodeId>/folders/<folderId>/discard-counts`: Syncthing's counts read now, what a revert or an override would discard; null when not given. */
