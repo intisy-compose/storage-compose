@@ -109,7 +109,7 @@ export const activitySettings = { bufferSize: activityBufferSize(process.env) };
 /** CONFLICT_SWEEP_PAUSE_MS and CONFLICT_RECHECK_HOURS from config.env: the pause between two directory reads of a conflict sweep, and how often every folder's conflict index is checked against its Syncthing. */
 export function conflictSweepSettings(environment: Record<string, string | undefined>): { browsePauseMs: number; verifyEveryMs: number } {
   const pause = Number(environment.CONFLICT_SWEEP_PAUSE_MS);
-  const browsePauseMs = environment.CONFLICT_SWEEP_PAUSE_MS && Number.isFinite(pause) && pause >= 0 ? Math.floor(pause) : 50;
+  const browsePauseMs = environment.CONFLICT_SWEEP_PAUSE_MS && Number.isFinite(pause) && pause >= 0 ? Math.floor(pause) : 10;
   return { browsePauseMs, verifyEveryMs: positiveNumber(environment.CONFLICT_RECHECK_HOURS, 24) * 3_600_000 };
 }
 
