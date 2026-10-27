@@ -185,5 +185,6 @@ export function advancedEditor(nodeId: string, target: AdvancedTarget, onSaved: 
 export function refreshAdvancedEditor(nodeId: string, target: AdvancedTarget): void {
   const state = states.get(keyOf(nodeId, target));
   if (!state?.open || state.saving || holdsDraft(state)) return;
+  state.result = null;
   void load(nodeId, target, state);
 }
