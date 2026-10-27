@@ -5,6 +5,7 @@
 $syncthingStopSeconds = 15
 $syncthingAttemptWindowSeconds = 600
 $syncthingAttemptsPerWindow = 3
+$syncthingStableRunSeconds = 60
 $syncthingLogMaxBytes = 10485760
 $tailscaleCli = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
 $syncthingInstances = @{}
@@ -261,6 +262,17 @@ function Test-InstanceIsBackingOff($Instance) {
     return $Instance.attempts.Count -ge $syncthingAttemptsPerWindow
 }
 
+<#
+.NOTES
+A Syncthing that ran at least $syncthingStableRunSeconds before it exited was restarted on request,
+such as the dashboard's Restart, not crashing; only quick exits count toward the backoff.
+#>
+function Test-InstanceRanStably($Instance) {
+    if (-not $Instance.startedAt) { return $false }
+    $started = [datetime]::Parse($Instance.startedAt, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+    return ((Get-Date) - $started).TotalSeconds -ge $syncthingStableRunSeconds
+}
+
 function Start-NodeSyncthing($Instance, [string]$ListenHost) {
     $node = $Instance.node
     if (Test-InstanceIsBackingOff $Instance) { $Instance.state = "failed"; return }
@@ -358,6 +370,7 @@ function Update-NodeInstances([object[]]$Nodes, [bool]$IsActive) {
         if (Test-NeedsRestartForAddress $instance $listenHost) { Stop-NodeSyncthing $instance "its tailnet address changed" }
         if ($instance.state -eq "running" -and -not (Test-ProcessIsRunning $instance.processId)) {
             Write-WatcherLog "node $($node.name) ($($node.id)): Syncthing exited; starting it again"
+            if (Test-InstanceRanStably $instance) { $instance.attempts = @() }
             $instance.state = "stopped"
         }
         if ($instance.state -ne "running") { Start-NodeSyncthing $instance $listenHost }
