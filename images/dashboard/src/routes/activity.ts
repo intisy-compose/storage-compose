@@ -5,8 +5,8 @@ import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, Route, WriteNote } from "../routes.js";
 import { shownUnscopedText } from "../shownSyncthingError.js";
-import { nodeSecrets as readNodeSecrets } from "../nodeSecrets.js";
-import { filesHoldingSecrets, holdsSecret, UnreadableZip, withoutSecrets, zipEntries } from "../supportBundle.js";
+import { type KnownSecrets, allSecretsKnown, knownNodeSecrets, nodeSecrets as readNodeSecrets, shownNodeText } from "../nodeSecrets.js";
+import { filesHoldingSecrets, holdsSecret, UnreadableZip, zipEntries } from "../supportBundle.js";
 import { AnswerTooLarge, type SystemError, boundedBytes } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
 
@@ -69,19 +69,14 @@ export function logLevelOf(level: unknown): LogLevel {
   return syncthingLevels[level.toUpperCase()] ?? "info";
 }
 
-/** A Syncthing text as the page sees it: the node's secrets replaced, then the redaction of Syncthing's texts. */
-function shownText(text: string, secrets: readonly string[]): string {
-  return shownUnscopedText(withoutSecrets(text, secrets));
+function logMessageOf(value: unknown, secrets: KnownSecrets = allSecretsKnown([])): LogMessage {
+  const fields = fieldsOf(value);
+  return { when: String(fields.when ?? ""), level: logLevelOf(fields.level), message: shownNodeText(String(fields.message ?? ""), secrets) };
 }
 
-function logMessageOf(value: unknown, secrets: readonly string[] = []): LogMessage {
+function nodeErrorOf(value: unknown, secrets: KnownSecrets = allSecretsKnown([])): NodeError {
   const fields = fieldsOf(value);
-  return { when: String(fields.when ?? ""), level: logLevelOf(fields.level), message: shownText(String(fields.message ?? ""), secrets) };
-}
-
-function nodeErrorOf(value: unknown, secrets: readonly string[] = []): NodeError {
-  const fields = fieldsOf(value);
-  return { when: String(fields.when ?? ""), message: shownText(String(fields.message ?? ""), secrets) };
+  return { when: String(fields.when ?? ""), message: shownNodeText(String(fields.message ?? ""), secrets) };
 }
 
 /**
@@ -114,7 +109,7 @@ export async function readNodeLog(instance: ResolvedInstance, since: string | nu
   const query = since ? `?since=${encodeURIComponent(since)}` : "";
   if (instance.kind === "remote") return { messages: listOf(fieldsOf(await forwardRead(instance, nodePath(instance.nodeId, `/log${query}`))).messages).map((message) => logMessageOf(message)) };
   const [answer, secrets] = await Promise.all([callSyncthing(instance, (client) => client.request<{ messages?: unknown } | null>("GET", `/system/log${query}`)), nodeSecrets(instance)]);
-  return { messages: listOf(answer?.messages).map((message) => logMessageOf(message, secrets)) };
+  return { messages: listOf(answer?.messages).map((message) => logMessageOf(message, allSecretsKnown(secrets))) };
 }
 
 async function localErrors(instance: LocalInstance): Promise<SystemError[]> {
@@ -124,7 +119,7 @@ async function localErrors(instance: LocalInstance): Promise<SystemError[]> {
 export async function readNodeErrors(instance: ResolvedInstance): Promise<NodeErrors> {
   if (instance.kind === "remote") return { errors: listOf(fieldsOf(await forwardRead(instance, nodePath(instance.nodeId, "/errors"))).errors).map((error) => nodeErrorOf(error)) };
   const [errors, secrets] = await Promise.all([localErrors(instance), nodeSecrets(instance)]);
-  return { errors: errors.map((error) => nodeErrorOf(error, secrets)) };
+  return { errors: errors.map((error) => nodeErrorOf(error, allSecretsKnown(secrets))) };
 }
 
 function plural(count: number, word: string): string {
@@ -157,7 +152,7 @@ export async function clearNodeErrors(instance: ResolvedInstance, readBackDelays
     },
     readBackDelaysMs,
   );
-  const [after, secrets] = await Promise.all([localErrors(local).catch(() => [] as SystemError[]), nodeSecrets(local)]);
+  const [after, secrets] = await Promise.all([localErrors(local).catch(() => [] as SystemError[]), knownNodeSecrets(local.nodeId, local.client)]);
   return { answer: { errors: after.map((error) => nodeErrorOf(error, secrets)) }, note: { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: `${local.name}: cleared ${plural(before.length, "Syncthing error")}` } };
 }
 

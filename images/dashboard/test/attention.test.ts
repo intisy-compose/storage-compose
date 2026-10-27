@@ -155,7 +155,7 @@ describe("attention", () => {
 
   it("a system error carrying one of the node's secrets shows it replaced, in its text and its ID", () => {
     const apiKey = "attention-api-key-0123456789";
-    const [shown] = systemErrorWarnings(node({}), [{ when: "2026-10-21T10:00:00Z", message: `GUI request with ${apiKey} refused` }], [apiKey]);
+    const [shown] = systemErrorWarnings(node({}), [{ when: "2026-10-21T10:00:00Z", message: `GUI request with ${apiKey} refused` }], { secrets: [apiKey], complete: true });
     assert.equal(shown.text, "pc's Syncthing: GUI request with [redacted] refused");
     assert.ok(!JSON.stringify(shown).includes(apiKey));
   });

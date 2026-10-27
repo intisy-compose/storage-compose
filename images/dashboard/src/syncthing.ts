@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { deviceDisplayName, listedAddresses } from "./api/deviceText.js";
 import { connectionKind } from "./connectionKind.js";
 import { needTotalOf } from "./folderLists.js";
-import { nodeSecretsOrApiKey } from "./nodeSecrets.js";
+import { type KnownSecrets, knownNodeSecrets } from "./nodeSecrets.js";
 import { shownUnscopedText } from "./shownSyncthingError.js";
 import { effectiveSharing, sharedDevices } from "./syncthingConfig.js";
 import { type FileVersion, type FolderFile, type FolderPeer, type FolderType, type NodeFolder, type NodeSync, type Peer, type RemoteState, type SyncthingDevice, type SyncthingInstance, listTimeoutMs } from "./api/types.js";
@@ -205,7 +205,7 @@ export interface InstanceView {
   offersWaiting: number;
   systemErrors: SystemError[];
   /** What its system errors are cleared of before they are shown (`nodeSecrets.ts`). */
-  secrets: string[];
+  secrets: KnownSecrets;
 }
 
 export class SyncthingError extends Error {}
@@ -672,7 +672,7 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint, nod
       optional(client.pendingDevices(), {}),
       optional(client.pendingFolders(), {}),
       optional(client.systemErrors(), []),
-      nodeSecretsOrApiKey(key, client),
+      knownNodeSecrets(key, client),
     ]);
     const folderRates = rates(key, connections);
     const folders = await folderViews(client, status.myID, folderConfigs, deviceConfigs, folderStats);

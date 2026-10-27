@@ -4,8 +4,7 @@ import { arrayIds, arrayStatus } from "./arrayStatus.js";
 import { conflictIndexes } from "./conflicts.js";
 import { localNodeInfos } from "./instanceResolver.js";
 import { recentLog, runningJob } from "./parity.js";
-import { nodeSecretsOrApiKey } from "./nodeSecrets.js";
-import { shownUnscopedText } from "./shownSyncthingError.js";
+import { type KnownSecrets, knownNodeSecrets, shownNodeText } from "./nodeSecrets.js";
 import { withoutSecrets } from "./supportBundle.js";
 import { activitySettings } from "./settings.js";
 import type { SyncthingClient, SyncthingEvent } from "./syncthing.js";
@@ -172,7 +171,7 @@ interface EventContext {
   /** The last completion seen per `<folder>/<device>`. */
   completions: Map<string, number>;
   /** What every entry's text is cleared of (`nodeSecrets.ts`). */
-  secrets: readonly string[];
+  secrets: KnownSecrets;
 }
 
 type EventData = Record<string, unknown>;
@@ -182,9 +181,10 @@ function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-/** An error text an event carries, as the page may see it. */
-function errorText(value: unknown): string {
-  return shownUnscopedText(text(value));
+/** An error text an event carries, as the page may see it (`shownNodeText`); none stays none. */
+function errorText(context: EventContext, value: unknown): string {
+  const error = text(value);
+  return error ? shownNodeText(error, context.secrets) : "";
 }
 
 /** The name the event itself reports first, then the configured one, then the short ID. */
@@ -213,7 +213,7 @@ function stateChanged(context: EventContext, data: EventData): Described | null 
   const to = text(data.to);
   if (waitingStates.has(to)) return null;
   const folder = folderName(context, data.folder);
-  const error = errorText(data.error);
+  const error = errorText(context, data.error);
   const words = error ? `stopped: ${error}` : (stateWords[to] ?? `is ${to}`);
   return { folderId: text(data.folder), type: "state-changed", level: error || to === "error" ? "error" : "info", text: `${folder} ${words}` };
 }
@@ -235,12 +235,12 @@ function folderErrors(context: EventContext, data: EventData): Described | null 
   if (!errors.length) return null;
   const [first] = errors;
   const count = errors.length === 1 ? "1 item" : `${errors.length} items`;
-  const words = `${folderName(context, data.folder)} failed to sync ${count}, first ${text(first.path)} (${errorText(first.error)})`;
+  const words = `${folderName(context, data.folder)} failed to sync ${count}, first ${text(first.path)} (${errorText(context, first.error)})`;
   return { folderId: text(data.folder), type: "folder-errors", level: "warning", text: words };
 }
 
 function itemFinished(context: EventContext, data: EventData): Described | null {
-  const error = errorText(data.error);
+  const error = errorText(context, data.error);
   if (!error) return null;
   return { folderId: text(data.folder), type: "item-failed", level: "warning", text: `${folderName(context, data.folder)} failed to sync ${text(data.item)} (${error})` };
 }
@@ -301,7 +301,7 @@ function describeEvent(event: SyncthingEvent, context: EventContext): Described 
     case "DeviceConnected":
       return { folderId: null, type: "device-connected", level: "info", text: `connected to ${context.deviceNames.get(text(data.id)) || text(data.deviceName) || device()} (${text(data.addr)})` };
     case "DeviceDisconnected":
-      return { folderId: null, type: "device-disconnected", level: "info", text: `lost ${device()}${text(data.error) ? ` (${errorText(data.error)})` : ""}` };
+      return { folderId: null, type: "device-disconnected", level: "info", text: `lost ${device()}${text(data.error) ? ` (${errorText(context, data.error)})` : ""}` };
     case "DevicePaused":
       return { folderId: null, type: "device-paused", level: "info", text: `${device()} paused` };
     case "DeviceResumed":
@@ -313,7 +313,7 @@ function describeEvent(event: SyncthingEvent, context: EventContext): Described 
     case "ConfigSaved":
       return { folderId: null, type: "config-saved", level: "info", text: "configuration saved" };
     case "Failure":
-      return { folderId: null, type: "failure", level: "error", text: `failure: ${shownUnscopedText(typeof event.data === "string" ? event.data : JSON.stringify(event.data))}` };
+      return { folderId: null, type: "failure", level: "error", text: `failure: ${shownNodeText(typeof event.data === "string" ? event.data : JSON.stringify(event.data), context.secrets)}` };
     default:
       return null;
   }
@@ -322,10 +322,10 @@ function describeEvent(event: SyncthingEvent, context: EventContext): Described 
 function entryOf(described: Described | null, event: SyncthingEvent, nodeId: string, context: EventContext): NewActivityEntry | null {
   if (!described) return null;
   const at = Number.isFinite(Date.parse(event.time)) ? new Date(event.time).toISOString() : new Date().toISOString();
-  const shown = (value: string) => withoutSecrets(value, context.secrets);
+  const shown = (value: string) => withoutSecrets(value, context.secrets.secrets);
   const { change, ...rest } = described;
   const entry: NewActivityEntry = { at, source: "syncthing", nodeId, ...rest, text: `${context.nodeName}: ${shown(described.text)}` };
-  return change ? { ...entry, change: { ...change, path: shown(change.path), device: shown(change.device) } } : entry;
+  return change ? { ...entry, change: { path: shown(change.path), action: shown(change.action), item: shown(change.item), device: shown(change.device) } } : entry;
 }
 
 /** One Syncthing event as an entry, or null for one Activity leaves out. */
@@ -400,7 +400,7 @@ class InstanceFeed {
     private readonly options: FeedOptions,
     private readonly listener: FeedListener,
   ) {
-    this.context = { nodeName: instance.name, deviceNames: new Map(), folderLabels: new Map(), completions: position.completions, secrets: [instance.client.endpoint.apiKey] };
+    this.context = { nodeName: instance.name, deviceNames: new Map(), folderLabels: new Map(), completions: position.completions, secrets: { secrets: [instance.client.endpoint.apiKey], complete: false } };
   }
 
   update(instance: FeedInstance): void {
@@ -419,7 +419,7 @@ class InstanceFeed {
         if (mayHaveRestarted) await this.followRestart();
         const events = await this.instance.client.events(this.position.since, followedEventTypes, this.options.waitSeconds, this.options.requestTimeoutMs);
         if (this.stopped) return;
-        this.context.secrets = await nodeSecretsOrApiKey(this.instance.nodeId, this.instance.client);
+        this.context.secrets = await knownNodeSecrets(this.instance.nodeId, this.instance.client);
         const mayHaveMissed = this.pollFailed || events.length >= this.options.bufferSize;
         this.pollFailed = false;
         this.take(events);
@@ -460,7 +460,7 @@ class InstanceFeed {
         const { changesPerPoll, waitSeconds, requestTimeoutMs } = this.options;
         const events = await this.instance.client.diskEvents(this.position.changesSince, changesPerPoll, waitSeconds, requestTimeoutMs);
         if (this.stopped) return;
-        this.context.secrets = await nodeSecretsOrApiKey(this.instance.nodeId, this.instance.client);
+        this.context.secrets = await knownNodeSecrets(this.instance.nodeId, this.instance.client);
         this.takeChanges(events);
         mayHaveRestarted = events.length === 0;
         if (events.length) await delay(this.options.changesPauseMs);

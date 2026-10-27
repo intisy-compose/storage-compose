@@ -1,8 +1,7 @@
 import { deviceDisplayName, isNodePaused, shortDeviceId } from "./api/deviceText.js";
 import type { StorageNode, Warning, WarningKind, WarningLevel } from "./api/types.js";
 import type { AttentionThresholds } from "./settings.js";
-import { shownUnscopedText } from "./shownSyncthingError.js";
-import { withoutSecrets } from "./supportBundle.js";
+import { type KnownSecrets, allSecretsKnown, shownNodeText } from "./nodeSecrets.js";
 import type { PendingDevices, PendingFolders, SystemError } from "./syncthing.js";
 
 const firstSeen = new Map<string, string>();
@@ -99,10 +98,10 @@ export function conflictWarnings(node: StorageNode): Warning[] {
     );
 }
 
-/** Each error the node's Syncthing reports, with `secrets` (`nodeSecrets.ts`) replaced and Syncthing's text redacted, in its text and its ID. */
-export function systemErrorWarnings(node: StorageNode, errors: SystemError[], secrets: readonly string[] = []): Warning[] {
+/** Each error the node's Syncthing reports, as `shownNodeText` shows it, in its text and its ID. */
+export function systemErrorWarnings(node: StorageNode, errors: SystemError[], secrets: KnownSecrets = allSecretsKnown([])): Warning[] {
   return errors.map((error) => {
-    const message = shownUnscopedText(withoutSecrets(error.message, secrets));
+    const message = shownNodeText(error.message, secrets);
     return warning({
       id: `system-error:${node.id}:${error.when}:${message}`,
       level: "warning",

@@ -53,10 +53,11 @@ export function reshownForwardedError(error: string): string {
   return shownSyncthingError(error, []);
 }
 
-/** What is shown instead of a text read without its folder's `.stignore` that could quote an ignore file. */
+/** What is shown instead of a text read without its folder's `.stignore` that could quote an ignore file, or of one whose node's secrets are not known. */
 export const hiddenUnscopedTexts = {
   namesInclude: "error hidden: it mentions an include",
   quotesPattern: "error hidden: it quotes an ignore pattern; the folder's ignore patterns show it",
+  secretsUnread: "error hidden: the node's secrets could not be read",
 } as const;
 
 const unscopedIncludeMention = /#include|\binclude (?:of|file)\b|\bincluded file/i;

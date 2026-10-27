@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { after, before, describe, it } from "node:test";
+import { after, before, describe, it, mock } from "node:test";
+import type { StorageNode } from "../src/api/types.js";
+import { systemErrorWarnings } from "../src/attention.js";
 import { type InstanceView, classifyConnections, instanceView } from "../src/syncthing.js";
 
 const ownId = "OWNAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
@@ -13,6 +15,9 @@ interface Answers {
   pausedDevices: string[];
   folderStatus: Record<string, Record<string, unknown>>;
   failingCompletion: string[];
+  systemErrors: { when: string; message: string }[];
+  /** What `/rest/config` answers; unset, it is a 500. */
+  config?: unknown;
 }
 
 const documentsStatus = { state: "idle", globalBytes: 1000, globalFiles: 10, needBytes: 0, needFiles: 0, errors: 1, pullErrors: 1, receiveOnlyTotalItems: 0 };
@@ -23,6 +28,7 @@ function answersFor(overrides: Partial<Answers> = {}): Answers {
     pausedDevices: [],
     folderStatus: { documents: documentsStatus },
     failingCompletion: [],
+    systemErrors: [],
     ...overrides,
   };
 }
@@ -88,6 +94,12 @@ function fakeSyncthing(answers: Answers, calls: string[]): Server {
           return response.end("database is busy");
         }
         return reply(response, answers.completion[url.searchParams.get("device") ?? ""] ?? { completion: 0, needBytes: 0 });
+      case "/rest/system/error":
+        return reply(response, { errors: answers.systemErrors.length ? answers.systemErrors : null });
+      case "/rest/config":
+        if (answers.config !== undefined) return reply(response, answers.config);
+        response.statusCode = 500;
+        return response.end("config unreadable");
       default:
         response.statusCode = 404;
         return response.end("not found");
@@ -228,5 +240,47 @@ describe("instance view", () => {
     } finally {
       await new Promise<void>((resolve) => other.close(() => resolve()));
     }
+  });
+});
+
+describe("a system error while the node's configuration cannot be read", () => {
+  const guiPasswordHash = "$2a$10$abcdefghijklmnopqrstuvO1234567890abcdefghijklmnopqrst";
+  const pc = { id: "fb98", name: "pc" } as StorageNode;
+
+  async function served<T>(answers: Answers, use: (endpoint: { url: string; apiKey: string }) => Promise<T>): Promise<T> {
+    const server = fakeSyncthing(answers, []);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    try {
+      return await use({ url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, apiKey: "key" });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  it("is hidden while the configuration was never read", async () => {
+    const answers = answersFor({ systemErrors: [{ when: "2026-10-27T10:00:00Z", message: `GUI login with ${guiPasswordHash} rejected` }] });
+    const view = (await served(answers, (endpoint) => instanceView("view-secrets-never-read", endpoint)))!;
+    const warnings = systemErrorWarnings(pc, view.systemErrors, view.secrets);
+    assert.ok(!JSON.stringify(warnings).includes(guiPasswordHash), JSON.stringify(warnings));
+    assert.deepEqual(warnings.map((shown) => shown.text), ["pc's Syncthing: error hidden: the node's secrets could not be read"]);
+  });
+
+  it("has the secrets last read replaced once the configuration cannot be read", async () => {
+    const answers = answersFor({ config: { gui: { apiKey: "key", user: "finn", password: guiPasswordHash } } });
+    await served(answers, async (endpoint) => {
+      await instanceView("view-secrets-kept", endpoint);
+      answers.config = undefined;
+      answers.systemErrors = [{ when: "2026-10-27T10:00:00Z", message: `GUI login with ${guiPasswordHash} rejected` }];
+      mock.timers.enable({ apis: ["Date"], now: Date.now() });
+      try {
+        mock.timers.tick(61_000);
+        const view = (await instanceView("view-secrets-kept", endpoint))!;
+        const warnings = systemErrorWarnings(pc, view.systemErrors, view.secrets);
+        assert.ok(!JSON.stringify(warnings).includes(guiPasswordHash), JSON.stringify(warnings));
+        assert.deepEqual(warnings.map((shown) => shown.text), ["pc's Syncthing: GUI login with [redacted] rejected"]);
+      } finally {
+        mock.timers.reset();
+      }
+    });
   });
 });

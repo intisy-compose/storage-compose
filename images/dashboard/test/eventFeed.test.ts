@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { after, describe, it } from "node:test";
+import { after, describe, it, mock } from "node:test";
 import { deflateRawSync, gzipSync } from "node:zlib";
 import { type DebugFacilities, type NodeErrors, type NodeLog, type ParityJob, changeActivityTypes, listTimeoutMs } from "../src/api/types.js";
 import { versionsReadLongestSeconds, versionsSlotWaitMs } from "../src/api/versioningText.js";
@@ -37,6 +37,9 @@ class FakeSyncthing {
   readonly sinceSeen: number[] = [];
   readonly typesSeen: string[] = [];
   readonly diskQueries: { since: number; limit: number | null }[] = [];
+  /** What `/rest/config` answers, or a 500 while `configFails`. */
+  config: unknown = null;
+  configFails = false;
   readonly server: Server;
 
   constructor() {
@@ -49,6 +52,11 @@ class FakeSyncthing {
       if (url.pathname === "/rest/system/status") return reply({ myID: pcDevice, startTime: this.startTime });
       if (url.pathname === "/rest/config/devices") return reply([{ deviceID: arrayDevice, name: "private-array", addresses: [] }]);
       if (url.pathname === "/rest/config/folders") return reply([{ id: "documents", label: "Documents", path: "/x", type: "sendreceive", paused: false, devices: [] }]);
+      if (url.pathname === "/rest/config") {
+        if (!this.configFails) return reply(this.config);
+        response.writeHead(500);
+        return response.end("config unreadable");
+      }
       const isDisk = url.pathname === "/rest/events/disk";
       if (url.pathname !== "/rest/events" && !isDisk) return reply(null);
       const since = Number(url.searchParams.get("since"));
@@ -117,6 +125,8 @@ class FakeSyncthing {
 
 
 const eventFeedApiKey = "event-feed-api-key-0123456789";
+const guiPasswordHash = "$2a$10$abcdefghijklmnopqrstuvO1234567890abcdefghijklmnopqrst";
+const secretsUnreadText = "error hidden: the node's secrets could not be read";
 const fakes: FakeSyncthing[] = [];
 const feedSets: EventFeeds[] = [];
 
@@ -379,6 +389,53 @@ describe("event feeds", () => {
     assert.deepEqual(texts(log), ["pc: failure: request with [redacted] failed", "pc: Documents failed to sync a.txt (rejected X-API-Key [redacted])"]);
   });
 
+  it("an event error text past the length cut has a secret straddling the cut replaced whole", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    const straddling = `${"e".repeat(1990)}${eventFeedApiKey} and more`;
+    fake.emit({ type: "ItemFinished", data: { folder: "documents", item: "a.txt", error: straddling, type: "file", action: "update" } }, { type: "Failure", data: straddling });
+    await until(() => log.query({}).entries.length === 2, "two entries");
+    for (const shown of texts(log)) {
+      assert.ok(!shown.includes(eventFeedApiKey.slice(0, 10)), shown.slice(-40));
+      assert.ok(shown.includes(`${"e".repeat(1990)}[redac`), shown.slice(-40));
+    }
+  });
+
+  it("an event error carrying the GUI password hash is hidden while the node's configuration was never read", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    fake.configFails = true;
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emit(
+      { type: "ItemFinished", data: { folder: "documents", item: "a.txt", error: `login with ${guiPasswordHash} refused`, type: "file", action: "update" } },
+      { type: "Failure", data: `hash ${guiPasswordHash}` },
+    );
+    await until(() => log.query({}).entries.length === 2, "two entries");
+    assert.ok(!JSON.stringify(log.query({})).includes(guiPasswordHash));
+    assert.deepEqual(texts(log), [`pc: failure: ${secretsUnreadText}`, `pc: Documents failed to sync a.txt (${secretsUnreadText})`]);
+  });
+
+  it("an event error carrying the GUI password hash has it replaced by the secrets last read once the configuration cannot be read", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    fake.config = { gui: { apiKey: eventFeedApiKey, user: "finn", password: guiPasswordHash } };
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emit({ type: "ConfigSaved", data: {} });
+    await until(() => log.query({}).entries.length === 1, "the entry read with the configuration");
+    fake.configFails = true;
+    mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    try {
+      mock.timers.tick(61_000);
+      fake.emit({ type: "ItemFinished", data: { folder: "documents", item: "a.txt", error: `login with ${guiPasswordHash} refused`, type: "file", action: "update" } });
+      await until(() => log.query({}).entries.length === 2, "the entry read after the configuration failed");
+    } finally {
+      mock.timers.reset();
+    }
+    assert.ok(!JSON.stringify(log.query({})).includes(guiPasswordHash));
+    assert.equal(texts(log)[0], "pc: Documents failed to sync a.txt (login with [redacted] refused)");
+  });
+
   it("an event error that names an include or quotes a pattern reaches Activity hidden, any other as Syncthing wrote it", async () => {
     const { fake, feed } = await instance("pc", "pc");
     const log = new ActivityLog(100);
@@ -493,6 +550,17 @@ describe("file changes", () => {
     await until(() => changes(log).length === 1, "the change");
     assert.ok(!JSON.stringify(log.query({})).includes(eventFeedApiKey), JSON.stringify(log.query({})));
     assert.equal(changes(log)[0].change?.path, "keys/[redacted].txt");
+  });
+
+  it("a change's action or item carrying one of the node's secrets shows it replaced", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("RemoteChangeDetected", "a.txt", arrayShort, "documents", `${eventFeedApiKey}-action`, `${eventFeedApiKey}-item`));
+    await until(() => changes(log).length === 1, "the change");
+    assert.ok(!JSON.stringify(log.query({})).includes(eventFeedApiKey), JSON.stringify(log.query({})));
+    assert.equal(changes(log)[0].change?.action, "[redacted]-action");
+    assert.equal(changes(log)[0].change?.item, "[redacted]-item");
   });
 });
 
@@ -630,7 +698,6 @@ function nanosOf(when: string): bigint {
   return BigInt(Date.parse(`${base}${zone}`)) * 1_000_000n + BigInt(fraction.padEnd(9, "0").slice(0, 9) || "0");
 }
 
-const guiPasswordHash = "$2a$10$abcdefghijklmnopqrstuvO1234567890abcdefghijklmnopqrst";
 const encryptionPassword = "fold<er>&pass";
 
 /** A Syncthing 2.1.6 answering what the Log tab reads: its log, its errors, its log levels, its configuration and its support bundle. */
@@ -648,6 +715,8 @@ class FakeDiagnostics {
   bundle: Buffer = zipOf({});
   loseNextAnswer = false;
   supportReads = 0;
+  /** `/rest/config` answers 500 while set. */
+  configFails = false;
   /** An error Syncthing reports again right after a clear, as a recurring failure does. */
   errorsAfterClear: { when: string; message: string }[] = [];
 
@@ -683,6 +752,7 @@ class FakeDiagnostics {
         return reply(null);
       }
       if (url.pathname === "/rest/config") {
+        if (this.configFails) return reply({ error: "config unreadable" }, 500);
         return reply({ gui: { apiKey: this.apiKey, user: "finn", password: guiPasswordHash }, folders: [{ id: "documents", devices: [{ deviceID: arrayDevice, encryptionPassword }] }] });
       }
       if (url.pathname === "/rest/debug/support") {
@@ -816,6 +886,21 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     assert.equal((await post(`${dashboard}/api/nodes/d7e5/errors/clear`)).status, 200);
     assert.equal(peer.fake.writes().length, 1, "with no errors left nothing is sent");
     assert.equal(notes.length, 1, "and nothing enters Activity");
+  });
+
+  it("a confirmed clear stays a clear when the node's secrets cannot be read: the errors left show hidden and Activity records it", async () => {
+    const { fake, node } = await localNode("e1f2", "dashboard-test-peer");
+    fake.configFails = true;
+    fake.errors = [{ when: "2026-10-27T10:00:00Z", message: "Listen (BEP/tcp): address in use" }];
+    fake.errorsAfterClear = [{ when: "2026-10-27T10:00:05Z", message: `password hash ${guiPasswordHash} rejected` }];
+    const dashboard = await dashboardFor([node]);
+    notes.length = 0;
+    const cleared = await post(`${dashboard}/api/nodes/e1f2/errors/clear`);
+    const body = await cleared.text();
+    assert.equal(cleared.status, 200, body);
+    assert.ok(!body.includes(guiPasswordHash), body);
+    assert.deepEqual(JSON.parse(body), { errors: [{ when: "2026-10-27T10:00:05Z", message: secretsUnreadText }] });
+    assert.deepEqual(notes.map((note) => [note.nodeId, note.text]), [["e1f2", "dashboard-test-peer: cleared 1 Syncthing error"]]);
   });
 
   it("a clear whose answer is lost is read back, and one that took effect enters Activity", async () => {
