@@ -91,7 +91,7 @@ export type {
 import { requestRefresh } from "./renderRequest.js";
 import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderSettings, FolderSettingsChange, FolderRescan, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
-export { diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, pullOrderTexts, topDirectoryDefault } from "../../src/api/types.js";
+export { diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
 export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
@@ -294,7 +294,7 @@ export function rescanAllFolders(nodeId: string): Promise<SaveResult<FolderResca
   return sendWrite(nodeApiPath(nodeId, "rescan-all"), "POST");
 }
 
-/** Removes the folder from the node's Syncthing only, its files stay on disk; `confirm` is the folder's ID, typed. */
+/** Removes the folder from the node's Syncthing only, its files stay on disk; `confirm` is the folder's label or ID, typed. */
 export function removeFolder(nodeId: string, folderId: string, confirm: string): Promise<SaveResult<RemovedFolder>> {
   const body: RemoveFolderBody = { confirm };
   return sendWrite(folderApiPath(nodeId, folderId), "DELETE", body);

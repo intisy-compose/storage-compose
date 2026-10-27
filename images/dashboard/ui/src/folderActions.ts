@@ -1,4 +1,4 @@
-import { type FolderCopy, type FolderSettings, type SaveResult, pauseFolder, removeFolder, rescanFolder } from "./api.js";
+import { type FolderCopy, type FolderSettings, type SaveResult, pauseFolder, removalConfirmations, removeFolder, rescanFolder } from "./api.js";
 import { button, element } from "./dom.js";
 import { registerForm } from "./forms.js";
 import { requestRender } from "./renderRequest.js";
@@ -12,7 +12,7 @@ function actionState(folderId: string, nodeId: string): FolderActionState {
   const key = actionKey(folderId, nodeId);
   const existing = appState.folderActions.get(key);
   if (existing) return existing;
-  const created: FolderActionState = { busy: false, sub: "", removeOpen: false, confirm: "", result: null };
+  const created: FolderActionState = { folderId, nodeId, busy: false, sub: "", removeOpen: false, confirm: "", result: null };
   appState.folderActions.set(key, created);
   return created;
 }
@@ -92,8 +92,21 @@ function removeToggle(state: FolderActionState): HTMLButtonElement {
   return control;
 }
 
+function filesStayText(path: string): string {
+  return `Your files stay on disk at ${path}; Syncthing removes only its own .stfolder marker.`;
+}
+
+/** The words a removal is confirmed with: `Test C or dashboard-test-c`. */
+function confirmationWords(settings: FolderSettings): string {
+  return removalConfirmations(settings).join(" or ");
+}
+
+function isConfirmed(settings: FolderSettings, typed: string): boolean {
+  return removalConfirmations(settings).includes(typed);
+}
+
 function removedNotice(copy: FolderCopy, settings: FolderSettings): Notice {
-  return { text: `Removed ${folderName(settings)} from ${copy.nodeName}'s Syncthing. Nothing was deleted: the files stay on disk at ${settings.path}.`, tone: "ok" };
+  return { text: `Removed ${folderName(settings)} from ${copy.nodeName}'s Syncthing. ${filesStayText(settings.path)}`, tone: "ok" };
 }
 
 /**
@@ -104,15 +117,15 @@ function forgetShownDetail(folderId: string): void {
   if (appState.folderDetail?.summary.id === folderId) appState.folderDetail = null;
 }
 
-/** @implNote The folder's ID, typed, is the confirmation the server asks for; the button waits for it so a stray click cannot stop a folder syncing. */
+/** @implNote The folder's label or ID, typed exactly, is the confirmation the server asks for; the button waits for it so a stray click cannot stop a folder syncing. */
 function removeForm(copy: FolderCopy, settings: FolderSettings, state: FolderActionState, formId: string): HTMLElement {
   const name = folderName(settings);
-  const confirmInput = element("input", { attributes: { id: `${formId}-confirm`, autocomplete: "off", spellcheck: "false", placeholder: `type ${settings.id} to confirm`, "aria-label": `Type ${settings.id} to confirm` } });
+  const confirmInput = element("input", { attributes: { id: `${formId}-confirm`, autocomplete: "off", spellcheck: "false", placeholder: `type ${confirmationWords(settings)} to confirm`, "aria-label": `Type ${confirmationWords(settings)} to confirm` } });
   confirmInput.defaultValue = state.confirm;
   confirmInput.value = state.confirm;
   confirmInput.disabled = state.busy;
   const removeButton = button(
-    state.busy ? "Removing…" : `Remove ${settings.id} from Syncthing`,
+    state.busy ? "Removing…" : `Remove ${name} from Syncthing`,
     () =>
       void run(
         state,
@@ -126,17 +139,17 @@ function removeForm(copy: FolderCopy, settings: FolderSettings, state: FolderAct
       ),
     "button danger",
   );
-  removeButton.disabled = state.busy || state.confirm !== settings.id;
+  removeButton.disabled = state.busy || !isConfirmed(settings, state.confirm);
   confirmInput.addEventListener("input", () => {
     state.confirm = confirmInput.value;
-    removeButton.disabled = state.busy || state.confirm !== settings.id;
+    removeButton.disabled = state.busy || !isConfirmed(settings, state.confirm);
   });
   return element(
     "div",
     { className: "action-form destructive" },
     element("p", {}, `This removes ${name} from ${copy.nodeName}'s Syncthing only: ${copy.nodeName} stops scanning it and stops syncing it with every device.`),
-    element("p", {}, element("strong", {}, "Nothing is deleted. "), `The files stay on disk at `, element("code", {}, settings.path), "."),
-    element("p", {}, `Type ${settings.id} to confirm.`),
+    element("p", {}, element("strong", {}, filesStayText(settings.path))),
+    element("p", {}, `Type ${confirmationWords(settings)} to confirm.`),
     element("div", { className: "form-fields" }, confirmInput),
     element("div", { className: "button-row" }, removeButton),
   );
@@ -161,13 +174,30 @@ export function folderActions(copy: FolderCopy, settings: FolderSettings): HTMLE
   );
 }
 
-/** The outcome of an action on a node that no longer has the folder, such as its removal, which its settings can no longer show. */
-export function orphanedActionResults(folderId: string, nodeIdsWithSettings: string[]): HTMLElement[] {
-  const lines: HTMLElement[] = [];
+interface ShownResult {
+  folderId: string;
+  nodeId: string;
+  result: Notice;
+}
+
+/** Results moved out of `appState.folderActions` once their node lost the folder; kept only while that folder's detail is shown. */
+let shownResults: ShownResult[] = [];
+
+/** Moves the result of each action on a node that no longer has the folder out of the actions, so it is not shown again once the folder is back. */
+function takeOrphanedResults(folderId: string, nodeIdsWithSettings: string[]): void {
   for (const [key, state] of appState.folderActions) {
-    const nodeId = key.slice(folderId.length + 1);
-    if (!key.startsWith(`${folderId}/`) || nodeIdsWithSettings.includes(nodeId) || !state.result) continue;
-    lines.push(resultLine(state.result) as HTMLElement);
+    if (state.folderId !== folderId || nodeIdsWithSettings.includes(state.nodeId)) continue;
+    appState.folderActions.delete(key);
+    if (state.result) shownResults.push({ folderId, nodeId: state.nodeId, result: state.result });
   }
-  return lines;
+}
+
+/**
+ * The outcome of an action on a node that no longer has the folder, such as its removal, which its settings can no longer show.
+ * @implNote Kept while the same folder's detail is shown, dropped once another folder is shown or the node has the folder again.
+ */
+export function orphanedActionResults(folderId: string, nodeIdsWithSettings: string[]): HTMLElement[] {
+  shownResults = shownResults.filter((shown) => shown.folderId === folderId && !nodeIdsWithSettings.includes(shown.nodeId));
+  takeOrphanedResults(folderId, nodeIdsWithSettings);
+  return shownResults.map((shown) => resultLine(shown.result) as HTMLElement);
 }

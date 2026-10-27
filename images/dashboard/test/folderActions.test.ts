@@ -8,8 +8,8 @@ import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/ins
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
 import { folderActionRoutes, pauseFolder, removeFolder, rescanAll, rescanFolder, rescanSubProblem } from "../src/routes/folderActions.js";
 import { SyncthingClient } from "../src/syncthing.js";
-import { copyCondition, nodeFolderState } from "../ui/src/folderCondition.js";
-import type { FolderCopy } from "../src/api/types.js";
+import { copyCondition, nodeFolderState, rescanAllQuestion, worstCondition } from "../ui/src/folderCondition.js";
+import type { FolderCopy, FolderSummary, NodeFolder, StorageNode } from "../src/api/types.js";
 import { until } from "./until.js";
 
 const apiKey = "folder-actions-test-key";
@@ -173,23 +173,30 @@ describe("pause, resume, rescan and remove a folder", () => {
   });
 
   it("remove needs the folder id typed", async () => {
-    for (const body of [{}, null, { confirm: "" }, { confirm: "Test C" }, { confirm: "dashboard-test-C" }, { confirm: " dashboard-test-c" }]) {
-      await assert.rejects(removeFolder(peer(), "dashboard-test-c", body, fastReadBacks), { status: 400, message: "type dashboard-test-c to confirm" }, JSON.stringify(body));
+    for (const body of [{}, null, { confirm: "" }, { confirm: "test c" }, { confirm: "Test C " }, { confirm: "dashboard-test-C" }, { confirm: " dashboard-test-c" }, { confirm: ["Test C"] }]) {
+      await assert.rejects(removeFolder(peer(), "dashboard-test-c", body, fastReadBacks), { status: 400, message: "type Test C or dashboard-test-c to confirm" }, JSON.stringify(body));
     }
+    await assert.rejects(removeFolder(peer(), "dashboard-test-p", { confirm: "" }, fastReadBacks), { status: 400, message: "type dashboard-test-p to confirm" }, "a folder without a label takes only its ID");
     assert.deepEqual(writes(), []);
     const removal = await removeFolder(peer(), "dashboard-test-c", { confirm: "dashboard-test-c" }, fastReadBacks);
     assert.deepEqual(writes(), [{ method: "DELETE", path: "/rest/config/folders/dashboard-test-c", body: null }]);
-    const text = "dashboard-test-peer: removed folder Test C (dashboard-test-c) from Syncthing; the files stay on disk at /var/syncthing/data/dashboard-test-c";
+    const text = "dashboard-test-peer: removed folder Test C (dashboard-test-c) from Syncthing; your files stay on disk at /var/syncthing/data/dashboard-test-c; Syncthing removes only its own .stfolder marker";
     assert.deepEqual(removal.removed, { folderId: "dashboard-test-c", label: "Test C", path: "/var/syncthing/data/dashboard-test-c", text });
     assert.equal(removal.note.text, text);
     assert.equal(removal.note.folderId, "dashboard-test-c");
     assert.ok(!folders.some((folder) => folder.id === "dashboard-test-c"));
   });
 
+  it("remove takes the folder's label typed exactly too", async () => {
+    const removal = await removeFolder(peer(), "dashboard-test-c", { confirm: "Test C" }, fastReadBacks);
+    assert.equal(removal.removed.folderId, "dashboard-test-c");
+    assert.deepEqual(writes(), [{ method: "DELETE", path: "/rest/config/folders/dashboard-test-c", body: null }]);
+  });
+
   it("a removal whose answer is lost counts once the folder is gone", async () => {
     loseWriteAnswer = true;
     const removal = await removeFolder(peer(), "dashboard-test-p", { confirm: "dashboard-test-p" }, fastReadBacks);
-    assert.equal(removal.note.text, "dashboard-test-peer: removed folder dashboard-test-p from Syncthing; the files stay on disk at /var/syncthing/data/dashboard-test-p");
+    assert.equal(removal.note.text, "dashboard-test-peer: removed folder dashboard-test-p from Syncthing; your files stay on disk at /var/syncthing/data/dashboard-test-p; Syncthing removes only its own .stfolder marker");
   });
 
   it("a remote node and an unknown folder are refused, none writing", async () => {
@@ -221,10 +228,10 @@ describe("pause, resume, rescan and remove a folder", () => {
       assert.deepEqual((await rescan.json()) as FolderRescan, { folderId: "dashboard-test-c", sub: "photos" });
       assert.equal((await send("folders/dashboard-test-c/rescan", "POST")).status, 200, "a rescan without a body is the whole folder");
       assert.equal((await send("rescan-all", "POST")).status, 200);
-      assert.equal((await send("folders/dashboard-test-c", "DELETE", { confirm: "Test C" })).status, 400);
-      const removed = await send("folders/dashboard-test-c", "DELETE", { confirm: "dashboard-test-c" });
+      assert.equal((await send("folders/dashboard-test-c", "DELETE", { confirm: "test c" })).status, 400);
+      const removed = await send("folders/dashboard-test-c", "DELETE", { confirm: "Test C" });
       assert.equal(removed.status, 200);
-      assert.match(((await removed.json()) as RemovedFolder).text, /the files stay on disk at \/var\/syncthing\/data\/dashboard-test-c$/);
+      assert.match(((await removed.json()) as RemovedFolder).text, /your files stay on disk at \/var\/syncthing\/data\/dashboard-test-c; Syncthing removes only its own \.stfolder marker$/);
       assert.deepEqual(
         notes.map((note) => note.text),
         [
@@ -233,7 +240,7 @@ describe("pause, resume, rescan and remove a folder", () => {
           "dashboard-test-peer: rescanned photos of folder Test C",
           "dashboard-test-peer: rescanned folder Test C",
           "dashboard-test-peer: rescanned every folder that is not paused",
-          "dashboard-test-peer: removed folder Test C (dashboard-test-c) from Syncthing; the files stay on disk at /var/syncthing/data/dashboard-test-c",
+          "dashboard-test-peer: removed folder Test C (dashboard-test-c) from Syncthing; your files stay on disk at /var/syncthing/data/dashboard-test-c; Syncthing removes only its own .stfolder marker",
         ],
       );
     } finally {
@@ -250,5 +257,15 @@ describe("a paused folder reads plainly as paused", () => {
     assert.equal(nodeFolderState({ state: "error", completion: 100 }).tone, "bad");
     const copy = { state: "paused", completion: 0, errors: 0 } as FolderCopy;
     assert.equal(copyCondition(copy).label, "paused");
+    const syncing = { state: "syncing", completion: 40, errors: 0 } as FolderCopy;
+    const summary = { copies: [syncing, copy] } as FolderSummary;
+    assert.equal(worstCondition(summary).label, "paused", "a paused copy outranks one still syncing in the header");
+  });
+
+  it("rescanning every folder asks with the folders that are scanned and their items", () => {
+    const folder = (state: string, files: number, directories: number) => ({ state, globalFiles: files, globalDirectories: directories }) as NodeFolder;
+    const node = { name: "pc", folders: [folder("idle", 900000, 20733), folder("idle", 3, 1), folder("paused", 50, 5)] } as StorageNode;
+    assert.equal(rescanAllQuestion(node), "Rescan all 2 folders of pc, 920,737 items?");
+    assert.equal(rescanAllQuestion({ name: "d7e5", folders: [folder("idle", 1, 0)] } as StorageNode), "Rescan all 1 folder of d7e5, 1 item?");
   });
 });

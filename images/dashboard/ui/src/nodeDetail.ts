@@ -2,7 +2,8 @@ import { type NodesResponse, type StorageNode, type SyncthingDevice, type Syncth
 import { arraySections } from "./arraySection.js";
 import { layoutRows, storageNodes } from "./devicePlacement.js";
 import { button, element, keyValueList, progressBar, section } from "./dom.js";
-import { nodeFolderState } from "./folderCondition.js";
+import { nodeFolderState, rescanAllQuestion } from "./folderCondition.js";
+import { registerForm } from "./forms.js";
 import { formatAge, formatBytes, formatDate, formatDuration, formatRate, usedFraction } from "./format.js";
 import { icon } from "./icons.js";
 import { warningBanner } from "./nodesPage.js";
@@ -159,7 +160,14 @@ function addFolderLink(node: StorageNode): HTMLElement | null {
 /** The nodes whose rescan of every folder is on its way, so a second click waits for the first answer. */
 const rescanAllSent = new Set<string>();
 
+/** The nodes whose rescan of every folder waits for its second click. */
+const rescanAllAsked = new Set<string>();
+
+const rescanAllFormId = "rescan-all-form";
+registerForm(rescanAllFormId);
+
 async function sendRescanAll(node: StorageNode): Promise<void> {
+  rescanAllAsked.delete(node.id);
   rescanAllSent.add(node.id);
   requestRender();
   const result = await rescanAllFolders(node.id);
@@ -168,12 +176,33 @@ async function sendRescanAll(node: StorageNode): Promise<void> {
   requestRender();
 }
 
+function askRescanAll(node: StorageNode, isAsking: boolean): void {
+  if (isAsking) rescanAllAsked.add(node.id);
+  else rescanAllAsked.delete(node.id);
+  requestRender();
+}
+
+function canRescanAll(node: StorageNode): boolean {
+  return node.local && node.online && node.syncthing !== null && node.folders.length > 0;
+}
+
 function rescanAllButton(node: StorageNode): HTMLButtonElement | null {
-  if (!node.local || !node.online || !node.syncthing || !node.folders.length) return null;
-  const control = button("Rescan every folder", () => void sendRescanAll(node), "button");
-  control.disabled = rescanAllSent.has(node.id);
+  if (!canRescanAll(node)) return null;
+  const control = button(rescanAllSent.has(node.id) ? "Rescanning…" : "Rescan every folder", () => askRescanAll(node, true), "button");
+  control.disabled = rescanAllSent.has(node.id) || rescanAllAsked.has(node.id);
   control.title = `Scan every folder of ${node.name} that is not paused for changes now`;
   return control;
+}
+
+/** @implNote A second click confirms: every folder of a node can be hundreds of thousands of items, and a scan of them all costs the node hours of disk reads. */
+function rescanAllConfirmation(node: StorageNode): HTMLElement | null {
+  if (!canRescanAll(node) || !rescanAllAsked.has(node.id)) return null;
+  return element(
+    "div",
+    { className: "action-form", attributes: { id: rescanAllFormId } },
+    element("p", {}, rescanAllQuestion(node)),
+    element("div", { className: "button-row" }, button("Rescan all", () => void sendRescanAll(node), "button primary"), button("Cancel", () => askRescanAll(node, false), "button ghost")),
+  );
 }
 
 function foldersSection(node: StorageNode): HTMLElement {
@@ -182,6 +211,7 @@ function foldersSection(node: StorageNode): HTMLElement {
     `Folders on this node (${node.folders.length})`,
     node.folders.length ? element("div", { className: "folder-list" }, ...node.folders.map(folderRow)) : element("p", { className: "muted" }, "No folders shared with this node."),
     actions.length ? element("div", { className: "button-row" }, ...actions) : null,
+    rescanAllConfirmation(node),
   );
 }
 

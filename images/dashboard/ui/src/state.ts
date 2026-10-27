@@ -141,6 +141,8 @@ export interface EditFolderFormState {
 
 /** One node's actions on one folder in the folder detail: what is on its way, what was typed, and how the last one went. */
 export interface FolderActionState {
+  folderId: string;
+  nodeId: string;
   busy: boolean;
   /** The part of the folder a rescan is limited to; empty is the whole folder. */
   sub: string;

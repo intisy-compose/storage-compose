@@ -1,4 +1,4 @@
-import type { FolderCopy, FolderSummary, NodeFolder } from "./api.js";
+import type { FolderCopy, FolderSummary, NodeFolder, StorageNode } from "./api.js";
 import { formatPercent, normaliseCompletion, plural } from "./format.js";
 import type { Tone } from "./nodeStatus.js";
 
@@ -11,10 +11,10 @@ export interface FolderCondition {
 /** How one copy stands; a higher rank is worse. */
 export function copyCondition(copy: FolderCopy): FolderCondition {
   const completion = normaliseCompletion(copy.completion);
-  if (copy.state.includes("error")) return { rank: 6, tone: "bad", label: copy.state };
-  if (copy.errors > 0) return { rank: 5, tone: "bad", label: plural(copy.errors, "failed item") };
-  if (copy.state === "unknown") return { rank: 4, tone: "muted", label: "not answering" };
-  if (copy.state === "paused") return { rank: 3, tone: "warn", label: "paused" };
+  if (copy.state.includes("error")) return { rank: 7, tone: "bad", label: copy.state };
+  if (copy.errors > 0) return { rank: 6, tone: "bad", label: plural(copy.errors, "failed item") };
+  if (copy.state === "unknown") return { rank: 5, tone: "muted", label: "not answering" };
+  if (copy.state === "paused") return { rank: 4, tone: "warn", label: "paused" };
   if (completion < 1) return { rank: 3, tone: "accent", label: `${copy.state}, ${formatPercent(completion)}` };
   if (copy.state !== "idle") return { rank: 1, tone: "accent", label: copy.state };
   return { rank: 0, tone: "ok", label: "up to date" };
@@ -50,4 +50,11 @@ export function nodeFolderState(folder: Pick<NodeFolder, "state" | "completion">
   if (completion < 1) return { text: `${state}, ${formatPercent(completion)}`, tone: "accent" };
   if (state === "idle") return { text: "up to date", tone: "ok" };
   return { text: state, tone: "accent" };
+}
+
+/** The question before a node rescans every folder: how many it scans, the paused ones left out as Syncthing does, and their items. */
+export function rescanAllQuestion(node: Pick<StorageNode, "name" | "folders">): string {
+  const scanned = node.folders.filter((folder) => folder.state !== "paused");
+  const items = scanned.reduce((total, folder) => total + folder.globalFiles + folder.globalDirectories, 0);
+  return `Rescan all ${plural(scanned.length, "folder")} of ${node.name}, ${plural(items, "item")}?`;
 }

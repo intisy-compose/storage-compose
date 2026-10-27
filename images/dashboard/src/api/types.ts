@@ -835,9 +835,14 @@ export interface FolderRescan {
   sub: string | null;
 }
 
-/** `DELETE /api/nodes/<nodeId>/folders/<folderId>`: the folder's ID, typed, confirms the removal. */
+/** `DELETE /api/nodes/<nodeId>/folders/<folderId>`: the folder's label or ID, typed exactly, confirms the removal. */
 export interface RemoveFolderBody {
   confirm: string;
+}
+
+/** What may be typed to confirm a folder's removal: its label when it has one, or its ID. */
+export function removalConfirmations(folder: { id: string; label: string }): string[] {
+  return folder.label && folder.label !== folder.id ? [folder.label, folder.id] : [folder.id];
 }
 
 /** The answer of a removal: the folder is gone from the node's Syncthing, its files are still at `path`. */

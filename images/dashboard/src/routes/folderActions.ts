@@ -1,4 +1,4 @@
-import type { FolderRescan, FolderSettings, RemoveFolderBody, RemovedFolder } from "../api/types.js";
+import { type FolderRescan, type FolderSettings, type RemoveFolderBody, type RemovedFolder, removalConfirmations } from "../api/types.js";
 import { folderSettings } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
@@ -102,8 +102,10 @@ export async function rescanAll(instance: ResolvedInstance): Promise<FolderResca
 /** What a removal did, in words, saying plainly that nothing was deleted. */
 export function folderRemovalText(nodeName: string, folder: Pick<Folder, "id" | "label" | "path">): string {
   const named = folder.label && folder.label !== folder.id ? `${folder.label} (${folder.id})` : folder.id;
-  return `${nodeName}: removed folder ${named} from Syncthing; the files stay on disk at ${folder.path}`;
+  return `${nodeName}: removed folder ${named} from Syncthing; your files stay on disk at ${folder.path}; Syncthing removes only its own .stfolder marker`;
 }
+
+
 
 export interface FolderRemoval {
   removed: RemovedFolder;
@@ -111,14 +113,15 @@ export interface FolderRemoval {
 }
 
 /**
- * Removes a folder from the node's Syncthing once its ID is typed; Syncthing deletes nothing on disk.
- * @implNote The typed ID is the confirmation, as for a device: a stray click cannot stop a folder syncing with every device.
+ * Removes a folder from the node's Syncthing once its label or ID is typed exactly; Syncthing deletes nothing on disk but its `.stfolder` marker.
+ * @implNote The typed name is the confirmation, as for a device: a stray click cannot stop a folder syncing with every device.
  */
 export async function removeFolder(instance: ResolvedInstance, folderId: string, body: unknown, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<FolderRemoval> {
   const local = requireLocal(instance);
   const folder = await knownFolder(local, folderId);
   const confirm = typeof body === "object" && body !== null ? (body as Partial<RemoveFolderBody>).confirm : undefined;
-  if (confirm !== folderId) throw new RequestError(400, `type ${folderId} to confirm`);
+  const accepted = removalConfirmations(folder);
+  if (typeof confirm !== "string" || !accepted.includes(confirm)) throw new RequestError(400, `type ${accepted.join(" or ")} to confirm`);
   await writeConfirmed(
     local,
     (client) => client.request("DELETE", folderPath(folderId)),
