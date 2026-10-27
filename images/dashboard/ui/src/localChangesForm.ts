@@ -1,5 +1,6 @@
 import { type FolderCopy, type FolderSettings, type LocalChangesAction, discardChanges, localChangesFolderType, overrideLossText, revertLossText } from "./api.js";
 import { button, element } from "./dom.js";
+import { closeItemList, isItemListOpen } from "./itemList.js";
 import { requestRender } from "./renderRequest.js";
 import type { FolderActionState, Notice } from "./state.js";
 
@@ -44,6 +45,12 @@ function lossLines(action: LocalChangesAction, copy: FolderCopy, settings: Folde
   return lines(copy.nodeName, folderName(settings), discardedCount(action, copy), settings.versioning);
 }
 
+/** @implNote Syncthing acts on a revert or override after answering, so the list of what it discards is closed rather than read again too early. */
+function closeListOfDiscarded(action: LocalChangesAction, copy: FolderCopy): void {
+  const target = { nodeId: copy.nodeId, folderId: copy.id, deviceId: null, kind: action === "revert" ? ("local-changed" as const) : ("need" as const) };
+  if (isItemListOpen(target)) closeItemList();
+}
+
 export type RunAction = (send: () => ReturnType<typeof discardChanges>, done: (text: string) => Notice, failed: string) => void;
 
 /**
@@ -63,6 +70,7 @@ export function localChangesForm(action: LocalChangesAction, copy: FolderCopy, s
         (text) => {
           state.discardOpen = false;
           state.discardConfirm = "";
+          closeListOfDiscarded(action, copy);
           return { text: `${text}.`, tone: "ok" };
         },
         action === "revert" ? "Not reverted" : "Not overridden",
