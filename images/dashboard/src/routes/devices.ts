@@ -81,7 +81,7 @@ const arrayLockedSettings = ["introducer", "autoAcceptFolders"] as const;
  * Why the change may not be made on this node, or null: on an array neither setting is turned on.
  * @implNote Either would let Syncthing add or share an array's folders with nothing typed (`arrayConfirmProblem`); turning them off stays allowed.
  */
-function arrayAutomationProblem(instance: LocalInstance, change: DeviceSettingsChange): string | null {
+export function arrayAutomationProblem(instance: LocalInstance, change: DeviceSettingsChange): string | null {
   if (!isArrayInstance(instance)) return null;
   const turnedOn = arrayLockedSettings.find((key) => change[key] === true);
   return turnedOn ? `${deviceSettingLabels[turnedOn]} stays off on ${instance.name}, an array: Syncthing would then add or share its folders with nothing typed` : null;

@@ -43,6 +43,8 @@ export interface SettingsContext {
   draft: DeviceSettings;
   /** On an array, introducer and accept folders automatically are only ever turned off. */
   isArray: boolean;
+  /** The node's defaults for new devices, which hold no name and are never paused. */
+  isDefaults?: boolean;
 }
 
 const arrayLockedToggles: readonly ToggleField[] = ["introducer", "autoAcceptFolders"];
@@ -123,7 +125,7 @@ export function settingFields(context: SettingsContext): HTMLElement {
   return element(
     "div",
     { className: "form-fields device-fields" },
-    labelled(context, "name", textInput(context, "name"), "Empty shows the short device ID."),
+    context.isDefaults ? null : labelled(context, "name", textInput(context, "name"), "Empty shows the short device ID."),
     labelled(context, "addresses", listInput(context, "addresses"), "One per line: dynamic, tcp://host:port, quic://host:port or relay://host:port?id=…"),
     labelled(context, "compression", compressionSelect(context)),
     element(
@@ -132,7 +134,7 @@ export function settingFields(context: SettingsContext): HTMLElement {
       toggle(context, "introducer", "adds the devices it shares folders with"),
       toggle(context, "autoAcceptFolders", "accepts the folders it offers"),
       toggle(context, "untrusted", "shares only encrypted folders with it"),
-      toggle(context, "paused", ""),
+      context.isDefaults ? null : toggle(context, "paused", ""),
       context.isArray ? element("small", { className: "muted" }, arrayAutomationText) : null,
     ),
     labelled(context, "allowedNetworks", listInput(context, "allowedNetworks"), "One network per line, such as 192.168.0.0/16; empty allows any."),

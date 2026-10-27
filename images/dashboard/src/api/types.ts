@@ -671,6 +671,63 @@ export interface OptionsEditResponse {
   nodes: NodeOptionsEdit[];
 }
 
+/** The person's answer to Syncthing's usage reporting question; it is never answered for them. */
+export type UsageReportingChoice = "accepted" | "declined";
+
+/**
+ * `PATCH /api/nodes/<nodeId>/general`: only the general settings the person changed. `deviceName` is the node's own device
+ * entry, the name other devices see; the rest are options. Answered with the node's `NodeOptionsResponse` as it now stands.
+ */
+export interface GeneralSettingsChange {
+  deviceName?: string;
+  minHomeDiskFree?: { value: number; unit: DiskFreeUnit };
+  usageReporting?: UsageReportingChoice;
+  crashReportingEnabled?: boolean;
+}
+
+/** The folder settings a node's new folders start with, as Syncthing's Default Folder holds them; path, label and sharing are each folder's own. */
+export const folderDefaultKeys = ["type", "rescanIntervalS", "fsWatcherEnabled", "fsWatcherDelayS", "ignorePerms", "order", "minDiskFree", "maxConflicts", "syncOwnership", "syncXattrs", "versioning"] as const;
+export type FolderDefaultKey = (typeof folderDefaultKeys)[number];
+/** `GET /api/nodes/<nodeId>/defaults/folder`; `PATCH` takes `Partial` of it, only the fields the person changed. */
+export type FolderDefaults = Pick<FolderSettings, FolderDefaultKey>;
+
+/** The device settings a node's new devices start with, as Syncthing's Default Device holds them; the name is each device's own. */
+export const deviceDefaultKeys = ["addresses", "compression", "introducer", "autoAcceptFolders", "untrusted", "allowedNetworks", "maxSendKbps", "maxRecvKbps", "numConnections"] as const;
+export type DeviceDefaultKey = (typeof deviceDefaultKeys)[number];
+/** `GET /api/nodes/<nodeId>/defaults/device`; `PATCH` takes `Partial` of it, only the fields the person changed. */
+export type DeviceDefaults = Pick<DeviceSettings, DeviceDefaultKey>;
+
+/** `GET` and `PUT /api/nodes/<nodeId>/defaults/ignores`: the ignore patterns a new folder starts with. */
+export interface DefaultIgnores {
+  lines: string[];
+}
+
+/** A device the node ignores: it is not offered as a request again until un-ignored. */
+export interface IgnoredDeviceEntry {
+  deviceId: string;
+  name: string;
+  address: string;
+  time: string;
+}
+
+/** A folder the node ignores when `offeredBy` offers it. */
+export interface IgnoredFolderEntry {
+  folderId: string;
+  label: string;
+  offeredBy: string;
+  offeredByName: string;
+  time: string;
+}
+
+/**
+ * `GET /api/nodes/<nodeId>/ignored`, and the answer of `DELETE .../ignored/devices/<deviceId>` and
+ * `DELETE .../ignored/folders/<folderId>?offeredBy=<deviceId>`, which un-ignore one entry and keep every other.
+ */
+export interface IgnoredLists {
+  devices: IgnoredDeviceEntry[];
+  folders: IgnoredFolderEntry[];
+}
+
 export type DeviceCompression = "metadata" | "always" | "never";
 
 /** `GET /api/nodes/<nodeId>/devices/<deviceId>`: one device as that node's Syncthing has it configured. */

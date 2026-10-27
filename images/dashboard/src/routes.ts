@@ -17,6 +17,7 @@ import { folderRoutes } from "./routes/folders.js";
 import { itemRoutes } from "./routes/items.js";
 import { localChangesRoutes } from "./routes/localChanges.js";
 import { nodeFolderRoutes } from "./routes/nodeFolders.js";
+import { nodeSettingsRoutes } from "./routes/nodeSettings.js";
 import { optionsRoutes } from "./routes/options.js";
 import { pendingRoutes } from "./routes/pending.js";
 import { pendingFolderRoutes } from "./routes/pendingFolders.js";
@@ -215,6 +216,7 @@ export const dashboardRoutes: AnyRoute[] = [
   ...pendingRoutes(joinRecords),
   ...pendingFolderRoutes(),
   ...optionsRoutes(),
+  ...nodeSettingsRoutes(),
   ...deviceRoutes(),
   ...nodeFolderRoutes(),
   ...folderIgnoreRoutes(),

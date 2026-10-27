@@ -1,5 +1,5 @@
 import { type ActivityEntry, type ConflictFile, type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type ReadResult, activityFiltersOf, activityFiltersQuery, defaultActivityFilters, defaultItemsPerPage } from "./api.js";
-import type { ActivityFilters, ActivityResponse, DebugFacilities, LogLevel, LogMessage, NodeErrors, FileVersion, VersionsPage, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, DebugFacilities, LogLevel, LogMessage, NodeErrors, FileVersion, VersionsPage, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, IgnoredLists, NodeOptionsResponse, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -302,6 +302,8 @@ export interface AppState {
   hostSettingsError: string | null;
   /** Each local node's options by node ID, or why they could not be read. */
   nodeOptions: Map<string, NodeOptionsResponse | { error: string }>;
+  /** What each local node ignores, by node ID, or why it could not be read. */
+  ignoredLists: Map<string, IgnoredLists | { error: string }>;
 }
 
 export interface FolderChangesState {
@@ -356,6 +358,7 @@ export const appState: AppState = {
   hostSettings: null,
   hostSettingsError: null,
   nodeOptions: new Map(),
+  ignoredLists: new Map(),
 };
 
 const pages: PageId[] = ["nodes", "folders", "attention", "activity", "requests", "settings"];

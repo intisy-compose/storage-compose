@@ -1,6 +1,6 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
 import type { NodesResponse } from "./api.js";
-import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderChanges, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests, savedWriteCount } from "./api.js";
+import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderChanges, fetchFolderDetail, fetchHostSettings, fetchIgnoredLists, fetchNodeOptions, fetchNodes, fetchRequests, savedWriteCount } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
 import { loadAddDeviceForm, renderAddDeviceForm } from "./addDeviceForm.js";
@@ -264,9 +264,18 @@ async function loadNodeOptions(nodeId: string): Promise<void> {
   }
 }
 
+async function loadIgnoredLists(nodeId: string): Promise<void> {
+  try {
+    appState.ignoredLists.set(nodeId, await fetchIgnoredLists(nodeId));
+  } catch (error) {
+    appState.ignoredLists.set(nodeId, { error: messageOf(error) });
+  }
+}
+
 /** @implNote Waits for the nodes, as they say which nodes are this host's. */
 async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
-  await Promise.all([loadHostSettings(), nodesLoaded.then(() => Promise.all(readableLocalNodes().map((node) => loadNodeOptions(node.id))))]);
+  const loadNode = (nodeId: string) => Promise.all([loadNodeOptions(nodeId), loadIgnoredLists(nodeId)]);
+  await Promise.all([loadHostSettings(), nodesLoaded.then(() => Promise.all(readableLocalNodes().map((node) => loadNode(node.id))))]);
 }
 
 /** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */

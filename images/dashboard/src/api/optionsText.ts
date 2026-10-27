@@ -1,4 +1,4 @@
-import type { ConnectionOptionKey } from "./types.js";
+import type { ConnectionOptionKey, GeneralSettingsChange } from "./types.js";
 
 /** The query of an options edit that is applied to every node of this host. */
 export const applyToHostQuery = "applyTo=host";
@@ -105,3 +105,10 @@ export function listenAddressProblem(address: string): string | null {
 export function discoveryServerProblem(server: string): string | null {
   return /^default(-v[46])?$/.test(server) || /^https:\/\/\S+$/.test(server) ? null : `${server || "an empty server"} is not a discovery server: default, default-v4, default-v6 or an https:// address`;
 }
+
+export const generalSettingLabels: Record<keyof GeneralSettingsChange, string> = {
+  deviceName: "Device name",
+  minHomeDiskFree: "Keep free on its home disk",
+  usageReporting: "Usage reports",
+  crashReportingEnabled: "Crash reports",
+};

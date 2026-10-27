@@ -180,7 +180,8 @@ export function newDeviceProblem(body: unknown): string | null {
 
 const folderTypeChoices = editableFolderTypes.map((type) => folderTypeTexts[type]).join(", ");
 
-function minDiskFreeCheck(value: unknown, label: string): string | null {
+/** Why `value` is no `{ value, unit }` of free disk space Syncthing takes, named `label`, or null when it is one. */
+export function minDiskFreeCheck(value: unknown, label: string): string | null {
   const free = isPlainObject(value) ? value : {};
   if (typeof free.value !== "number" || !Number.isFinite(free.value) || free.value < 0) return `${label} must be a number, 0 or more`;
   if (!diskFreeUnits.includes(free.unit as DiskFreeUnit)) return `${label} must be in ${diskFreeUnits.join(", ")}`;

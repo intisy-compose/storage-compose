@@ -2,6 +2,9 @@ import type { HostSettings, InstanceGui, InstanceOptions, NodeOptionsResponse, P
 import { element, keyValueList } from "./dom.js";
 import { priorityUnsetText } from "./folderCondition.js";
 import { isNotConnected } from "./nodeStatus.js";
+import { defaultsSection } from "./defaultsSection.js";
+import { generalSettingsForm } from "./generalForm.js";
+import { ignoredSection } from "./ignoredSection.js";
 import { connectionOptionsForm } from "./optionsForm.js";
 import { applyTheme } from "./preferences.js";
 import { requestRender } from "./renderRequest.js";
@@ -13,11 +16,6 @@ function onOff(value: boolean): string {
 
 function listText(values: string[], emptyText: string): string {
   return values.length ? values.join(", ") : emptyText;
-}
-
-function usageReportingText(urAccepted: number): string {
-  if (urAccepted < 0) return "declined";
-  return urAccepted === 0 ? "not answered yet" : `accepted (version ${urAccepted})`;
 }
 
 function card(heading: string, subheading: string | null, ...children: (HTMLElement | null)[]): HTMLElement {
@@ -53,15 +51,11 @@ function hostCard(settings: HostSettings): HTMLElement {
   );
 }
 
-/** The options the connections form does not change. */
+/** The options neither the connections nor the general form changes. */
 function otherOptionsList(options: InstanceOptions): HTMLElement {
   return keyValueList([
-    ["Device name", options.deviceName || "not set"],
     ["Always local", listText(options.alwaysLocalNets, "none")],
     ["Reconnect", `every ${options.reconnectionIntervalS} s`],
-    ["Keep free", `${options.minHomeDiskFree.value} ${options.minHomeDiskFree.unit} on its home disk`],
-    ["Usage reports", usageReportingText(options.urAccepted)],
-    ["Crash reports", onOff(options.crashReportingEnabled)],
   ]);
 }
 
@@ -78,7 +72,7 @@ function nodeBody(node: StorageNode, answer: NodeOptionsResponse | { error: stri
   if (isNotConnected(node)) return [element("p", { className: "muted" }, "Not connected, so its options cannot be read.")];
   if (!answer) return [element("p", { className: "muted" }, "Reading its options…")];
   if ("error" in answer) return [element("p", { className: "warning" }, answer.error)];
-  return [connectionOptionsForm(node, answer.options, localNodes().length), otherOptionsList(answer.options), guiList(answer.gui)];
+  return [connectionOptionsForm(node, answer.options, localNodes().length), generalSettingsForm(node, answer.options), otherOptionsList(answer.options), guiList(answer.gui), defaultsSection(node), ignoredSection(node)];
 }
 
 function nodeCard(node: StorageNode): HTMLElement {
