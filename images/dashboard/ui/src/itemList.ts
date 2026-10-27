@@ -85,14 +85,27 @@ function sizeChoice(list: ItemListState): HTMLElement {
   return select;
 }
 
+/**
+ * A full page may be followed by another even past the count: Syncthing pages the items being fetched apart from the rest,
+ * and lists an item being fetched again among the rest of a later page.
+ */
+function hasNextPage(list: ItemListState, page: ItemsPage<NeedItem | FolderItem>, pages: number | null): boolean {
+  return page.items.length === list.perPage || (pages !== null && list.page < pages);
+}
+
+function positionText(list: ItemListState, pages: number | null): string {
+  if (list.loading) return "Reading…";
+  return pages !== null && list.page <= pages ? `Page ${formatCount(list.page)} of ${formatCount(pages)}` : `Page ${formatCount(list.page)}`;
+}
+
 function pager(list: ItemListState, page: ItemsPage<NeedItem | FolderItem>): HTMLElement {
   const pages = pageCount(page.total, list.perPage);
-  const hasNext = pages === null ? page.items.length === list.perPage : list.page < pages;
+  const hasNext = hasNextPage(list, page, pages);
   const previous = button("Previous", () => goToPage(list, list.page - 1), "button ghost");
   previous.disabled = list.loading || list.page <= 1;
   const next = button("Next", () => goToPage(list, list.page + 1), "button ghost");
   next.disabled = list.loading || !hasNext;
-  const position = list.loading ? "Reading…" : pages === null ? `Page ${formatCount(list.page)}` : `Page ${formatCount(list.page)} of ${formatCount(pages)}`;
+  const position = positionText(list, pages);
   const again = button("Read again", () => void load(list), "button ghost");
   again.disabled = list.loading;
   return element("div", { className: "item-pager" }, previous, element("span", { className: "muted" }, position), next, sizeChoice(list), again);
