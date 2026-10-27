@@ -1,4 +1,4 @@
-import { type FolderSettings, type FolderType, type StorageNode, addFolder, browseFolderPaths, checkFolderPath, fetchFolderDefaults, folderTypeTexts, ignoreLinesOf, ignoreLinesProblem } from "./api.js";
+import { type FolderSettings, type FolderType, type StorageNode, addFolder, browseFolderPaths, checkFolderPath, fetchFolderDefaults, folderSettingLabels, folderTypeTexts, ignoreLinesOf, ignoreLinesProblem } from "./api.js";
 import { arrayConfirmField, isArrayConfirmed } from "./arrayConfirm.js";
 import { controlId, resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
@@ -141,7 +141,7 @@ function pathHint(form: AddFolderFormState): HTMLElement {
 }
 
 function pathField(form: AddFolderFormState): HTMLElement {
-  const field = textField(form, "path", "Path", pathHint(form), { list: suggestionListId });
+  const field = textField(form, "path", folderSettingLabels.path, pathHint(form), { list: suggestionListId });
   const input = field.querySelector("input") as HTMLInputElement;
   input.addEventListener("input", () => void suggestPaths(form, input.value));
   input.addEventListener("focus", () => void suggestPaths(form, input.value));
@@ -165,7 +165,7 @@ function typeField(form: AddFolderFormState): HTMLElement {
   select.value = draft.type;
   select.disabled = form.saving || form.added !== null;
   select.addEventListener("change", () => (draft.type = select.value as FolderType));
-  return element("label", { className: "setting", attributes: { for: id } }, element("span", {}, "Type"), select);
+  return element("label", { className: "setting", attributes: { for: id } }, element("span", {}, folderSettingLabels.type), select);
 }
 
 function pausedField(form: AddFolderFormState): HTMLElement {
@@ -265,7 +265,7 @@ function settingsFields(form: AddFolderFormState): (HTMLElement | null)[] {
     element(
       "div",
       { className: "form-fields device-fields" },
-      textField(form, "label", "Label", "The name the pages show; empty shows the ID."),
+      textField(form, "label", folderSettingLabels.label, "The name the pages show; empty shows the ID."),
       textField(form, "id", "Folder ID", "The same on every device that shares the folder; it cannot be changed later."),
       pathField(form),
       typeField(form),
