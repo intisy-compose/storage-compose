@@ -23,6 +23,7 @@ import {
   rowOn,
   treePath,
   warmFolderRoots,
+  withinDeadline,
 } from "./treeListing.js";
 
 /** Another host's dashboard, asked once per listing for its own nodes. */
@@ -68,15 +69,6 @@ async function askHost(host: OtherHost, path: string, page: number, sources: All
   }
 }
 
-function withinDeadline<Value>(work: Promise<Value>, waitMs: number, late: () => Value): Promise<Value> {
-  let timer: NodeJS.Timeout | undefined;
-  const waited = new Promise<Value>((resolve) => {
-    timer = setTimeout(() => resolve(late()), waitMs);
-    timer.unref();
-  });
-  return Promise.race([work, waited]).finally(() => clearTimeout(timer));
-}
-
 /** A node as this listing sees it: read in time, still being read, or not attached. */
 interface NodeView {
   tree: NodeTree;
@@ -84,7 +76,7 @@ interface NodeView {
 }
 
 function treeWithout(node: TreeNode, sources: ListingSources, folders: NodeTree["folders"] = []): NodeTree {
-  return { node, answering: false, ownId: "", folders, deviceNames: new Map(), statuses: new Map(), lists: new Map(), sources };
+  return { node, answering: false, ownId: "", folders, deviceNames: new Map(), statuses: new Map(), statusViews: new Map(), lists: new Map(), sources };
 }
 
 async function viewOf(node: TreeNode, layout: SetupLayout | null, sources: ListingSources, waitMs: number): Promise<NodeView> {

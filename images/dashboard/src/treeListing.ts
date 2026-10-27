@@ -1,6 +1,6 @@
 import { deviceDisplayName } from "./api/deviceText.js";
 import type { NodeEntryState, TreeEntry, TreeListing } from "./api/types.js";
-import { entryStatus, type StatusInput } from "./explorerStatus.js";
+import { type Count, entryStatus, type StatusInput } from "./explorerStatus.js";
 import { type FolderLists, PathSet, browseFor, errorTotalOf, listsWithStatus, needTotalOf, treeFingerprint } from "./folderLists.js";
 import { RequestError } from "./http.js";
 import { overridesBelow, priorityAt } from "./priorityTree.js";
@@ -29,15 +29,27 @@ export interface TreeSources {
   node: (nodeId: string) => Promise<TreeNode>;
   layout: () => Promise<SetupLayout | null>;
   needLimit: number;
-  /** How long a listing waits for a folder's first lists before it shows the folder's counts instead. */
+  /** How long a listing waits for a folder's status, its first lists and its first directory read before it shows them as still being read. */
   firstListsWaitMs: number;
 }
 
 /** What a node's tree is read with; the node itself is handed in separately. */
 export type ListingSources = Omit<TreeSources, "node">;
 
-/** A folder's lists, or only its counts while the first read of them has not finished (`stillReading`). */
-type ListsView = FolderLists & { stillReading: boolean };
+/** Where a folder's items lie: placed by path, too many to place, still being read, or in lists that could not be read. */
+type Placed = PathSet | "too-many" | "reading" | "unreadable";
+
+/** A folder's lists as a listing sees them: read, still being read the first time, or failed (`readError`). */
+interface ListsView {
+  need: Placed;
+  errors: Placed;
+  localChanged: Placed;
+  stillReading: boolean;
+  readError: string | null;
+}
+
+/** A folder's status, or "reading" while it has not answered within the listing's wait; null when it could not be read. */
+type StatusView = FolderStatus | "reading" | null;
 
 /** A Syncthing folder placed in the tree: one the node holds (`config` set) or one only offered to it. */
 interface PlacedFolder {
@@ -52,6 +64,7 @@ export interface NodeTree {
   folders: PlacedFolder[];
   deviceNames: Map<string, string>;
   statuses: Map<string, Promise<FolderStatus | null>>;
+  statusViews: Map<string, Promise<StatusView>>;
   lists: Map<string, Promise<ListsView | null>>;
   sources: ListingSources;
 }
@@ -66,8 +79,6 @@ export type Row = RowBase &
     | { source: "offered" }
     | { source: "paused"; folder: PlacedFolder }
   );
-
-type Count = number | "too-many";
 
 function segmentsOf(relativePath: string): string[] {
   return relativePath.split("/").filter(Boolean);
@@ -101,7 +112,7 @@ function offeredOnly(configs: SyncthingFolderConfig[], pending: Record<string, {
 }
 
 export async function readNodeTree(node: TreeNode, layout: SetupLayout | null, sources: ListingSources): Promise<NodeTree> {
-  const tree: NodeTree = { node, answering: false, ownId: "", folders: [], deviceNames: new Map(), statuses: new Map(), lists: new Map(), sources };
+  const tree: NodeTree = { node, answering: false, ownId: "", folders: [], deviceNames: new Map(), statuses: new Map(), statusViews: new Map(), lists: new Map(), sources };
   if (!node.client) return tree;
   try {
     const client = node.client;
@@ -137,6 +148,27 @@ function folderStatus(tree: NodeTree, folder: PlacedFolder): Promise<FolderStatu
   return status;
 }
 
+export function withinDeadline<Value>(work: Promise<Value>, waitMs: number, late: () => Value): Promise<Value> {
+  let timer: NodeJS.Timeout | undefined;
+  const waited = new Promise<Value>((resolve) => {
+    timer = setTimeout(() => resolve(late()), waitMs);
+    timer.unref();
+  });
+  return Promise.race([work, waited]).finally(() => clearTimeout(timer));
+}
+
+/** The folder's status as far as it answered within the listing's wait. */
+function statusView(tree: NodeTree, folder: PlacedFolder): Promise<StatusView> {
+  const config = folder.config;
+  if (!config) return Promise.resolve(null);
+  let view = tree.statusViews.get(config.id);
+  if (!view) {
+    view = withinDeadline<StatusView>(folderStatus(tree, folder), tree.sources.firstListsWaitMs, () => "reading");
+    tree.statusViews.set(config.id, view);
+  }
+  return view;
+}
+
 async function browse(tree: NodeTree, folder: PlacedFolder, prefix: string): Promise<BrowseEntry[]> {
   const status = await folderStatus(tree, folder);
   return browseFor(instanceKeyOf(tree), tree.node.client!, folder.config!.id, prefix, status ? treeFingerprint(status) : "");
@@ -150,24 +182,20 @@ export function warmFolderRoots(tree: NodeTree, rows: Row[]): void {
   }
 }
 
-function countsOnly(status: FolderStatus): ListsView {
-  const placed = (count: number) => (count > 0 ? ("too-many" as const) : new PathSet([]));
-  return { sequence: status.sequence ?? 0, need: placed(needTotalOf(status)), errors: placed(errorTotalOf(status)), localChanged: placed(status.receiveOnlyTotalItems ?? 0), stillReading: true };
+/** The folder's counts without where its items lie, each count above 0 marked `unplaced`. */
+function countsOnly(status: FolderStatus, unplaced: "reading" | "unreadable", readError: string | null = null): ListsView {
+  const placed = (count: number): Placed => (count > 0 ? unplaced : new PathSet([]));
+  return { need: placed(needTotalOf(status)), errors: placed(errorTotalOf(status)), localChanged: placed(status.receiveOnlyTotalItems ?? 0), stillReading: unplaced === "reading", readError };
 }
 
-async function withinWait(waitMs: number, status: FolderStatus, lists: Promise<FolderLists>): Promise<ListsView> {
-  let timer: NodeJS.Timeout | undefined;
-  const waited = new Promise<ListsView>((resolve) => {
-    timer = setTimeout(() => resolve(countsOnly(status)), waitMs);
-    timer.unref();
-  });
-  try {
-    return await Promise.race([lists.then((read) => ({ ...read, stillReading: false })), waited]);
-  } catch {
-    return countsOnly(status);
-  } finally {
-    clearTimeout(timer);
-  }
+const nothingKnownYet: ListsView = { need: "reading", errors: "reading", localChanged: "reading", stillReading: true, readError: null };
+
+function withinWait(waitMs: number, status: FolderStatus, lists: Promise<FolderLists>): Promise<ListsView> {
+  const read = lists.then(
+    (done): ListsView => ({ need: done.need, errors: done.errors, localChanged: done.localChanged, stillReading: false, readError: null }),
+    (error: unknown) => countsOnly(status, "unreadable", error instanceof Error ? error.message : String(error)),
+  );
+  return withinDeadline(read, waitMs, () => countsOnly(status, "reading"));
 }
 
 function folderLists(tree: NodeTree, folder: PlacedFolder): Promise<ListsView | null> {
@@ -176,9 +204,10 @@ function folderLists(tree: NodeTree, folder: PlacedFolder): Promise<ListsView | 
   if (!config || !client) return Promise.resolve(null);
   let lists = tree.lists.get(config.id);
   if (!lists) {
-    lists = folderStatus(tree, folder).then((status) =>
-      status ? withinWait(tree.sources.firstListsWaitMs, status, listsWithStatus(instanceKeyOf(tree), client, config.id, status, tree.sources.needLimit)) : null,
-    );
+    lists = statusView(tree, folder).then((status) => {
+      if (status === "reading") return nothingKnownYet;
+      return status ? withinWait(tree.sources.firstListsWaitMs, status, listsWithStatus(instanceKeyOf(tree), client, config.id, status, tree.sources.needLimit)) : null;
+    });
     tree.lists.set(config.id, lists);
   }
   return lists;
@@ -230,7 +259,8 @@ async function indexRows(tree: NodeTree, path: string): Promise<DirectoryRows & 
   const label = folder.placement.label;
   if (!folder.config) return { rows: [], notes: [`${label} is offered to ${tree.node.name} and not accepted, so its contents are not on this node yet`], inIndex: false };
   if (folder.config.paused) return { rows: [], notes: [`${label} is paused on ${tree.node.name}`], inIndex: false };
-  const entries = await browse(tree, folder, location.inside);
+  const entries = await withinDeadline<BrowseEntry[] | null>(browse(tree, folder, location.inside), tree.sources.firstListsWaitMs, () => null);
+  if (!entries) return { rows: [], notes: [`${label}: its contents on ${tree.node.name} are still being read`], inIndex: true };
   return { rows: entries.map((entry) => indexRow(folder, location.inside, path, entry)), notes: [], inIndex: true };
 }
 
@@ -257,12 +287,21 @@ export async function directoryRows(tree: NodeTree, layout: SetupLayout | null, 
   return { rows, notes: fromIndex.notes };
 }
 
+const unplacedOrder = ["unreadable", "reading", "too-many"] as const;
+
+/** A sum of counts; one that is not a number wins, the least known first. */
 function add(left: Count, right: Count): Count {
-  return left === "too-many" || right === "too-many" ? "too-many" : left + right;
+  const unplaced = unplacedOrder.find((marker) => left === marker || right === marker);
+  return unplaced ?? (left as number) + (right as number);
 }
 
 function hasAny(count: Count): boolean {
-  return count === "too-many" || count > 0;
+  return count === "too-many" || (typeof count === "number" && count > 0);
+}
+
+function countOf(status: StatusView, count: (status: FolderStatus) => number): Count {
+  if (status === "reading") return "reading";
+  return status ? count(status) : 0;
 }
 
 /** What the folders whose roots lie at or below the path (all but `except`) add to its counts. */
@@ -270,12 +309,12 @@ async function rootCounts(tree: NodeTree, path: string, except: PlacedFolder | n
   const roots = heldFolders(tree).filter(
     (folder) => folder !== except && isAtOrBelow(folder.placement.relativePath, path) && !(strictlyBelow && samePath(folder.placement.relativePath, path)),
   );
-  const statuses = await Promise.all(roots.map((folder) => folderStatus(tree, folder)));
+  const statuses = await Promise.all(roots.map((folder) => statusView(tree, folder)));
   let outstanding: Count = 0;
   let failed: Count = 0;
   for (const status of statuses) {
-    outstanding = add(outstanding, status ? needTotalOf(status) : 0);
-    failed = add(failed, status ? errorTotalOf(status) : 0);
+    outstanding = add(outstanding, countOf(status, needTotalOf));
+    failed = add(failed, countOf(status, errorTotalOf));
   }
   return { outstanding, failed, roots, statuses };
 }
@@ -297,7 +336,7 @@ async function treeRowInput(tree: NodeTree, layout: SetupLayout | null, row: Row
     return { ...base, hasFolder: false, offered, folderPaused: false, folderState: "", local: null, outstandingBelow: 0, failedBelow: 0, locallyChanged: false, sharedWithOthers: false };
   }
   const configs = counts.roots.map((folder) => folder.config!);
-  const states = counts.statuses.map((status) => status?.state ?? "");
+  const states = counts.statuses.map((status) => (status === "reading" ? "" : (status?.state ?? "")));
   const ownRoot = counts.roots.findIndex((folder) => samePath(folder.placement.relativePath, row.path));
   return {
     ...base,
@@ -308,14 +347,14 @@ async function treeRowInput(tree: NodeTree, layout: SetupLayout | null, row: Row
     local: { deleted: false, ignored: false },
     outstandingBelow: counts.outstanding,
     failedBelow: counts.failed,
-    locallyChanged: counts.statuses.some((status) => (status?.receiveOnlyTotalItems ?? 0) > 0),
+    locallyChanged: counts.statuses.some((status) => hasAny(countOf(status, (read) => read.receiveOnlyTotalItems ?? 0))),
     sharedWithOthers: configs.some((config) => sharesWithOthers(tree, config)),
   };
 }
 
-function countUnder(list: PathSet | "too-many" | undefined, inside: string): Count {
+function countUnder(list: Placed | undefined, inside: string): Count {
   if (list === undefined) return 0;
-  return list === "too-many" ? "too-many" : list.countUnder(inside);
+  return list instanceof PathSet ? list.countUnder(inside) : list;
 }
 
 /** The row as this node sees its path, or null where the node neither holds nor is offered a folder at, above or below it. */
@@ -352,13 +391,13 @@ function outsideFolderInput(tree: NodeTree, layout: SetupLayout | null, path: st
 
 async function indexRowInput(tree: NodeTree, layout: SetupLayout | null, row: Extract<Row, { source: "index" }>, local: StatusInput["local"]): Promise<StatusInput> {
   const config = row.folder.config!;
-  const [status, lists, nested] = await Promise.all([folderStatus(tree, row.folder), folderLists(tree, row.folder), rootCounts(tree, row.path, row.folder, true)]);
+  const [status, lists, nested] = await Promise.all([statusView(tree, row.folder), folderLists(tree, row.folder), rootCounts(tree, row.path, row.folder, true)]);
   return {
     ...baseInput(tree, layout, row.path),
     hasFolder: true,
     offered: false,
     folderPaused: config.paused,
-    folderState: status?.state ?? "",
+    folderState: status === "reading" ? "" : (status?.state ?? ""),
     local,
     outstandingBelow: add(countUnder(lists?.need, row.inside), nested.outstanding),
     failedBelow: add(countUnder(lists?.errors, row.inside), nested.failed),
@@ -429,9 +468,11 @@ export async function mapAtMost<Item, Result>(items: Item[], atOnce: number, map
   return results;
 }
 
-function listNotes(label: string, status: FolderStatus | null, lists: ListsView | null): string[] {
-  if (!status || !lists) return [];
-  if (lists.stillReading) return [`${label}: ${needTotalOf(status)} items outstanding and ${errorTotalOf(status)} failed in this folder; where they are is still being read`];
+function listNotes(label: string, status: StatusView, lists: ListsView | null): string[] {
+  if (!status || status === "reading" || !lists) return [];
+  const counts = `${needTotalOf(status)} items outstanding and ${errorTotalOf(status)} failed in this folder`;
+  if (lists.readError !== null) return [`${label}: ${counts}; where they are could not be read: ${lists.readError}`];
+  if (lists.stillReading) return [`${label}: ${counts}; where they are is still being read`];
   if (lists.need === "too-many") return [`${label}: ${needTotalOf(status)} items outstanding in this folder, too many to place`];
   return [];
 }
@@ -440,7 +481,7 @@ export async function folderNotes(tree: NodeTree, rows: Row[]): Promise<string[]
   const folders = [...new Set(rows.flatMap((row) => (row.source === "index" ? [row.folder] : [])))];
   const notes = await Promise.all(
     folders.map(async (folder) => {
-      const [status, lists] = await Promise.all([folderStatus(tree, folder), folderLists(tree, folder)]);
+      const [status, lists] = await Promise.all([statusView(tree, folder), folderLists(tree, folder)]);
       return listNotes(folder.placement.label, status, lists);
     }),
   );
