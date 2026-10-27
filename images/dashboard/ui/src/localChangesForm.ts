@@ -1,4 +1,5 @@
 import { type FolderCopy, type FolderSettings, type LocalChangesAction, discardChanges, discardedCount, fetchDiscardCounts, localChangesFolderType, overrideLossText, revertLossText } from "./api.js";
+import { acceptCountsRead, forgetCountsRead, startCountsRead } from "./discardCounts.js";
 import { button, element } from "./dom.js";
 import { closeItemList, isItemListOpen } from "./itemList.js";
 import { requestRender } from "./renderRequest.js";
@@ -22,12 +23,9 @@ function folderName(settings: FolderSettings): string {
 
 /** Reads Syncthing's counts once as the form opens, so the form names what would be discarded now rather than at the last poll. */
 async function readDiscardCounts(settings: FolderSettings, state: FolderActionState): Promise<void> {
-  state.discardCounts = null;
-  state.discardCountsReading = true;
+  const token = startCountsRead(state);
   const answer = await fetchDiscardCounts(state.nodeId, settings.id);
-  state.discardCounts = answer.ok ? answer.value : null;
-  state.discardCountsReading = false;
-  requestRender();
+  if (acceptCountsRead(state, token, answer)) requestRender();
 }
 
 export function localChangesToggle(action: LocalChangesAction, settings: FolderSettings, state: FolderActionState): HTMLButtonElement {
@@ -37,6 +35,7 @@ export function localChangesToggle(action: LocalChangesAction, settings: FolderS
       state.discardOpen = !state.discardOpen;
       state.discardConfirm = "";
       if (state.discardOpen) void readDiscardCounts(settings, state);
+      else forgetCountsRead(state);
       requestRender();
     },
     state.discardOpen ? "button ghost" : "button danger",

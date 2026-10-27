@@ -11,7 +11,9 @@ import { forwardBudgetsMs, itemRoutes } from "../src/routes/items.js";
 import { localChangesRoutes } from "../src/routes/localChanges.js";
 import { reshownForwardedError, shownSyncthingError } from "../src/shownSyncthingError.js";
 import { SyncthingClient, listTimeoutMs } from "../src/syncthing.js";
+import { acceptCountsRead, forgetCountsRead, startCountsRead } from "../ui/src/discardCounts.js";
 import { hasNextPage, positionText, totalText } from "../ui/src/itemPages.js";
+import { outOfSyncCount, outOfSyncText } from "../ui/src/outOfSync.js";
 import { until } from "./until.js";
 
 const apiKey = "items-test-key";
@@ -499,6 +501,34 @@ describe("the words of a revert or override", () => {
     assert.equal(discardedCount("override", polled, { localChanged: 0, needTotalItems: 7 }), 7, "the count read as the form opened wins over the last poll");
     assert.equal(discardedCount("revert", { ...polled, localChanged: 2 }, { localChanged: 4, needTotalItems: 0 }), 4);
     assert.equal(discardedCount("override", polled, { localChanged: 0, needTotalItems: null }), null);
+  });
+});
+
+describe("the copy card and the override form count alike", () => {
+  it("out of sync counts every item, so directories or deletes alone still show and open their list", () => {
+    const copy = { needItems: 3, needTotalItems: 5, needBytes: 60, completion: 40 };
+    assert.equal(outOfSyncCount(copy), discardedCount("override", { localChanged: 0, ...copy }, null));
+    assert.equal(outOfSyncText(copy), "5 items, 60 B (40% done)");
+    const directoriesOnly = { needTotalItems: 2, needBytes: 0, completion: 100 };
+    assert.equal(outOfSyncCount(directoriesOnly), 2);
+    assert.equal(outOfSyncText(directoriesOnly), "2 items, 0 B (100% done)");
+    assert.equal(outOfSyncText({ needTotalItems: 0, needBytes: 0, completion: 100 }), "nothing");
+  });
+
+  it("an answer for a form closed or reopened since is dropped and leaves a newer read waiting", () => {
+    const state = { discardOpen: true, discardCounts: null, discardCountsReading: false };
+    const first = startCountsRead(state);
+    const second = startCountsRead(state);
+    assert.equal(acceptCountsRead(state, first, { ok: true, value: { localChanged: 0, needTotalItems: 9 } }), false);
+    assert.equal(state.discardCountsReading, true, "the newer read is still waiting");
+    assert.equal(state.discardCounts, null);
+    assert.equal(acceptCountsRead(state, second, { ok: true, value: { localChanged: 0, needTotalItems: 4 } }), true);
+    assert.deepEqual([state.discardCounts, state.discardCountsReading], [{ localChanged: 0, needTotalItems: 4 }, false]);
+    const third = startCountsRead(state);
+    state.discardOpen = false;
+    forgetCountsRead(state);
+    assert.equal(acceptCountsRead(state, third, { ok: true, value: { localChanged: 0, needTotalItems: 1 } }), false, "the form was closed");
+    assert.equal(state.discardCounts, null);
   });
 });
 

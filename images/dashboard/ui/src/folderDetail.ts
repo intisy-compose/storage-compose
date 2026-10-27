@@ -1,10 +1,11 @@
 import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type PendingFolderOffer, deviceDisplayName, folderTypeTexts, versioningWords } from "./api.js";
 import { button, element, keyValueList, section } from "./dom.js";
-import { formatBytes, formatDate, formatDuration, formatPercent, normaliseCompletion, plural } from "./format.js";
+import { formatBytes, formatDate, formatDuration, plural } from "./format.js";
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
 import { folderActions, orphanedActionResults } from "./folderActions.js";
 import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./folderCondition.js";
 import { icon } from "./icons.js";
+import { outOfSyncCount, outOfSyncText } from "./outOfSync.js";
 import { isItemListOpen, itemListPanel, toggleItemList } from "./itemList.js";
 import { type ItemListKind, type ItemListTarget, appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
 
@@ -24,11 +25,6 @@ function priorityText(summary: FolderSummary): HTMLElement | string {
 function itemsText(copy: FolderCopy): string {
   const items = copy.globalFiles + copy.globalDirectories;
   return `${plural(items, "item")} (${plural(copy.globalFiles, "file")}, ${plural(copy.globalDirectories, "folder")}), ${formatBytes(copy.globalBytes)}`;
-}
-
-function outOfSyncText(copy: FolderCopy): string {
-  if (!copy.needItems && !copy.needBytes) return "nothing";
-  return `${plural(copy.needItems, "item")}, ${formatBytes(copy.needBytes)} (${formatPercent(normaliseCompletion(copy.completion))} done)`;
 }
 
 function copyList(copy: FolderCopy, kind: ItemListKind): ItemListTarget {
@@ -52,7 +48,7 @@ function listPanel(copy: FolderCopy, kind: ItemListKind, title: string): HTMLEle
 /** The count opens the list of what the copy's node still has to fetch. */
 function outOfSyncValue(copy: FolderCopy): HTMLElement | string {
   const text = outOfSyncText(copy);
-  return copy.needItems ? listToggle(copy, "need", text, `List what ${copy.nodeName} still has to fetch`) : text;
+  return outOfSyncCount(copy) ? listToggle(copy, "need", text, `List what ${copy.nodeName} still has to fetch`) : text;
 }
 
 /** The count opens the list of the copy's failed items, each with Syncthing's error text. */
