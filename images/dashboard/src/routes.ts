@@ -91,11 +91,14 @@ export interface NothingWritten {
   nothingWritten: true;
 }
 
+/** What a node write hands back: its note, one note for each node a write to several of them changed, or that it wrote nothing. */
+export type WriteOutcome = WriteNote | [WriteNote, ...WriteNote[]] | NothingWritten;
+
 /** A write to a node: it must answer with the note Activity records, or say outright that it wrote nothing, so a write that names nothing does not compile. */
 export interface NodeWriteRoute {
   method: WriteMethod;
   pattern: RegExp;
-  write: (context: RouteContext) => Promise<WriteNote | NothingWritten>;
+  write: (context: RouteContext) => Promise<WriteOutcome>;
 }
 
 export type AnyRoute = Route | NodeWriteRoute;
@@ -211,7 +214,7 @@ export const dashboardRoutes: AnyRoute[] = [
   ...deviceIndexRoutes(joinRecords),
   ...pendingRoutes(joinRecords),
   ...pendingFolderRoutes(),
-  ...optionsRoutes,
+  ...optionsRoutes(),
   ...deviceRoutes(),
   ...nodeFolderRoutes(),
   ...folderIgnoreRoutes(),
@@ -237,14 +240,14 @@ function withText(note: WriteNote): WriteNote {
 }
 
 /** After a successful write: the shared local nodes build is dropped so the next read shows it, and a node write's note enters Activity. */
-export function settleWrite(method: string, statusCode: number, note: WriteNote | NothingWritten | null, effects: WriteEffects = liveWriteEffects): void {
+export function settleWrite(method: string, statusCode: number, outcome: WriteOutcome | null, effects: WriteEffects = liveWriteEffects): void {
   if (method === "GET" || method === "HEAD" || statusCode >= 400) return;
-  if (note && "nothingWritten" in note) return;
+  if (outcome && "nothingWritten" in outcome) return;
   effects.invalidate();
-  if (note) effects.record(withText(note));
+  for (const note of outcome === null ? [] : Array.isArray(outcome) ? outcome : [outcome]) effects.record(withText(note));
 }
 
-async function runRoute(candidate: AnyRoute, context: RouteContext): Promise<WriteNote | NothingWritten | null> {
+async function runRoute(candidate: AnyRoute, context: RouteContext): Promise<WriteOutcome | null> {
   if ("write" in candidate) return candidate.write(context);
   await candidate.handle(context);
   return null;

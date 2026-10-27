@@ -75,8 +75,14 @@ export type {
   NodeEntryState,
   NodeFolder,
   NodeKind,
+  NodeOptionsEdit,
   NodeOptionsResponse,
   NodesResponse,
+  ConnectionOptionKey,
+  ConnectionOptions,
+  ConnectionOptionsChange,
+  OptionsEditOutcome,
+  OptionsEditResponse,
   NodeSync,
   Parity,
   ParityJob,
@@ -120,10 +126,14 @@ export type {
 } from "../../src/api/types.js";
 import type { LocalChangesAction } from "../../src/api/localChangesText.js";
 import { requestRefresh } from "./renderRequest.js";
+import type { ConnectionOptionsChange, OptionsEditResponse } from "../../src/api/types.js";
+import { applyToHostQuery } from "../../src/api/optionsText.js";
 import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, DebugChange, DebugFacilities, NodeErrors, NodeLog, AddedDevice, ArrayAction, ArrayActionBody, ConflictsPage, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, RestoredVersions, RestoreVersionsBody, TreeListing, VersionsPage } from "../../src/api/types.js";
 import { type ActivityFilters, activityRequestQuery, defaultActivityFilters, folderChangesShown } from "../../src/api/activityFilters.js";
 import { changesActivityType } from "../../src/api/types.js";
 
+export { connectionOptionKeys, connectionOptionsOf } from "../../src/api/types.js";
+export { applyToHostLabel, applyToHostQuery, connectionOptionLabels, discoveryServerProblem, listenAddressProblem, perNodeListenText } from "../../src/api/optionsText.js";
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
 export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
@@ -220,6 +230,11 @@ export function removeDevice(nodeId: string, deviceId: string, confirm: string):
 
 function nodeApiPath(nodeId: string, rest: string): string {
   return `api/nodes/${encodeURIComponent(nodeId)}/${rest}`;
+}
+
+/** Sends only `change`, to the node or, with `applyToHost`, to every node of this host; the answer says what became of each. */
+export function saveNodeOptions(nodeId: string, change: ConnectionOptionsChange, applyToHost: boolean): Promise<SaveResult<OptionsEditResponse>> {
+  return sendWrite(nodeApiPath(nodeId, `options${applyToHost ? `?${applyToHostQuery}` : ""}`), "PATCH", change);
 }
 
 /** A new device's settings as the node's Syncthing fills them in. */

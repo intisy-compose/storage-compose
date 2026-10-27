@@ -631,6 +631,46 @@ export interface NodeOptionsResponse {
   gui: InstanceGui;
 }
 
+/** The options of Syncthing's own Connections settings, the ones the options form changes. */
+export const connectionOptionKeys = [
+  "listenAddresses",
+  "maxRecvKbps",
+  "maxSendKbps",
+  "limitBandwidthInLan",
+  "natEnabled",
+  "localAnnounceEnabled",
+  "globalAnnounceEnabled",
+  "globalAnnounceServers",
+  "relaysEnabled",
+] as const;
+
+export type ConnectionOptionKey = (typeof connectionOptionKeys)[number];
+export type ConnectionOptions = Pick<InstanceOptions, ConnectionOptionKey>;
+/** `PATCH /api/nodes/<nodeId>/options`, with `?applyTo=host` for every node of this host: only the options the person changed. */
+export type ConnectionOptionsChange = Partial<ConnectionOptions>;
+
+export function connectionOptionsOf(options: InstanceOptions): ConnectionOptions {
+  return Object.fromEntries(connectionOptionKeys.map((key) => [key, structuredClone(options[key])])) as ConnectionOptions;
+}
+
+/** What an options edit did on one node: `unchanged` when every option already had its value, so nothing was sent. */
+export type OptionsEditOutcome = "saved" | "unchanged" | "maybe saved" | "failed" | "not connected";
+
+export interface NodeOptionsEdit {
+  nodeId: string;
+  name: string;
+  outcome: OptionsEditOutcome;
+  /** Why the node was not changed, or may not have been; null when it was. */
+  problem: string | null;
+  /** The node's options as they now stand, null when they could not be read. */
+  options: InstanceOptions | null;
+}
+
+/** The answer of an options edit: the node in the path first, then each other node of the host it was applied to. */
+export interface OptionsEditResponse {
+  nodes: NodeOptionsEdit[];
+}
+
 export type DeviceCompression = "metadata" | "always" | "never";
 
 /** `GET /api/nodes/<nodeId>/devices/<deviceId>`: one device as that node's Syncthing has it configured. */

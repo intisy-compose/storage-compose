@@ -2,6 +2,7 @@ import type { HostSettings, InstanceGui, InstanceOptions, NodeOptionsResponse, P
 import { element, keyValueList } from "./dom.js";
 import { priorityUnsetText } from "./folderCondition.js";
 import { isNotConnected } from "./nodeStatus.js";
+import { connectionOptionsForm } from "./optionsForm.js";
 import { applyTheme } from "./preferences.js";
 import { requestRender } from "./renderRequest.js";
 import { appState, locationFor } from "./state.js";
@@ -12,10 +13,6 @@ function onOff(value: boolean): string {
 
 function listText(values: string[], emptyText: string): string {
   return values.length ? values.join(", ") : emptyText;
-}
-
-function rateText(kibPerSecond: number): string {
-  return kibPerSecond > 0 ? `${kibPerSecond} KiB/s` : "unlimited";
 }
 
 function usageReportingText(urAccepted: number): string {
@@ -56,17 +53,10 @@ function hostCard(settings: HostSettings): HTMLElement {
   );
 }
 
-function optionsList(options: InstanceOptions): HTMLElement {
+/** The options the connections form does not change. */
+function otherOptionsList(options: InstanceOptions): HTMLElement {
   return keyValueList([
     ["Device name", options.deviceName || "not set"],
-    ["Listen on", listText(options.listenAddresses, "nothing")],
-    ["Global discovery", `${onOff(options.globalAnnounceEnabled)}, servers ${listText(options.globalAnnounceServers, "none")}`],
-    ["Local discovery", onOff(options.localAnnounceEnabled)],
-    ["Relays", onOff(options.relaysEnabled)],
-    ["NAT traversal", onOff(options.natEnabled)],
-    ["Send limit", rateText(options.maxSendKbps)],
-    ["Receive limit", rateText(options.maxRecvKbps)],
-    ["Limits in LAN", onOff(options.limitBandwidthInLan)],
     ["Always local", listText(options.alwaysLocalNets, "none")],
     ["Reconnect", `every ${options.reconnectionIntervalS} s`],
     ["Keep free", `${options.minHomeDiskFree.value} ${options.minHomeDiskFree.unit} on its home disk`],
@@ -88,7 +78,7 @@ function nodeBody(node: StorageNode, answer: NodeOptionsResponse | { error: stri
   if (isNotConnected(node)) return [element("p", { className: "muted" }, "Not connected, so its options cannot be read.")];
   if (!answer) return [element("p", { className: "muted" }, "Reading its options…")];
   if ("error" in answer) return [element("p", { className: "warning" }, answer.error)];
-  return [optionsList(answer.options), guiList(answer.gui)];
+  return [connectionOptionsForm(node, answer.options, localNodes().length), otherOptionsList(answer.options), guiList(answer.gui)];
 }
 
 function nodeCard(node: StorageNode): HTMLElement {

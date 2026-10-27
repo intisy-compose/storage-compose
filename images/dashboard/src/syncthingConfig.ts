@@ -1,5 +1,6 @@
 import { deviceSettingLabels, shareFoldersLabel } from "./api/deviceText.js";
-import { type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type DiskFreeUnit, type FolderSettingsChange, type FolderSharingChange, type FolderType, type InstanceGui, type InstanceOptions, type PullOrder, type VersioningType, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "./api/types.js";
+import { connectionOptionLabels, discoveryServerProblem, listenAddressProblem, perNodeListenText } from "./api/optionsText.js";
+import { type ConnectionOptionKey, type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type DiskFreeUnit, type FolderSettingsChange, type FolderSharingChange, type FolderType, type InstanceGui, type InstanceOptions, type PullOrder, type VersioningType, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "./api/types.js";
 import { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, offeredVersioningTypes, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versionsPathLabel } from "./api/versioningText.js";
 
 type SyncthingObject = Record<string, unknown>;
@@ -285,6 +286,46 @@ function folderSettingProblem(key: string, value: unknown): string | null {
   if (!Object.hasOwn(folderFieldChecks, key)) return `${key} is not a folder setting this edit changes`;
   const field = key as keyof FolderSettingsChange;
   return folderFieldChecks[field](value, folderSettingLabels[field]);
+}
+
+function listenAddressesCheck(value: unknown, label: string): string | null {
+  if (!isStringList(value)) return `${label} must be a list of addresses`;
+  if (value.length === 0) return `${label} needs at least one address, or default`;
+  return value.map(listenAddressProblem).find((problem) => problem !== null) ?? null;
+}
+
+function discoveryServersCheck(value: unknown, label: string): string | null {
+  if (!isStringList(value)) return `${label} must be a list of servers`;
+  return value.map(discoveryServerProblem).find((problem) => problem !== null) ?? null;
+}
+
+const optionFieldChecks: Record<ConnectionOptionKey, FieldCheck> = {
+  listenAddresses: listenAddressesCheck,
+  maxRecvKbps: wholeNumberField,
+  maxSendKbps: wholeNumberField,
+  limitBandwidthInLan: booleanField,
+  natEnabled: booleanField,
+  localAnnounceEnabled: booleanField,
+  globalAnnounceEnabled: booleanField,
+  globalAnnounceServers: discoveryServersCheck,
+  relaysEnabled: booleanField,
+};
+
+function optionProblem(key: string, value: unknown): string | null {
+  if (!Object.hasOwn(optionFieldChecks, key)) return `${key} is not a connection option`;
+  const field = key as ConnectionOptionKey;
+  return optionFieldChecks[field](value, connectionOptionLabels[field]);
+}
+
+/** Why a connection options change cannot be sent as it is, or null when it can; one for every node of the host never carries listen addresses. */
+export function optionsChangeProblem(change: unknown, applyToHost: boolean): string | null {
+  if (!isPlainObject(change) || Object.keys(change).length === 0) return "nothing to change";
+  if (applyToHost && Object.hasOwn(change, "listenAddresses")) return perNodeListenText;
+  for (const [key, value] of Object.entries(change)) {
+    const problem = optionProblem(key, value);
+    if (problem) return problem;
+  }
+  return null;
 }
 
 /** Why a folder change cannot be sent to Syncthing as it is, or null when it can; a setting is named by its label in the form. */
