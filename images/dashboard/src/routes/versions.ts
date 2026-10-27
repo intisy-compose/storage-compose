@@ -5,7 +5,9 @@ import { type LocalInstance, type RemoteInstance, type ResolvedInstance, arrayCo
 import { folderSubpathProblem } from "../pathGuard.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { versionsSettings } from "../settings.js";
-import { AnswerTooLarge, listTimeoutMs } from "../syncthing.js";
+import { shownUnscopedText } from "../shownSyncthingError.js";
+import { versionsSlotWaitMs } from "../api/versioningText.js";
+import { AnswerTooLarge } from "../syncthing.js";
 import { SharedLists } from "../versionLists.js";
 import { decodedSegment } from "./devices.js";
 import { type PageRequest, pageRequestOf } from "./items.js";
@@ -256,7 +258,8 @@ export async function restoreVersions(instance: ResolvedInstance, folderId: stri
   if (settings.versioning.type === "external") throw externalRefusal(settings, local);
   let errors: Record<string, string>;
   try {
-    errors = await callSyncthing(local, (client) => client.restoreVersions(folderId, files));
+    const answered = await callSyncthing(local, (client) => client.restoreVersions(folderId, files));
+    errors = Object.fromEntries(Object.entries(answered).map(([path, error]) => [path, shownUnscopedText(String(error))]));
   } catch (error) {
     if (error instanceof RequestError && error.status === 503) throw new UnconfirmedWrite(local.name);
     throw error;
@@ -288,7 +291,7 @@ async function resolveFor(sources: VersionSources, url: URL, nodeId: string): Pr
 
 export function versionRoutes(sources: VersionSources = liveSources): AnyRoute[] {
   const maxBytes = sources.maxListBytes ?? versionsSettings.listMaxBytes;
-  const lists = new SharedLists<StoredVersions>({ keptMs: sources.listKeptMs ?? listKeptMs, maxTotalBytes: maxBytes, maxReading: listsReadAtOnce, slotWaitMs: sources.slotWaitMs ?? listTimeoutMs });
+  const lists = new SharedLists<StoredVersions>({ keptMs: sources.listKeptMs ?? listKeptMs, maxTotalBytes: maxBytes, maxReading: listsReadAtOnce, slotWaitMs: sources.slotWaitMs ?? versionsSlotWaitMs });
   return [
     {
       method: "GET",

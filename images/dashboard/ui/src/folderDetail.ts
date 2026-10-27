@@ -1,4 +1,4 @@
-import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type PendingFolderOffer, deviceDisplayName, folderTypeTexts, versioningWords } from "./api.js";
+import { type ActivityEntry, type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type PendingFolderOffer, changesActivityType, defaultActivityFilters, deviceDisplayName, folderChangesShown, folderTypeTexts, versioningWords } from "./api.js";
 import { button, element, keyValueList, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, plural } from "./format.js";
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
@@ -9,7 +9,7 @@ import { outOfSyncCount, outOfSyncText } from "./outOfSync.js";
 import { isItemListOpen, itemListPanel, toggleItemList } from "./itemList.js";
 import { conflictCopies } from "./itemPages.js";
 import { isVersionsOpen, toggleVersions, versionsPanel } from "./versionsPanel.js";
-import { type ItemListKind, type ItemListTarget, appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
+import { type ItemListKind, type ItemListTarget, activityLocation, appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
 
 function onOff(value: boolean): string {
   return value ? "on" : "off";
@@ -205,6 +205,36 @@ function settingsSection(summary: FolderSummary, detail: FolderDetailResponse | 
   );
 }
 
+function nodeNameOf(nodeId: string | null): string {
+  return appState.data?.nodes.find((node) => node.id === nodeId)?.name ?? nodeId ?? "";
+}
+
+function changeLine(entry: ActivityEntry): HTMLElement {
+  const change = entry.change;
+  const node = nodeNameOf(entry.nodeId);
+  const by = entry.type === "remote-change" && change ? ` by ${change.device}` : "";
+  return element(
+    "li",
+    { className: "change-line" },
+    element("code", { className: "change-path" }, change ? `${change.path}${change.item === "dir" ? "/" : ""}` : entry.text),
+    element("small", {}, `${change?.action ?? "changed"} on ${node}${by}, ${formatDate(entry.at)}`),
+  );
+}
+
+/** The folder's newest file changes on this host's nodes, as Syncthing's Recent Changes listed them; Activity lists the rest. */
+function changesSection(folderId: string): HTMLElement {
+  const changes = appState.folderChanges?.folderId === folderId ? appState.folderChanges : null;
+  const all = element("a", { className: "button ghost", attributes: { href: activityLocation({ ...defaultActivityFilters, folder: folderId, kind: changesActivityType }) } }, "All changes in Activity");
+  const heading = `Recent changes (last ${folderChangesShown})`;
+  if (!changes?.entries) {
+    const status = changes?.error ? `Changes could not be read: ${changes.error}` : "Reading the changes…";
+    return section(heading, element("p", { className: "muted" }, status));
+  }
+  const error = changes.error ? element("p", { className: "muted" }, `Could not be read again: ${changes.error}`) : null;
+  if (!changes.entries.length) return section(heading, error, element("p", { className: "muted" }, "No change seen since the dashboard or the node's Syncthing started."), all);
+  return section(heading, error, element("ol", { className: "change-list" }, ...changes.entries.map(changeLine)), all);
+}
+
 function detailHeader(summary: FolderSummary): HTMLElement {
   const condition = worstCondition(summary);
   return element(
@@ -231,6 +261,7 @@ export function renderFolderDetail(summary: FolderSummary, detail: FolderDetailR
     folderPrioritySection(summary, priority),
     section(`Copies (${summary.copies.length})`, summary.copies.length ? element("div", { className: "copy-list" }, ...summary.copies.map(copyCard)) : element("p", { className: "muted" }, "No node keeps this folder yet.")),
     summary.offers.length ? section(`Offers not accepted (${summary.offers.length})`, ...summary.offers.map(offerLine)) : null,
+    changesSection(summary.id),
     settingsSection(summary, detail),
   );
 }

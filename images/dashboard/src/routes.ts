@@ -8,7 +8,7 @@ import { type HostAllowlist, RequestError, UnconfirmedWrite, hostAllowlist, host
 import { fileJoinRecords } from "./join.js";
 import { invalidateLocalNodes, nodesResponse } from "./nodes.js";
 import { type Job, isJobRunning, parityState, recentLog, startJob } from "./parity.js";
-import { activityRoutes } from "./routes/activity.js";
+import { activityRoutes, nodeLogRoutes } from "./routes/activity.js";
 import { deviceIndexRoutes } from "./routes/deviceIndex.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { folderActionRoutes } from "./routes/folderActions.js";
@@ -23,7 +23,7 @@ import { pendingFolderRoutes } from "./routes/pendingFolders.js";
 import { treeRoutes } from "./routes/tree.js";
 import { versionRoutes } from "./routes/versions.js";
 import { arrayStatusDirectory, clusterArrayId, dashboardHosts, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
-import { SyncthingError, SyncthingUnavailable } from "./syncthing.js";
+import { SyncthingError, SyncthingRefusal, SyncthingUnavailable } from "./syncthing.js";
 
 export const joinRecords = fileJoinRecords(joinsFile);
 
@@ -206,6 +206,7 @@ export const dashboardRoutes: AnyRoute[] = [
   },
   ...folderRoutes,
   ...activityRoutes,
+  ...nodeLogRoutes(),
   ...treeRoutes,
   ...deviceIndexRoutes(joinRecords),
   ...pendingRoutes(joinRecords),
@@ -271,8 +272,14 @@ function errorStatus(error: unknown): number {
   return 500;
 }
 
-function errorAnswer(error: unknown): ErrorAnswer {
-  const answer: ErrorAnswer = { error: error instanceof Error ? error.message : String(error) };
+/** A refusal by Syncthing in words: its status, and its answer only as `SyncthingRefusal` shows it. */
+export function refusalText(refusal: SyncthingRefusal): string {
+  return `Syncthing refused the request (HTTP ${refusal.status})${refusal.shownBody ? `: ${refusal.shownBody}` : ""}`;
+}
+
+export function errorAnswer(error: unknown): ErrorAnswer {
+  const text = error instanceof SyncthingRefusal ? refusalText(error) : error instanceof Error ? error.message : String(error);
+  const answer: ErrorAnswer = { error: text };
   return error instanceof UnconfirmedWrite ? { ...answer, maybeSaved: true } : answer;
 }
 

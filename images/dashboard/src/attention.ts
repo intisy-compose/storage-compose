@@ -1,6 +1,7 @@
 import { deviceDisplayName, isNodePaused, shortDeviceId } from "./api/deviceText.js";
 import type { StorageNode, Warning, WarningKind, WarningLevel } from "./api/types.js";
 import type { AttentionThresholds } from "./settings.js";
+import { type KnownSecrets, allSecretsKnown, shownNodeText } from "./nodeSecrets.js";
 import type { PendingDevices, PendingFolders, SystemError } from "./syncthing.js";
 
 const firstSeen = new Map<string, string>();
@@ -97,17 +98,19 @@ export function conflictWarnings(node: StorageNode): Warning[] {
     );
 }
 
-export function systemErrorWarnings(node: StorageNode, errors: SystemError[]): Warning[] {
-  return errors.map((error) =>
-    warning({
-      id: `system-error:${node.id}:${error.when}:${error.message}`,
+/** Each error the node's Syncthing reports, as `shownNodeText` shows it, in its text and its ID. */
+export function systemErrorWarnings(node: StorageNode, errors: SystemError[], secrets: KnownSecrets = allSecretsKnown([])): Warning[] {
+  return errors.map((error) => {
+    const message = shownNodeText(error.message, secrets);
+    return warning({
+      id: `system-error:${node.id}:${error.when}:${message}`,
       level: "warning",
       kind: "system-error",
-      text: `${node.name}'s Syncthing: ${error.message}`,
+      text: `${node.name}'s Syncthing: ${message}`,
       nodeId: node.id,
       at: error.when,
-    }),
-  );
+    });
+  });
 }
 
 /** Each device asking to connect and each folder offered to the node, as info entries for Requests. */

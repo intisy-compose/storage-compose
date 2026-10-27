@@ -78,7 +78,7 @@ describe("file versions: browse and restore", () => {
       request.on("end", () => {
         restoreBodies.push(JSON.parse(text));
         if (loseRestoreAnswer) return void request.socket.destroy();
-        reply(response, { "gone.txt": "version not found" });
+        reply(response, { "gone.txt": "version not found", "leaky.txt": "cannot restore: #include ../../config/config.xml" });
       });
       return;
     }
@@ -226,8 +226,8 @@ describe("file versions: browse and restore", () => {
     assert.deepEqual(writes(), ["POST /rest/folder/versions?folder=test-a"]);
     assert.deepEqual(restoreBodies, [files]);
     assert.deepEqual(answer.body.restored, ["hello.txt"]);
-    assert.deepEqual(answer.body.errors, { "gone.txt": "version not found" });
-    assert.match(answer.body.text, /^dashboard-test-peer: restored 1 file of folder Test A from its versions: hello\.txt \(version of 2026-10-25T10:00:00\+02:00\); 1 not restored/);
+    assert.deepEqual(answer.body.errors, { "gone.txt": "version not found", "leaky.txt": "error hidden: it mentions an include" }, "a per file error is shown through the redaction");
+    assert.match(answer.body.text, /^dashboard-test-peer: restored 1 file of folder Test A from its versions: hello\.txt \(version of 2026-10-25T10:00:00\+02:00\); 2 not restored/);
     assert.deepEqual(notes.map((note) => [note.folderId, note.text]), [["test-a", answer.body.text]]);
   });
 

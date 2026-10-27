@@ -2,8 +2,12 @@ import { readFile } from "node:fs/promises";
 import { deviceDisplayName, listedAddresses } from "./api/deviceText.js";
 import { connectionKind } from "./connectionKind.js";
 import { needTotalOf } from "./folderLists.js";
+import { type KnownSecrets, knownNodeSecrets } from "./nodeSecrets.js";
+import { shownUnscopedText } from "./shownSyncthingError.js";
 import { effectiveSharing, sharedDevices } from "./syncthingConfig.js";
-import type { FileVersion, FolderFile, FolderPeer, FolderType, NodeFolder, NodeSync, Peer, RemoteState, SyncthingDevice, SyncthingInstance } from "./api/types.js";
+import { type FileVersion, type FolderFile, type FolderPeer, type FolderType, type NodeFolder, type NodeSync, type Peer, type RemoteState, type SyncthingDevice, type SyncthingInstance, listTimeoutMs } from "./api/types.js";
+
+export { listTimeoutMs };
 
 export interface SyncthingEndpoint {
   url: string;
@@ -156,8 +160,6 @@ export interface LocalChangedAnswer {
   files: IndexItem[] | null;
 }
 
-/** @implNote Item lists of a folder with 900,000 items take far longer than the 4 s the rest of the API gets. */
-export const listTimeoutMs = 30_000;
 
 function pageQuery(folderId: string, page: number, perPage: number): string {
   return new URLSearchParams({ folder: folderId, page: String(page), perpage: String(perPage) }).toString();
@@ -202,9 +204,30 @@ export interface InstanceView {
   /** Folders offered to this instance and not accepted. */
   offersWaiting: number;
   systemErrors: SystemError[];
+  /** What its system errors are cleared of before they are shown (`nodeSecrets.ts`). */
+  secrets: KnownSecrets;
 }
 
 export class SyncthingError extends Error {}
+
+/**
+ * Syncthing answered the request with an error status; `shownBody` is its answer as the page may see it.
+ * @implNote The answer is Syncthing's own text, which can quote an ignore file, so it is passed through `shownUnscopedText` before it
+ * enters the message, and every path that shows an error's message shows only that.
+ */
+export class SyncthingRefusal extends SyncthingError {
+  readonly shownBody: string;
+
+  constructor(
+    request: string,
+    readonly status: number,
+    body: string,
+  ) {
+    const shownBody = shownUnscopedText(body.trim());
+    super(`${request}: HTTP ${status}${shownBody ? ` ${shownBody}` : ""}`);
+    this.shownBody = shownBody;
+  }
+}
 
 /** The instance did not answer at all: refused, unreachable or past the timeout. */
 export class SyncthingUnavailable extends SyncthingError {}
@@ -219,13 +242,14 @@ export class AnswerTooLarge extends SyncthingError {
   }
 }
 
-async function boundedText(response: Response, maxBytes: number, what: string): Promise<string> {
+/** The answer's body, read only up to `maxBytes`; past that the read is cancelled and `AnswerTooLarge` thrown. */
+export async function boundedBytes(response: Response, maxBytes: number, what: string): Promise<Buffer> {
   if (Number(response.headers.get("content-length")) > maxBytes) {
     await response.body?.cancel().catch(() => {});
     throw new AnswerTooLarge(what, maxBytes);
   }
   const reader = response.body?.getReader();
-  if (!reader) return "";
+  if (!reader) return Buffer.alloc(0);
   const chunks: Uint8Array[] = [];
   let length = 0;
   try {
@@ -241,7 +265,11 @@ async function boundedText(response: Response, maxBytes: number, what: string): 
     if (error instanceof AnswerTooLarge) throw error;
     throw new SyncthingUnavailable(`${what}: ${(error as Error).message}`);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+async function boundedText(response: Response, maxBytes: number, what: string): Promise<string> {
+  return (await boundedBytes(response, maxBytes, what)).toString("utf8");
 }
 
 export class SyncthingClient {
@@ -269,7 +297,7 @@ export class SyncthingClient {
     const text = await response.text().catch((error: Error) => {
       throw new SyncthingUnavailable(`${method} ${path}: ${error.message}`);
     });
-    if (!response.ok) throw new SyncthingError(`${method} ${path}: HTTP ${response.status} ${text}`);
+    if (!response.ok) throw new SyncthingRefusal(`${method} ${path}`, response.status, text);
     return (text ? JSON.parse(text) : null) as T;
   }
 
@@ -315,6 +343,15 @@ export class SyncthingClient {
     return this.request<SyncthingEvent[] | null>("GET", `/events?${query.toString()}`, undefined, timeoutMs).then((events) => events ?? []);
   }
 
+  /**
+   * A long poll of `/rest/events/disk`, the `LocalChangeDetected` and `RemoteChangeDetected` events after `since`, at most the newest `limit`.
+   * @implNote Syncthing 2.1.6 keeps them in a subscription of their own, numbered apart from `/rest/events` and holding the last 1000.
+   */
+  diskEvents(since: number, limit: number, waitSeconds: number, timeoutMs: number): Promise<SyncthingEvent[]> {
+    const query = new URLSearchParams({ since: String(since), limit: String(limit), timeout: String(waitSeconds) });
+    return this.request<SyncthingEvent[] | null>("GET", `/events/disk?${query.toString()}`, undefined, timeoutMs).then((events) => events ?? []);
+  }
+
   /** Adds the device, or leaves one with the same ID as it is. */
   async addDevice(device: SyncthingDeviceConfig): Promise<void> {
     const known = await this.devices();
@@ -337,7 +374,7 @@ export class SyncthingClient {
       throw new SyncthingUnavailable(`GET /db/file: ${error.message}`);
     });
     if (response.status === 404) return null;
-    if (!response.ok) throw new SyncthingError(`GET /db/file: HTTP ${response.status} ${text}`);
+    if (!response.ok) throw new SyncthingRefusal("GET /db/file", response.status, text);
     return JSON.parse(text) as IndexFile;
   }
 
@@ -379,7 +416,7 @@ export class SyncthingClient {
     const path = `/folder/versions?folder=${encodeURIComponent(folderId)}`;
     const response = await this.raw("GET", `/rest${path}`, listTimeoutMs);
     const text = await boundedText(response, maxBytes, `GET ${path}`);
-    if (!response.ok) throw new SyncthingError(`GET ${path}: HTTP ${response.status} ${text}`);
+    if (!response.ok) throw new SyncthingRefusal(`GET ${path}`, response.status, text);
     return { files: (text ? JSON.parse(text) : null) ?? {}, bytes: Buffer.byteLength(text) };
   }
 
@@ -624,7 +661,7 @@ export function classifyConnections(views: InstanceView[], localDeviceIds: Reado
 export async function instanceView(key: string, endpoint: SyncthingEndpoint, nodeName = key): Promise<InstanceView | null> {
   const client = new SyncthingClient(endpoint);
   try {
-    const [status, version, connections, folderConfigs, deviceConfigs, deviceStats, folderStats, pendingDevices, pendingFolders, systemErrors] = await Promise.all([
+    const [status, version, connections, folderConfigs, deviceConfigs, deviceStats, folderStats, pendingDevices, pendingFolders, systemErrors, secrets] = await Promise.all([
       client.request<SystemStatus>("GET", "/system/status"),
       client.request<{ version: string }>("GET", "/system/version"),
       client.request<Connections>("GET", "/system/connections"),
@@ -635,6 +672,7 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint, nod
       optional(client.pendingDevices(), {}),
       optional(client.pendingFolders(), {}),
       optional(client.systemErrors(), []),
+      knownNodeSecrets(key, client),
     ]);
     const folderRates = rates(key, connections);
     const folders = await folderViews(client, status.myID, folderConfigs, deviceConfigs, folderStats);
@@ -665,6 +703,7 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint, nod
       pendingFolders,
       offersWaiting: Object.keys(pendingFolders).length,
       systemErrors,
+      secrets,
     };
   } catch {
     return null;
