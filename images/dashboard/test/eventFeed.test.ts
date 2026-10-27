@@ -543,6 +543,22 @@ describe("file changes", () => {
     assert.equal(changes(log)[0].change?.path, "after.txt");
   });
 
+  it("a restart whose new IDs run past the old cursor loses no change and enters none twice", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "a.txt", pcShort), diskChange("LocalChangeDetected", "b.txt", pcShort));
+    await until(() => changes(log).length === 2, "the changes before the restart");
+    await until(() => fake.diskQueries.some((query) => query.since === 2), "a poll from the old cursor");
+    const queriesBefore = fake.diskQueries.length;
+    fake.restart();
+    fake.emitDisk(...["c.txt", "d.txt", "e.txt"].map((path) => diskChange("LocalChangeDetected", path, pcShort)));
+    await until(() => changes(log).length >= 5, "the changes after the restart");
+    await until(() => fake.diskQueries.slice(queriesBefore).some((query) => query.since === 3), "a poll from the new run's cursor");
+    assert.deepEqual(changes(log).map((entry) => entry.change?.path), ["e.txt", "d.txt", "c.txt", "b.txt", "a.txt"]);
+    assert.equal(fake.diskQueries.slice(queriesBefore)[0].since, 0, "the first poll of the new run starts from 0, not from the old cursor 2");
+  });
+
   it("a change's path or device carrying one of the node's secrets shows it replaced", async () => {
     const { fake, feed } = await instance("pc", "pc");
     const log = new ActivityLog(100);
