@@ -591,6 +591,12 @@ a.button { display: inline-block; text-decoration: none; color: inherit; }
 .settings-block { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; }
 .settings-block summary { cursor: pointer; font-weight: 500; }
 .settings-block[open] summary { margin-bottom: 8px; }
+.folder-actions { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.folder-actions .button-row { margin-top: 0; }
+.rescan-row { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+.rescan-row input { flex: 1; height: 32px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--surface); min-width: 0; }
+.rescan-row input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.folder-actions .notice { margin: 8px 0 0; }
 
 .setting > span { font-weight: 500; }
 .setting-input { display: flex; gap: 8px; }

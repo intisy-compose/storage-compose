@@ -32,6 +32,7 @@ export type {
   FolderIgnores,
   FolderPathCheck,
   FolderPeer,
+  FolderRescan,
   FolderSettings,
   FolderSettingsChange,
   FolderShare,
@@ -69,7 +70,10 @@ export type {
   Peer,
   RemoteState,
   RemoveDeviceBody,
+  RemoveFolderBody,
+  RemovedFolder,
   RequestsResponse,
+  RescanBody,
   Space,
   StorageNode,
   SyncState,
@@ -85,7 +89,7 @@ export type {
   WarningLevel,
 } from "../../src/api/types.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderSettings, FolderSettingsChange, RemoveDeviceBody, HostSettings, IgnoredDevice, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
+import type { AcceptDeviceBody, AcceptedDevice, ActivityResponse, AddedDevice, ArrayAction, ArrayActionBody, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderSettings, FolderSettingsChange, FolderRescan, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, NodeOptionsResponse, NodesResponse, PendingDevice, RequestsResponse, TreeListing } from "../../src/api/types.js";
 
 export { diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, pullOrderTexts, topDirectoryDefault } from "../../src/api/types.js";
 
@@ -269,6 +273,31 @@ export function fetchFolderIgnores(nodeId: string, folderId: string): Promise<Fo
 export function saveFolderIgnores(nodeId: string, folderId: string, lines: string[], opened: string[]): Promise<SaveResult<FolderIgnores>> {
   const change: IgnoresChange = { lines, opened };
   return sendWrite(ignoresPath(nodeId, folderId), "PUT", change);
+}
+
+function folderApiPath(nodeId: string, folderId: string, rest = ""): string {
+  return nodeApiPath(nodeId, `folders/${encodeURIComponent(folderId)}${rest}`);
+}
+
+/** Sends only the folder's pause; the answer is the folder as it now stands. */
+export function pauseFolder(nodeId: string, folderId: string, paused: boolean): Promise<SaveResult<FolderSettings>> {
+  return sendWrite(folderApiPath(nodeId, folderId, paused ? "/pause" : "/resume"), "POST");
+}
+
+/** Rescans the whole folder, or only `sub` below its path when it is not empty. */
+export function rescanFolder(nodeId: string, folderId: string, sub: string): Promise<SaveResult<FolderRescan>> {
+  const body: RescanBody = sub.trim() ? { sub: sub.trim() } : {};
+  return sendWrite(folderApiPath(nodeId, folderId, "/rescan"), "POST", body);
+}
+
+export function rescanAllFolders(nodeId: string): Promise<SaveResult<FolderRescan>> {
+  return sendWrite(nodeApiPath(nodeId, "rescan-all"), "POST");
+}
+
+/** Removes the folder from the node's Syncthing only, its files stay on disk; `confirm` is the folder's ID, typed. */
+export function removeFolder(nodeId: string, folderId: string, confirm: string): Promise<SaveResult<RemovedFolder>> {
+  const body: RemoveFolderBody = { confirm };
+  return sendWrite(folderApiPath(nodeId, folderId), "DELETE", body);
 }
 
 export function fetchFolderDetail(folderId: string): Promise<FolderDetailResponse> {

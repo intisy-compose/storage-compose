@@ -1,4 +1,4 @@
-import type { FolderCopy, FolderSummary } from "./api.js";
+import type { FolderCopy, FolderSummary, NodeFolder } from "./api.js";
 import { formatPercent, normaliseCompletion, plural } from "./format.js";
 import type { Tone } from "./nodeStatus.js";
 
@@ -14,8 +14,8 @@ export function copyCondition(copy: FolderCopy): FolderCondition {
   if (copy.state.includes("error")) return { rank: 6, tone: "bad", label: copy.state };
   if (copy.errors > 0) return { rank: 5, tone: "bad", label: plural(copy.errors, "failed item") };
   if (copy.state === "unknown") return { rank: 4, tone: "muted", label: "not answering" };
+  if (copy.state === "paused") return { rank: 3, tone: "warn", label: "paused" };
   if (completion < 1) return { rank: 3, tone: "accent", label: `${copy.state}, ${formatPercent(completion)}` };
-  if (copy.state === "paused") return { rank: 2, tone: "muted", label: "paused" };
   if (copy.state !== "idle") return { rank: 1, tone: "accent", label: copy.state };
   return { rank: 0, tone: "ok", label: "up to date" };
 }
@@ -39,3 +39,15 @@ export function priorityBand(priority: number): "high" | "middle" | "low" {
 }
 
 export const priorityUnsetText = "not set by the layered sync yet";
+
+/** A folder's state on the Nodes page; a paused one reads as paused, never as 0 % of anything. */
+export function nodeFolderState(folder: Pick<NodeFolder, "state" | "completion">): { text: string; tone: Tone } {
+  const completion = normaliseCompletion(folder.completion);
+  const state = folder.state;
+  if (state === "paused") return { text: "paused", tone: "warn" };
+  if (state.includes("error") || state.includes("fail")) return { text: completion < 1 ? `${state}, ${formatPercent(completion)}` : state, tone: "bad" };
+  if (state === "unknown") return { text: completion < 1 ? `${state}, ${formatPercent(completion)}` : state, tone: "muted" };
+  if (completion < 1) return { text: `${state}, ${formatPercent(completion)}`, tone: "accent" };
+  if (state === "idle") return { text: "up to date", tone: "ok" };
+  return { text: state, tone: "accent" };
+}

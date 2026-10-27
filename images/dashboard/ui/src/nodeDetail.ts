@@ -1,8 +1,9 @@
-import { type NodesResponse, type StorageNode, type SyncthingDevice, type SyncthingInstance, addressLabel, reachTone } from "./api.js";
+import { type NodesResponse, type StorageNode, type SyncthingDevice, type SyncthingInstance, addressLabel, reachTone, rescanAllFolders } from "./api.js";
 import { arraySections } from "./arraySection.js";
 import { layoutRows, storageNodes } from "./devicePlacement.js";
-import { element, keyValueList, progressBar, section } from "./dom.js";
-import { formatAge, formatBytes, formatDate, formatDuration, formatPercent, formatRate, normaliseCompletion, usedFraction } from "./format.js";
+import { button, element, keyValueList, progressBar, section } from "./dom.js";
+import { nodeFolderState } from "./folderCondition.js";
+import { formatAge, formatBytes, formatDate, formatDuration, formatRate, usedFraction } from "./format.js";
 import { icon } from "./icons.js";
 import { warningBanner } from "./nodesPage.js";
 import { arrayStateLabel, countRoles, isArrayAbsent, isNotConnected, isOffline, shortSyncState, spaceTone, warningsFor } from "./nodeStatus.js";
@@ -138,17 +139,8 @@ function detailsSection(node: StorageNode): HTMLElement {
   );
 }
 
-function folderStateTone(state: string): string {
-  if (state === "idle" || state === "up to date") return "ok";
-  if (state.includes("error") || state.includes("fail")) return "bad";
-  if (state === "paused" || state === "unknown") return "muted";
-  return "accent";
-}
-
 function folderRow(folder: StorageNode["folders"][number]): HTMLElement {
-  const completion = normaliseCompletion(folder.completion);
-  const tone = folderStateTone(folder.state);
-  const stateText = folder.state === "idle" && completion >= 1 ? "up to date" : completion < 1 ? `${folder.state}, ${formatPercent(completion)}` : folder.state;
+  const { text: stateText, tone } = nodeFolderState(folder);
   const failed = folder.errors ? `${folder.errors} failed ${folder.errors === 1 ? "item" : "items"}` : null;
   return element(
     "div",
@@ -164,11 +156,32 @@ function addFolderLink(node: StorageNode): HTMLElement | null {
   return element("a", { className: "button", attributes: { href: addFolderLocation(node.id, "") } }, "Add a folder");
 }
 
+/** The nodes whose rescan of every folder is on its way, so a second click waits for the first answer. */
+const rescanAllSent = new Set<string>();
+
+async function sendRescanAll(node: StorageNode): Promise<void> {
+  rescanAllSent.add(node.id);
+  requestRender();
+  const result = await rescanAllFolders(node.id);
+  rescanAllSent.delete(node.id);
+  appState.notice = result.ok ? { text: `Asked ${node.name}'s Syncthing to rescan every folder that is not paused.`, tone: "ok" } : { text: `Not rescanned: ${result.message}`, tone: "bad" };
+  requestRender();
+}
+
+function rescanAllButton(node: StorageNode): HTMLButtonElement | null {
+  if (!node.local || !node.online || !node.syncthing || !node.folders.length) return null;
+  const control = button("Rescan every folder", () => void sendRescanAll(node), "button");
+  control.disabled = rescanAllSent.has(node.id);
+  control.title = `Scan every folder of ${node.name} that is not paused for changes now`;
+  return control;
+}
+
 function foldersSection(node: StorageNode): HTMLElement {
+  const actions = [addFolderLink(node), rescanAllButton(node)].filter((action): action is HTMLElement => action !== null);
   return section(
     `Folders on this node (${node.folders.length})`,
     node.folders.length ? element("div", { className: "folder-list" }, ...node.folders.map(folderRow)) : element("p", { className: "muted" }, "No folders shared with this node."),
-    addFolderLink(node),
+    actions.length ? element("div", { className: "button-row" }, ...actions) : null,
   );
 }
 

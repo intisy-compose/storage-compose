@@ -139,6 +139,17 @@ export interface EditFolderFormState {
   result: Notice | null;
 }
 
+/** One node's actions on one folder in the folder detail: what is on its way, what was typed, and how the last one went. */
+export interface FolderActionState {
+  busy: boolean;
+  /** The part of the folder a rescan is limited to; empty is the whole folder. */
+  sub: string;
+  removeOpen: boolean;
+  /** The folder's ID as typed to confirm the removal. */
+  confirm: string;
+  result: Notice | null;
+}
+
 /** The Folders page's file explorer: which node's view, which directory, and what the person opened in it. */
 export interface ExplorerState {
   node: string;
@@ -190,6 +201,8 @@ export interface AppState {
   explorer: ExplorerState;
   /** `<folder id>/<node id>` of the settings a person folded away. */
   foldedSettings: Set<string>;
+  /** By `<folder id>/<node id>`. */
+  folderActions: Map<string, FolderActionState>;
   activity: ActivityResponse | null;
   activityError: string | null;
   activityFilters: ActivityFilters;
@@ -233,6 +246,7 @@ export const appState: AppState = {
   folderDetailError: null,
   explorer: emptyExplorer(allNodesView, ""),
   foldedSettings: new Set(),
+  folderActions: new Map(),
   activity: null,
   activityError: null,
   activityFilters: { node: "", folder: "", source: "", routine: false },

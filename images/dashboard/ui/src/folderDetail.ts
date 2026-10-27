@@ -2,6 +2,7 @@ import { type FolderCopy, type FolderDetailResponse, type FolderSettings, type F
 import { element, keyValueList, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, formatPercent, normaliseCompletion, plural } from "./format.js";
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
+import { folderActions, orphanedActionResults } from "./folderActions.js";
 import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./folderCondition.js";
 import { icon } from "./icons.js";
 import { appState, editFolderLocation, explorerLocation, locationFor } from "./state.js";
@@ -112,7 +113,15 @@ function editLink(summary: FolderSummary, copy: FolderCopy | undefined): HTMLEle
 function settingsBlock(summary: FolderSummary, nodeId: string, settings: FolderSettings): HTMLElement {
   const key = `${summary.id}/${nodeId}`;
   const copy = summary.copies.find((candidate) => candidate.nodeId === nodeId);
-  const block = element("details", { className: "settings-block" }, element("summary", {}, `On ${copy?.nodeName ?? nodeId}`), keyValueList(settingsRows(settings, deviceNames(summary))), editLink(summary, copy));
+  const heading = `On ${copy?.nodeName ?? nodeId}${settings.paused ? ", paused" : ""}`;
+  const block = element(
+    "details",
+    { className: "settings-block" },
+    element("summary", {}, heading),
+    keyValueList(settingsRows(settings, deviceNames(summary))),
+    editLink(summary, copy),
+    copy?.local ? folderActions(copy, settings) : null,
+  );
   block.open = !appState.foldedSettings.has(key);
   block.addEventListener("toggle", () => {
     if (block.open) appState.foldedSettings.delete(key);
@@ -130,6 +139,7 @@ function settingsSection(summary: FolderSummary, detail: FolderDetailResponse | 
   const entries = Object.entries(detail.settings);
   return section(
     "Settings",
+    ...orphanedActionResults(summary.id, Object.keys(detail.settings)),
     entries.length ? element("div", { className: "settings-blocks" }, ...entries.map(([nodeId, settings]) => settingsBlock(summary, nodeId, settings))) : element("p", { className: "muted" }, "No node answered with its settings."),
   );
 }
@@ -168,6 +178,7 @@ export function renderFolderNotFound(folderId: string, error: string): HTMLEleme
   return element(
     "div",
     { className: "detail-inner detail-empty" },
+    ...orphanedActionResults(folderId, []),
     element("p", {}, `Folder ${folderId} could not be shown: ${error}`),
     element("a", { attributes: { href: explorerLocation(null) } }, "Close"),
   );

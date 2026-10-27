@@ -824,6 +824,31 @@ export interface IgnoresChange {
   opened: string[];
 }
 
+/** `POST /api/nodes/<nodeId>/folders/<folderId>/rescan`: the whole folder, or only `sub`, a directory or file below its path. */
+export interface RescanBody {
+  sub?: string;
+}
+
+/** The answer of a rescan: which folder, or null for every folder of the node, and which part of it. */
+export interface FolderRescan {
+  folderId: string | null;
+  sub: string | null;
+}
+
+/** `DELETE /api/nodes/<nodeId>/folders/<folderId>`: the folder's ID, typed, confirms the removal. */
+export interface RemoveFolderBody {
+  confirm: string;
+}
+
+/** The answer of a removal: the folder is gone from the node's Syncthing, its files are still at `path`. */
+export interface RemovedFolder {
+  folderId: string;
+  label: string;
+  path: string;
+  /** In words, saying that the files stay on disk. */
+  text: string;
+}
+
 /** `GET /api/nodes/<nodeId>/folder-defaults?under=<tree path>`: a new folder as the node's Syncthing would make it, placed at that directory. */
 export interface NewFolderDefaults {
   settings: FolderSettings;
