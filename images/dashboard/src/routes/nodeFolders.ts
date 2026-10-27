@@ -62,7 +62,7 @@ async function syncthingDefaults(instance: LocalInstance): Promise<SyncthingObje
   return asObject(await callSyncthing(instance, (client) => client.request<unknown>("GET", "/config/defaults/folder")));
 }
 
-function isSamePath(left: string, right: string, node: NodeRoot): boolean {
+function isSamePath(left: string, right: string, node: Pick<NodeRoot, "os">): boolean {
   return relativeToRoot(left, right, node.os) === "" && relativeToRoot(right, left, node.os) === "";
 }
 
@@ -384,12 +384,12 @@ function movedFolderVersionsProblem(newPath: string, folders: SyncthingFolderSet
   return null;
 }
 
-function isSameVersionsPath(current: string, sent: string, node: NodeRoot): boolean {
+function isSameVersionsPath(current: string, sent: string, node: Pick<NodeRoot, "os">): boolean {
   return current === sent || (current !== "" && sent !== "" && isSamePath(current, sent, node));
 }
 
 /** @implNote Only the sent params are compared: Syncthing keeps the params of the folder's earlier types beside them. */
-function isVersioningInPlace(current: SyncthingFolderSettings["versioning"], sent: Versioning, node: NodeRoot): boolean {
+function isVersioningInPlace(current: SyncthingFolderSettings["versioning"], sent: Versioning, node: Pick<NodeRoot, "os">): boolean {
   const now = current ?? {};
   const isSameParams = Object.entries(sent.params).every(([key, value]) => now.params?.[key] === value);
   return (now.type ?? "") === sent.type && now.cleanupIntervalS === sent.cleanupIntervalS && isSameVersionsPath(now.fsPath ?? "", sent.fsPath, node) && isSameParams;
@@ -405,12 +405,14 @@ function isSharingInPlace(current: SyncthingFolderSettings, sharing: Sharing): b
   return sharing.share.every((entry) => shared.has(entry.deviceId)) && sharing.unshare.every((deviceId) => !shared.has(deviceId));
 }
 
-/** @implNote The path is compared as the guard reads paths, so Syncthing writing it with another case or a trailing separator still counts. */
+/**
+ * @implNote Paths are compared as the guard reads them, so Syncthing writing one with another case or a trailing separator
+ * still counts; only the node's OS is needed, so a node without a known root reads its change back too.
+ */
 function isFolderChangeInPlace(instance: LocalInstance, current: SyncthingFolderSettings, settings: SettingsChange, sharing: Sharing): boolean {
   const { path, versioning, ...rest } = settings;
-  const { node } = rooted(instance);
-  const isPathInPlace = path === undefined || isSamePath(current.path, path, node);
-  const isVersioningSaved = versioning === undefined || isVersioningInPlace(current.versioning, versioning, node);
+  const isPathInPlace = path === undefined || isSamePath(current.path, path, instance);
+  const isVersioningSaved = versioning === undefined || isVersioningInPlace(current.versioning, versioning, instance);
   return isChangeInPlace(current, rest) && isPathInPlace && isVersioningSaved && isSharingInPlace(current, sharing);
 }
 
@@ -517,7 +519,7 @@ export async function editFolder(instance: ResolvedInstance, folderId: string, b
   if (!listed) throw new RequestError(404, `${local.name} has no folder ${folderId}`);
   const folderPath = moved.path ?? listed.path;
   const settings: SettingsChange = moved.versioning === undefined ? moved : { ...moved, versioning: guardedVersioning(local, moved.versioning, folderPath, nodes) };
-  const versionsProblem = settings.versioning ? versionsPathFolderProblem(settings.versioning.fsPath, folders, folderId, folderPath, rooted(local).node) : null;
+  const versionsProblem = settings.versioning?.fsPath ? versionsPathFolderProblem(settings.versioning.fsPath, folders, folderId, folderPath, rooted(local).node) : null;
   if (versionsProblem) throw new RequestError(400, versionsProblem);
   const isMoved = settings.path !== undefined && !isSamePath(listed.path, settings.path, rooted(local).node);
   const movedProblem = isMoved ? movedFolderVersionsProblem(folderPath, folders, folderId, settings.versioning !== undefined, rooted(local).node) : null;

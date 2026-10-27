@@ -557,6 +557,17 @@ describe("adding a folder to a node", () => {
     assert.equal(dropAfterWrite, 0, "the first three read-backs got no answer");
   });
 
+  it("a node without a known root confirms a lost answer by reading it back, and changes its versioning without a versions path", async () => {
+    const rootless: LocalInstance = { ...peer(), root: null };
+    loseWriteAnswer = true;
+    const edit = await editFolder(rootless, "dashboard-test-e", { label: "Renamed" }, roots, fastReadBacks);
+    assert.equal(noteText(edit), "dashboard-test-peer: changed folder Test A; label Renamed");
+    loseWriteAnswer = false;
+    const versioned = await editFolder(rootless, "dashboard-test-e", { versioning: { type: "trashcan", params: { cleanoutDays: "0" }, cleanupIntervalS: 3600, fsPath: "" } }, roots, fastReadBacks);
+    assert.equal(versioned.settings.versioning.type, "trashcan");
+    await assert.rejects(editFolder(rootless, "dashboard-test-e", { path: "/var/syncthing/data/x" }, roots), { status: 409, message: "dashboard-test-peer has no root known to the dashboard, so no folder can be placed on it" });
+  });
+
   it("a read-back finds a moved path in place however Syncthing writes it", async () => {
     loseWriteAnswer = true;
     storedPath = (path) => `${path.toLowerCase()}\\`;
