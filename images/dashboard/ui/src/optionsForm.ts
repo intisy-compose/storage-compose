@@ -123,7 +123,7 @@ function applyToHostToggle(context: FieldContext, nodeCount: number): HTMLElemen
     box.defaultChecked = box.checked;
   });
   box.disabled = form.saving || nodeCount < 2;
-  const hint = nodeCount < 2 ? "this host runs no other node" : "discovery, relays, NAT and limits; listen addresses stay this node's own";
+  const hint = nodeCount < 2 ? "this host runs no other node" : "discovery, relays, NAT and limits; listen addresses stay this node's own, and an array is changed only on its own card";
   return element("label", { className: "toggle", attributes: { for: id } }, box, element("span", {}, applyToHostLabel, element("small", { className: "muted" }, ` ${hint}`)));
 }
 
@@ -163,11 +163,12 @@ const outcomeWords: Record<NodeOptionsEdit["outcome"], string> = {
   "maybe saved": "may have been saved",
   failed: "not saved",
   "not connected": "not connected, not changed",
+  skipped: "left out",
 };
 
 function outcomeTone(edit: NodeOptionsEdit): Notice["tone"] {
   if (edit.outcome === "failed") return "bad";
-  return edit.outcome === "saved" || edit.outcome === "unchanged" ? "ok" : "warn";
+  return edit.outcome === "saved" || edit.outcome === "unchanged" || edit.outcome === "skipped" ? "ok" : "warn";
 }
 
 function outcomeLine(edit: NodeOptionsEdit): HTMLElement {

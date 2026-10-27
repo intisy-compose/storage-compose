@@ -654,7 +654,7 @@ export function connectionOptionsOf(options: InstanceOptions): ConnectionOptions
 }
 
 /** What an options edit did on one node: `unchanged` when every option already had its value, so nothing was sent. */
-export type OptionsEditOutcome = "saved" | "unchanged" | "maybe saved" | "failed" | "not connected";
+export type OptionsEditOutcome = "saved" | "unchanged" | "maybe saved" | "failed" | "not connected" | "skipped";
 
 export interface NodeOptionsEdit {
   nodeId: string;

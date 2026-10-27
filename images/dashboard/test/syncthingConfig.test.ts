@@ -283,6 +283,15 @@ describe("a listen address", () => {
     assert.match(listenAddressProblem("quic://[::]:22100") ?? "", /port 22100, outside/);
     assert.match(listenAddressProblem("tcp://0.0.0.0") ?? "", /names no port/);
     assert.match(listenAddressProblem("http://:22000") ?? "", /is not a listen address/);
+    assert.equal(listenAddressProblem("DYNAMIC+HTTPS://relays.syncthing.net/endpoint"), null, "the scheme is case-insensitive, as relay:// is");
+  });
+
+  it("is refused where Go's SplitHostPort would refuse its host and port", () => {
+    for (const address of ["tcp://::22000", "tcp://[::22000", "tcp://[::]x:22000", "quic://1.2.3.4:22000:1", "tcp://[::]]:22000"]) {
+      assert.match(listenAddressProblem(address) ?? "", /is not host:port/, address);
+    }
+    assert.match(listenAddressProblem("tcp://[::]") ?? "", /names no port/);
+    assert.match(listenAddressProblem("tcp://[::]:") ?? "", /names no port/);
   });
 });
 
@@ -301,18 +310,26 @@ describe("editing a node's connection options", () => {
   const remote: RemoteInstance = { kind: "remote", nodeId: "p53n", name: "p53", host: "p53", dashboardUrl: "http://127.0.0.1:1" };
 
   function instances(): Record<string, ResolvedInstance> {
-    return { d7e5: local("d7e5", "dashboard-test-peer", peer), fb98: { ...local("fb98", "pc", pc), source: "host-agent", os: "windows" }, p53n: remote };
+    return {
+      "5784": { ...local("5784", "private-array", array), source: "array" },
+      d7e5: local("d7e5", "dashboard-test-peer", peer),
+      fb98: { ...local("fb98", "pc", pc), source: "host-agent", os: "windows" },
+      p53n: remote,
+    };
   }
 
-  /** This host's nodes: the array 5784, whose drives are attached only with `arrayAttached`, the peer and pc. */
+  /** This host's nodes: the array 5784, whose drives are attached only with `arrayAttached`, the peer, a drive node that is not plugged in, and pc. */
   function hostNodes(arrayAttached: boolean): HostNode[] {
     const all = instances();
     return [
-      { nodeId: "5784", name: "private-array", instance: arrayAttached ? { ...local("5784", "private-array", array), source: "array" } : null, present: arrayAttached },
-      { nodeId: "d7e5", name: "dashboard-test-peer", instance: all.d7e5 as LocalInstance, present: true },
-      { nodeId: "fb98", name: "pc", instance: all.fb98 as LocalInstance, present: true },
+      { nodeId: "5784", name: "private-array", source: "array", instance: arrayAttached ? (all["5784"] as LocalInstance) : null, present: arrayAttached },
+      { nodeId: "d7e5", name: "dashboard-test-peer", source: "registry", instance: all.d7e5 as LocalInstance, present: true },
+      { nodeId: "c3d4", name: "usb-drive", source: "registry", instance: null, present: false },
+      { nodeId: "fb98", name: "pc", source: "host-agent", instance: all.fb98 as LocalInstance, present: true },
     ];
   }
+
+  const arraySkipped = "private-array is an array: change its options on its own card";
 
   function recordingEffects(): WriteEffects & { notes: WriteNote[]; invalidations: number } {
     const effects = { notes: [] as WriteNote[], invalidations: 0, invalidate: () => void (effects.invalidations += 1), record: (note: WriteNote) => void effects.notes.push(note) };
@@ -365,10 +382,12 @@ describe("editing a node's connection options", () => {
         edit.nodes.map((result) => [result.nodeId, result.outcome]),
         [
           ["d7e5", "saved"],
-          ["5784", "saved"],
+          ["5784", "skipped"],
+          ["c3d4", "not connected"],
           ["fb98", "saved"],
         ],
       );
+      assert.deepEqual(array.requests, [], "an array is never written by apply to all");
       for (const node of [peer, pc, array]) {
         for (const write of writesTo(node)) assert.ok(!Object.hasOwn(write.body as object, "listenAddresses"), "no write carries listen addresses");
       }
@@ -376,7 +395,6 @@ describe("editing a node's connection options", () => {
       assert.deepEqual(pc.options.listenAddresses, ["tcp://100.75.76.90:22001"], "each node keeps its own port");
       assert.deepEqual(effects.notes.map((note) => note.text), [
         "dashboard-test-peer: changed connection options; relays on; send limit 1000 KiB/s",
-        "private-array: changed connection options; send limit 1000 KiB/s",
         "pc: changed connection options; send limit 1000 KiB/s",
       ]);
       assert.equal(effects.invalidations, 1, "the refused request dropped nothing, the saved one once");
@@ -447,7 +465,8 @@ describe("editing a node's connection options", () => {
         edit.nodes.map((result) => [result.nodeId, result.outcome, result.problem]),
         [
           ["d7e5", "saved", null],
-          ["5784", "not connected", "private-array is not connected, so it was not changed"],
+          ["5784", "skipped", arraySkipped],
+          ["c3d4", "not connected", "usb-drive is not connected, so it was not changed"],
           ["fb98", "saved", null],
         ],
       );
@@ -466,18 +485,68 @@ describe("editing a node's connection options", () => {
         edit.nodes.map((result) => [result.nodeId, result.outcome]),
         [
           ["d7e5", "saved"],
-          ["5784", "saved"],
+          ["5784", "skipped"],
+          ["c3d4", "not connected"],
           ["fb98", "failed"],
         ],
       );
-      assert.equal(edit.nodes[2].problem, "pc's Syncthing is not answering");
+      assert.equal(edit.nodes[3].problem, "pc's Syncthing is not answering");
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("apply to all sends nothing to an array node and reports it skipped", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects, true);
+    try {
+      const edit = (await (await patch(`${dashboard.url}/api/nodes/fb98/options?${applyToHostQuery}`, { relaysEnabled: true })).json()) as OptionsEditResponse;
+      const arrayResult = edit.nodes.find((result) => result.nodeId === "5784");
+      assert.deepEqual(arrayResult, { nodeId: "5784", name: "private-array", outcome: "skipped", problem: arraySkipped, options: null });
+      assert.deepEqual(array.requests, []);
+      assert.ok(!effects.notes.some((note) => note.nodeId === "5784"), "Activity names no change on the array");
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("editing the array's own card still works", async () => {
+    const effects = recordingEffects();
+    const dashboard = await dashboardWith(effects, true);
+    try {
+      const answer = await patch(`${dashboard.url}/api/nodes/5784/options`, { relaysEnabled: false, maxRecvKbps: 500 });
+      assert.equal(answer.status, 200);
+      assert.equal(((await answer.json()) as OptionsEditResponse).nodes[0].outcome, "saved");
+      assert.deepEqual(writesTo(array).map((write) => write.body), [{ relaysEnabled: false, maxRecvKbps: 500 }]);
+      assert.deepEqual(effects.notes.map((note) => note.text), ["private-array: changed connection options; relays off; receive limit 500 KiB/s"]);
+      assert.deepEqual(writesTo(peer), []);
+      assert.deepEqual(writesTo(pc), []);
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("a listen port another node of this host lists is 400 naming that node", async () => {
+    const dashboard = await dashboardWith(recordingEffects(), true);
+    try {
+      const taken = await patch(`${dashboard.url}/api/nodes/d7e5/options`, { listenAddresses: ["tcp://:22001"] });
+      assert.equal(taken.status, 400);
+      assert.equal(((await taken.json()) as { error: string }).error, "tcp://:22001 listens on port 22001, which pc already lists (tcp://100.75.76.90:22001)");
+      const defaultTaken = await patch(`${dashboard.url}/api/nodes/d7e5/options`, { listenAddresses: ["quic://0.0.0.0:22000"] });
+      assert.equal(defaultTaken.status, 400);
+      assert.equal(((await defaultTaken.json()) as { error: string }).error, "quic://0.0.0.0:22000 listens on port 22000, which private-array already lists (default)");
+      assert.deepEqual(writesTo(peer), []);
+
+      assert.equal((await patch(`${dashboard.url}/api/nodes/d7e5/options`, { listenAddresses: ["tcp://:22002", "quic://:22002"] })).status, 200, "the node's own port, with quic beside tcp, stays its own");
+      assert.deepEqual(writesTo(pc), []);
+      assert.deepEqual(writesTo(array), []);
     } finally {
       dashboard.close();
     }
   });
 
   it("is refused for another host's node, and for an option this form does not change", async () => {
-    await assert.rejects(editOptions(remote, { relaysEnabled: true }, null), (error: Error & { status?: number }) => error.status === 409 && error.message === "act on p53's dashboard");
+    await assert.rejects(editOptions(remote, { relaysEnabled: true }, async () => [], false), (error: Error & { status?: number }) => error.status === 409 && error.message === "act on p53's dashboard");
     assert.equal(optionsChangeProblem({ deviceName: "x" }, false), "deviceName is not a connection option");
     assert.equal(optionsChangeProblem({ relaysEnabled: "yes" }, false), "Relays must be on or off");
     assert.equal(optionsChangeProblem({ maxSendKbps: -1 }, false), "Send limit must be a whole number, 0 or more");
@@ -488,6 +557,6 @@ describe("editing a node's connection options", () => {
 
   it("a node whose Syncthing does not answer is 503 and names it", async () => {
     pc.close();
-    await assert.rejects(editOptions(instances().fb98, { relaysEnabled: true }, null), (error: Error & { status?: number }) => error.status === 503 && error.message === "pc's Syncthing is not answering");
+    await assert.rejects(editOptions(instances().fb98, { relaysEnabled: true }, async () => [], false), (error: Error & { status?: number }) => error.status === 503 && error.message === "pc's Syncthing is not answering");
   });
 });

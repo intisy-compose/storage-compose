@@ -42,10 +42,49 @@ const rowsText = syncPortRows.map((row) => `${row.serves} (${rowRange(row)})`).j
 
 const portSchemes = new Set(["tcp", "tcp4", "tcp6", "quic", "quic4", "quic6"]);
 
-/** The port of an address's `host:port` or `[ipv6]:port`, null when it names none. */
-function portOf(authority: string): string | null {
-  const port = /:(\d*)$/.exec(authority.startsWith("[") ? authority.slice(authority.indexOf("]") + 1) : authority);
-  return port && port[1] !== "" ? port[1] : null;
+/** The port `default` listens on. */
+const defaultListenPort = 22000;
+
+type HostPort = { port: string } | { problem: "malformed" | "no port" };
+
+/**
+ * An address's `host:port` split as Go's `net.SplitHostPort`, which Syncthing uses: an IPv6 host only in brackets,
+ * the closing bracket followed by the port's colon, one colon otherwise.
+ */
+function splitHostPort(authority: string): HostPort {
+  if (authority.startsWith("[")) {
+    const close = authority.indexOf("]");
+    if (close < 0 || authority.indexOf("[", 1) >= 0 || authority.indexOf("]", close + 1) >= 0) return { problem: "malformed" };
+    const rest = authority.slice(close + 1);
+    if (rest === "") return { problem: "no port" };
+    return rest.startsWith(":") && !rest.slice(1).includes(":") ? portPart(rest.slice(1)) : { problem: "malformed" };
+  }
+  if (authority.includes("[") || authority.includes("]")) return { problem: "malformed" };
+  const colons = authority.split(":").length - 1;
+  if (colons === 0) return { problem: "no port" };
+  return colons === 1 ? portPart(authority.slice(authority.indexOf(":") + 1)) : { problem: "malformed" };
+}
+
+function portPart(port: string): HostPort {
+  if (port === "") return { problem: "no port" };
+  return /^\d+$/.test(port) ? { port } : { problem: "malformed" };
+}
+
+function isPortless(address: string): boolean {
+  return address === "default" || /^(dynamic\+https|relay):\/\//i.test(address);
+}
+
+/** A listen address's scheme and `host:port`, null for one that is no tcp:// or quic:// address. */
+function hostPortOf(address: string): HostPort | null {
+  const parsed = /^([a-z0-9]+):\/\/([^/?#\s]*)$/i.exec(address);
+  return parsed && portSchemes.has(parsed[1].toLowerCase()) ? splitHostPort(parsed[2]) : null;
+}
+
+/** The port of this host a listen address takes, null for one that takes none, such as a relay. */
+export function listenPort(address: string): number | null {
+  if (address === "default") return defaultListenPort;
+  const hostPort = isPortless(address) ? null : hostPortOf(address);
+  return hostPort && "port" in hostPort ? Number(hostPort.port) : null;
 }
 
 /**
@@ -53,12 +92,12 @@ function portOf(authority: string): string | null {
  * @implNote `default` listens on 22000; a relay address listens on no port of this host.
  */
 export function listenAddressProblem(address: string): string | null {
-  if (address === "default" || address.startsWith("dynamic+https://") || /^relay:\/\//i.test(address)) return null;
-  const parsed = /^([a-z0-9]+):\/\/([^/?#\s]*)$/i.exec(address);
-  if (!parsed || !portSchemes.has(parsed[1].toLowerCase())) return `${address || "an empty address"} is not a listen address: default, or a tcp://, quic://, relay:// or dynamic+https:// address`;
-  const port = portOf(parsed[2]);
-  if (port === null) return `${address} names no port: give one of the storage stack's rows in access/PORTS.md, ${rowsText}`;
-  const number = Number(port);
+  if (isPortless(address)) return null;
+  const hostPort = hostPortOf(address);
+  if (!hostPort) return `${address || "an empty address"} is not a listen address: default, or a tcp://, quic://, relay:// or dynamic+https:// address`;
+  if ("problem" in hostPort && hostPort.problem === "malformed") return `${address} is not host:port: write an IPv6 address in brackets, as [::]:${defaultListenPort}`;
+  if ("problem" in hostPort) return `${address} names no port: give one of the storage stack's rows in access/PORTS.md, ${rowsText}`;
+  const number = Number(hostPort.port);
   return syncPortRows.some((row) => number >= row.first && number <= row.last) ? null : `${address} listens on port ${number}, outside the storage stack's rows in access/PORTS.md: ${rowsText}`;
 }
 

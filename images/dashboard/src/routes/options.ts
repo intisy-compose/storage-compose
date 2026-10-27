@@ -1,4 +1,4 @@
-import { connectionOptionLabels } from "../api/optionsText.js";
+import { connectionOptionLabels, listenPort } from "../api/optionsText.js";
 import type { ConnectionOptionKey, ConnectionOptionsChange, HostSettings, InstanceOptions, NodeOptionsEdit, NodeOptionsResponse, OptionsEditOutcome, OptionsEditResponse } from "../api/types.js";
 import { RequestError, UnconfirmedWrite, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type LocalNodeInfo, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, localNodeInfos, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
@@ -118,6 +118,16 @@ function notChanged(node: Pick<HostNode, "nodeId" | "name">, outcome: OptionsEdi
   return { result: { nodeId: node.nodeId, name: node.name, outcome, problem, options: null }, note: null };
 }
 
+/**
+ * Another node of an edit applied to the whole host; an array is left out.
+ * @implNote An array's options are changed only on its own card: the private array holds the PC's pending folders (HANDOFF decision 1),
+ * so no click on another node's card may change it.
+ */
+async function editOtherHostNode(node: HostNode, change: ConnectionOptionsChange, readBackDelaysMs: readonly number[]): Promise<NodeEditDone> {
+  if (node.source === "array") return notChanged(node, "skipped", `${node.name} is an array: change its options on its own card`);
+  return editHostNode(node, change, readBackDelaysMs);
+}
+
 /** One node of an edit applied to the whole host: its failure is reported in the answer and does not stop the other nodes. */
 async function editHostNode(node: HostNode, change: ConnectionOptionsChange, readBackDelaysMs: readonly number[]): Promise<NodeEditDone> {
   if (!node.present) return notChanged(node, "not connected", `${node.name} is not connected, so it was not changed`);
@@ -129,7 +139,37 @@ async function editHostNode(node: HostNode, change: ConnectionOptionsChange, rea
   }
 }
 
-export type HostNode = Pick<LocalNodeInfo, "nodeId" | "name" | "instance" | "present">;
+export type HostNode = Pick<LocalNodeInfo, "nodeId" | "name" | "source" | "instance" | "present">;
+
+interface ListedAddress {
+  nodeName: string;
+  address: string;
+}
+
+/** The listen addresses each other answering node of this host lists now; a node that cannot be read is left out. */
+async function otherNodesAddresses(instance: LocalInstance, hostNodes: HostNode[]): Promise<ListedAddress[]> {
+  const others = hostNodes.filter((node) => node.nodeId !== instance.nodeId && node.instance !== null);
+  const listed = await Promise.all(
+    others.map(async (node) => {
+      const options = await syncthingOptions(node.instance as LocalInstance).catch(() => ({}) as SyncthingObject);
+      return instanceOptions(options, "").listenAddresses.map((address) => ({ nodeName: node.name, address }));
+    }),
+  );
+  return listed.flat();
+}
+
+/**
+ * Refuses a listen address on a port another node of this host lists, `default` counting as 22000.
+ * @implNote The nodes share the host's ports (the gateway's namespace for container nodes), so a second node on one would fail to listen.
+ */
+async function refuseTakenPorts(instance: LocalInstance, addresses: string[], hostNodes: HostNode[]): Promise<void> {
+  const listed = await otherNodesAddresses(instance, hostNodes);
+  for (const address of addresses) {
+    const port = listenPort(address);
+    const taken = port === null ? undefined : listed.find((entry) => listenPort(entry.address) === port);
+    if (taken) throw new RequestError(400, `${address} listens on port ${port}, which ${taken.nodeName} already lists (${taken.address})`);
+  }
+}
 
 export interface OptionsEdit {
   answer: OptionsEditResponse;
@@ -149,19 +189,21 @@ function editOutcome(done: NodeEditDone[]): WriteOutcome {
 export async function editOptions(
   instance: ResolvedInstance,
   change: unknown,
-  hostNodes: (() => Promise<HostNode[]>) | null,
+  hostNodes: () => Promise<HostNode[]>,
+  applyToHost: boolean,
   readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs,
 ): Promise<OptionsEdit> {
   const local = requireLocal(instance);
-  const problem = optionsChangeProblem(change, hostNodes !== null);
+  const problem = optionsChangeProblem(change, applyToHost);
   if (problem) throw new RequestError(400, problem);
   const valid = change as ConnectionOptionsChange;
-  if (hostNodes === null) {
+  if (!applyToHost) {
+    if (valid.listenAddresses) await refuseTakenPorts(local, valid.listenAddresses, await hostNodes());
     const done = await editNodeOptions(local, valid, readBackDelaysMs);
     return { answer: { nodes: [done.result] }, outcome: editOutcome([done]) };
   }
-  const done = [await editHostNode({ nodeId: local.nodeId, name: local.name, instance: local, present: true }, valid, readBackDelaysMs)];
-  for (const node of (await hostNodes()).filter((candidate) => candidate.nodeId !== local.nodeId)) done.push(await editHostNode(node, valid, readBackDelaysMs));
+  const done = [await editHostNode({ nodeId: local.nodeId, name: local.name, source: local.source, instance: local, present: true }, valid, readBackDelaysMs)];
+  for (const node of (await hostNodes()).filter((candidate) => candidate.nodeId !== local.nodeId)) done.push(await editOtherHostNode(node, valid, readBackDelaysMs));
   return { answer: { nodes: done.map((entry) => entry.result) }, outcome: editOutcome(done) };
 }
 
@@ -196,7 +238,7 @@ export function optionsRoutes(sources: OptionsRouteSources = liveSources): AnyRo
       write: async ({ request, response, url, params: [nodeId] }) => {
         const appliedToHost = isAppliedToHost(url);
         const instance = await sources.resolve(decodedNodeId(nodeId));
-        const edit = await editOptions(instance, await readBody(request), appliedToHost ? sources.hostNodes : null, sources.readBackDelaysMs);
+        const edit = await editOptions(instance, await readBody(request), sources.hostNodes, appliedToHost, sources.readBackDelaysMs);
         sendJson(response, 200, edit.answer);
         return edit.outcome;
       },
