@@ -229,10 +229,11 @@ describe("answering a folder offered to a node", () => {
   });
 
   it("the chosen type and versioning are what the folder is created with", async () => {
-    await acceptPendingFolder(peer(), "dashboard-test-a", acceptBody({ type: "receiveonly", versioning: { ...staggered, fsPath: "../dashboard-test-a-versions" } }), nodes);
+    const result = await acceptPendingFolder(peer(), "dashboard-test-a", acceptBody({ type: "receiveonly", versioning: { ...staggered, fsPath: "../dashboard-test-a-versions" } }), nodes);
     const created = received.find((entry) => entry.method === "POST")?.body as { type: string; versioning: Record<string, unknown> };
     assert.equal(created.type, "receiveonly");
     assert.deepEqual(created.versioning, { type: "staggered", params: { maxAge: "31536000" }, cleanupIntervalS: 3600, fsPath: "/var/syncthing/dashboard-test-a-versions", fsType: "basic" });
+    assert.match(result.note.text, /; versioning staggered, .*, in \/var\/syncthing\/dashboard-test-a-versions$/, "Activity names the versions path as it was sent, not as typed");
   });
 
   it("a lost answer to an accept is read back: the folder in place at its path is accepted, one missing is the 503 of a node that does not answer", async () => {

@@ -10,7 +10,7 @@ import type { SyncthingFolderSettings } from "../syncthing.js";
 import { folderChangeProblem } from "../syncthingConfig.js";
 import { type SyncthingConfig, changeWholeConfig } from "../wholeConfig.js";
 import { decodedSegment } from "./devices.js";
-import { type NodeFolderSources, createFolder, guardNewFolderPath, newFolderPlacementProblem, nodeFolderSources } from "./nodeFolders.js";
+import { type CreatedFolder, type NodeFolderSources, createFolder, guardNewFolderPath, newFolderPlacementProblem, nodeFolderSources } from "./nodeFolders.js";
 
 type SyncthingObject = Record<string, unknown>;
 
@@ -103,11 +103,17 @@ export interface FolderAcceptance {
 }
 
 /** What an accept did, in words: `pc: accepted folder Documents (documents) from laptop at F:\Documents; receive only; versioning staggered, ...`. */
-function acceptText(nodeName: string, offer: PendingFolderOffer, path: string, request: AcceptFolderBody, ignoreLines: number, keptPaused: string | null): string {
+function acceptText(nodeName: string, offer: PendingFolderOffer, created: CreatedFolder): string {
   const label = offerLabel(offer);
   const named = label !== offer.folderId ? `${label} (${offer.folderId})` : offer.folderId;
-  const details = [folderTypeTexts[request.type], `versioning ${versioningWords(request.versioning)}`, ...(ignoreLines ? [`${ignoreLines} ${ignoreLines === 1 ? "line" : "lines"} of ignore patterns`] : []), ...(keptPaused ? [keptPaused] : [])];
-  return [`${nodeName}: accepted folder ${named} from ${offer.offeredByName} at ${path}`, ...details].join("; ");
+  const { folder, ignores, versioning } = created;
+  const details = [
+    ...(folder.type ? [folderTypeTexts[folder.type]] : []),
+    ...(versioning ? [`versioning ${versioningWords(versioning)}`] : []),
+    ...(ignores.lines ? [`${ignores.lines} ${ignores.lines === 1 ? "line" : "lines"} of ignore patterns`] : []),
+    ...(ignores.keptPaused ? [ignores.keptPaused] : []),
+  ];
+  return [`${nodeName}: accepted folder ${named} from ${offer.offeredByName} at ${folder.path}`, ...details].join("; ");
 }
 
 /**
@@ -129,8 +135,7 @@ export async function acceptPendingFolder(instance: ResolvedInstance, folderId: 
   if (wrongType) throw new RequestError(400, wrongType);
   if (folders.some((folder) => folder.id === folderId)) throw new RequestError(409, `${local.name} already has folder ${folderId}; share it with ${offer.offeredByName} from the folder's settings`);
   const created = await createFolder(local, { id: folderId, label: offer.label, path: request.path, type: request.type }, nodes, { offeredBy, versioning: request.versioning }, readBackDelaysMs);
-  const text = acceptText(local.name, offer, created.folder.path, request, created.ignores.lines, created.ignores.keptPaused);
-  return { added: created.added, note: { nodeId: local.nodeId, nodeName: local.name, folderId, text } };
+  return { added: created.added, note: { nodeId: local.nodeId, nodeName: local.name, folderId, text: acceptText(local.name, offer, created) } };
 }
 
 function deviceEntries(config: SyncthingConfig): SyncthingObject[] {

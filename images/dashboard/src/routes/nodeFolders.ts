@@ -172,12 +172,14 @@ export interface OfferedFolder {
   versioning: Versioning;
 }
 
-/** A folder as created: the node's answer, the folder as sent, and how its ignore patterns went. */
+/** A folder as created: the node's answer, the folder as sent, how its ignore patterns went, and an accept's versioning as sent. */
 export interface CreatedFolder {
   instance: LocalInstance;
   added: FolderSettings;
   folder: NewFolder;
   ignores: AddedIgnores;
+  /** The offer's chosen versioning with its versions path as checked; null for an add, which takes the node's default. */
+  versioning: Versioning | null;
 }
 
 async function isFolderAt(instance: LocalInstance, folderId: string, path: string, node: NodeRoot): Promise<boolean> {
@@ -257,7 +259,7 @@ export async function createFolder(instance: ResolvedInstance, request: NewFolde
   await writeConfirmed(local, (client) => client.request("POST", "/config/folders", config), () => isFolderAt(local, folder.id, folder.path, node), readBackDelaysMs);
   const startsPaused = folder.paused ?? defaults.paused === true;
   const keptPaused = holdsIgnores ? await startWithIgnores(local, folder, ignores, startsPaused) : null;
-  return { instance: local, added: await settingsAfter(local, folder.id, config), folder, ignores: { lines: ignores.length, keptPaused } };
+  return { instance: local, added: await settingsAfter(local, folder.id, config), folder, ignores: { lines: ignores.length, keptPaused }, versioning };
 }
 
 /**
