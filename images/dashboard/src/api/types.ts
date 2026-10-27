@@ -685,6 +685,15 @@ export interface GeneralSettingsChange {
   crashReportingEnabled?: boolean;
 }
 
+/**
+ * The answer of a general settings edit: the node's options as they now stand (null when they could not be read again), and
+ * `problem` when the rename was saved but the other settings were not.
+ */
+export interface GeneralEditResponse {
+  settings: NodeOptionsResponse | null;
+  problem: string | null;
+}
+
 /** The folder settings a node's new folders start with, as Syncthing's Default Folder holds them; path, label and sharing are each folder's own. */
 export const folderDefaultKeys = ["type", "rescanIntervalS", "fsWatcherEnabled", "fsWatcherDelayS", "ignorePerms", "order", "minDiskFree", "maxConflicts", "syncOwnership", "syncXattrs", "versioning"] as const;
 export type FolderDefaultKey = (typeof folderDefaultKeys)[number];

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { type IncomingMessage, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import type { DefaultIgnores, DeviceDefaults, FolderDefaults, IgnoredLists, NodeOptionsResponse, Versioning } from "../src/api/types.js";
+import type { DefaultIgnores, DeviceDefaults, FolderDefaults, GeneralEditResponse, IgnoredLists, Versioning } from "../src/api/types.js";
 import { versioningWords } from "../src/api/versioningText.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
@@ -101,6 +101,8 @@ interface FakeNode {
   url: string;
   config: Record<string, unknown>;
   requests: FakeRequest[];
+  /** Set to refuse every options PATCH, as a Syncthing that fails mid-change does. */
+  refuseOptions: boolean;
   close(): void;
 }
 
@@ -120,9 +122,14 @@ function answer(node: FakeNode, method: string, path: string, body: unknown): [n
   if (path === "/rest/config" && method === "GET") return [200, config];
   if (path === "/rest/config" && method === "PUT") return [200, void (node.config = body as Config)];
   if (path === "/rest/config/options" && method === "GET") return [200, config.options];
+  if (path === "/rest/config/options" && method === "PATCH" && node.refuseOptions) return [500, { error: "options refused" }];
   if (path === "/rest/config/options" && method === "PATCH") return [200, void (config.options = { ...config.options, ...(body as object) })];
   if (path === "/rest/config/gui") return [200, config.gui];
   if (path === "/rest/config/devices" && method === "GET") return [200, config.devices];
+  if (device && method === "GET") {
+    const entry = (config.devices as Config[]).find((candidate) => candidate.deviceID === decodeURIComponent(device[1]));
+    return entry ? [200, entry] : [404, { error: "no such device" }];
+  }
   if (device && method === "PATCH") {
     const entry = (config.devices as Config[]).find((candidate) => candidate.deviceID === decodeURIComponent(device[1]));
     if (!entry) return [404, { error: "no such device" }];
@@ -140,7 +147,7 @@ function answer(node: FakeNode, method: string, path: string, body: unknown): [n
 }
 
 async function fakeSyncthing(): Promise<FakeNode> {
-  const node: FakeNode = { url: "", config: wholeConfig(), requests: [], close: () => {} };
+  const node: FakeNode = { url: "", config: wholeConfig(), requests: [], refuseOptions: false, close: () => {} };
   const server = createServer(async (request, response) => {
     const path = new URL(request.url ?? "/", "http://fake").pathname;
     const body = await requestBody(request);
@@ -164,7 +171,7 @@ const remote: RemoteInstance = { kind: "remote", nodeId: "p53n", name: "p53", ho
 describe("a node's general settings, defaults and ignored lists", () => {
   let peer: FakeNode;
   let array: FakeNode;
-  let effects: WriteEffects & { notes: WriteNote[] };
+  let effects: WriteEffects & { notes: WriteNote[]; invalidations: number };
   let dashboard: { url: string; close: () => void };
 
   function local(nodeId: string, name: string, node: FakeNode, source: LocalInstance["source"]): LocalInstance {
@@ -179,7 +186,7 @@ describe("a node's general settings, defaults and ignored lists", () => {
       resolve: async (nodeId) => instances[nodeId] ?? Promise.reject(new RequestError(404, `no node ${nodeId}`)),
       readBackDelaysMs: [5, 10],
     };
-    effects = { notes: [], invalidate: () => {}, record: (note) => void effects.notes.push(note) };
+    effects = { notes: [], invalidations: 0, invalidate: () => void (effects.invalidations += 1), record: (note) => void effects.notes.push(note) };
     const handle = requestHandler(nodeSettingsRoutes(sources), effects);
     const server = createServer((request, response) => void handle(request, response));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -202,12 +209,30 @@ describe("a node's general settings, defaults and ignored lists", () => {
     const before = structuredClone(peer.config) as Config;
     const answer = await send("PATCH", "/api/nodes/d7e5/general", { deviceName: "dashboard-test-renamed" });
     assert.equal(answer.status, 200);
-    assert.equal(((await answer.json()) as NodeOptionsResponse).options.deviceName, "dashboard-test-renamed");
+    const edit = (await answer.json()) as GeneralEditResponse;
+    assert.equal(edit.settings?.options.deviceName, "dashboard-test-renamed");
+    assert.equal(edit.problem, null);
     assert.deepEqual(writesTo(peer), [{ method: "PATCH", path: `/rest/config/devices/${ownId}`, body: { name: "dashboard-test-renamed" } }]);
     const after = peer.config as Config;
     assert.deepEqual(after.devices[1], before.devices[1], "the other device is untouched");
     assert.deepEqual(after.options, before.options, "no option is written");
     assert.deepEqual(effects.notes.map((note) => note.text), ["dashboard-test-peer: renamed this node's device from 862540988a29 to dashboard-test-renamed"]);
+  });
+
+  it("a rename whose options then fail is answered as done, with the options' problem, and enters Activity", async () => {
+    peer.refuseOptions = true;
+    const answer = await send("PATCH", "/api/nodes/d7e5/general", { deviceName: "dashboard-test-renamed", crashReportingEnabled: false });
+    assert.equal(answer.status, 200);
+    const edit = (await answer.json()) as GeneralEditResponse;
+    assert.equal(edit.settings?.options.deviceName, "dashboard-test-renamed");
+    assert.match(edit.problem ?? "", /^the other settings were not saved: /);
+    assert.equal((peer.config as Config).options.crashReportingEnabled, true);
+    assert.deepEqual(effects.notes.map((note) => note.text), ["dashboard-test-peer: renamed this node's device from 862540988a29 to dashboard-test-renamed"]);
+    assert.equal(effects.invalidations, 1);
+
+    const optionsOnly = await send("PATCH", "/api/nodes/d7e5/general", { crashReportingEnabled: false });
+    assert.equal(optionsOnly.status, 502, "with nothing done, the failure is the answer");
+    assert.equal(effects.notes.length, 1);
   });
 
   it("a general change sends only the options it changed, and a name already so is not sent", async () => {
@@ -360,10 +385,10 @@ describe("a node's general settings, defaults and ignored lists", () => {
     const answer = await send("DELETE", `/api/nodes/d7e5/ignored/folders/dashboard-test-b?offeredBy=${tw1}`);
     assert.equal(answer.status, 200);
     assert.deepEqual(((await answer.json()) as IgnoredLists).folders.map((folder) => folder.folderId), ["dashboard-test-c"]);
-    const [put] = writesTo(peer);
-    const expected = structuredClone(before);
-    expected.devices[1].ignoredFolders = [before.devices[1].ignoredFolders[1]];
-    assert.deepEqual(put.body, expected);
+    assert.deepEqual(writesTo(peer), [{ method: "PATCH", path: `/rest/config/devices/${tw1}`, body: { ignoredFolders: [before.devices[1].ignoredFolders[1]] } }], "only that device's list is sent");
+    const after = peer.config as Config;
+    assert.deepEqual(after.devices[0], before.devices[0]);
+    assert.deepEqual(after.remoteIgnoredDevices, before.remoteIgnoredDevices);
     assert.deepEqual(effects.notes.map((note) => note.text), ["dashboard-test-peer: un-ignored folder dashboard-test-b offered by dashboard-test-tw1, it may be offered again"]);
     assert.equal((await send("DELETE", "/api/nodes/d7e5/ignored/folders/dashboard-test-b")).status, 400, "the offering device is named");
     assert.equal((await send("DELETE", `/api/nodes/d7e5/ignored/folders/dashboard-test-b?offeredBy=${tw1}`)).status, 404);

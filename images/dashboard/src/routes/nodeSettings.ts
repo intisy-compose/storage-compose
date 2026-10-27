@@ -1,8 +1,9 @@
 import { generalSettingLabels } from "../api/optionsText.js";
-import type { GeneralSettingsChange, NodeOptionsResponse, UsageReportingChoice } from "../api/types.js";
+import type { GeneralEditResponse, GeneralSettingsChange, NodeOptionsResponse, UsageReportingChoice } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
+import { SyncthingRefusal, refusalText } from "../syncthing.js";
 import { isChangeInPlace, minDiskFreeCheck } from "../syncthingConfig.js";
 import { decodedSegment } from "./devices.js";
 import { ignoredListRoutes } from "./ignoredLists.js";
@@ -111,11 +112,24 @@ async function writeOptionParts(instance: LocalInstance, parts: OptionPart[], re
 }
 
 export interface GeneralEdit {
-  answer: NodeOptionsResponse;
+  answer: GeneralEditResponse;
   note: WriteNote | NothingWritten;
 }
 
-/** Sends the general settings the person changed to the node's Syncthing: the name to its own device entry, the rest as options; what is already so is not sent. */
+function failureText(error: unknown): string {
+  return error instanceof SyncthingRefusal ? refusalText(error) : (error as Error).message;
+}
+
+/** The node's options as they now stand; null when it stops answering, as Syncthing restarts after some changes. */
+async function settingsNow(instance: LocalInstance): Promise<NodeOptionsResponse | null> {
+  return nodeOptions(instance).catch(() => null);
+}
+
+/**
+ * Sends the general settings the person changed to the node's Syncthing: the name to its own device entry, the rest as options; what is already so is not sent.
+ * @implNote The rename is written first; when the options then fail, the rename is still answered as done with the options' problem, as an options edit of
+ * several nodes answers each one, so Activity records it and a retry, which finds the name already set, is not its only trace.
+ */
 export async function editGeneral(instance: ResolvedInstance, change: unknown, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<GeneralEdit> {
   const local = requireLocal(instance);
   const problem = generalChangeProblem(change);
@@ -123,8 +137,15 @@ export async function editGeneral(instance: ResolvedInstance, change: unknown, r
   const valid = change as GeneralSettingsChange;
   const parts = await optionParts(local, valid);
   const renamed = valid.deviceName === undefined ? null : await renameOwnDevice(local, valid.deviceName.trim(), readBackDelaysMs);
-  const optionWords = await writeOptionParts(local, parts, readBackDelaysMs);
-  const answer = await nodeOptions(local);
+  let optionWords: string[] = [];
+  let optionsProblem: string | null = null;
+  try {
+    optionWords = await writeOptionParts(local, parts, readBackDelaysMs);
+  } catch (error) {
+    if (!renamed) throw error;
+    optionsProblem = `the other settings were not saved: ${failureText(error)}`;
+  }
+  const answer: GeneralEditResponse = { settings: await settingsNow(local), problem: optionsProblem };
   if (!renamed && !optionWords.length) return { answer, note: { nothingWritten: true } };
   const text = [`${local.name}: ${renamed ?? "changed general settings"}`, ...optionWords].join("; ");
   return { answer, note: { nodeId: local.nodeId, nodeName: local.name, folderId: null, text } };

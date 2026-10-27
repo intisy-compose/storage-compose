@@ -1,10 +1,11 @@
-import { type IgnoredDeviceEntry, type IgnoredFolderEntry, type IgnoredLists, type SaveResult, type StorageNode, deviceDisplayName, seenTimeText, shortDeviceId, unignoreDevice, unignoreFolder } from "./api.js";
+import { type IgnoredDeviceEntry, type IgnoredFolderEntry, type IgnoredLists, type SaveResult, type StorageNode, deviceDisplayName, fetchIgnoredLists, seenTimeText, shortDeviceId, unignoreDevice, unignoreFolder } from "./api.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element } from "./dom.js";
 import { requestRender } from "./renderRequest.js";
 import { appState, type Notice } from "./state.js";
 
 interface IgnoredState {
+  open: boolean;
   /** The entry being un-ignored, so its button waits for the answer. */
   busyKey: string | null;
   result: Notice | null;
@@ -15,9 +16,22 @@ const states = new Map<string, IgnoredState>();
 function stateOf(nodeId: string): IgnoredState {
   const known = states.get(nodeId);
   if (known) return known;
-  const created: IgnoredState = { busyKey: null, result: null };
+  const created: IgnoredState = { open: false, busyKey: null, result: null };
   states.set(nodeId, created);
   return created;
+}
+
+/** The local nodes whose Ignored section is open: only those are read, as each read is the node's whole configuration. */
+export function openIgnoredNodeIds(): string[] {
+  return [...states].filter(([, state]) => state.open).map(([nodeId]) => nodeId);
+}
+
+export async function loadIgnoredLists(nodeId: string): Promise<void> {
+  try {
+    appState.ignoredLists.set(nodeId, await fetchIgnoredLists(nodeId));
+  } catch (error) {
+    appState.ignoredLists.set(nodeId, { error: (error as Error).message });
+  }
 }
 
 function deviceKey(entry: IgnoredDeviceEntry): string {
@@ -79,20 +93,34 @@ function listOrEmpty(rows: HTMLElement[], emptyText: string): HTMLElement {
   return rows.length ? element("ul", { className: "ignored-list" }, ...rows) : element("p", { className: "muted" }, emptyText);
 }
 
-/** What the node ignores: devices that asked to connect and folders offered by a device, each with a way back. */
-export function ignoredSection(node: StorageNode): HTMLElement {
+function ignoredBody(node: StorageNode): HTMLElement[] {
   const lists = appState.ignoredLists.get(node.id);
-  const heading = element("h3", { className: "settings-subheading" }, "Ignored");
-  if (!lists) return element("div", { className: "ignored-section" }, heading, element("p", { className: "muted" }, "Reading what it ignores…"));
-  if ("error" in lists) return element("div", { className: "ignored-section" }, heading, element("p", { className: "warning" }, lists.error));
-  return element(
-    "div",
-    { className: "ignored-section" },
-    heading,
+  if (!lists) return [element("p", { className: "muted" }, "Reading what it ignores…")];
+  if ("error" in lists) return [element("p", { className: "warning" }, lists.error)];
+  const result = resultLine(stateOf(node.id).result);
+  return [
     element("p", { className: "muted" }, "Devices"),
     listOrEmpty(lists.devices.map((entry) => deviceRow(node, entry)), "No device is ignored."),
     element("p", { className: "muted" }, "Folders"),
     listOrEmpty(lists.folders.map((entry) => folderRow(node, entry)), "No folder offer is ignored."),
-    resultLine(stateOf(node.id).result),
-  );
+    ...(result ? [result] : []),
+  ];
+}
+
+/**
+ * What the node ignores: devices that asked to connect and folders offered by a device, each with a way back.
+ * @implNote Read when opened and with each poll while open, never while closed: the read is the node's whole configuration.
+ */
+export function ignoredSection(node: StorageNode): HTMLElement {
+  const state = stateOf(node.id);
+  const details = element("details", { className: "defaults-section ignored-section" }, element("summary", {}, "Ignored devices and folders"), ...(state.open ? ignoredBody(node) : []));
+  details.open = state.open;
+  details.addEventListener("toggle", () => {
+    if (details.open === state.open) return;
+    state.open = details.open;
+    if (state.open) appState.ignoredLists.delete(node.id);
+    requestRender();
+    if (state.open) void loadIgnoredLists(node.id).then(requestRender);
+  });
+  return details;
 }

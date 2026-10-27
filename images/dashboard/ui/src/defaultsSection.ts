@@ -74,6 +74,15 @@ function savingForm<Values>(formId: string, values: Values): SavingForm<Values> 
   return { formId, saved: values, draft: structuredClone(values), saving: false, result: null };
 }
 
+function holdsUnsaved<Values>(form: SavingForm<Values>): boolean {
+  return form.saving || JSON.stringify(form.saved) !== JSON.stringify(form.draft);
+}
+
+/** A form opened with the values just read, unless the one already held carries a draft, which is kept as typed. */
+function followed<Values>(held: SavingForm<Values> | null, formId: string, values: Values): SavingForm<Values> {
+  return held && holdsUnsaved(held) ? held : savingForm(formId, values);
+}
+
 async function load(nodeId: string): Promise<void> {
   const state = stateOf(nodeId);
   state.loading = true;
@@ -82,9 +91,9 @@ async function load(nodeId: string): Promise<void> {
   try {
     const [folder, device, ignores] = await Promise.all([fetchFolderDefaultSettings(nodeId), fetchDeviceDefaultSettings(nodeId), fetchDefaultIgnores(nodeId)]);
     const formId = formIdOf(nodeId);
-    state.folder = savingForm(`${formId}-folder`, asFolder(folder));
-    state.device = savingForm(`${formId}-device`, asDevice(device));
-    state.ignores = savingForm(`${formId}-ignores`, { text: ignores.lines.join("\n") });
+    state.folder = followed(state.folder, `${formId}-folder`, asFolder(folder));
+    state.device = followed(state.device, `${formId}-device`, asDevice(device));
+    state.ignores = followed(state.ignores, `${formId}-ignores`, { text: ignores.lines.join("\n") });
   } catch (error) {
     state.error = (error as Error).message;
   }
@@ -236,13 +245,14 @@ function ignoresDefaultsForm(nodeId: string, form: SavingForm<{ text: string }>)
 
 function body(node: StorageNode, state: DefaultsState): (HTMLElement | null)[] {
   if (state.error) return [element("p", { className: "warning" }, state.error), button("Read again", () => void load(node.id), "button ghost")];
-  if (state.loading || !state.folder || !state.device || !state.ignores) return [element("p", { className: "muted" }, "Reading its defaults…")];
+  if (!state.folder || !state.device || !state.ignores) return [element("p", { className: "muted" }, "Reading its defaults…")];
   return [folderDefaultsForm(node.id, state.folder), deviceDefaultsForm(node, state.device), ignoresDefaultsForm(node.id, state.ignores)];
 }
 
 /**
  * What a local node's new folders and devices start with, read each time the section is opened.
- * @implNote Each form is registered, so a poll does not rebuild one that holds typed input; a closed section reads nothing and drops its forms.
+ * @implNote Each form is registered, so a poll does not rebuild one that holds typed input; a closed section reads nothing and keeps
+ * its drafts, which a reopening shows again instead of the values it reads.
  */
 export function defaultsSection(node: StorageNode): HTMLElement {
   const state = stateOf(node.id);
@@ -254,7 +264,6 @@ export function defaultsSection(node: StorageNode): HTMLElement {
     if (details.open === state.open) return;
     state.open = details.open;
     if (state.open && !state.loading) return void load(node.id);
-    Object.assign(state, { folder: null, device: null, ignores: null, error: null });
     requestRender();
   });
   return details;

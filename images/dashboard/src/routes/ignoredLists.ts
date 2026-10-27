@@ -1,7 +1,7 @@
 import { deviceDisplayName, shortDeviceId } from "../api/deviceText.js";
 import type { IgnoredDeviceEntry, IgnoredFolderEntry, IgnoredLists } from "../api/types.js";
 import { RequestError, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, WriteNote } from "../routes.js";
 import { type SyncthingConfig, changeWholeConfig } from "../wholeConfig.js";
 import { decodedSegment } from "./devices.js";
@@ -45,14 +45,6 @@ function withoutIgnoredDevice(config: SyncthingConfig, deviceId: string): Syncth
   return kept.length === ignored.length ? null : { ...config, remoteIgnoredDevices: kept };
 }
 
-function withoutIgnoredFolder(config: SyncthingConfig, folderId: string, offeredBy: string): SyncthingConfig | null {
-  const device = objects(config.devices).find((entry) => entry.deviceID === offeredBy);
-  const ignored = objects(device?.ignoredFolders);
-  if (!device || !ignored.some((folder) => folder.id === folderId)) return null;
-  const changed = { ...device, ignoredFolders: ignored.filter((folder) => folder.id !== folderId) };
-  return { ...config, devices: objects(config.devices).map((entry) => (entry === device ? changed : entry)) };
-}
-
 export interface Unignore {
   lists: IgnoredLists;
   note: WriteNote;
@@ -80,15 +72,37 @@ function folderName(entry: IgnoredFolderEntry): string {
   return entry.label && entry.label !== entry.folderId ? `${entry.label} (${entry.folderId})` : entry.folderId;
 }
 
-/** Takes one folder off the offering device's ignored folders and keeps every other, written as `unignoreDevice` writes. */
+async function ignoredFoldersOf(instance: LocalInstance, deviceId: string): Promise<SyncthingObject[]> {
+  const device = await callSyncthing(instance, (client) => client.request<SyncthingObject | null>("GET", `/config/devices/${encodeURIComponent(deviceId)}`));
+  return objects(device?.ignoredFolders);
+}
+
+const folderChangeAttempts = 2;
+
+/**
+ * Takes one folder off the offering device's ignored folders and keeps every other, through that device's own endpoint.
+ * @implNote Syncthing replaces the device's whole list on a PATCH and has no version check, so the list is read again just before
+ * the PATCH: a change in between starts once more from the changed list, and a second one is a 409 with nothing written.
+ */
 export async function unignoreFolder(instance: ResolvedInstance, folderId: string, offeredBy: string | null, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<Unignore> {
   const local = requireLocal(instance);
   if (!offeredBy) throw new RequestError(400, "name the device whose offer of the folder is ignored: ?offeredBy=<device ID>");
   const entry = (await readIgnoredLists(local)).folders.find((folder) => folder.folderId === folderId && folder.offeredBy === offeredBy);
   if (!entry) throw new RequestError(404, `${folderId} from ${shortDeviceId(offeredBy)} is not ignored on ${local.name}`);
-  const conflict = `${local.name}'s configuration changed twice while ${folderName(entry)} was being un-ignored; nothing was written, try again`;
-  await changeWholeConfig(local, (config) => withoutIgnoredFolder(config, folderId, offeredBy), conflict, readBackDelaysMs);
-  return { lists: await readIgnoredLists(local), note: noteOf(local, `un-ignored folder ${folderName(entry)} offered by ${entry.offeredByName}, it may be offered again`) };
+  const isGone = async () => !(await ignoredFoldersOf(local, offeredBy)).some((folder) => folder.id === folderId);
+  for (let attempt = 0; attempt < folderChangeAttempts; attempt++) {
+    const ignored = await ignoredFoldersOf(local, offeredBy);
+    if (!ignored.some((folder) => folder.id === folderId)) return unignoredFolder(local, entry);
+    if (JSON.stringify(await ignoredFoldersOf(local, offeredBy)) !== JSON.stringify(ignored)) continue;
+    const kept = ignored.filter((folder) => folder.id !== folderId);
+    await writeConfirmed(local, (client) => client.request("PATCH", `/config/devices/${encodeURIComponent(offeredBy)}`, { ignoredFolders: kept }), isGone, readBackDelaysMs);
+    return unignoredFolder(local, entry);
+  }
+  throw new RequestError(409, `${entry.offeredByName}'s ignored folders on ${local.name} changed twice while ${folderName(entry)} was being un-ignored; nothing was written, try again`);
+}
+
+async function unignoredFolder(instance: LocalInstance, entry: IgnoredFolderEntry): Promise<Unignore> {
+  return { lists: await readIgnoredLists(instance), note: noteOf(instance, `un-ignored folder ${folderName(entry)} offered by ${entry.offeredByName}, it may be offered again`) };
 }
 
 /** The routes of what a node ignores; `node` resolves the node ID segment of the path. */

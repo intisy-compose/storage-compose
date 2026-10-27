@@ -24,7 +24,7 @@ import { pendingFolderRoutes } from "./routes/pendingFolders.js";
 import { treeRoutes } from "./routes/tree.js";
 import { versionRoutes } from "./routes/versions.js";
 import { arrayStatusDirectory, clusterArrayId, dashboardHosts, joinsFile, publicDirectory, tailnetHost } from "./settings.js";
-import { SyncthingError, SyncthingRefusal, SyncthingUnavailable } from "./syncthing.js";
+import { SyncthingError, SyncthingRefusal, SyncthingUnavailable, refusalText } from "./syncthing.js";
 
 export const joinRecords = fileJoinRecords(joinsFile);
 
@@ -275,11 +275,6 @@ function errorStatus(error: unknown): number {
   if (error instanceof SyncthingUnavailable) return 503;
   if (error instanceof SyncthingError) return 502;
   return 500;
-}
-
-/** A refusal by Syncthing in words: its status, and its answer only as `SyncthingRefusal` shows it. */
-export function refusalText(refusal: SyncthingRefusal): string {
-  return `Syncthing refused the request (HTTP ${refusal.status})${refusal.shownBody ? `: ${refusal.shownBody}` : ""}`;
 }
 
 export function errorAnswer(error: unknown): ErrorAnswer {

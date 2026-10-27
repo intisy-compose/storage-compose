@@ -1,4 +1,4 @@
-import { type DiskFreeUnit, type GeneralSettingsChange, type InstanceOptions, type StorageNode, type UsageReportingChoice, changedFields, diskFreeUnits, generalSettingLabels, saveGeneralSettings } from "./api.js";
+import { type DiskFreeUnit, type GeneralEditResponse, type GeneralSettingsChange, type InstanceOptions, type StorageNode, type UsageReportingChoice, changedFields, diskFreeUnits, generalSettingLabels, saveGeneralSettings } from "./api.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element } from "./dom.js";
 import { type FieldForm, numberControl, selectControl, setting, textControl, toggleControl } from "./fieldKit.js";
@@ -64,6 +64,18 @@ function generalChangeOf(saved: GeneralValues, draft: GeneralValues): GeneralSet
   return change;
 }
 
+/**
+ * Takes the node's answer; a rename that was saved while the other settings were not says both, and the draft keeps what was not saved.
+ * @implNote The saved values follow the node's own answer, so the unsaved fields still differ from them and stay in the form.
+ */
+function settle(nodeId: string, form: GeneralFormState, answer: GeneralEditResponse): void {
+  if (answer.settings) appState.nodeOptions.set(nodeId, answer.settings);
+  const draft = form.draft;
+  if (answer.settings) form.saved = valuesOf(answer.settings.options);
+  form.draft = answer.problem ? draft : structuredClone(form.saved);
+  form.result = answer.problem ? { text: `Renamed; ${answer.problem}.`, tone: "warn" } : { text: "Saved.", tone: "ok" };
+}
+
 async function save(nodeId: string, form: GeneralFormState): Promise<void> {
   const change = generalChangeOf(form.saved, form.draft);
   if (Object.keys(change).length === 0) {
@@ -75,14 +87,8 @@ async function save(nodeId: string, form: GeneralFormState): Promise<void> {
   requestRender();
   const result = await saveGeneralSettings(nodeId, change);
   form.saving = false;
-  if (result.ok) {
-    appState.nodeOptions.set(nodeId, result.value);
-    form.saved = valuesOf(result.value.options);
-    form.draft = structuredClone(form.saved);
-    form.result = { text: "Saved.", tone: "ok" };
-  } else {
-    form.result = editFailureNotice(result);
-  }
+  if (result.ok) settle(nodeId, form, result.value);
+  else form.result = editFailureNotice(result);
   requestRender();
 }
 
@@ -106,7 +112,7 @@ function generalFields(form: GeneralFormState, nodeName: string): HTMLElement {
     element(
       "div",
       { className: "number-fields" },
-      setting(id, "keepFree", generalSettingLabels.minHomeDiskFree, numberControl(form, "keepFree"), "Syncthing stops syncing when less is free where it keeps its database."),
+      setting(id, "keepFree", generalSettingLabels.minHomeDiskFree, numberControl(form, "keepFree", 0, "any"), "Syncthing stops syncing when less is free where it keeps its database."),
       setting(id, "keepFreeUnit", "Unit", selectControl(form, "keepFreeUnit", diskFreeUnits.map((unit) => [unit, unit] as const))),
     ),
     setting(id, "usageReporting", generalSettingLabels.usageReporting, selectControl(form, "usageReporting", usageChoices(form)), "The person decides; the dashboard never accepts for them."),

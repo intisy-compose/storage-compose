@@ -229,6 +229,11 @@ export class SyncthingRefusal extends SyncthingError {
   }
 }
 
+/** A refusal by Syncthing in words: its status, and its answer only as `SyncthingRefusal` shows it. */
+export function refusalText(refusal: SyncthingRefusal): string {
+  return `Syncthing refused the request (HTTP ${refusal.status})${refusal.shownBody ? `: ${refusal.shownBody}` : ""}`;
+}
+
 /** The instance did not answer at all: refused, unreachable or past the timeout. */
 export class SyncthingUnavailable extends SyncthingError {}
 

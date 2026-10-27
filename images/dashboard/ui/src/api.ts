@@ -128,6 +128,7 @@ export type {
   DeviceDefaults,
   FolderDefaultKey,
   FolderDefaults,
+  GeneralEditResponse,
   GeneralSettingsChange,
   IgnoredDeviceEntry,
   IgnoredFolderEntry,
@@ -136,7 +137,7 @@ export type {
 } from "../../src/api/types.js";
 import type { LocalChangesAction } from "../../src/api/localChangesText.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { ConnectionOptionsChange, DefaultIgnores, DeviceDefaults, FolderDefaults, GeneralSettingsChange, IgnoredLists, OptionsEditResponse } from "../../src/api/types.js";
+import type { ConnectionOptionsChange, DefaultIgnores, DeviceDefaults, FolderDefaults, GeneralEditResponse, GeneralSettingsChange, IgnoredLists, OptionsEditResponse } from "../../src/api/types.js";
 import { applyToHostQuery } from "../../src/api/optionsText.js";
 import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, DebugChange, DebugFacilities, NodeErrors, NodeLog, AddedDevice, ArrayAction, ArrayActionBody, ConflictsPage, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, RestoredVersions, RestoreVersionsBody, TreeListing, VersionsPage } from "../../src/api/types.js";
 import { type ActivityFilters, activityRequestQuery, defaultActivityFilters, folderChangesShown } from "../../src/api/activityFilters.js";
@@ -247,8 +248,8 @@ export function saveNodeOptions(nodeId: string, change: ConnectionOptionsChange,
   return sendWrite(nodeApiPath(nodeId, `options${applyToHost ? `?${applyToHostQuery}` : ""}`), "PATCH", change);
 }
 
-/** Sends only the general settings the person changed; the answer is the node's options as they now stand. */
-export function saveGeneralSettings(nodeId: string, change: GeneralSettingsChange): Promise<SaveResult<NodeOptionsResponse>> {
+/** Sends only the general settings the person changed; the answer is the node's options as they now stand, and what was not saved. */
+export function saveGeneralSettings(nodeId: string, change: GeneralSettingsChange): Promise<SaveResult<GeneralEditResponse>> {
   return sendWrite(nodeApiPath(nodeId, "general"), "PATCH", change);
 }
 

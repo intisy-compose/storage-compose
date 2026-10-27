@@ -27,9 +27,9 @@ export function textControl<Values>(form: FieldForm<Values>, key: KeysOf<Values,
   return input;
 }
 
-/** @implNote A field left empty is held as NaN, so the server names it instead of the form sending a guess. */
-export function numberControl<Values>(form: FieldForm<Values>, key: KeysOf<Values, number>, minimum = 0): HTMLInputElement {
-  const input = element("input", { attributes: { id: controlId(form.formId, key), type: "number", min: String(minimum), step: "1" } });
+/** @implNote A field left empty is held as NaN, so the server names it instead of the form sending a guess; `step` "any" takes fractions. */
+export function numberControl<Values>(form: FieldForm<Values>, key: KeysOf<Values, number>, minimum = 0, step = "1"): HTMLInputElement {
+  const input = element("input", { attributes: { id: controlId(form.formId, key), type: "number", min: String(minimum), step } });
   input.defaultValue = String(form.saved[key]);
   input.value = String(form.draft[key]);
   input.addEventListener("input", () => ((form.draft[key] as number) = input.value === "" ? Number.NaN : Number(input.value)));
