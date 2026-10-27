@@ -14,6 +14,8 @@ const apiKey = "items-test-key";
 const ownId = "D7E5AAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA";
 const peerId = "PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6";
 const arrayId = "X7KCOB7-4ZJQ2RT-W352REX-D36FWRQ-YSGVXEA-6YA5PZK-PHYIU5M-32WVQQ4";
+const offeredId = "NICA6WR-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA";
+const leftId = "LEFTAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA";
 
 function reply(response: ServerResponse, body: unknown, status = 200): void {
   response.writeHead(status, { "Content-Type": "application/json" });
@@ -52,12 +54,19 @@ describe("out-of-sync items", () => {
         { deviceID: ownId, name: "dashboard-test-peer" },
         { deviceID: peerId, name: "pc" },
         { deviceID: arrayId, name: "private-array" },
+        { deviceID: offeredId, name: "laptop" },
+        { deviceID: leftId, name: "phone" },
       ]);
     }
-    if (url.pathname === "/rest/config/folders") return reply(response, [{ id: "documents", label: "Documents", path: "/var/syncthing/data/documents", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }, { deviceID: peerId }] }]);
+    if (url.pathname === "/rest/config/folders") return reply(response, [{ id: "documents", label: "Documents", path: "/var/syncthing/data/documents", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }, { deviceID: peerId }, { deviceID: offeredId }, { deviceID: leftId }] }]);
     if (folder !== "documents") return response.writeHead(404).end("no such folder\n");
     if (url.pathname === "/rest/db/status") return reply(response, { needTotalItems: 918_733, needFiles: 918_000 });
-    if (url.pathname === "/rest/db/completion") return reply(response, { completion: 12.5, needItems: 4, needBytes: 4096, remoteState: "valid" });
+    if (url.pathname === "/rest/db/completion") {
+      const device = url.searchParams.get("device");
+      if (device === offeredId) return reply(response, { completion: 0, needItems: 918_733, needBytes: 1e11, remoteState: "unknown", sequence: 0 });
+      if (device === leftId) return reply(response, { completion: 0, needItems: 918_733, needBytes: 1e11, remoteState: "notSharing", sequence: 0 });
+      return reply(response, { completion: 12.5, needItems: 4, needBytes: 4096, remoteState: "valid", sequence: 4711 });
+    }
     if (page > 1) await slowPages;
     if (url.pathname === "/rest/db/need") {
       const names = Array.from({ length: perPage }, (_, index) => `Projects/report-${(page - 1) * perPage + index}.pdf`);
@@ -179,6 +188,16 @@ describe("out-of-sync items", () => {
     assert.equal(status, 409);
     assert.equal(body.error, "Documents is not shared with private-array on dashboard-test-peer");
     assert.ok(!asked.some((path) => path.startsWith("/rest/db/remoteneed")), "Syncthing would answer every item as needed");
+  });
+
+  it("remote need of a device that has not accepted the folder, or no longer shares it, says so instead of listing every item", async () => {
+    const offered = await getJson<{ error: string }>(`/api/nodes/d7e5/folders/documents/remote-need?device=${offeredId}`);
+    assert.equal(offered.status, 409);
+    assert.equal(offered.body.error, "laptop has not accepted Documents from dashboard-test-peer, so what it needs is not known");
+    const left = await getJson<{ error: string }>(`/api/nodes/d7e5/folders/documents/remote-need?device=${leftId}`);
+    assert.equal(left.status, 409);
+    assert.equal(left.body.error, "phone does not share Documents with dashboard-test-peer");
+    assert.ok(!asked.some((path) => path.startsWith("/rest/db/remoteneed")), asked.join(", "));
   });
 
   it("remote need without a device, and a folder the node does not have, are refused", async () => {

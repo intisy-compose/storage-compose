@@ -5,7 +5,7 @@ import { RequestError, sendJson } from "../http.js";
 import { type LocalInstance, type RemoteInstance, type ResolvedInstance, callSyncthing, forwardRead, forwardedListTimeoutMs, resolveInstance } from "../instanceResolver.js";
 import type { Route } from "../routes.js";
 import { SharedRead } from "../sharedRead.js";
-import type { IndexItem, SyncthingClient, SyncthingDeviceConfig, SyncthingFolderConfig } from "../syncthing.js";
+import type { Completion, IndexItem, SyncthingClient, SyncthingDeviceConfig, SyncthingFolderConfig } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
 
 export interface PageRequest {
@@ -68,12 +68,26 @@ function deviceOf(devices: SyncthingDeviceConfig[], deviceId: string): FolderPee
   return { deviceId, name: deviceDisplayName(devices.find((device) => device.deviceID === deviceId)?.name, deviceId) };
 }
 
+/**
+ * Why the device's need is not known although the folder is shared with it, or null.
+ * @implNote Syncthing counts every item as needed by a device that never sent its index of the folder, as one that has not accepted it.
+ */
+function unknownNeedReason(completion: Completion | null, device: FolderPeer, label: string, instance: LocalInstance): string | null {
+  if (completion?.remoteState === "notSharing") return `${device.name} does not share ${label} with ${instance.name}`;
+  if (completion?.remoteState === "unknown" && !completion.sequence) return `${device.name} has not accepted ${label} from ${instance.name}, so what it needs is not known`;
+  return null;
+}
+
 async function localRemoteNeed(instance: LocalInstance, folderId: string, deviceId: string, request: PageRequest): Promise<RemoteNeedPage> {
   return callSyncthing(instance, async (client) => {
     const { folder, devices } = await folderContext(instance, client, folderId);
     const device = deviceOf(devices, deviceId);
-    if (!folder.devices.some((entry) => entry.deviceID === deviceId)) throw new RequestError(409, `${folder.label || folder.id} is not shared with ${device.name} on ${instance.name}`);
-    const [answer, completion] = await Promise.all([client.remoteNeedPage(folderId, deviceId, request.page, request.perPage), client.folderCompletion(folderId, deviceId).catch(() => null)]);
+    const label = folder.label || folder.id;
+    if (!folder.devices.some((entry) => entry.deviceID === deviceId)) throw new RequestError(409, `${label} is not shared with ${device.name} on ${instance.name}`);
+    const completion = await client.folderCompletion(folderId, deviceId).catch(() => null);
+    const reason = unknownNeedReason(completion, device, label, instance);
+    if (reason) throw new RequestError(409, reason);
+    const answer = await client.remoteNeedPage(folderId, deviceId, request.page, request.perPage);
     const items = (answer.files ?? []).map((item) => folderItem(item, devices));
     return { items, page: request.page, perPage: request.perPage, total: typeof completion?.needItems === "number" ? completion.needItems : null, device };
   });

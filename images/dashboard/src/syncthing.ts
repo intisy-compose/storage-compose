@@ -171,6 +171,8 @@ export interface Completion {
   needBytes: number;
   needItems?: number;
   remoteState?: string;
+  /** The last index sequence received from the device for the folder; 0 when it never sent one. */
+  sequence?: number;
 }
 
 const completionUnavailable = "unavailable";
