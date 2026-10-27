@@ -705,8 +705,8 @@ export type AdvancedTarget = { kind: "options" } | { kind: "folder"; id: string 
  */
 export interface AdvancedConfig {
   config: Record<string, unknown>;
-  /** Whether the node's Syncthing needs a restart before a saved change takes effect. */
-  restartRequired: boolean;
+  /** Whether the node's Syncthing needs a restart before a saved change takes effect; null when a save's node stopped answering before it said. */
+  restartRequired: boolean | null;
 }
 
 /** `GET /api/nodes/<nodeId>/restart-required`. */

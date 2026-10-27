@@ -14,7 +14,7 @@ interface EditorState {
   error: string | null;
   saved: SyncthingObject | null;
   text: string;
-  restartRequired: boolean;
+  restartRequired: boolean | null;
   saving: boolean;
   result: Notice | null;
 }
