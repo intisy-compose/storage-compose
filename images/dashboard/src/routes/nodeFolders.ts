@@ -82,9 +82,10 @@ function overlapWarning(folders: SyncthingFolderSettings[], path: string, node: 
 
 /**
  * How an add, or the edit of `editedFolderId`, would judge `typed` on this node: the guard's refusal first, without a
- * Syncthing call, then the node's other folders.
+ * Syncthing call, then the node's other folders and, for a move, their versions paths as the save judges them when the
+ * edit does or does not also change the folder's versioning (`editsVersioning`).
  */
-export async function checkFolderPath(instance: ResolvedInstance, typed: string, nodes: NodeRoot[], editedFolderId: string | null = null): Promise<FolderPathCheck> {
+export async function checkFolderPath(instance: ResolvedInstance, typed: string, nodes: NodeRoot[], editedFolderId: string | null = null, editsVersioning = false): Promise<FolderPathCheck> {
   const { instance: local, node } = rooted(instance);
   const problem = folderPathProblem(typed.trim(), node, nodes);
   if (problem) return { path: typed.trim(), problem, warning: null };
@@ -93,7 +94,7 @@ export async function checkFolderPath(instance: ResolvedInstance, typed: string,
   const edited = configured.find((folder) => folder.id === editedFolderId);
   const folders = configured.filter((folder) => folder !== edited);
   const isMoved = edited !== undefined && !isSamePath(edited.path, path, node);
-  const conflict = samePathProblem(local, folders, path, node) ?? (isMoved ? movedFolderVersionsProblem(path, configured, edited.id, false, node) : null);
+  const conflict = samePathProblem(local, folders, path, node) ?? (isMoved ? movedFolderVersionsProblem(path, configured, edited.id, editsVersioning, node) : null);
   return { path, problem: conflict, warning: overlapWarning(folders, path, node) };
 }
 
@@ -537,7 +538,7 @@ export function nodeFolderRoutes(sources: NodeFolderSources = liveSources): AnyR
       method: "GET",
       pattern: /^\/api\/nodes\/([^/]+)\/folder-path-check$/,
       handle: async ({ response, url, params: [nodeId] }) =>
-        sendJson(response, 200, await checkFolderPath(await node(nodeId), url.searchParams.get("path") ?? "", await sources.nodeRoots(), url.searchParams.get("folder"))),
+        sendJson(response, 200, await checkFolderPath(await node(nodeId), url.searchParams.get("path") ?? "", await sources.nodeRoots(), url.searchParams.get("folder"), url.searchParams.get("versioning") === "changed")),
     },
     {
       method: "POST",

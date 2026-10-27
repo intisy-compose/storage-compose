@@ -288,7 +288,7 @@ describe("adding a folder to a node", () => {
   });
 
   it("an #include outside the folder in a new folder's patterns is 400 before anything is read", async () => {
-    const includes = ["#include ../../config/config.xml", "#include C:\\Windows\\win.ini", "#includeX ../../config/config.xml", "#include\tsub/x ../../config/config.xml", "#include  ../x", "#include\t../x", "#include"];
+    const includes = ["#include ../../config/config.xml", "#include C:\\Windows\\win.ini", "#includeX ../../config/config.xml", "#include\tsub/x ../../config/config.xml", "#include  ../x", "#include\t../x", "#include", "\u0085#include ../../config/config.xml", "#include \u0085../../config/config.xml", "\u0085", "\u000B#include ../x", "#include ../x\u000C", " #include ../../config/config.xml"];
     for (const ignores of [...includes.map((line) => ["*.tmp", line]), ["*.tmp\n#include /etc/passwd"], "*.tmp", [1]]) {
       await assert.rejects(addFolder(peer(), { id: "dashboard-test-a", path: "/var/syncthing/data/dashboard-test-a", ignores }, roots), (error: Error & { status?: number }) => error.status === 400, JSON.stringify(ignores));
     }
@@ -802,6 +802,7 @@ describe("adding a folder to a node", () => {
       assert.equal((await checkFolderPath(peer(), path, roots, "dashboard-test-e")).problem, message, `the live check agrees for ${path}`);
     }
     assert.equal((await checkFolderPath(peer(), "/var/syncthing/data/archive", roots)).problem, null, "a new folder is not judged by the rule for moves");
+    assert.equal((await checkFolderPath(peer(), "/var/syncthing/data/e-versions/inner", roots, "dashboard-test-e", true)).problem, null, "an edit that also changes versioning leaves the folder's own versions path to the save's versioning check, as the save does");
     versionedAs("dashboard-test-e", { type: "simple", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "versions" });
     await assert.rejects(editFolder(peer(), "dashboard-test-e", { path: "/var/syncthing/data/moved" }, roots), refusedVersionsPath("Path: /var/syncthing/data/moved would hold its own versions path /var/syncthing/data/moved/versions, so those versions would sync as its files"));
     assert.deepEqual(patchedBodies(), []);

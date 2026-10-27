@@ -130,7 +130,7 @@ async function runPathCheck(form: EditFolderFormState, typed: string): Promise<v
   }
   let check;
   try {
-    check = await checkFolderPath(form.nodeId, typed, form.folderId);
+    check = await checkFolderPath(form.nodeId, typed, form.folderId, changedFields(form.saved, form.draft as FolderSettings).versioning !== undefined);
   } catch (error) {
     check = { path: typed, problem: messageOf(error), warning: null };
   }

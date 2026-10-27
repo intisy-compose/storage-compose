@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
-import { ignoreLinesOf, ignoreLinesProblem, ignoresChangeWords } from "../src/api/ignorePatterns.js";
+import { goTrimSpace, ignoreLinesOf, ignoreLinesProblem, ignoresChangeWords } from "../src/api/ignorePatterns.js";
 import type { FolderIgnores } from "../src/api/types.js";
-import { RequestError, UnconfirmedWrite } from "../src/http.js";
+import { RequestError } from "../src/http.js";
 import { areIgnoresUnsaved } from "../ui/src/folderDraft.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
@@ -190,13 +190,50 @@ describe("a folder's ignore patterns", () => {
     assert.equal((await readIgnores(peer(), "dashboard-test-a")).error, "folder marker missing", "without an include the error is Syncthing's own");
   });
 
-  it("a lost answer whose read-back holds the patterns but whose next read fails says the state is unknown", async () => {
+  it("a lost answer confirmed by its read-back answers that read and enters Activity, even when the node answers no further read", async () => {
     loseWriteAnswer = true;
     readsLeftAfterWrite = 1;
-    await assert.rejects(saveIgnores(peer(), "dashboard-test-a", { lines: ["*.tmp"], opened: [] }, fastReadBacks), (error: Error & { status?: number }) => {
-      assert.ok(error instanceof UnconfirmedWrite);
-      return error.status === 503 && error.message === "dashboard-test-peer: the patterns were saved; could not read back how Syncthing reads them";
-    });
+    const saved = await saveIgnores(peer(), "dashboard-test-a", { lines: ["*.tmp"], opened: [] }, fastReadBacks);
+    assert.deepEqual(saved.ignores, { lines: ["*.tmp"], expanded: ["*.tmp", "**/*.tmp", "*.tmp/**", "**/*.tmp/**"], hiddenIncluded: 0, error: null });
+    assert.equal(noteText(saved.note), "dashboard-test-peer: changed ignore patterns of folder Test A; added *.tmp");
+  });
+
+  it("a confirmed save after a lost answer enters Activity through the router", async () => {
+    const notes: WriteNote[] = [];
+    const effects: WriteEffects = { invalidate: () => {}, record: (note) => void notes.push(note) };
+    const handle = requestHandler(folderIgnoreRoutes({ resolve: async () => peer(), readBackDelaysMs: fastReadBacks }), effects);
+    const dashboard = createServer((request, response) => void handle(request, response));
+    const url = `${await listen(dashboard)}/api/nodes/d7e5/folders/dashboard-test-a/ignores`;
+    try {
+      loseWriteAnswer = true;
+      readsLeftAfterWrite = 1;
+      const saved = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lines: ["*.tmp"], opened: [] }) });
+      assert.equal(saved.status, 200);
+      assert.deepEqual(notes.map((note) => note.text), ["dashboard-test-peer: changed ignore patterns of folder Test A; added *.tmp"]);
+    } finally {
+      dashboard.close();
+    }
+  });
+
+  it("a line is trimmed as Go trims it, so a NEL or another odd space cannot hide an #include", async () => {
+    assert.equal(goTrimSpace("\u0085 　 x   "), "x");
+    assert.equal(goTrimSpace("﻿x"), "﻿x", "Go does not take U+FEFF for a space");
+    const control = ["\u0085#include ../../config/config.xml", "#include \u0085../../config/config.xml", "\u0085", "\u000B#include ../x", "#include ../x\u000C", "#include \u000B../x"];
+    for (const line of control) {
+      await assert.rejects(saveIgnores(peer(), "dashboard-test-a", { lines: ["*.tmp", line], opened: [] }), { status: 400, message: "line 2 holds a control character; no character below a space other than tab is allowed" }, JSON.stringify(line));
+    }
+    for (const line of [" #include ../../config/config.xml", "#include 　../x", " #include  /etc/passwd"]) {
+      await assert.rejects(saveIgnores(peer(), "dashboard-test-a", { lines: [line], opened: [] }), (error: Error & { status?: number }) => error.status === 400 && error.message.endsWith("refers to a file outside the folder; an included file must lie inside it"), JSON.stringify(line));
+    }
+    assert.deepEqual(received, []);
+  });
+
+  it("a file written elsewhere with a NEL before #include is treated as an include and named as unsavable", async () => {
+    lines = ["*.tmp", "\u0085#include missing.txt"];
+    forcedError = "failed to load include file missing.txt: <apikey>secret-api-key</apikey>";
+    const read = await readIgnores(peer(), "dashboard-test-a");
+    assert.equal(read.error, "Syncthing cannot read an included file");
+    assert.match(ignoreLinesProblem(read.lines) ?? "", /^line 2 holds a control character/, "the edit form names the line that keeps the file from being saved");
   });
 
   it("the edit form knows when typed patterns are not saved yet", () => {

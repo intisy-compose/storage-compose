@@ -241,9 +241,9 @@ export function browseFolderPaths(nodeId: string, current: string): Promise<stri
   return getJson(`${nodeApiPath(nodeId, "browse")}?current=${encodeURIComponent(current)}`);
 }
 
-/** How the node would judge `path` for a new folder, or for the edit of `editedFolderId`, whose own path is then no conflict. */
-export function checkFolderPath(nodeId: string, path: string, editedFolderId: string | null = null): Promise<FolderPathCheck> {
-  const query = new URLSearchParams({ path, ...(editedFolderId === null ? {} : { folder: editedFolderId }) });
+/** How the node would judge `path` for a new folder, or for the edit of `editedFolderId` (that also changes its versioning when `editsVersioning`). */
+export function checkFolderPath(nodeId: string, path: string, editedFolderId: string | null = null, editsVersioning = false): Promise<FolderPathCheck> {
+  const query = new URLSearchParams({ path, ...(editedFolderId === null ? {} : { folder: editedFolderId }), ...(editsVersioning ? { versioning: "changed" } : {}) });
   return getJson(`${nodeApiPath(nodeId, "folder-path-check")}?${query.toString()}`);
 }
 

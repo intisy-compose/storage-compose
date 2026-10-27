@@ -1,6 +1,6 @@
-import { ignoreLinesProblem, ignoresChangeWords, isIncludeLine } from "../api/ignorePatterns.js";
+import { goTrimSpace, ignoreLinesProblem, ignoresChangeWords, isIncludeLine } from "../api/ignorePatterns.js";
 import type { FolderIgnores, IgnoresChange } from "../api/types.js";
-import { RequestError, UnconfirmedWrite, readBody, sendJson } from "../http.js";
+import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import type { SyncthingFolderConfig } from "../syncthing.js";
@@ -43,7 +43,7 @@ function patternCore(pattern: string): string {
 }
 
 function isPatternLine(line: string): boolean {
-  const trimmed = line.trim();
+  const trimmed = goTrimSpace(line);
   return trimmed !== "" && !trimmed.startsWith("//") && !isIncludeLine(trimmed);
 }
 
@@ -127,6 +127,7 @@ export interface IgnoresSave {
  * Replaces the folder's `.stignore` with `lines`, only while the node's file is still the one the form opened with.
  * @implNote Syncthing takes the file only whole and has no version check, so the file is read again as the last step before
  * the write and a difference is a 409; a change landing between that read and the POST, one request apart, is still overwritten.
+ * When the POST's answer is lost, the read-back that finds the lines in place is the answer, so a confirmed save always enters Activity.
  */
 export async function saveIgnores(instance: ResolvedInstance, folderId: string, body: unknown, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<IgnoresSave> {
   const local = requireLocal(instance);
@@ -139,15 +140,17 @@ export async function saveIgnores(instance: ResolvedInstance, folderId: string, 
   const before = current.ignore ?? [];
   if (!isSameLines(before, opened)) throw new RequestError(409, "the ignore patterns changed on the node since the form opened; nothing was written");
   if (isSameLines(before, lines)) return { ignores: shownIgnores(current), note: { nothingWritten: true } };
-  let answer: SyncthingIgnores | null = null;
+  const latest: { answer: SyncthingIgnores | null } = { answer: null };
   await writeConfirmed(
     local,
-    async () => void (answer = await writeIgnoreLines(local, folderId, lines)),
-    async () => isSameLines((await local.client.request<SyncthingIgnores>("GET", ignoresPath(folderId))).ignore ?? [], lines),
+    async () => void (latest.answer = await writeIgnoreLines(local, folderId, lines)),
+    async () => {
+      latest.answer = await local.client.request<SyncthingIgnores>("GET", ignoresPath(folderId));
+      return isSameLines(latest.answer.ignore ?? [], lines);
+    },
     readBackDelaysMs,
   );
-  const after = answer ?? (await syncthingIgnores(local, folderId).catch(() => null));
-  if (!after) throw new UnconfirmedWrite(local.name, `${local.name}: the patterns were saved; could not read back how Syncthing reads them`);
+  const after = latest.answer ?? (await syncthingIgnores(local, folderId));
   return { ignores: shownIgnores(after), note: { nodeId: local.nodeId, nodeName: local.name, folderId, text: ignoresEditText(local.name, folderName(folder), before, lines) } };
 }
 
