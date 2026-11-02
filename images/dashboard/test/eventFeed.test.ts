@@ -514,7 +514,20 @@ describe("file changes", () => {
     feedsFor(log).reconcile([feed]);
     await until(() => changes(log).length > 0, "the burst");
     await until(() => fake.diskQueries.some((query) => query.since === 10), "a poll after the burst");
-    assert.deepEqual(changes(log).map((entry) => entry.change?.path ?? entry.text), ["file9", "file8", "file7", "file6", "pc: 6 changes not listed in Documents"]);
+    assert.deepEqual(changes(log).map((entry) => entry.change?.path ?? entry.text), ["file9", "file8", "file7", "file6"], "the first poll's gap is history from before the dashboard started");
+  });
+
+  it("after an observed restart, changes the new run's first poll had no room for are counted", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "before.txt", pcShort));
+    await until(() => changes(log).length === 1, "the change before the restart");
+    await until(() => fake.diskQueries.some((query) => query.since === 1), "a poll from the old cursor");
+    fake.restart();
+    fake.emitDisk(...Array.from({ length: 7 }, (_, index) => diskChange("LocalChangeDetected", `after${index}`, pcShort)));
+    await until(() => changes(log).some((entry) => entry.change?.path === "after6"), "the new run's changes");
+    assert.deepEqual(changes(log).filter((entry) => !entry.change).map((entry) => entry.text), ["pc: 3 changes not listed in Documents"]);
   });
 
   it("changes past what a poll may take are counted in one entry for their node and folder, and a full poll without a gap adds none", async () => {

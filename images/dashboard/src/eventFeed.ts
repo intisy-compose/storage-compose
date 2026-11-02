@@ -402,10 +402,15 @@ interface FeedPosition {
   /** Where `/rest/events/disk` was read up to, in that subscription's own numbering. */
   changesSince: number;
   changesStartTime: string | null;
+  /**
+   * Whether `changesSince` came from a poll of this feed position, so a gap after it was missed here; the first poll's starts from 0 and
+   * covers the instance's history. A restart's cursor of 0 still counts: the new run numbers from 1.
+   */
+  changesPolled: boolean;
 }
 
 function newFeedPosition(): FeedPosition {
-  return { since: 0, startTime: null, completions: new Map(), changesSince: 0, changesStartTime: null };
+  return { since: 0, startTime: null, completions: new Map(), changesSince: 0, changesStartTime: null, changesPolled: false };
 }
 
 /** How many failed items of one folder the instance's buffer keeps besides the folder's summary entry. */
@@ -506,8 +511,9 @@ class InstanceFeed {
 
   private takeChanges(events: SyncthingEvent[]): void {
     if (events.some((event) => event.id <= this.position.changesSince)) this.position.changesSince = 0;
-    const notListed = notListedEntry(events, this.position.changesSince, this.options.changesPerPoll, this.instance.nodeId, this.context);
+    const notListed = this.position.changesPolled ? notListedEntry(events, this.position.changesSince, this.options.changesPerPoll, this.instance.nodeId, this.context) : null;
     if (notListed) this.log.append(feedBufferKey(this.instance.nodeId, notListed), notListed);
+    this.position.changesPolled = true;
     for (const event of events) {
       const entry = changeEntry(event, this.instance.nodeId, this.context);
       if (entry) this.log.append(feedBufferKey(this.instance.nodeId, entry), entry);
