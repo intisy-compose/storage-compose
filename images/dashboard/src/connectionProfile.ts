@@ -25,10 +25,22 @@ function readBoolean(table: TomlTable, key: string, path: string, fallback: bool
   return value;
 }
 
-function readNumber(table: TomlTable, key: string, path: string, fallback: number): number {
+interface IntegerRange {
+  lowest: number;
+  highest: number;
+}
+
+const kbpsRange: IntegerRange = { lowest: 0, highest: Number.MAX_SAFE_INTEGER };
+const portRange: IntegerRange = { lowest: 1, highest: 65535 };
+
+function readInteger(table: TomlTable, key: string, path: string, fallback: number, range: IntegerRange): number {
   const value = table[key];
   if (value === undefined) return fallback;
   if (typeof value !== "number") throw new ProfileError(`${path}.${key} must be a number`);
+  if (!Number.isInteger(value) || value < range.lowest || value > range.highest) {
+    const highest = range.highest === Number.MAX_SAFE_INTEGER ? "" : ` to ${range.highest}`;
+    throw new ProfileError(`${path}.${key} must be a whole number from ${range.lowest}${highest}`);
+  }
   return value;
 }
 
@@ -42,16 +54,16 @@ function readDiscovery(table: TomlTable, fallback: string | string[]): string | 
 
 function readLimits(table: TomlTable, path: string, fallback: BandwidthLimits): BandwidthLimits {
   return {
-    maxSendKbps: readNumber(table, "max_send_kbps", path, fallback.maxSendKbps),
-    maxRecvKbps: readNumber(table, "max_recv_kbps", path, fallback.maxRecvKbps),
+    maxSendKbps: readInteger(table, "max_send_kbps", path, fallback.maxSendKbps, kbpsRange),
+    maxRecvKbps: readInteger(table, "max_recv_kbps", path, fallback.maxRecvKbps, kbpsRange),
     limitLan: readBoolean(table, "limit_lan", path, fallback.limitLan),
   };
 }
 
 function readNodeLimits(table: TomlTable, path: string): Partial<BandwidthLimits> {
   const limits: Partial<BandwidthLimits> = {};
-  if (table.max_send_kbps !== undefined) limits.maxSendKbps = readNumber(table, "max_send_kbps", path, 0);
-  if (table.max_recv_kbps !== undefined) limits.maxRecvKbps = readNumber(table, "max_recv_kbps", path, 0);
+  if (table.max_send_kbps !== undefined) limits.maxSendKbps = readInteger(table, "max_send_kbps", path, 0, kbpsRange);
+  if (table.max_recv_kbps !== undefined) limits.maxRecvKbps = readInteger(table, "max_recv_kbps", path, 0, kbpsRange);
   if (table.limit_lan !== undefined) limits.limitLan = readBoolean(table, "limit_lan", path, false);
   return limits;
 }
@@ -73,7 +85,7 @@ export function parseProfile(text: string): ConnectionProfile {
     relays: {
       public: readBoolean(relays, "public", "relays", defaults.relays.public),
       bridges: readBoolean(relays, "bridges", "relays", defaults.relays.bridges),
-      bridgePort: readNumber(relays, "bridge_port", "relays", defaults.relays.bridgePort),
+      bridgePort: readInteger(relays, "bridge_port", "relays", defaults.relays.bridgePort, portRange),
     },
     limits: readLimits(limits, "limits", defaults.limits),
     nodeLimits: Object.fromEntries(

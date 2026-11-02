@@ -144,6 +144,16 @@ describe("the connection profile in the data repo", () => {
     assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
   });
 
+  it("answers 400 naming the key to a negative limit, and commits nothing", async () => {
+    await pullDataRepo(ours);
+    const headBefore = git(ours, "rev-parse", "HEAD");
+    const base = (await readProfile(ours)).profile;
+    const answer = await ask("PUT", JSON.stringify({ ...limited(-5), base }));
+    assert.equal(answer.status, 400);
+    assert.match(JSON.parse(answer.body).error, /limits\.max_send_kbps/);
+    assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
+  });
+
   it("a commit landing between the save's commit and a rejected push survives", async () => {
     const third = cloneOf(remote, join(root, "third"));
     git(theirs, "pull", "-q", "--ff-only");

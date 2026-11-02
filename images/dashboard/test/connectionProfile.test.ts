@@ -62,6 +62,27 @@ describe("connection profile", () => {
     assert.throws(() => parseProfile("[limits.node.AB12]\nmax_send_kbps = true\n"), /limits\.node\.AB12\.max_send_kbps/);
   });
 
+  it("a fractional kbps names the key", () => {
+    assert.throws(() => parseProfile("[limits]\nmax_send_kbps = 1.5\n"), (error: unknown) => {
+      return error instanceof ProfileError && error.message.includes("limits.max_send_kbps");
+    });
+  });
+
+  it("a negative kbps names the key", () => {
+    assert.throws(() => parseProfile("[limits.node.AB12]\nmax_recv_kbps = -1\n"), (error: unknown) => {
+      return error instanceof ProfileError && error.message.includes("limits.node.AB12.max_recv_kbps");
+    });
+  });
+
+  it("a bridge port outside 1-65535 names the key", () => {
+    for (const port of ["0", "65536", "22100.5"]) {
+      assert.throws(() => parseProfile(`[relays]\nbridge_port = ${port}\n`), (error: unknown) => {
+        return error instanceof ProfileError && error.message.includes("relays.bridge_port");
+      }, port);
+    }
+    assert.equal(parseProfile("[relays]\nbridge_port = 65535\n").relays.bridgePort, 65535);
+  });
+
   it("formatProfile round-trips", () => {
     const profile = parseProfile(
       '[methods]\nnat = false\n[discovery]\nglobal = ["https://a.example/v2/"]\n[relays]\nbridge_port = 22200\n' +
