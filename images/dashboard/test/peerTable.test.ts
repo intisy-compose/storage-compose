@@ -173,4 +173,32 @@ describe("this host's part of the peer table", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("a stale heartbeat keeps the host agent's nodes in the connections file", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "peer-sources-"));
+    try {
+      const networks = [{ kind: "lan", address: "192.168.1.5", category: "Private" }, { kind: "tailnet", address: "100.64.0.5" }];
+      const syncthing = { state: "running", deviceId: "DEV-AGENT", guiPort: 8385, listenPort: 22004, listenAddress: "tcp://0.0.0.0:22004", apiKey: "key", problem: null };
+      const tenMinutesAgo = Date.now() / 1000 - 600;
+      const heartbeat = {
+        heartbeat: new Date(tenMinutesAgo * 1000).toISOString(),
+        heartbeatEpoch: tenMinutesAgo,
+        host: "pc",
+        os: "windows",
+        state: "running",
+        problems: [],
+        nodes: [
+          { id: "d004", name: "D004", kind: "drive", threshold: 0, assigned: [], root: "D:\\", syncthing },
+          { id: "d005", name: "D005", kind: "drive", threshold: 0, assigned: [], root: "E:\\", syncthing: { ...syncthing, deviceId: null } },
+        ],
+        networks,
+      };
+      writeFileSync(join(directory, "heartbeat.json"), JSON.stringify(heartbeat));
+      const resolver = { registryDirectory: join(directory, "nodes"), heartbeatPath: join(directory, "heartbeat.json"), otherHostNodes: async () => [] };
+      const local = await localPeerTable({ resolver, dockerNodeInfos: async () => [], dockerBridgeFile: join(directory, "bridge.json"), gatewayTailnetName: "" });
+      assert.deepEqual(local.nodes, [{ nodeId: "d004", name: "D004", deviceId: "DEV-AGENT", syncPort: 22004, networks }]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { Bridge, HostNetwork, NodeAddresses, PeerTable } from "./api/types.js";
-import { type HostAgentHeartbeat, isAgentAlive, readHeartbeat } from "./hostAgent.js";
+import { type HostAgentHeartbeat, readHeartbeat } from "./hostAgent.js";
 import { type LocalNodeInfo, type ResolverSources, defaultResolverSources, localNodeInfos, readDashboard } from "./instanceResolver.js";
 import { clusterSyncPort, registrySyncPort } from "./joinInstances.js";
 import { buildPeerTable } from "./peerTable.js";
@@ -35,10 +35,6 @@ export function dockerNetworks(hostNetworks: HostNetwork[], gatewayTailnetName: 
     ...hostNetworks.filter((network) => network.kind === "lan"),
     ...[...new Set(tailnetAddresses)].map((address): HostNetwork => ({ kind: "tailnet", address, tcpOnly: true })),
   ];
-}
-
-function liveHeartbeat(heartbeat: HostAgentHeartbeat | null): HostAgentHeartbeat | null {
-  return heartbeat && isAgentAlive(heartbeat) ? heartbeat : null;
 }
 
 function agentNodes(heartbeat: HostAgentHeartbeat | null, networks: HostNetwork[]): NodeAddresses[] {
@@ -77,9 +73,13 @@ async function localBridges(sources: PeerSources, docker: HostNetwork[]): Promis
   return bridge ? [{ host: hostName, ...bridge, addresses: docker }] : [];
 }
 
-/** This host's own nodes and bridges: what `GET /api/connections/addresses?scope=local` answers. */
+/**
+ * This host's own nodes and bridges: what `GET /api/connections/addresses?scope=local` answers.
+ * @implNote The heartbeat is used whatever its age: a node left out of one round is swapped to tailnet-only by its
+ * keeper, so a slow round, a sleep or the agent's reinstall must not drop the host agent's nodes.
+ */
 export async function localPeerTable(sources: PeerSources = defaultPeerSources): Promise<PeerTable> {
-  const heartbeat = liveHeartbeat(await readHeartbeat(sources.resolver.heartbeatPath));
+  const heartbeat = await readHeartbeat(sources.resolver.heartbeatPath);
   const hostNetworks = heartbeat?.networks ?? [];
   const docker = dockerNetworks(hostNetworks, sources.gatewayTailnetName);
   const nodes = [...(await dockerNodes(sources, docker)), ...agentNodes(heartbeat, hostNetworks)];
