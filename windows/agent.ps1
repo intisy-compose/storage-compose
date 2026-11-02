@@ -171,11 +171,15 @@ function Get-Heartbeat($Status, [bool]$IsActive, $PassState, [string]$State, [st
             removesItselfAt = $removesAt
         }
         passThrough = Get-PassThroughSummary $PassState
-        networks = @(Get-HostNetworks)
+        networks = @(Get-HeartbeatNetworks)
         nodes = @($script:syncthingInstances.Values | ForEach-Object { Get-PublishedInstance $_ })
         foundNodes = @($script:foundNodes.nodes | ForEach-Object { [ordered]@{ id = $_.id; name = $_.name; kind = $_.kind; root = $_.root } })
         problems = $problems
     }
+}
+
+function Get-HeartbeatNetworks {
+    try { return @(Get-HostNetworks) } catch { Write-WatcherLog "could not read the host's networks: $_"; return @() }
 }
 
 function Write-Heartbeat($Heartbeat) {

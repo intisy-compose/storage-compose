@@ -79,47 +79,65 @@ function Set-XmlChildList($Parent, [string]$Name, [string[]]$Values) {
 
 function Set-ListenAddresses($Options, [string[]]$Addresses) { return Set-XmlChildList $Options "listenAddress" $Addresses }
 
+$profileListenAddressPattern = '^(tcp|quic|relay|dynamic\+https?)://'
+
+function Test-IsProfileListenAddress($Address) { return $Address -is [string] -and $Address -match $profileListenAddressPattern }
+
+function Test-IsConnectionsEntry($Entry) {
+    if ($Entry -isnot [System.Management.Automation.PSCustomObject] -or -not $Entry.PSObject.Properties["listenAddresses"]) { return $false }
+    $addresses = @($Entry.listenAddresses)
+    return $addresses.Count -gt 0 -and @($addresses | Where-Object { -not (Test-IsProfileListenAddress $_) }).Count -eq 0
+}
+
 <#
 .NOTES
 The node's entry of the connections file the dashboard writes through a read-write bind (the agent
-never writes it). Null without the file, without an entry for the node or without listen addresses
-in it, which leaves the node tailnet-only.
+never writes it). Null without the file, without an entry for the node, or with an entry that is not
+an object whose listen addresses are all Syncthing address strings: a malformed value written into
+config.xml can keep Syncthing from loading it, so such a node stays tailnet-only instead.
 #>
 function Get-NodeConnections($Node) {
     if (-not $script:connectionsFile) { return $null }
     $byNode = Read-JsonFile $script:connectionsFile
     if (-not $byNode -or -not $byNode.PSObject.Properties[$Node.id]) { return $null }
     $entry = $byNode.($Node.id)
-    if (-not $entry.PSObject.Properties["listenAddresses"] -or @($entry.listenAddresses | Where-Object { $_ }).Count -eq 0) { return $null }
+    if (-not (Test-IsConnectionsEntry $entry)) { return $null }
     return $entry
 }
 
 function Get-NodeListenAddresses($Connections, [string]$ListenHost, $Ports) {
-    if ($Connections) { return @($Connections.listenAddresses | Where-Object { $_ } | ForEach-Object { "$_" }) }
+    if ($Connections) { return @($Connections.listenAddresses) }
     return @("tcp://$ListenHost`:$($Ports.listen)")
 }
 
-function ConvertTo-XmlValue($Value) {
-    if ($Value -is [bool]) { return $(if ($Value) { "true" } else { "false" }) }
-    return "$Value"
+$profileSwitchNames = @("globalAnnounceEnabled", "localAnnounceEnabled", "relaysEnabled", "natEnabled", "limitBandwidthInLan")
+$profileRateNames = @("maxSendKbps", "maxRecvKbps")
+$tailnetOnlyOptions = [ordered]@{
+    globalAnnounceEnabled = "false"; localAnnounceEnabled = "false"; relaysEnabled = "false"; natEnabled = "false"
+    maxSendKbps = "0"; maxRecvKbps = "0"; limitBandwidthInLan = "false"
 }
 
-$profileOptionNames = @("globalAnnounceEnabled", "localAnnounceEnabled", "relaysEnabled", "natEnabled", "maxSendKbps", "maxRecvKbps", "limitBandwidthInLan")
-$tailnetOnlyOptions = [ordered]@{ globalAnnounceEnabled = "false"; localAnnounceEnabled = "false"; relaysEnabled = "false"; natEnabled = "false" }
+function Test-IsRate($Value) { return ($Value -is [int] -or $Value -is [long]) -and $Value -ge 0 }
 $keptOptions = [ordered]@{ urAccepted = "-1"; autoUpgradeIntervalH = "0"; crashReportingEnabled = "false"; startBrowser = "false" }
 
 function Get-ProfileOptionValues($Connections) {
     $values = [ordered]@{}
     if (-not $Connections.PSObject.Properties["options"] -or -not $Connections.options) { return $values }
-    foreach ($name in $profileOptionNames) {
-        if ($Connections.options.PSObject.Properties[$name]) { $values[$name] = ConvertTo-XmlValue $Connections.options.$name }
+    $options = $Connections.options
+    foreach ($name in $profileSwitchNames) {
+        if ($options.PSObject.Properties[$name] -and $options.$name -is [bool]) { $values[$name] = $(if ($options.$name) { "true" } else { "false" }) }
+    }
+    foreach ($name in $profileRateNames) {
+        if ($options.PSObject.Properties[$name] -and (Test-IsRate $options.$name)) { $values[$name] = "$($options.$name)" }
     }
     return $values
 }
 
 function Set-ProfileAnnounceServers($Options, $Connections) {
     if (-not $Connections.PSObject.Properties["options"] -or -not $Connections.options -or -not $Connections.options.PSObject.Properties["globalAnnounceServers"]) { return $false }
-    return Set-XmlChildList $Options "globalAnnounceServer" @($Connections.options.globalAnnounceServers | ForEach-Object { "$_" })
+    $servers = @($Connections.options.globalAnnounceServers)
+    if (@($servers | Where-Object { $_ -isnot [string] }).Count -gt 0) { return $false }
+    return Set-XmlChildList $Options "globalAnnounceServer" $servers
 }
 
 function Save-XmlDocument($Document, [string]$Path) {

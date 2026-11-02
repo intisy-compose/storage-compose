@@ -263,7 +263,37 @@ Describe "the connection profile in a node's config" {
         Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
         (Get-ConfiguredListenAddresses $node) -join " " | Should Be "tcp://100.100.1.2:32110"
         $options = Read-ConfigOptions $node
-        foreach ($name in @("globalAnnounceEnabled", "localAnnounceEnabled", "relaysEnabled", "natEnabled")) { $options.$name | Should Be "false" }
+        foreach ($name in @("globalAnnounceEnabled", "localAnnounceEnabled", "relaysEnabled", "natEnabled", "limitBandwidthInLan")) { $options.$name | Should Be "false" }
+        $options.maxSendKbps | Should Be "0"
+        $options.maxRecvKbps | Should Be "0"
+    }
+
+    It "treats a null entry and a non-string listen address as no entry, so the node stays tailnet-only" {
+        $node = New-ConfiguredNode "c006" "malformed"
+        [System.IO.Directory]::CreateDirectory((Split-Path $script:connectionsFile)) | Out-Null
+        [System.IO.File]::WriteAllText($script:connectionsFile, '{ "c006": null }')
+        Get-NodeConnections $node | Should BeNullOrEmpty
+        Write-ConnectionsFile @{ c006 = @{ options = @{}; listenAddresses = @(32110, "tcp://0.0.0.0:32110"); deviceAddresses = @{} } }
+        Get-NodeConnections $node | Should BeNullOrEmpty
+        Write-ConnectionsFile @{ c006 = @{ options = @{}; listenAddresses = @("ftp://0.0.0.0:32110"); deviceAddresses = @{} } }
+        Get-NodeConnections $node | Should BeNullOrEmpty
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        (Get-ConfiguredListenAddresses $node) -join " " | Should Be "tcp://100.100.1.2:32110"
+    }
+
+    It "writes only well-typed profile options" {
+        $node = New-ConfiguredNode "c007" "typed"
+        Write-ConnectionsFile @{ c007 = @{
+            options = @{ natEnabled = "yes"; relaysEnabled = $true; maxSendKbps = -5; maxRecvKbps = 1.5; limitBandwidthInLan = 1 }
+            listenAddresses = @("tcp://0.0.0.0:32110"); deviceAddresses = @{}
+        } }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        $options = Read-ConfigOptions $node
+        $options.relaysEnabled | Should Be "true"
+        $options.natEnabled | Should Not Be "yes"
+        $options.maxSendKbps | Should Be "0"
+        $options.maxRecvKbps | Should Be "0"
+        $options.limitBandwidthInLan | Should Be "false"
     }
 
     It "reports no change for the listen addresses it already has, and a change for a reordered list" {
