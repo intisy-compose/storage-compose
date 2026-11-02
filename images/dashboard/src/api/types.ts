@@ -1305,3 +1305,18 @@ export interface NodeRegistryEntry {
   /** False for an ephemeral node such as a test peer: its instance ID and drive are never written to the seen files. Absent means true. */
   remember?: boolean;
 }
+
+export interface BandwidthLimits {
+  maxSendKbps: number;
+  maxRecvKbps: number;
+  limitLan: boolean;
+}
+
+/** The cluster's connection profile, `connections.toml` in the data repo; `nodeLimits` is keyed by node id. */
+export interface ConnectionProfile {
+  methods: { lan: boolean; tailnet: boolean; nat: boolean };
+  discovery: { global: string | string[] };
+  relays: { public: boolean; bridges: boolean; bridgePort: number };
+  limits: BandwidthLimits;
+  nodeLimits: Record<string, Partial<BandwidthLimits>>;
+}
