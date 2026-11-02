@@ -33,6 +33,8 @@ describe("device text", () => {
     assert.equal(connectionKindText("tailscale"), "Tailscale");
     assert.equal(connectionKindText("local-network"), "local network");
     assert.equal(connectionKindText("relay"), "relay");
+    assert.equal(connectionKindText("bridge", "pc"), "bridge via pc");
+    assert.equal(connectionKindText("bridge"), "bridge");
     assert.equal(connectionKindText("internet"), "internet");
     const connected = device({ online: true, connection: { kind: "tailscale", address: "100.64.0.12:22000", type: "tcp-client", nodeId: "fb98" } });
     assert.equal(deviceStateText(connected, now), "connected over Tailscale");

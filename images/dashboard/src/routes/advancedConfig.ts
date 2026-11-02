@@ -3,13 +3,12 @@ import { keeperProblem } from "../api/keeperText.js";
 import { generalSettingLabels } from "../api/optionsText.js";
 import type { AdvancedConfig, AdvancedTarget } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
-import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, localNodeInfos, requireLocal, resolveInstance, settingsKeeperOf, writeConfirmed } from "../instanceResolver.js";
+import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, settingsKeeperOf, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
 import { isChangeInPlace, redactConfig } from "../syncthingConfig.js";
 import { advancedChangeProblem, guiManagedText } from "./advancedGuards.js";
 import { decodedSegment } from "./devices.js";
 import { requiresRestart, restartRoutes } from "./nodeRestart.js";
-import { type HostNode, refuseTakenPorts } from "./options.js";
 
 type SyncthingObject = Record<string, unknown>;
 
@@ -116,7 +115,6 @@ export async function editAdvanced(
   instance: ResolvedInstance,
   target: AdvancedTarget,
   change: unknown,
-  hostNodes: () => Promise<HostNode[]>,
   readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs,
 ): Promise<AdvancedEdit> {
   const local = requireLocal(instance);
@@ -124,7 +122,6 @@ export async function editAdvanced(
   const problem = advancedChangeProblem(local, target, current, change, objectWords(target, current)) ?? (await ownNameProblem(local, target, change as SyncthingObject));
   if (problem) throw new RequestError(400, problem);
   const valid = change as SyncthingObject;
-  if (target.kind === "options" && Array.isArray(valid.listenAddresses)) await refuseTakenPorts(local, valid.listenAddresses as string[], await hostNodes());
   const pending = Object.fromEntries(Object.entries(valid).filter(([key, value]) => !isChangeInPlace(current, { [key]: value })));
   if (Object.keys(pending).length === 0) return { answer: shown(current, await requiresRestart(local)), note: { nothingWritten: true } };
   await writeConfirmed(
@@ -139,13 +136,11 @@ export async function editAdvanced(
 
 export interface AdvancedConfigSources {
   resolve(nodeId: string): Promise<ResolvedInstance>;
-  /** Every node of this host, whose listen ports a new listen address may not take. */
-  hostNodes(): Promise<HostNode[]>;
   /** The waits between read-backs of an edit whose answer was lost; tests shorten them. */
   readBackDelaysMs?: readonly number[];
 }
 
-const liveSources: AdvancedConfigSources = { resolve: (nodeId) => resolveInstance(nodeId), hostNodes: () => localNodeInfos() };
+const liveSources: AdvancedConfigSources = { resolve: (nodeId) => resolveInstance(nodeId) };
 
 /** The advanced editor of a node's options, folders and devices, and the node's restart. */
 export function advancedConfigRoutes(sources: AdvancedConfigSources = liveSources): AnyRoute[] {
@@ -165,7 +160,7 @@ export function advancedConfigRoutes(sources: AdvancedConfigSources = liveSource
       pattern,
       write: async ({ request, response, params: [nodeId, target] }) => {
         const parsed = advancedTargetOf(target);
-        const edit = await editAdvanced(await node(nodeId), parsed, await readBody(request), sources.hostNodes, sources.readBackDelaysMs);
+        const edit = await editAdvanced(await node(nodeId), parsed, await readBody(request), sources.readBackDelaysMs);
         sendJson(response, 200, edit.answer);
         return edit.note;
       },

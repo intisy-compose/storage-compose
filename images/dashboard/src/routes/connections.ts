@@ -1,10 +1,12 @@
-import type { ConnectionProfile, HostNetwork, NodeAddresses, PeerTable } from "../api/types.js";
+import { strandedText } from "../api/profileText.js";
+import type { ConnectionProfile, HostNetwork, NodeAddresses, PeerTable, ProfileSaveBody } from "../api/types.js";
 import { connectionsRound } from "../applyConnections.js";
 import { ProfileError, formatProfile, parseProfile } from "../connectionProfile.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type JoinRecords, joinedNodeId } from "../join.js";
 import { collectPeerTable, localPeerTable } from "../peerSources.js";
 import type { NodeConnections } from "../peerTable.js";
+import { newlyStrandedPairs } from "../reachability.js";
 import { type AnyRoute, hostWritePattern } from "../routes.js";
 import { setupRepoDirectory } from "../settings.js";
 import { ProfileConflict, pullDataRepo, readProfile, saveProfile } from "../setupRepo.js";
@@ -17,6 +19,18 @@ function validProfile(body: unknown): ConnectionProfile {
   } catch (error) {
     throw new RequestError(400, error instanceof ProfileError ? error.message : "the body is not a connection profile");
   }
+}
+
+/**
+ * Refuses a profile that would leave a pair of nodes without a common method that the saved profile still connects.
+ * @implNote Only newly stranded pairs count: a pair no profile connects would otherwise make every later save, a node's limit
+ * included, ask again. A table that cannot be read strands nothing, as the save must not wait on every dashboard answering.
+ */
+async function refuseStranding(profile: ConnectionProfile, repository: string, peerTables: PeerTableReads): Promise<void> {
+  const table = await peerTables.all().catch(() => null);
+  if (!table) return;
+  const pairs = newlyStrandedPairs((await readProfile(repository)).profile, profile, table);
+  if (pairs.length) throw new RequestError(409, strandedText(pairs));
 }
 
 export interface PeerTableReads {
@@ -52,7 +66,9 @@ export function connectionRoutes(repository = setupRepoDirectory, peerTables = d
       method: "PUT",
       pattern: hostWritePattern(/^\/api\/connections\/profile$/),
       handle: async ({ request, response }) => {
-        const profile = validProfile(await readBody(request));
+        const body = (await readBody(request)) as ProfileSaveBody;
+        const profile = validProfile(body);
+        if (body?.confirmUnreachable !== true) await refuseStranding(profile, repository, peerTables);
         await saveProfile(profile, "feat(connections): change the connection profile", repository).catch(async (error) => {
           if (error instanceof ProfileConflict) await pullDataRepo(repository);
           throw error;

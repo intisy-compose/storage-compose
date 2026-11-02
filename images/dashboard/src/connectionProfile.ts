@@ -118,7 +118,7 @@ export function formatProfile(profile: ConnectionProfile): string {
  * profile relay setting turns it on. `methods.tailnet` maps to no option; it shapes listen addresses.
  */
 export function profileOptions(profile: ConnectionProfile, nodeId: string): Omit<ConnectionOptions, "listenAddresses"> {
-  const limits = { ...profile.limits, ...profile.nodeLimits[nodeId] };
+  const limits = nodeLimitsOf(profile, nodeId);
   const global = profile.discovery.global;
   const servers = Array.isArray(global) ? global : global === "" ? [] : [global];
   return {
@@ -131,4 +131,16 @@ export function profileOptions(profile: ConnectionProfile, nodeId: string): Omit
     maxRecvKbps: limits.maxRecvKbps,
     limitBandwidthInLan: limits.limitLan,
   };
+}
+
+/** The limits a node runs with: the cluster default with the node's override over it. */
+export function nodeLimitsOf(profile: ConnectionProfile, nodeId: string): BandwidthLimits {
+  return { ...profile.limits, ...profile.nodeLimits[nodeId] };
+}
+
+/** A copy of `profile` in which `nodeId` runs with `limits`: the override keeps only what differs from the cluster default, and none is left when nothing does. */
+export function withNodeLimits(profile: ConnectionProfile, nodeId: string, limits: BandwidthLimits): ConnectionProfile {
+  const override = Object.fromEntries((Object.keys(limits) as (keyof BandwidthLimits)[]).filter((key) => limits[key] !== profile.limits[key]).map((key) => [key, limits[key]]));
+  const nodeLimits = Object.fromEntries(Object.entries(profile.nodeLimits).filter(([id]) => id !== nodeId));
+  return { ...structuredClone(profile), nodeLimits: Object.keys(override).length ? { ...structuredClone(nodeLimits), [nodeId]: override } : structuredClone(nodeLimits) };
 }

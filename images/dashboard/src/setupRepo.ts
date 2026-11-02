@@ -1,5 +1,5 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
-import type { ConnectionProfile, PriorityBand } from "./api/types.js";
+import type { ConnectionProfile, PriorityBand, ProfileRead } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
 import { RequestError } from "./http.js";
@@ -195,11 +195,6 @@ export class ProfileUnreachable extends RequestError {
   }
 }
 
-export interface ProfileRead {
-  profile: ConnectionProfile;
-  pulledAt: string | null;
-  pullProblem: string | null;
-}
 
 interface PullState {
   pulledAt: string | null;

@@ -1,9 +1,10 @@
 import { deviceSettingLabels } from "../api/deviceText.js";
 import { keeperProblem } from "../api/keeperText.js";
-import { connectionOptionLabels, generalSettingLabels } from "../api/optionsText.js";
+import { generalSettingLabels } from "../api/optionsText.js";
+import { profileProblem } from "../api/profileText.js";
 import { type AdvancedTarget, type DeviceSettingsChange, type FolderSettingsChange, type FolderType, folderSettingLabels } from "../api/types.js";
 import { type LocalInstance, settingsKeeperOf } from "../instanceResolver.js";
-import { deviceChangeProblem, folderChangeProblem, isSecretKey, minDiskFreeCheck, optionsChangeProblem } from "../syncthingConfig.js";
+import { deviceChangeProblem, folderChangeProblem, isSecretKey, minDiskFreeCheck } from "../syncthingConfig.js";
 import { arrayAutomationProblem } from "./devices.js";
 import { typeChangeProblem } from "./nodeFolders.js";
 
@@ -66,14 +67,13 @@ function optionKeyProblem(key: string, value: unknown): string | null {
 }
 
 function optionsProblem(instance: LocalInstance, change: SyncthingObject): string | null {
-  const kept = keeperProblem(settingsKeeperOf(instance), Object.keys(change));
-  if (kept) return kept;
+  const owned = keeperProblem(settingsKeeperOf(instance), Object.keys(change)) ?? profileProblem(Object.keys(change));
+  if (owned) return owned;
   for (const [key, value] of Object.entries(change)) {
     const problem = optionKeyProblem(key, value);
     if (problem) return problem;
   }
-  const connection = picked(change, Object.keys(connectionOptionLabels));
-  return Object.keys(connection).length ? optionsChangeProblem(connection, false) : null;
+  return null;
 }
 
 function isPlainName(value: unknown): boolean {
@@ -110,10 +110,7 @@ function isPlainObject(value: unknown): value is SyncthingObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * Why an advanced change cannot be sent as it is, or null: every key is judged by the same check its form uses, so the editor bypasses no guard.
- * @implNote A listen address is also checked against the ports this host's other nodes list, which needs a read and is done by the caller.
- */
+/** Why an advanced change cannot be sent as it is, or null: every key is judged by the same check its form uses, so the editor bypasses no guard. */
 export function advancedChangeProblem(instance: LocalInstance, target: AdvancedTarget, current: SyncthingObject, change: unknown, what: string): string | null {
   if (!isPlainObject(change) || Object.keys(change).length === 0) return "nothing to change";
   for (const [key, value] of Object.entries(change)) {

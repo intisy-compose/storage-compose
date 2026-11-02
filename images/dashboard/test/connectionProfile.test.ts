@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ProfileError, defaultProfile, formatProfile, parseProfile, profileOptions } from "../src/connectionProfile.js";
+import { ProfileError, defaultProfile, formatProfile, nodeLimitsOf, parseProfile, profileOptions, withNodeLimits } from "../src/connectionProfile.js";
 
 describe("connection profile", () => {
   it("an empty file is the default profile", () => {
@@ -70,5 +70,17 @@ describe("connection profile", () => {
     assert.deepEqual(parseProfile(formatProfile(profile)), profile);
     assert.deepEqual(parseProfile(formatProfile(defaultProfile())), defaultProfile());
     assert.equal(formatProfile(profile).includes("\r"), false);
+  });
+
+  it("a per-node limit saves into the profile override", () => {
+    const profile = parseProfile("[limits]\nmax_send_kbps = 1000\n");
+    const limited = withNodeLimits(profile, "fb98", { maxSendKbps: 200, maxRecvKbps: 0, limitLan: false });
+    assert.deepEqual(limited.nodeLimits, { fb98: { maxSendKbps: 200 } }, "only what differs from the cluster default is the override");
+    assert.match(formatProfile(limited), /\[limits\.node\.fb98\]\nmax_send_kbps = 200\n/);
+    assert.deepEqual(nodeLimitsOf(limited, "fb98"), { maxSendKbps: 200, maxRecvKbps: 0, limitLan: false });
+    assert.deepEqual(profile.nodeLimits, {}, "the profile it started from is left as it was");
+    const back = withNodeLimits(limited, "fb98", { maxSendKbps: 1000, maxRecvKbps: 0, limitLan: false });
+    assert.deepEqual(back.nodeLimits, {}, "a node back on the default has no override left");
+    assert.equal(formatProfile(back).includes("limits.node"), false);
   });
 });

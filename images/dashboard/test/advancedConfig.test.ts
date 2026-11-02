@@ -7,7 +7,6 @@ import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
 import { type AdvancedConfigSources, advancedConfigRoutes } from "../src/routes/advancedConfig.js";
-import type { HostNode } from "../src/routes/options.js";
 import { SyncthingClient } from "../src/syncthing.js";
 
 const apiKey = "secret-api-key";
@@ -152,6 +151,8 @@ function writesTo(node: FakeNode): FakeRequest[] {
 const remote: RemoteInstance = { kind: "remote", nodeId: "p53n", name: "p53", host: "p53", dashboardUrl: "http://127.0.0.1:1" };
 const gone: LocalInstance = { kind: "local", nodeId: "dead", name: "gone-node", client: new SyncthingClient({ url: "http://127.0.0.1:9", apiKey }), root: "/data", os: "linux", threshold: 0, source: "registry" };
 
+const profileWords = "set by the connection profile, so changed for the whole cluster in Settings under Connections, a node's limits as its override there";
+
 describe("the advanced config editor and restarts", () => {
   let peer: FakeNode;
   let array: FakeNode;
@@ -174,13 +175,8 @@ describe("the advanced config editor and restarts", () => {
       dead: gone,
       p53n: remote,
     };
-    const hostNodes: HostNode[] = ["d7e5", "5784", "fb98"].map((nodeId) => {
-      const instance = instances[nodeId] as LocalInstance;
-      return { nodeId, name: instance.name, source: instance.source, root: instance.root, instance, present: true };
-    });
     const sources: AdvancedConfigSources = {
       resolve: async (nodeId) => instances[nodeId] ?? Promise.reject(new RequestError(404, `no node ${nodeId}`)),
-      hostNodes: async () => hostNodes,
       readBackDelaysMs: [5, 10],
     };
     effects = { notes: [], invalidate: () => {}, record: (note) => void effects.notes.push(note) };
@@ -263,9 +259,8 @@ describe("the advanced config editor and restarts", () => {
 
   it("the advanced editor keeps every guard of the forms", async () => {
     const refusals: [string, unknown, string | RegExp][] = [
-      ["options", { listenAddresses: ["tcp://:30000"] }, /^tcp:\/\/:30000 listens on port 30000, outside the storage stack's rows in access\/PORTS\.md/],
-      ["options", { listenAddresses: ["tcp://:22001"] }, "tcp://:22001 listens on port 22001, which private-array already lists (tcp://:22001)"],
-      ["options", { globalAnnounceServers: ["http://plain"] }, /is not a discovery server/],
+      ["options", { listenAddresses: ["tcp://:22003"] }, `listenAddresses: ${profileWords}`],
+      ["options", { globalAnnounceServers: ["default"], maxSendKbps: 10 }, `globalAnnounceServers, maxSendKbps: ${profileWords}`],
       ["options", { urAccepted: 3 }, "usage reporting is the person's own answer: give it in General's usage reports"],
       ["options", { urUniqueId: "abc" }, "usage reporting is the person's own answer: give it in General's usage reports"],
       ["options", { crURL: "https://elsewhere.example/crash" }, "crURL stays Syncthing's own: where a node sends reports or looks for releases is not changed here"],
@@ -297,27 +292,22 @@ describe("the advanced config editor and restarts", () => {
     for (const node of [peer, array, pc]) assert.deepEqual(writesTo(node), []);
     assert.equal(effects.notes.length, 0);
 
-    const freePort = await send("PATCH", "/api/nodes/d7e5/advanced/options", { listenAddresses: ["tcp://:22003"] });
-    assert.equal(freePort.status, 200, "a free port in the rows passes");
     const refusedBySyncthing = await send("PATCH", "/api/nodes/d7e5/advanced/folders/dashboard-test-a", { maxConflicts: 11, markerName: ".stmarker" });
     assert.equal(refusedBySyncthing.status, 200);
   });
 
-  it("a key the node's keeper rewrites at each start is refused, and an ordinary one still saves", async () => {
-    await refused("/api/nodes/fb98/advanced/options", { relaysEnabled: true, keepTemporariesH: 12 }, "relaysEnabled: set by the host agent at each start, so not changed here");
-    await refused("/api/nodes/fb98/advanced/options", { crashReportingEnabled: false, globalAnnounceEnabled: true }, "crashReportingEnabled, globalAnnounceEnabled: set by the host agent at each start, so not changed here");
+  it("a key the node's keeper or the connection profile sets is refused, and an ordinary one still saves", async () => {
+    await refused("/api/nodes/fb98/advanced/options", { crashReportingEnabled: false, keepTemporariesH: 12 }, "crashReportingEnabled: set by the host agent at each start, so not changed here");
     await refused("/api/nodes/fb98/advanced/options", { urAccepted: -1 }, "urAccepted: set by the host agent at each start, so not changed here");
     await refused(`/api/nodes/fb98/advanced/devices/${ownId}`, { name: "renamed" }, "name: set by the host agent at each start, so not changed here");
-    await refused("/api/nodes/5784/advanced/options", { listenAddresses: ["tcp://:22005"] }, "listenAddresses: set by the nodes service at each start, so not changed here");
-    for (const node of [array, pc]) assert.deepEqual(writesTo(node), []);
+    for (const node of ["fb98", "5784", "d7e5"]) await refused(`/api/nodes/${node}/advanced/options`, { relaysEnabled: true }, `relaysEnabled: ${profileWords}`);
+    for (const node of [array, pc, peer]) assert.deepEqual(writesTo(node), []);
 
     assert.equal((await send("PATCH", "/api/nodes/fb98/advanced/options", { keepTemporariesH: 12 })).status, 200);
     assert.equal((await send("PATCH", `/api/nodes/fb98/advanced/devices/${otherId}`, { name: "renamed-other" })).status, 200, "only pc's own device name is the host agent's");
-    assert.equal((await send("PATCH", "/api/nodes/5784/advanced/options", { relaysEnabled: true })).status, 200, "an array other than ARRAY_PREFIX (the tests' cluster is \"storage\"): the nodes service rewrites only its listen address");
-    assert.equal((await send("PATCH", `/api/nodes/5784/advanced/devices/${ownId}`, { name: "private-array-renamed" })).status, 200);
-    assert.equal((await send("PATCH", "/api/nodes/d7e5/advanced/options", { relaysEnabled: true, listenAddresses: ["tcp://:22006"] })).status, 200, "nothing rewrites the peer's");
+    assert.equal((await send("PATCH", `/api/nodes/5784/advanced/devices/${ownId}`, { name: "private-array-renamed" })).status, 200, "the nodes service rewrites nothing");
     assert.deepEqual(writesTo(pc).map((write) => write.body), [{ keepTemporariesH: 12 }, { name: "renamed-other" }]);
-    assert.deepEqual(writesTo(array).map((write) => write.body), [{ relaysEnabled: true }, { name: "private-array-renamed" }]);
+    assert.deepEqual(writesTo(array).map((write) => write.body), [{ name: "private-array-renamed" }]);
   });
 
   it("a save whose restart need cannot be read again answers it as unknown, not as false", async () => {

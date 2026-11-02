@@ -1,6 +1,6 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
 import type { NodesResponse } from "./api.js";
-import { fetchActivity, fetchDeviceSettings, fetchDevices, fetchFolderChanges, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchRequests, fetchRestartState, savedWriteCount } from "./api.js";
+import { fetchActivity, fetchConnectionProfile, fetchDeviceSettings, fetchDevices, fetchFolderChanges, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchPeerTable, fetchRequests, fetchRestartState, savedWriteCount } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
 import { loadAddDeviceForm, renderAddDeviceForm } from "./addDeviceForm.js";
@@ -257,6 +257,20 @@ async function loadHostSettings(): Promise<void> {
   }
 }
 
+async function loadConnectionProfile(): Promise<void> {
+  try {
+    appState.connectionProfile = await readAfterSavedWrites(fetchConnectionProfile);
+    appState.connectionProfileError = null;
+  } catch (error) {
+    appState.connectionProfileError = messageOf(error);
+  }
+}
+
+/** @implNote A table that cannot be read leaves the last one: the form then judges a change by it, or by nothing before the first read. */
+async function loadPeerTable(): Promise<void> {
+  appState.peerTable = await fetchPeerTable().catch(() => appState.peerTable);
+}
+
 async function loadNodeOptions(nodeId: string): Promise<void> {
   try {
     appState.nodeOptions.set(nodeId, await readAfterSavedWrites(() => fetchNodeOptions(nodeId)));
@@ -276,7 +290,7 @@ async function loadRestartState(nodeId: string): Promise<void> {
 /** @implNote Waits for the nodes, as they say which nodes are this host's. */
 async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
   const loadNode = (nodeId: string) => Promise.all([loadNodeOptions(nodeId), loadRestartState(nodeId), openIgnoredNodeIds().includes(nodeId) ? loadIgnoredLists(nodeId) : null]);
-  await Promise.all([loadHostSettings(), nodesLoaded.then(() => Promise.all(readableLocalNodes().map((node) => loadNode(node.id))))]);
+  await Promise.all([loadHostSettings(), loadConnectionProfile(), loadPeerTable(), nodesLoaded.then(() => Promise.all(readableLocalNodes().map((node) => loadNode(node.id))))]);
 }
 
 /** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */

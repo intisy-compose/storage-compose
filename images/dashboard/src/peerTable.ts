@@ -2,6 +2,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Bridge, ConnectionOptions, ConnectionProfile, HostNetwork, NodeAddresses, PeerTable } from "./api/types.js";
 import { profileOptions } from "./connectionProfile.js";
+import { canReach } from "./reachability.js";
 
 /** What a node's keeper applies: its options, its listen addresses, and the addresses of every peer keyed by device ID. */
 export interface NodeConnections {
@@ -31,19 +32,6 @@ export function buildPeerTable(local: NodeAddresses[], localBridges: Bridge[], r
     bridges: [...bridges.values()].sort((first, second) => first.host.localeCompare(second.host)),
     builtAt,
   };
-}
-
-/** @implNote A LAN Windows marks `Public` is firewalled to the tailnet range (spec section 5), so it carries no LAN method. */
-function isUsable(profile: ConnectionProfile, network: HostNetwork): boolean {
-  if (network.kind === "lan") return profile.methods.lan && network.category !== "Public";
-  if (network.kind === "tailnet") return profile.methods.tailnet;
-  return profile.methods.nat;
-}
-
-/** @implNote A public address is reached from any network, so only a LAN or tailnet address needs the dialler on it too. */
-function canReach(profile: ConnectionProfile, own: HostNetwork[], network: HostNetwork): boolean {
-  if (!isUsable(profile, network)) return false;
-  return network.kind === "public" || own.some((ownNetwork) => ownNetwork.kind === network.kind && isUsable(profile, ownNetwork));
 }
 
 function hostPort(address: string, port: number): string {

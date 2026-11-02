@@ -52,7 +52,8 @@ describe("the connection profile in the data repo", () => {
   after(() => rmSync(root, { recursive: true, force: true }));
 
   async function ask(method: string, body: string): Promise<{ status: number; body: string }> {
-    const handler = requestHandler(connectionRoutes(ours), { invalidate: () => {}, record: () => {} }, hostAllowlist(["localhost"]));
+    const noPeers = { nodes: [], bridges: [], builtAt: "2026-11-02T10:00:00.000Z" };
+    const handler = requestHandler(connectionRoutes(ours, { local: async () => noPeers, all: async () => noPeers }), { invalidate: () => {}, record: () => {} }, hostAllowlist(["localhost"]));
     const server: Server = createServer((request, response) => void handler(request, response));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     const port = (server.address() as AddressInfo).port;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { closestKind, connectionKind } from "../src/connectionKind.js";
+import { bridgeHostOf, closestKind, connectionKind } from "../src/connectionKind.js";
 
 const arrayId = "X7KCOB7-4ZJQ2RT-W352REX-D36FWRQ-YSGVXEA-6YA5PZK-PHYIU5M-32WVQQ4";
 const laptopId = "LAPTOPA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
@@ -19,6 +19,16 @@ describe("connection kind", () => {
   it("relay-client is relay before the address is looked at", () => {
     assert.equal(kindOf("192.168.1.5:22067", "relay-client"), "relay");
     assert.equal(kindOf("100.75.83.74:22067", "relay-server"), "relay");
+  });
+
+  it("a relayed connection through a bridge of the cluster is bridge, naming the bridge's host", () => {
+    const bridges = new Map([["192.168.1.5", "pc"]]);
+    const through = (address: string) => ({ deviceId: laptopId, connected: true, type: "relay-client", address, localDeviceIds, bridges });
+    assert.equal(connectionKind(through("192.168.1.5:22100")), "bridge");
+    assert.equal(bridgeHostOf(through("relay://192.168.1.5:22100/?id=RELAY")), "pc");
+    assert.equal(connectionKind(through("203.0.113.9:22067")), "relay", "a public relay stays relay");
+    assert.equal(bridgeHostOf(through("203.0.113.9:22067")), null);
+    assert.equal(connectionKind({ ...through("192.168.1.5:22000"), type: "tcp-client" }), "local-network", "a direct connection to the bridge's host is not bridged");
   });
 
   it("100.75.83.74 and fd7a:115c:a1e0::1 are tailscale", () => {
@@ -56,6 +66,8 @@ describe("connection kind", () => {
     assert.equal(closestKind(["relay", "internet", "tailscale"]), "tailscale");
     assert.equal(closestKind(["tailscale", "local-network"]), "local-network");
     assert.equal(closestKind(["relay", "this-device"]), "this-device");
+    assert.equal(closestKind(["relay", "bridge"]), "bridge");
+    assert.equal(closestKind(["bridge", "internet"]), "internet");
     assert.equal(closestKind([]), null);
   });
 });

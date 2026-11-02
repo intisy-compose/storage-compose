@@ -7,7 +7,7 @@ import { conflictIndexes } from "./conflicts.js";
 import { type UnreadSources, recordPresentDrives } from "./driveHistory.js";
 import { agentEntries, agentProblem, readHeartbeat } from "./hostAgent.js";
 import { registryWarnings, statusRegistryEntries, syncthingEndpoint } from "./instances.js";
-import { connectionsStateOf } from "./connectionsDrift.js";
+import { bridgesByAddress, connectionsStateOf } from "./connectionsDrift.js";
 import { type JoinRecords, joinedNodeId } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { type LocalNodeSource, localNodeRules } from "./nodeSource.js";
@@ -298,7 +298,7 @@ async function buildNodesResponse(scope: "all" | "local", records: JoinRecords):
   const running = new Map([...views.map((view): [string, string] => [view.device.deviceId, view.nodeId]), ...agentNodes]);
   const remembered = rememberedLocalNodes(await deviceSeenStore.load());
   const local = localDeviceIds({ running, remembered, localNodeIds: new Set(ownNodes.map((node) => node.id)), otherHostNodes });
-  classifyConnections(views, local);
+  classifyConnections(views, local, bridgesByAddress());
   const kept = rememberable({ views, running, nodes: ownNodes }, ephemeral);
   await rememberDevices(kept.views, kept.running);
   await rememberDrives(kept.nodes, unread);
