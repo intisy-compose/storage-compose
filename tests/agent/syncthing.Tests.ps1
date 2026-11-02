@@ -445,6 +445,53 @@ Describe "the firewall per network profile" {
         Get-TestRule "d009" "udp private" | Should Not BeNullOrEmpty
     }
 
+    It "an unreadable connections file leaves the profile rules in place" {
+        $instance = New-SyncthingInstance (New-ConfiguredNode "d010" "unreadable")
+        $instance.state = "running"
+        $instance.ports = $ports
+        Write-ConnectionsFile @{ d010 = (New-ProfileEntry $true) }
+        Update-InstanceFirewall $instance
+        [System.IO.File]::WriteAllText($script:connectionsFile, '{ "d010": { "listenAdd')
+        Test-IsUnreadableConnections (Get-NodeConnections $instance.node) | Should Be $true
+        Update-InstanceFirewall $instance
+        Get-TestRule "d010" "tcp private" | Should Not BeNullOrEmpty
+        Get-TestRule "d010" "discovery private" | Should Not BeNullOrEmpty
+        $global:firewallRules.ContainsKey("storage-compose syncthing d010 udp") | Should Be $false
+        $instance.usesLan | Should Be $true
+        Remove-Item -LiteralPath $script:connectionsFile
+        Update-InstanceFirewall $instance
+        Get-TestRule "d010" "udp" | Should Not BeNullOrEmpty
+        $global:firewallRules.ContainsKey("storage-compose syncthing d010 tcp private") | Should Be $false
+    }
+
+    It "a start with an unreadable connections file keeps the profile settings and rules" {
+        Mock Stop-NodeSyncthingProcesses { }
+        Mock Start-SyncthingProcess { return 4242 }
+        Mock Get-NodePorts { return $ports }
+        $node = New-ConfiguredNode "d011" "unreadable-start"
+        $entry = @{
+            options = @{ localAnnounceEnabled = $true; relaysEnabled = $true; natEnabled = $true; maxSendKbps = 500 }
+            listenAddresses = @("tcp://0.0.0.0:32120", "quic://0.0.0.0:32120", "dynamic+https://relays.syncthing.net/endpoint")
+            deviceAddresses = @{}
+        }
+        Write-ConnectionsFile @{ d011 = $entry }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        [System.IO.File]::WriteAllText($script:connectionsFile, "")
+        $instance = New-SyncthingInstance $node
+        Start-NodeSyncthing $instance "100.100.1.2"
+        $instance.state | Should Be "running"
+        $instance.usesProfile | Should Be $true
+        (Get-ConfiguredListenAddresses $node) -join " " | Should Be ($entry.listenAddresses -join " ")
+        $options = Read-ConfigOptions $node
+        $options.localAnnounceEnabled | Should Be "true"
+        $options.relaysEnabled | Should Be "true"
+        $options.natEnabled | Should Be "true"
+        $options.maxSendKbps | Should Be "500"
+        Get-TestRule "d011" "tcp private" | Should Not BeNullOrEmpty
+        Get-TestRule "d011" "discovery private" | Should Not BeNullOrEmpty
+        $global:firewallRules.ContainsKey("storage-compose syncthing d011 udp") | Should Be $false
+    }
+
     Reset-Agent
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
 }

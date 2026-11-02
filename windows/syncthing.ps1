@@ -89,20 +89,56 @@ function Test-IsConnectionsEntry($Entry) {
     return $addresses.Count -gt 0 -and @($addresses | Where-Object { -not (Test-IsProfileListenAddress $_) }).Count -eq 0
 }
 
+$unreadableConnections = [pscustomobject]@{ unreadable = $true }
+
+function Test-IsUnreadableConnections($Connections) { return [object]::ReferenceEquals($Connections, $unreadableConnections) }
+
+function Read-ConnectionsFile([string]$Path) {
+    try { $byNode = Get-Content -Raw -LiteralPath $Path -ErrorAction Stop | ConvertFrom-Json } catch { return $unreadableConnections }
+    if ($byNode -isnot [System.Management.Automation.PSCustomObject]) { return $unreadableConnections }
+    return $byNode
+}
+
 <#
 .NOTES
 The node's entry of the connections file the dashboard writes through a read-write bind (the agent
 never writes it). Null without the file, without an entry for the node, or with an entry that is not
 an object whose listen addresses are all Syncthing address strings: a malformed value written into
-config.xml can keep Syncthing from loading it, so such a node stays tailnet-only instead.
+config.xml can keep Syncthing from loading it, so such a node stays tailnet-only instead. A file that
+exists but cannot be read or parsed (caught mid-write, say) is $unreadableConnections, never null, so
+the callers keep the node's current rules and settings instead of swapping it to tailnet-only.
 #>
 function Get-NodeConnections($Node) {
-    if (-not $script:connectionsFile) { return $null }
-    $byNode = Read-JsonFile $script:connectionsFile
-    if (-not $byNode -or -not $byNode.PSObject.Properties[$Node.id]) { return $null }
+    if (-not $script:connectionsFile -or -not (Test-Path -LiteralPath $script:connectionsFile)) { return $null }
+    $byNode = Read-ConnectionsFile $script:connectionsFile
+    if (Test-IsUnreadableConnections $byNode) { return $byNode }
+    if (-not $byNode.PSObject.Properties[$Node.id]) { return $null }
     $entry = $byNode.($Node.id)
     if (-not (Test-IsConnectionsEntry $entry)) { return $null }
     return $entry
+}
+
+function Test-IsTailnetOnlyListen($Addresses) {
+    return @($Addresses).Count -eq 1 -and "$(@($Addresses)[0])" -match '^tcp://(?!0\.0\.0\.0:)'
+}
+
+<#
+.NOTES
+The entry a node's config.xml already runs with: its listen addresses and whether local announce is
+on, which is all the start and the firewall read from an entry. Null for a tailnet-only config.
+#>
+function Get-ConfiguredConnections($Node) {
+    try { $options = ([xml][System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node))).configuration.options } catch { return $null }
+    $addresses = @($options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
+    $entry = [pscustomobject]@{ options = [pscustomobject]@{ localAnnounceEnabled = "$($options.localAnnounceEnabled)" -eq "true" }; listenAddresses = $addresses }
+    if ((Test-IsTailnetOnlyListen $addresses) -or -not (Test-IsConnectionsEntry $entry)) { return $null }
+    return $entry
+}
+
+function Get-StartConnections($Node) {
+    $connections = Get-NodeConnections $Node
+    if (Test-IsUnreadableConnections $connections) { return Get-ConfiguredConnections $Node }
+    return $connections
 }
 
 function Get-NodeListenAddresses($Connections, [string]$ListenHost, $Ports) {
@@ -330,6 +366,7 @@ names an older agent left) on its first round.
 function Update-InstanceFirewall($Instance) {
     if ($Instance.state -ne "running" -or -not $Instance.ports) { return }
     $connections = Get-NodeConnections $Instance.node
+    if (Test-IsUnreadableConnections $connections) { return }
     if ((Get-InstanceFirewallShape $Instance $connections) -eq $Instance.firewallShape) { return }
     try { Set-InstanceFirewall $Instance $connections } catch { Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): firewall rules not updated: $_" }
 }
@@ -467,7 +504,7 @@ function Start-NodeSyncthing($Instance, [string]$ListenHost) {
         $Instance.ports = Get-NodePorts $node
         New-Item -ItemType Directory -Force -Path (Get-SyncthingHome $node) | Out-Null
         if (-not (Test-Path -LiteralPath (Get-SyncthingConfigPath $node))) { New-SyncthingConfig $node }
-        $connections = Get-NodeConnections $node
+        $connections = Get-StartConnections $node
         $identity = Set-SyncthingConfig $node $Instance.ports $ListenHost $connections
         $Instance.apiKey = $identity.apiKey
         $Instance.deviceId = $identity.deviceId
@@ -513,7 +550,7 @@ function Resume-OrphanedSyncthing($Instance) {
         $Instance.apiKey = $document.configuration.gui.apikey
         $Instance.listenAddress = $document.configuration.options.listenAddress | Select-Object -First 1
     } catch { }
-    $Instance.usesProfile = [bool](Get-NodeConnections $Instance.node)
+    $Instance.usesProfile = [bool](Get-StartConnections $Instance.node)
     $Instance.deviceId = Get-SyncthingDeviceId $Instance.node
     Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): took over the running Syncthing, pid $($Instance.processId)"
     return $true
