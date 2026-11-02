@@ -252,7 +252,7 @@ function formBody(state: ClusterFormState, read: ProfileRead): HTMLElement {
     profileState(read),
     element("h3", { className: "settings-subheading" }, "Methods"),
     element("div", { className: "form-fields device-fields" }, methodFields(state), setting(formId, "globalDiscovery", "Global discovery servers", listControl(state, "globalDiscovery"), "One per line: default, or an https:// address; empty turns global discovery off.")),
-    element("div", { className: "form-fields device-fields" }, setting(formId, "bridgePort", "Bridge port", numberControl(state, "bridgePort", 1), "Outside 22000-22099, the nodes' sync ports.")),
+    element("div", { className: "form-fields device-fields" }, element("div", { className: "setting" }, element("span", {}, "Bridge port"), element("span", {}, "22100, fixed by the port table"))),
     element("h3", { className: "settings-subheading" }, "Bandwidth"),
     limitFields(state),
     overridesList(),
