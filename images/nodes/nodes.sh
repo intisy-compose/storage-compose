@@ -37,12 +37,15 @@ wanted_nodes() {
     done
 }
 
-port_index() {   # <id>: the node's n, given once and kept
-    local index
+is_index_taken() { awk -v n="$1" '$2 == n {found = 1} END {exit !found}' "$ports_file"; }
+
+port_index() {   # <id>: the node's n, given once and kept; fails when 21 to 99 are all taken
+    local index candidate
     touch "$ports_file"
     index=$(awk -v id="$1" '$1 == id {print $2}' "$ports_file")
     if [ -z "$index" ]; then
-        for index in $(seq 21 99); do awk -v n="$index" '$2 == n {found = 1} END {exit !found}' "$ports_file" || break; done
+        for candidate in $(seq 21 99); do is_index_taken "$candidate" || { index=$candidate; break; }; done
+        [ -n "$index" ] || { log "no sync port left for $1: 22021 to 22099 are all taken" >&2; return 1; }
         echo "$1 $index" >> "$ports_file"
     fi
     echo "$index"
@@ -83,7 +86,7 @@ start_guard() {   # <id> <home> <gui address>
 
 start_instance() {   # <id> <home> <kind>
     local id=$1 home=$2 index gui
-    index=$(port_index "$id")
+    index=$(port_index "$id") || return 1
     gui="0.0.0.0:$(( 8390 + index ))"
     prepare_home "$id" "$home" "$(( 22000 + index ))" || { log "could not prepare $home"; return 1; }
     STGUIADDRESS=$gui setpriv --reuid="$service_user" --regid="$service_user" --clear-groups \

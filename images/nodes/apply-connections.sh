@@ -3,8 +3,8 @@
 # dashboard's /status/connections.json once the node's Syncthing answers, for the nodes service's
 # instances and the cluster alike (POSIX sh: the cluster's image has busybox only). Only the options
 # and listen addresses; each device's addresses stay the dashboard's, which adds no device. A missing
-# file or entry changes nothing; a value of the wrong type or a listen address of an unknown scheme
-# is left out, never sent.
+# file or entry changes nothing; an option of the wrong type is left out, and a listen list with any
+# address of an unknown scheme is left out whole, as the host agent does (windows/syncthing.ps1).
 set -u
 
 node=$1
@@ -24,11 +24,11 @@ wanted_options() {
             elif $key == "limitBandwidthInLan" or $key == "natEnabled" or $key == "localAnnounceEnabled"
                 or $key == "globalAnnounceEnabled" or $key == "relaysEnabled" then type == "boolean"
             else false end;
-        def is_listen_address: type == "string" and test("^(tcp|quic|relay|dynamic\\+https)://[^[:space:]]+$");
+        def is_listen_address: type == "string" and test("^(tcp|quic|relay|dynamic\\+https?)://");
+        def is_listen_list: type == "array" and length > 0 and all(.[]; is_listen_address);
         .[$id] | select(type == "object")
         | ((.options | if type == "object" then . else {} end) | with_entries(select(.key as $key | .value | is_valid($key)))) as $options
-        | ((.listenAddresses | if type == "array" then . else [] end) | map(select(is_listen_address))) as $listen
-        | $options + (if $listen == [] then {} else {listenAddresses: $listen} end)
+        | $options + (if .listenAddresses | is_listen_list then {listenAddresses: .listenAddresses} else {} end)
         | select(length > 0)' "$connections" 2> /dev/null
 }
 

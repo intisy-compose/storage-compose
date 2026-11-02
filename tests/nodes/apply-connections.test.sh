@@ -92,6 +92,10 @@ cat > "$profile" << 'EOF'
   "a7b8": {
     "options": { "relaysEnabled": false, "maxSendKbps": "fast" },
     "listenAddresses": ["tcp://0.0.0.0:22024", "udp://0.0.0.0:22024"]
+  },
+  "c9d0": {
+    "options": { "natEnabled": true },
+    "listenAddresses": ["tcp://0.0.0.0:22025", "dynamic+http://relays.example/endpoint"]
   }
 }
 EOF
@@ -104,9 +108,12 @@ check "it sends the node's options and listen addresses" \
 exit 0' "$(run_apply "$profile" a1b2)"
 check "an invalid entry changes nothing" "exit 0" "$(run_apply "$profile" c3d4)"
 check "an entry of nothing but invalid values changes nothing" "exit 0" "$(run_apply "$profile" e5f6)"
-check "an invalid value is left out and the valid ones are sent" \
-    'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"relaysEnabled":false,"listenAddresses":["tcp://0.0.0.0:22024"]}
+check "a list with one invalid address leaves the listen addresses unchanged while a valid option is still sent" \
+    'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"relaysEnabled":false}
 exit 0' "$(run_apply "$profile" a7b8)"
+check "a listen list takes the host agent's schemes, dynamic+http included" \
+    'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"natEnabled":true,"listenAddresses":["tcp://0.0.0.0:22025","dynamic+http://relays.example/endpoint"]}
+exit 0' "$(run_apply "$profile" c9d0)"
 echo '{"a1b2": ' > "$scratch/broken.json"
 check "an unreadable file changes nothing" "exit 0" "$(run_apply "$scratch/broken.json" a1b2)"
 check "a Syncthing that never answers is sent nothing" "exit 1" "$(CURL_PING_FAILS=1 run_apply "$profile" a1b2)"
@@ -127,6 +134,9 @@ check "the next new node takes the next free port" 22 "$(port_index e5f6)"
 check "the assignments are kept" "c3d4 3
 a1b2 21
 e5f6 22" "$(cat "$ports_file")"
+for index in $(seq 21 99); do echo "n$index $index"; done > "$ports_file"
+port_index f0f0 > /dev/null 2>&1
+check "with 21-99 all taken a new node gets no port" "1 79" "$? $(wc -l < "$ports_file")"
 
 write_config() {   # <home> <listen address>...
     mkdir -p "$1"
