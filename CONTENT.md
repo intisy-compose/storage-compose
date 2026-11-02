@@ -20,6 +20,7 @@ Samba, Syncthing and Kopia); the migration onto the real drives follows.
 | `samba` | `ghcr.io/crazy-max/samba:4.23.8` | the pool as one SMB share, `\\storage.<tailnet>.ts.net\storage` |
 | `syncthing` | built, `ghcr.io/syncthing/syncthing:2.1.6` + jq | a Syncthing peer whose folders live anywhere in the pool, nested ones too (`pool/Documents`, `pool/Documents/GitHub`); its GUI is on this host only, `http://localhost:8443`; it applies the connection profile at each start |
 | `nodes` | built, `debian:trixie-slim` + Syncthing 2.1.6 | one Syncthing per drive node, folder node and array other than the cluster, each with the identity kept on its own storage, on sync ports 22021 and up (22001 to 22020 are the host agent's), applying the connection profile at each start |
+| `bridge` | `syncthing/relaysrv:2.1.7` | the host's one private Syncthing relay on port 22100, in the gateway's network, for peers that share no network with a Docker node; its key lives on the array, so its relay id survives a rebuild |
 | `kopia` | built from the Kopia 0.23.1 release binary | a Kopia repository server on `pool/kopia`, `https://storage.<tailnet>.ts.net:51515` |
 
 Every image is pinned to a version.
@@ -188,9 +189,15 @@ login. Its tests read `tests/fixtures/drive-sync.toml`, never a real list:
 ## Sharing, syncing and backups
 
 Tailscale serve forwards the tailnet ports straight into the stack: 443 (dashboard and join API), 445 (Samba),
-22000 (Syncthing sync), 22001 to 22008 (the node Syncthings) and 51515 (Kopia). The host itself
-reaches the dashboard at `http://localhost:8442` and the Syncthing GUI at `http://localhost:8443`,
-both published on 127.0.0.1; the GUI is not on the tailnet. The dashboard answers only requests
+22000 (Syncthing sync), 22001 to 22099 (the node Syncthings), 22100 (the bridge) and 51515 (Kopia),
+TCP only. The gateway also publishes the sync ports on every interface of the host, TCP and UDP:
+22000, 22021 to 22099 (the nodes service's nodes; 22001 to 22020 stay free for the host agent's
+native nodes) and 22100, so peers on the LAN reach the Docker nodes directly; Syncthing
+authenticates every peer by its device ID. The `bridge` is this host's private Syncthing relay
+(`strelaysrv`, in no public pool, its status listener off) on 22100: peers that share no network
+with a Docker node meet through it, and it writes its relay id to `/status/bridge.json` for the
+dashboard. The host itself reaches the dashboard at `http://localhost:8442` and the Syncthing GUI
+at `http://localhost:8443`, both published on 127.0.0.1; the GUI is not on the tailnet. The dashboard answers only requests
 addressed to `localhost`, `127.0.0.1`, `[::1]`, its `ts.net` name or a name in
 `DASHBOARD_EXTRA_HOSTS`, and any other name gets 421, so a site that points its own name at
 127.0.0.1 cannot read or change it. The logins are generated once and kept on the cluster's `data1`, so every host that
