@@ -140,10 +140,12 @@ new_node_id() { od -An -N2 -tx1 /dev/urandom | tr -d ' \n'; }
 local_device_id() { as_owner syncthing device-id --home="$syncthing_home" 2> /dev/null | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$' | head -n 1; }
 
 # The keys exist before the node file, so the file is named after the device list's entry for this ID.
+# A kept connections.json belonged to the old device ID, so new keys start from the tailnet only.
 generate_keys() {
     [[ -f "$syncthing_home/config.xml" ]] && return 0
     [[ -d "$join_root" ]] || fail "the data root $join_root does not exist"
     as_owner syncthing generate --home="$syncthing_home" --no-port-probing > /dev/null
+    rm -f "$syncthing_home/connections.json"
     changed "generated Syncthing's keys in $syncthing_home"
 }
 
@@ -185,7 +187,7 @@ install_step() {
 
 unit_text() {
     local step_command
-    step_command="$step_dir/$STEP_NAME $(dashboard_url) $(joined_node_id) $syncthing_home"
+    step_command="$step_dir/$STEP_NAME $(dashboard_url) $(joined_node_id) $syncthing_home $listen_port"
     cat << EOF
 [Unit]
 Description=Syncthing for the storage node at $join_root

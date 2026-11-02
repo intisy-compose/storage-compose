@@ -144,6 +144,15 @@ function Get-RootSyncthing { return [pscustomobject]@{ root = [System.IO.Path]::
 
 <#
 .NOTES
+A kept connections.json belonged to the old device ID, so new keys start from the tailnet only.
+#>
+function New-JoinSyncthingKeys($Node) {
+    New-SyncthingConfig $Node
+    Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath ([System.IO.Path]::Combine((Get-SyncthingHome $Node), "connections.json"))
+}
+
+<#
+.NOTES
 The keys exist before the node file, so the file is named after the device list's entry for this
 device's ID; the host agent then finds a home that already has them.
 #>
@@ -153,7 +162,7 @@ function Initialize-SyncthingKeys {
     if (Test-Path -LiteralPath (Get-SyncthingConfigPath $rootSyncthing)) { return }
     if (-not (Test-Path -LiteralPath $Root)) { throw "the data root $Root does not exist" }
     New-Item -ItemType Directory -Force -Path (Get-SyncthingHome $rootSyncthing) | Out-Null
-    New-SyncthingConfig $rootSyncthing
+    New-JoinSyncthingKeys $rootSyncthing
     Write-JoinChange "generated Syncthing's keys in $(Get-SyncthingHome $rootSyncthing)"
 }
 
@@ -247,7 +256,7 @@ function Get-JoinedNodeId($Node) {
 }
 
 function Get-ConnectionsStepArguments($Node) {
-    return "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $repository "join\storage-connections.ps1")`" -Dashboard `"$(Get-DashboardUrl)`" -NodeId $(Get-JoinedNodeId $Node) -SyncthingHome `"$(Get-SyncthingHome $Node)`""
+    return "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $repository "join\storage-connections.ps1")`" -Dashboard `"$(Get-DashboardUrl)`" -NodeId $(Get-JoinedNodeId $Node) -SyncthingHome `"$(Get-SyncthingHome $Node)`" -ListenPort $userSyncthingListenPort"
 }
 
 <#
@@ -291,7 +300,7 @@ device uses; it listens on the tailnet only, like every node.
 function Start-UserSyncthing($Node) {
     $ports = [pscustomobject]@{ gui = $userSyncthingGuiPort; listen = $userSyncthingListenPort }
     New-Item -ItemType Directory -Force -Path (Get-SyncthingHome $Node) | Out-Null
-    if (-not (Test-Path -LiteralPath (Get-SyncthingConfigPath $Node))) { New-SyncthingConfig $Node; Write-JoinChange "generated Syncthing's keys in $(Get-SyncthingHome $Node)" }
+    if (-not (Test-Path -LiteralPath (Get-SyncthingConfigPath $Node))) { New-JoinSyncthingKeys $Node; Write-JoinChange "generated Syncthing's keys in $(Get-SyncthingHome $Node)" }
     $listenHost = Get-TailnetAddress
     if (-not $listenHost) { $listenHost = "127.0.0.1" }
     $running = Find-SyncthingProcess $Node

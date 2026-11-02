@@ -174,7 +174,7 @@ try {
             $actions = @($global:tasks["storage-compose syncthing pc-test"].Actions)
             $actions.Count | Should Be 2
             $actions[0].Execute | Should Be (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe")
-            $actions[0].Arguments | Should Be "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $repository "join\storage-connections.ps1")`" -Dashboard `"$Dashboard`" -NodeId $nodeId -SyncthingHome `"$($script:nodeRoot).storage\syncthing`""
+            $actions[0].Arguments | Should Be "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $repository "join\storage-connections.ps1")`" -Dashboard `"$Dashboard`" -NodeId $nodeId -SyncthingHome `"$($script:nodeRoot).storage\syncthing`" -ListenPort $userSyncthingListenPort"
         }
         It "opens its sync port to the tailnet only, before Windows can ask" {
             $node = Read-NodeFile $script:nodeRoot
@@ -242,8 +242,8 @@ try {
         New-Item -ItemType Directory -Force -Path $stepHome, (Join-Path $scratch "dashboard\connections") | Out-Null
         Copy-Item "$($script:nodeRoot).storage\syncthing\config.xml" $stepConfig
         $entry = Join-Path $scratch "dashboard\connections\device-steptst.json"
-        function Invoke-Step([string]$Url) {
-            & (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repository "join\storage-connections.ps1") -Dashboard $Url -NodeId "device-steptst" -SyncthingHome $stepHome | Out-Null
+        function Invoke-Step([string]$Url, [string]$Port = "22000") {
+            & (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repository "join\storage-connections.ps1") -Dashboard $Url -NodeId "device-steptst" -SyncthingHome $stepHome -ListenPort $Port | Out-Null
             return $LASTEXITCODE
         }
         function Get-StepOptions {
@@ -285,6 +285,21 @@ try {
             Invoke-Step $Dashboard | Should Be 0
             (Get-FileHash $stepConfig).Hash | Should Be $before
             [System.IO.File]::ReadAllText($kept) | Should Match "quic://"
+        }
+        It "a device joined on 22001 keeps 22001 after the step, relay and pool addresses untouched" {
+            [System.IO.File]::WriteAllText($entry, '{"options": {}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://[::]:22000", "relay://10.0.0.1:22100/?id=RELAY", "dynamic+https://relays.syncthing.net/endpoint"], "deviceAddresses": {}}')
+            Invoke-Step $Dashboard "22001" | Should Be 0
+            $options = ([xml][System.IO.File]::ReadAllText($stepConfig)).configuration.options
+            (@($options.SelectNodes('listenAddress') | ForEach-Object { $_.InnerText }) -join ',') | Should Be "tcp://0.0.0.0:22001,quic://[::]:22001,relay://10.0.0.1:22100/?id=RELAY,dynamic+https://relays.syncthing.net/endpoint"
+        }
+        It "new keys drop the copy kept for the old device ID" {
+            $freshRoot = Join-Path $scratch "keys-root"
+            New-Item -ItemType Directory -Force -Path (Join-Path $freshRoot ".storage\syncthing") | Out-Null
+            [System.IO.File]::WriteAllText((Join-Path $freshRoot ".storage\syncthing\connections.json"), '{"listenAddresses": ["tcp://0.0.0.0:22000"]}')
+            $Root = $freshRoot
+            Initialize-SyncthingKeys
+            Test-Path (Join-Path $freshRoot ".storage\syncthing\config.xml") | Should Be $true
+            Test-Path (Join-Path $freshRoot ".storage\syncthing\connections.json") | Should Be $false
         }
     }
 
@@ -450,7 +465,7 @@ try {
         $config.configuration.gui.address = "127.0.0.1:18484"
         foreach ($listen in @($config.configuration.options.SelectNodes("listenAddress"))) { $listen.InnerText = "tcp://0.0.0.0:32184" }
         $config.Save((Join-Path $oldHome "config.xml"))
-        $old = Start-Process -FilePath $winget -ArgumentList "serve --no-browser --no-console" -WindowStyle Hidden -PassThru
+        $old = Start-Process -FilePath $winget -ArgumentList "serve --no-browser --no-console --no-upgrade" -WindowStyle Hidden -PassThru
         $oldKey = Get-ApiKey $oldHome
         $oldApi = { param($Method, $Path, $Body) $arguments = @{ Method = $Method; Uri = "http://127.0.0.1:18484$Path"; Headers = @{ "X-API-Key" = $oldKey }; UseBasicParsing = $true }; if ($Body) { $arguments["Body"] = $Body; $arguments["ContentType"] = "application/json" }; Invoke-RestMethod @arguments }
         $deadline = (Get-Date).AddSeconds(60)

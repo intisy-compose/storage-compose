@@ -97,7 +97,7 @@ check "the request" "{\"name\":\"p53\",\"os\":\"linux\",\"syncthingDeviceId\":\"
 check "the peer connects to the device over the tailnet address" true "$(wait_for_connection "$device_id")"
 step=/usr/local/lib/storage-join/storage-connections
 node_id="device-$(printf '%s' "${device_id:0:7}" | tr '[:upper:]' '[:lower:]')"
-check "the unit runs the connections step before syncthing" "-$step http://127.0.0.1:$dashboard_port $node_id /data/.storage/syncthing" "$(sed -n 's/^ExecStartPre=//p' /etc/systemd/system/storage-syncthing.service)"
+check "the unit runs the connections step before syncthing" "-$step http://127.0.0.1:$dashboard_port $node_id /data/.storage/syncthing 22000" "$(sed -n 's/^ExecStartPre=//p' /etc/systemd/system/storage-syncthing.service)"
 check "the step is the join's own, installed beside the unit" "$(sha256sum < /join/storage-connections.sh)" "$(sha256sum < "$step")"
 
 echo "The second run changes nothing:"
@@ -130,6 +130,12 @@ restart_device
 check "the dashboard's entry is applied before syncthing starts, a wrongly typed option left out" "$on_profile" "$(options_now)"
 check "and kept in the node's home" "$(jq -c . "$entry")" "$(jq -c . /data/.storage/syncthing/connections.json 2> /dev/null)"
 check "owned by the node's owner" finn "$(stat -c %U /data/.storage/syncthing/connections.json 2> /dev/null)"
+cp -a /data/.storage/syncthing /tmp/port-home && rm -f /tmp/port-home/connections.json
+printf '{"options": {}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://[::]:22000", "relay://10.0.0.1:22100/?id=RELAY", "dynamic+https://relays.syncthing.net/endpoint"], "deviceAddresses": {}}' > /tmp/dashboard/connections/device-porttst.json
+su-exec finn "$step" "http://127.0.0.1:$dashboard_port" device-porttst /tmp/port-home 22001 > /dev/null 2>&1
+check "a device joined on 22001 keeps 22001 after the step, relay and pool addresses untouched" \
+    "tcp://0.0.0.0:22001,quic://[::]:22001,relay://10.0.0.1:22100/?id=RELAY,dynamic+https://relays.syncthing.net/endpoint" \
+    "$(sed -n 's:.*<listenAddress>\(.*\)</listenAddress>.*:\1:p' /tmp/port-home/config.xml | sed 's/&amp;/\&/g' | paste -sd, -)"
 kill "$dashboard_pid" && wait "$dashboard_pid" 2> /dev/null
 device_patch /rest/config/options "$(jq -n '{listenAddresses: ["tcp://127.0.0.1:22000"], globalAnnounceEnabled: false, maxSendKbps: 0}')" > /dev/null
 restart_device
@@ -147,6 +153,9 @@ check "its config untouched by the step" "$config_before" "$(sha256sum < /data/.
 check "and no copy is made up" false "$([[ -e /data/.storage/syncthing/connections.json ]] && echo true || echo false)"
 check "the step itself exits 0 without a dashboard" 0 "$(su-exec finn "$step" http://127.0.0.1:1 "$node_id" /data/.storage/syncthing > /dev/null 2>&1; echo $?)"
 start_dashboard
+mkdir -p /data5/.storage/syncthing && echo '{"listenAddresses": ["tcp://0.0.0.0:22000"]}' > /data5/.storage/syncthing/connections.json && chown -R finn:finn /data5
+bash -c "source $join; use_root /data5; generate_keys" > /dev/null
+check "new keys drop the copy kept for the old device ID" false "$([[ -e /data5/.storage/syncthing/connections.json ]] && echo true || echo false)"
 
 echo "The auth key from the stick's personal folder:"
 echo NeedsLogin > /run/fake-tailscale/state

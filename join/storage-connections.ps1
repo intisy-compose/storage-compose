@@ -4,7 +4,8 @@
 The start step of a node's Syncthing on a device joined without the host agent: the join's logon task
 runs it before Syncthing. Fetches the node's entry from the dashboard's GET
 /api/connections/node/<NodeId>, keeps it as connections.json in the Syncthing home, and writes its
-options and listen addresses into config.xml before Syncthing starts.
+options and listen addresses into config.xml before Syncthing starts, each tcp:// and quic:// listen
+address on the device's own -ListenPort.
 
 .DESCRIPTION
 A dashboard that does not answer within 10 s leaves the kept copy in use; without a copy nothing
@@ -15,7 +16,8 @@ never keeps Syncthing from starting.
 param(
     [string]$Dashboard,
     [string]$NodeId,
-    [string]$SyncthingHome
+    [string]$SyncthingHome,
+    [string]$ListenPort
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,12 +46,24 @@ function Save-DashboardEntry {
     Move-Item -Force -LiteralPath "$kept.partial" -Destination $kept
 }
 
+<#
+.NOTES
+The dashboard assumes 22000 for every joined device and leaves the device's own port to this step.
+#>
+function ConvertTo-OwnListenPort($Address) {
+    if ($Address -isnot [string] -or $ListenPort -notmatch '^\d+$' -or $Address -notmatch '^(tcp|quic)://') { return $Address }
+    return $Address -replace ':\d+((?:[/?].*)?)$', ":$ListenPort`$1"
+}
+
 function Set-KeptConnections {
     $kept = Get-KeptConnectionsPath
     $configPath = [System.IO.Path]::Combine($SyncthingHome, "config.xml")
     if (-not ((Test-Path -LiteralPath $kept) -and (Test-Path -LiteralPath $configPath))) { return }
     $entry = ConvertFrom-ConnectionsText ([System.IO.File]::ReadAllText($kept))
     if (-not $entry) { return }
+    if ($entry.PSObject.Properties["listenAddresses"] -and $entry.listenAddresses -is [array]) {
+        $entry.listenAddresses = @($entry.listenAddresses | ForEach-Object { ConvertTo-OwnListenPort $_ })
+    }
     $document = New-Object System.Xml.XmlDocument
     $document.Load($configPath)
     $options = $document.DocumentElement.SelectSingleNode("options")
