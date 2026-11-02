@@ -217,7 +217,7 @@ function changeLine(entry: ActivityEntry): HTMLElement {
     "li",
     { className: "change-line" },
     element("code", { className: "change-path" }, change ? `${change.path}${change.item === "dir" ? "/" : ""}` : entry.text),
-    element("small", {}, `${change?.action ?? "changed"} on ${node}${by}, ${formatDate(entry.at)}`),
+    element("small", {}, change ? `${change.action} on ${node}${by}, ${formatDate(entry.at)}` : formatDate(entry.at)),
   );
 }
 

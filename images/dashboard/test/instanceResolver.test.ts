@@ -36,6 +36,8 @@ function remoteNode(overrides: Partial<StorageNode>): StorageNode {
     peers: [],
     folders: [],
     dashboardUrl: null,
+    keeper: null,
+    restartConfirmRequired: false,
     ...overrides,
   };
 }

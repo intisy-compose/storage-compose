@@ -412,6 +412,9 @@ a.button { display: inline-block; text-decoration: none; color: inherit; }
   border: 1px solid var(--line-strong); background: var(--surface); min-width: 0; width: 100%;
 }
 .form-fields input:focus, .form-fields select:focus, .setting input:focus, .setting select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.form-fields input:disabled, .form-fields select:disabled, .form-fields textarea:disabled, .setting input:disabled, .setting select:disabled, .setting textarea:disabled {
+  background: var(--surface-sunken); color: var(--text-muted); border-style: dashed; cursor: not-allowed;
+}
 
 .folder-list { display: flex; flex-direction: column; }
 .folder-row {

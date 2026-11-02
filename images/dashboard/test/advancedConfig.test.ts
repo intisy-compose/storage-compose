@@ -82,6 +82,8 @@ interface FakeNode {
   url: string;
   config: Config;
   requiresRestart: boolean;
+  /** False once the node stops answering whether it needs a restart, as while it restarts. */
+  answersRestartRequired: boolean;
   requests: FakeRequest[];
   close(): void;
 }
@@ -102,7 +104,7 @@ function answer(node: FakeNode, method: string, path: string, body: unknown): [n
   const folder = /^\/rest\/config\/folders\/([^/]+)$/.exec(path);
   const device = /^\/rest\/config\/devices\/([^/]+)$/.exec(path);
   if (path === "/rest/system/status") return [200, { myID: ownId }];
-  if (path === "/rest/config/restart-required") return [200, { requiresRestart: node.requiresRestart }];
+  if (path === "/rest/config/restart-required") return node.answersRestartRequired ? [200, { requiresRestart: node.requiresRestart }] : [503, { error: "restarting" }];
   if (path === "/rest/system/restart" && method === "POST") {
     node.requiresRestart = false;
     return [200, { ok: "restarting" }];
@@ -128,7 +130,7 @@ function answer(node: FakeNode, method: string, path: string, body: unknown): [n
 }
 
 async function fakeSyncthing(listenAddress: string): Promise<FakeNode> {
-  const node: FakeNode = { url: "", config: nodeConfig(listenAddress), requiresRestart: false, requests: [], close: () => {} };
+  const node: FakeNode = { url: "", config: nodeConfig(listenAddress), requiresRestart: false, answersRestartRequired: true, requests: [], close: () => {} };
   const server = createServer(async (request, response) => {
     const path = new URL(request.url ?? "/", "http://fake").pathname;
     const body = await requestBody(request);
@@ -311,11 +313,20 @@ describe("the advanced config editor and restarts", () => {
 
     assert.equal((await send("PATCH", "/api/nodes/fb98/advanced/options", { keepTemporariesH: 12 })).status, 200);
     assert.equal((await send("PATCH", `/api/nodes/fb98/advanced/devices/${otherId}`, { name: "renamed-other" })).status, 200, "only pc's own device name is the host agent's");
-    assert.equal((await send("PATCH", "/api/nodes/5784/advanced/options", { relaysEnabled: true })).status, 200, "the nodes service rewrites only the listen address");
+    assert.equal((await send("PATCH", "/api/nodes/5784/advanced/options", { relaysEnabled: true })).status, 200, "an array other than ARRAY_PREFIX (the tests' cluster is \"storage\"): the nodes service rewrites only its listen address");
     assert.equal((await send("PATCH", `/api/nodes/5784/advanced/devices/${ownId}`, { name: "private-array-renamed" })).status, 200);
     assert.equal((await send("PATCH", "/api/nodes/d7e5/advanced/options", { relaysEnabled: true, listenAddresses: ["tcp://:22006"] })).status, 200, "nothing rewrites the peer's");
     assert.deepEqual(writesTo(pc).map((write) => write.body), [{ keepTemporariesH: 12 }, { name: "renamed-other" }]);
     assert.deepEqual(writesTo(array).map((write) => write.body), [{ relaysEnabled: true }, { name: "private-array-renamed" }]);
+  });
+
+  it("a save whose restart need cannot be read again answers it as unknown, not as false", async () => {
+    peer.answersRestartRequired = false;
+    const answer = await send("PATCH", "/api/nodes/d7e5/advanced/folders/dashboard-test-a", { maxConflicts: 12 });
+    assert.equal(answer.status, 200);
+    const saved = (await answer.json()) as AdvancedConfig;
+    assert.equal(saved.config.maxConflicts, 12);
+    assert.equal(saved.restartRequired, null);
   });
 
   it("restart required is reported per node", async () => {

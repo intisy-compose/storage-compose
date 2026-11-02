@@ -50,6 +50,8 @@ function node(overrides: Partial<StorageNode>): StorageNode {
     peers: [],
     folders: [],
     dashboardUrl: null,
+    keeper: null,
+    restartConfirmRequired: false,
     ...overrides,
   };
 }

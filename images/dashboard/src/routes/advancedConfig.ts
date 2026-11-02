@@ -70,7 +70,7 @@ export function advancedEditText(nodeName: string, target: AdvancedTarget, curre
   return [`${nodeName}: changed ${what} in the advanced editor`, ...Object.entries(sent).map(([key, value]) => `${key} ${valueText(value)}`)].join("; ");
 }
 
-function shown(config: SyncthingObject, restartRequired: boolean): AdvancedConfig {
+function shown(config: SyncthingObject, restartRequired: boolean | null): AdvancedConfig {
   return { config: asObject(redactConfig(config)), restartRequired };
 }
 
@@ -83,14 +83,11 @@ export async function readAdvanced(instance: ResolvedInstance, target: AdvancedT
 /**
  * The object as it now stands.
  * @implNote The change is already written; a node that stops answering now must not turn it into "not saved", so the answer is then the change
- * laid over the object as read before.
+ * laid over the object as read before, and whether it needs a restart is unknown rather than no.
  */
 async function stateAfter(instance: LocalInstance, target: AdvancedTarget, expected: SyncthingObject): Promise<AdvancedConfig> {
-  try {
-    return await readAdvanced(instance, target);
-  } catch {
-    return shown(expected, false);
-  }
+  const [config, restartRequired] = await Promise.all([readObject(instance, target).catch(() => expected), requiresRestart(instance).catch(() => null)]);
+  return shown(config, restartRequired);
 }
 
 /**

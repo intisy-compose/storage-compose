@@ -167,7 +167,7 @@ async function loadDeviceForm(): Promise<void> {
   const form = appState.deviceForm;
   if (!form || form.saved) return;
   try {
-    const settings = await fetchDeviceSettings(form.nodeId, form.deviceId);
+    const settings = await readAfterSavedWrites(() => fetchDeviceSettings(form.nodeId, form.deviceId));
     if (form !== appState.deviceForm || form.saved) return;
     form.saved = settings;
     form.draft = structuredClone(settings);
@@ -202,7 +202,7 @@ async function loadFolderDetail(): Promise<void> {
   const folderId = appState.selectedFolderId;
   if (!folderId) return;
   try {
-    const detail = await fetchFolderDetail(folderId);
+    const detail = await readAfterSavedWrites(() => fetchFolderDetail(folderId));
     if (folderId !== appState.selectedFolderId) return;
     appState.folderDetail = detail;
     appState.folderDetailError = null;
@@ -259,7 +259,7 @@ async function loadHostSettings(): Promise<void> {
 
 async function loadNodeOptions(nodeId: string): Promise<void> {
   try {
-    appState.nodeOptions.set(nodeId, await fetchNodeOptions(nodeId));
+    appState.nodeOptions.set(nodeId, await readAfterSavedWrites(() => fetchNodeOptions(nodeId)));
   } catch (error) {
     appState.nodeOptions.set(nodeId, { error: messageOf(error) });
   }

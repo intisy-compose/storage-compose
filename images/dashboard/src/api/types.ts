@@ -304,6 +304,10 @@ export interface StorageNode {
   folders: NodeFolder[];
   /** The other host's dashboard this node was read from; null for this host's nodes and for a device no dashboard reported. */
   dashboardUrl: string | null;
+  /** What rewrites some of the node's Syncthing settings at each start, which its forms then show read only; null for none, and off this host. */
+  keeper: SettingsKeeper | null;
+  /** Whether restarting the node's Syncthing needs its name typed, as the restart route asks. */
+  restartConfirmRequired: boolean;
 }
 
 export type WarningKind =
@@ -365,9 +369,10 @@ export interface FileChange {
   device: string;
 }
 
-export const changeActivityTypes = ["local-change", "remote-change"] as const;
+/** `changes-not-listed` counts the changes a poll of `/rest/events/disk` had no room for: `pc: 6 changes not listed in Documents`. */
+export const changeActivityTypes = ["local-change", "remote-change", "changes-not-listed"] as const;
 
-/** The `type` that stands for both `changeActivityTypes`. */
+/** The `type` that stands for every one of `changeActivityTypes`. */
 export const changesActivityType = "changes";
 
 /** Scans and file changes, which a busy folder produces every few seconds; `routine=false` leaves them out. */
@@ -705,8 +710,8 @@ export type AdvancedTarget = { kind: "options" } | { kind: "folder"; id: string 
  */
 export interface AdvancedConfig {
   config: Record<string, unknown>;
-  /** Whether the node's Syncthing needs a restart before a saved change takes effect. */
-  restartRequired: boolean;
+  /** Whether the node's Syncthing needs a restart before a saved change takes effect; null when a save's node stopped answering before it said. */
+  restartRequired: boolean | null;
 }
 
 /** `GET /api/nodes/<nodeId>/restart-required`. */
