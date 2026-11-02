@@ -179,12 +179,17 @@ services:
         condition: service_healthy
 
   syncthing:
-    image: ghcr.io/syncthing/syncthing:2.1.6
+    build:
+      context: services/syncthing
+      args:
+        SYNCTHING_IMAGE: ghcr.io/syncthing/syncthing:2.1.6
+    image: storage-syncthing:local
     container_name: storage-syncthing
     restart: unless-stopped
     network_mode: "service:gateway"
     entrypoint: ["/bin/sh", "/start.sh"]
     environment:
+      ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
       STGUIADDRESS: 127.0.0.1:8385
       STHOMEDIR: /var/syncthing/config
     # The image's own check probes 8384, which in the shared namespace is Tailscale serve's TLS port.
@@ -195,6 +200,7 @@ services:
     volumes:
       - ./services/syncthing/start.sh:/start.sh:ro
       - ./services/syncthing/guard.sh:/guard.sh:ro
+      - ./images/nodes/apply-connections.sh:/apply-connections.sh:ro
       - storage-status:/status:ro
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/syncthing:/var/syncthing/config
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/secrets:/secrets:ro
@@ -207,7 +213,7 @@ services:
         condition: service_healthy
 
   # One Syncthing per drive, folder and further array node, each with the identity on its own
-  # storage; they share the gateway's namespace, so tailnet ports 22001 to 22099 reach them.
+  # storage; they share the gateway's namespace, so tailnet ports 22021 to 22099 reach them.
   nodes:
     build: images/nodes
     image: storage-nodes:local

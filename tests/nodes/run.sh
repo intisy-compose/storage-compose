@@ -51,7 +51,7 @@ clean_up() {
 }
 
 say "Building the images and the drives"
-"${compose[@]}" build --quiet lab mounter pool snapraid dashboard nodes || exit 1
+"${compose[@]}" build --quiet lab mounter pool snapraid dashboard syncthing nodes || exit 1
 [ -z "$(docker ps -aq -f name=^stn-lab$)" ] || clean_up
 "${compose[@]}" up -d lab || exit 1
 lab remove > /dev/null

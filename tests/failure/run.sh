@@ -82,7 +82,7 @@ until_job_free() {   # <job command...>: retries while another job holds the loc
 
 start_stack() {
     say "Building the images and starting the test stack"
-    "${compose[@]}" build --quiet lab mounter pool snapraid dashboard kopia || exit 1
+    "${compose[@]}" build --quiet lab mounter pool snapraid dashboard kopia syncthing || exit 1
     [ -z "$(docker ps -aq -f name=^c24t-lab$)" ] || stop_stack
     "${compose[@]}" up -d lab || exit 1
     lab remove-drives > /dev/null
