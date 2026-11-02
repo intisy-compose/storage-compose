@@ -14,9 +14,11 @@ interface EditorState {
   error: string | null;
   saved: SyncthingObject | null;
   text: string;
-  restartRequired: boolean;
+  restartRequired: boolean | null;
   saving: boolean;
   result: Notice | null;
+  /** Counts the reads started, so only the newest one's answer is taken. */
+  reads: number;
 }
 
 const states = new Map<string, EditorState>();
@@ -28,7 +30,7 @@ function keyOf(nodeId: string, target: AdvancedTarget): string {
 function stateOf(key: string): EditorState {
   const known = states.get(key);
   if (known) return known;
-  const created: EditorState = { open: false, loading: false, error: null, saved: null, text: "", restartRequired: false, saving: false, result: null };
+  const created: EditorState = { open: false, loading: false, error: null, saved: null, text: "", restartRequired: false, saving: false, result: null, reads: 0 };
   states.set(key, created);
   return created;
 }
@@ -51,15 +53,17 @@ function settle(state: EditorState, answer: AdvancedConfig): void {
 }
 
 async function load(nodeId: string, target: AdvancedTarget, state: EditorState): Promise<void> {
+  const read = ++state.reads;
   state.loading = true;
   state.error = null;
   requestRender();
   try {
-    settle(state, await fetchAdvancedConfig(nodeId, target));
+    const answer = await fetchAdvancedConfig(nodeId, target);
+    if (read === state.reads && !holdsDraft(state)) settle(state, answer);
   } catch (error) {
-    state.error = (error as Error).message;
+    if (read === state.reads) state.error = (error as Error).message;
   }
-  state.loading = false;
+  if (read === state.reads) state.loading = false;
   requestRender();
 }
 
@@ -84,7 +88,9 @@ function savedText(answer: AdvancedConfig): string {
   return answer.restartRequired ? "Saved. Syncthing needs a restart before the change takes effect." : "Saved.";
 }
 
-async function save(nodeId: string, target: AdvancedTarget, state: EditorState, onSaved: () => void): Promise<void> {
+type OnSaved = (config: SyncthingObject) => void;
+
+async function save(nodeId: string, target: AdvancedTarget, state: EditorState, onSaved: OnSaved): Promise<void> {
   const parsed = parsedChange(state);
   if ("problem" in parsed) {
     state.result = { text: `Not saved: ${parsed.problem}`, tone: "bad" };
@@ -100,9 +106,11 @@ async function save(nodeId: string, target: AdvancedTarget, state: EditorState, 
   const result = await saveAdvancedConfig(nodeId, target, parsed.change);
   state.saving = false;
   if (result.ok) {
+    state.reads += 1;
+    state.loading = false;
     settle(state, result.value);
     state.result = { text: savedText(result.value), tone: result.value.restartRequired ? "warn" : "ok" };
-    onSaved();
+    onSaved(result.value.config);
   } else {
     state.result = editFailureNotice(result);
   }
@@ -132,7 +140,7 @@ function textArea(formId: string, state: EditorState): HTMLTextAreaElement {
   return area;
 }
 
-function editorBody(nodeId: string, target: AdvancedTarget, state: EditorState, formId: string, onSaved: () => void): HTMLElement[] {
+function editorBody(nodeId: string, target: AdvancedTarget, state: EditorState, formId: string, onSaved: OnSaved): HTMLElement[] {
   if (state.error) return [element("p", { className: "tone-text-bad" }, `Could not read it: ${state.error}`)];
   if (!state.saved) return [element("p", { className: "muted" }, "Reading…")];
   return [
@@ -157,7 +165,7 @@ function editorBody(nodeId: string, target: AdvancedTarget, state: EditorState, 
  * @implNote Read again on each opening unless it holds a draft: a draft is measured against the read it was typed over, so a newer read
  * under it would send back keys the person never touched.
  */
-export function advancedEditor(nodeId: string, target: AdvancedTarget, onSaved: () => void = () => {}): HTMLElement {
+export function advancedEditor(nodeId: string, target: AdvancedTarget, onSaved: OnSaved = () => {}): HTMLElement {
   const key = keyOf(nodeId, target);
   const state = stateOf(key);
   const formId = formIdOf(key);
@@ -171,4 +179,12 @@ export function advancedEditor(nodeId: string, target: AdvancedTarget, onSaved: 
     if (state.open && !state.saving && !holdsDraft(state)) void load(nodeId, target, state);
   });
   return details;
+}
+
+/** After the form beside it saved, an open editor holding no draft reads the object again, so its text shows what the form saved. */
+export function refreshAdvancedEditor(nodeId: string, target: AdvancedTarget): void {
+  const state = states.get(keyOf(nodeId, target));
+  if (!state?.open || state.saving || holdsDraft(state)) return;
+  state.result = null;
+  void load(nodeId, target, state);
 }

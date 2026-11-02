@@ -39,12 +39,12 @@ describe("activity filters in the address", () => {
 });
 
 describe("GET /api/activity?type=changes", () => {
-  it("type=changes stands for both change types, and routine=false leaves out only routine types not asked for", () => {
+  it("type=changes stands for every change type, and routine=false leaves out only routine types not asked for", () => {
     const query = activityQuery(new URL("http://dashboard/api/activity?type=changes&routine=false"));
-    assert.deepEqual(query.types, ["local-change", "remote-change"]);
+    assert.deepEqual(query.types, ["local-change", "remote-change", "changes-not-listed"]);
     const log = new ActivityLog(10);
-    for (const type of ["local-change", "remote-change", "state-changed", "item-failed"]) log.append(type, newEntry(type));
-    assert.deepEqual(log.query(query).entries.map((found) => found.type).sort(), ["local-change", "remote-change"]);
+    for (const type of ["local-change", "remote-change", "changes-not-listed", "state-changed", "item-failed"]) log.append(type, newEntry(type));
+    assert.deepEqual(log.query(query).entries.map((found) => found.type).sort(), ["changes-not-listed", "local-change", "remote-change"]);
     assert.deepEqual(log.query(activityQuery(new URL("http://dashboard/api/activity?routine=false"))).entries.map((found) => found.type), ["item-failed"]);
   });
 });

@@ -16,6 +16,7 @@ import {
   perNodeListenText,
   saveNodeOptions,
 } from "./api.js";
+import { refreshAdvancedEditor } from "./advancedEditor.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element } from "./dom.js";
 import { controlId, registerForm } from "./forms.js";
@@ -228,8 +229,12 @@ async function save(nodeId: string, form: OptionsFormState): Promise<void> {
   requestRender();
   const result = await saveNodeOptions(nodeId, change, form.applyToHost);
   form.saving = false;
-  if (result.ok) settle(form, result.value);
-  else form.result = editFailureNotice(result);
+  if (result.ok) {
+    settle(form, result.value);
+    for (const edit of result.value.nodes) refreshAdvancedEditor(edit.nodeId, { kind: "options" });
+  } else {
+    form.result = editFailureNotice(result);
+  }
   requestRender();
 }
 

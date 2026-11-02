@@ -10,13 +10,17 @@ import {
   deviceDisplayName,
   folderShare,
   deviceSettingLabels,
+  generalSettingKeys,
+  isKeeperManaged,
+  keeperManagedText,
   removeDevice,
   saveDeviceSettings,
   saveFolderSettings,
 } from "./api.js";
 import { arrayAutomationText, arraySharesElsewhere } from "./arrayConfirm.js";
 import { button, element, section } from "./dom.js";
-import { advancedEditor } from "./advancedEditor.js";
+import { advancedEditor, refreshAdvancedEditor } from "./advancedEditor.js";
+import { followSavedConfig } from "./formFollow.js";
 import { controlId, registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
@@ -149,9 +153,17 @@ export function settingFields(context: SettingsContext): HTMLElement {
   );
 }
 
-/** The node's own device: only its name can be changed, the name other devices are offered for the node. */
-function ownNameField(context: SettingsContext): HTMLElement {
-  return element("div", { className: "form-fields device-fields" }, labelled(context, "name", textInput(context, "name"), "Empty shows the short device ID."));
+/** The node's own device: only its name can be changed, the name other devices are offered for the node, unless its keeper sets it. */
+function ownNameField(context: SettingsContext, node: StorageNode): HTMLElement {
+  const input = textInput(context, "name");
+  const kept = isOwnNameKept(node);
+  if (kept) input.disabled = true;
+  const hint = node.keeper && kept ? `Read only: ${keeperManagedText(node.keeper)}.` : "Empty shows the short device ID.";
+  return element("div", { className: "form-fields device-fields" }, labelled(context, "name", input, hint));
+}
+
+function isOwnNameKept(node: StorageNode): boolean {
+  return isKeeperManaged(node.keeper, generalSettingKeys.deviceName);
 }
 
 function isOwnDevice(node: StorageNode, form: DeviceFormState): boolean {
@@ -175,6 +187,7 @@ async function save(form: DeviceFormState): Promise<void> {
     form.saved = result.value;
     form.draft = structuredClone(result.value);
     form.result = { text: "Saved.", tone: "ok" };
+    refreshAdvancedEditor(form.nodeId, { kind: "device", id: form.deviceId });
   } else {
     form.result = editFailureNotice(result);
   }
@@ -202,18 +215,14 @@ function formBody(node: StorageNode, form: DeviceFormState): HTMLElement {
   }
   if (!node.local) return element("p", { className: "read-only-note" }, `Read-only. ${node.name}'s devices are edited on ${node.host}'s own dashboard.`);
   const context: SettingsContext = { formId, saving: form.saving, saved: form.saved, draft: form.draft, isArray: node.kind === "array" };
-  return element(
+  const own = isOwnDevice(node, form);
+  const buttons = element(
     "div",
-    { className: "device-form", attributes: { id: formId } },
-    isOwnDevice(node, form) ? ownNameField(context) : settingFields(context),
-    resultLine(form.result),
-    element(
-      "div",
-      { className: "button-row" },
-      Object.assign(button(form.saving ? "Saving…" : "Save", () => void save(form), "button primary"), { disabled: form.saving }),
-      Object.assign(button("Revert", () => revert(form), "button ghost"), { disabled: form.saving }),
-    ),
+    { className: "button-row" },
+    Object.assign(button(form.saving ? "Saving…" : "Save", () => void save(form), "button primary"), { disabled: form.saving }),
+    Object.assign(button("Revert", () => revert(form), "button ghost"), { disabled: form.saving }),
   );
+  return element("div", { className: "device-form", attributes: { id: formId } }, own ? ownNameField(context, node) : settingFields(context), resultLine(form.result), own && isOwnNameKept(node) ? null : buttons);
 }
 
 /** The panel's header with a way back to the node's detail. */
@@ -375,17 +384,18 @@ function foldersForm(node: StorageNode, form: DeviceFormState, name: string): HT
   );
 }
 
-/** After an advanced save the form reads the device again, unless it holds a change the person made. */
-function followAdvancedSave(form: DeviceFormState): void {
-  if (form.saving || JSON.stringify(form.saved) !== JSON.stringify(form.draft)) return;
-  form.saved = null;
-  form.draft = null;
+/** After an advanced save the form takes the saved values; a field the person changed keeps what they typed. */
+function followAdvancedSave(form: DeviceFormState, config: Record<string, unknown>): void {
+  if (form.saving || !form.saved || !form.draft) return;
+  const followed = followSavedConfig(form.saved, form.draft, config);
+  form.saved = followed.saved;
+  form.draft = followed.draft;
 }
 
 function deviceSections(node: StorageNode, form: DeviceFormState, name: string): HTMLElement[] {
   if (form.removed) return [section("Removed", removedBody(node, name))];
   const isOtherLocalDevice = node.local && form.saved !== null && !isOwnDevice(node, form);
-  const advanced = node.local && form.saved !== null ? [advancedEditor(node.id, { kind: "device", id: form.deviceId }, () => followAdvancedSave(form))] : [];
+  const advanced = node.local && form.saved !== null ? [advancedEditor(node.id, { kind: "device", id: form.deviceId }, (config) => followAdvancedSave(form, config))] : [];
   return [
     section("Device ID", element("code", { className: "device-id" }, form.deviceId)),
     section("Settings", formBody(node, form)),

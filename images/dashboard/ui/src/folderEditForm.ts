@@ -17,11 +17,12 @@ import {
   pullOrderTexts,
   saveFolderSettings,
 } from "./api.js";
-import { advancedEditor } from "./advancedEditor.js";
+import { advancedEditor, refreshAdvancedEditor } from "./advancedEditor.js";
 import { arrayConfirmField, isArrayConfirmed } from "./arrayConfirm.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
 import { plural } from "./format.js";
+import { folderConfigForForm, followSavedConfig } from "./formFollow.js";
 import { controlId, registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { outOfSyncCount } from "./outOfSync.js";
@@ -316,6 +317,7 @@ async function save(form: EditFolderFormState): Promise<void> {
     form.confirm = "";
     form.result = hasUnsavedIgnores(form) ? { text: `Saved. ${unsavedIgnoresText}`, tone: "warn" } : { text: "Saved.", tone: "ok" };
     showSavedInDetail(form, result.value);
+    refreshAdvancedEditor(form.nodeId, { kind: "folder", id: form.folderId });
   } else {
     form.result = editFailureNotice(result);
   }
@@ -367,15 +369,17 @@ function formHeader(form: EditFolderFormState, detail: FolderDetailResponse, cop
   );
 }
 
-/** After an advanced save the form fills again from the next folder read, unless it holds a change the person made. */
-function followAdvancedSave(form: EditFolderFormState): void {
-  if (form.saving || JSON.stringify(form.saved) !== JSON.stringify(form.draft)) return;
-  form.saved = null;
-  form.draft = null;
+/** After an advanced save the form and the folder's detail take the saved values; a field the person changed keeps what they typed. */
+function followAdvancedSave(form: EditFolderFormState, config: Record<string, unknown>): void {
+  if (form.saving || !form.saved || !form.draft) return;
+  const followed = followSavedConfig(form.saved, form.draft, folderConfigForForm(config));
+  form.saved = followed.saved;
+  form.draft = followed.draft;
+  showSavedInDetail(form, followed.saved);
 }
 
 export function renderEditFolderForm(form: EditFolderFormState, detail: FolderDetailResponse): HTMLElement {
   const copy = copyOf(detail, form.nodeId);
-  const advanced = copy?.local ? advancedEditor(form.nodeId, { kind: "folder", id: form.folderId }, () => followAdvancedSave(form)) : null;
+  const advanced = copy?.local ? advancedEditor(form.nodeId, { kind: "folder", id: form.folderId }, (config) => followAdvancedSave(form, config)) : null;
   return element("div", { className: "detail-inner" }, formHeader(form, detail, copy), ...formBody(form, copy), advanced);
 }

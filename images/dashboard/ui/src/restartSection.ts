@@ -63,14 +63,14 @@ function restartNeededLine(node: StorageNode): HTMLElement | null {
 
 /**
  * The node's "restart needed" banner and its Restart button, as Syncthing's own Actions menu has one.
- * @implNote An array or the host's own native node asks for its name typed, as the dashboard's other risky node actions do.
+ * @implNote An array or the host's own native node asks for its name typed, as the dashboard's other risky node actions do. That is
+ * taken from the node, not from the restart-required read, which fails while the node restarts.
  */
 export function restartSection(node: StorageNode): HTMLElement {
   const form = formOf(node.id);
   const formId = formIdOf(node.id);
   registerForm(formId);
-  const state = appState.restartStates.get(node.id);
-  const confirmRequired = state !== undefined && !("error" in state) && state.confirmRequired;
+  const confirmRequired = node.restartConfirmRequired;
   const restartButton = Object.assign(button(form.restarting ? "Restarting…" : "Restart Syncthing", () => void restart(node, form), "button restart-button"), {
     disabled: form.restarting || (confirmRequired && form.confirm !== node.name),
   });
