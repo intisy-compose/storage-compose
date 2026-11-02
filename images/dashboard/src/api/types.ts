@@ -1320,3 +1320,40 @@ export interface ConnectionProfile {
   limits: BandwidthLimits;
   nodeLimits: Record<string, Partial<BandwidthLimits>>;
 }
+
+/**
+ * One network a host is on, as its keeper detected it. `category` is the Windows network profile.
+ * @implNote `tcpOnly` marks a Docker node's tailnet address: `serve` forwards TCP only, so QUIC does not reach it there.
+ */
+export interface HostNetwork {
+  kind: "lan" | "tailnet" | "public";
+  address: string;
+  category?: "Private" | "Domain" | "Public";
+  tcpOnly?: boolean;
+}
+
+/** A storage node's sync port and the networks it is reached on. */
+export interface NodeAddresses {
+  nodeId: string;
+  deviceId: string;
+  syncPort: number;
+  networks: HostNetwork[];
+}
+
+/** A host's private relay, which nodes on any of its networks reach each other through. */
+export interface Bridge {
+  host: string;
+  relayId: string;
+  port: number;
+  addresses: HostNetwork[];
+}
+
+/**
+ * Every node's addresses and every bridge, as one dashboard last built them; `GET /api/connections/addresses?scope=local`
+ * answers this host's own part.
+ */
+export interface PeerTable {
+  nodes: NodeAddresses[];
+  bridges: Bridge[];
+  builtAt: string;
+}

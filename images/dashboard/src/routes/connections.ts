@@ -1,6 +1,7 @@
-import type { ConnectionProfile } from "../api/types.js";
+import type { ConnectionProfile, PeerTable } from "../api/types.js";
 import { ProfileError, formatProfile, parseProfile } from "../connectionProfile.js";
 import { RequestError, readBody, sendJson } from "../http.js";
+import { collectPeerTable, localPeerTable } from "../peerSources.js";
 import { type AnyRoute, hostWritePattern } from "../routes.js";
 import { setupRepoDirectory } from "../settings.js";
 import { ProfileConflict, pullDataRepo, readProfile, saveProfile } from "../setupRepo.js";
@@ -14,8 +15,20 @@ function validProfile(body: unknown): ConnectionProfile {
   }
 }
 
-export function connectionRoutes(repository = setupRepoDirectory): AnyRoute[] {
+export interface PeerTableReads {
+  local: () => Promise<PeerTable>;
+  all: () => Promise<PeerTable>;
+}
+
+const defaultPeerTableReads: PeerTableReads = { local: () => localPeerTable(), all: () => collectPeerTable() };
+
+export function connectionRoutes(repository = setupRepoDirectory, peerTables = defaultPeerTableReads): AnyRoute[] {
   return [
+    {
+      method: "GET",
+      pattern: /^\/api\/connections\/addresses$/,
+      handle: async ({ response, url }) => sendJson(response, 200, await (url.searchParams.get("scope") === "local" ? peerTables.local() : peerTables.all())),
+    },
     {
       method: "GET",
       pattern: /^\/api\/connections\/profile$/,
