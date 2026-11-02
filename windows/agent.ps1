@@ -155,8 +155,10 @@ function Get-Heartbeat($Status, [bool]$IsActive, $PassState, [string]$State, [st
     $now = Get-Now
     $removesAt = $null
     if ($script:stackGoneSince) { $removesAt = $script:stackGoneSince.AddSeconds($script:stackGraceSeconds).ToString("o") }
+    $networks = @(Get-HeartbeatNetworks)
     $problems = @($script:foundNodes.problems)
     if ($BinaryProblem) { $problems += $BinaryProblem }
+    $problems += @(Get-LanProblems $networks @($script:syncthingInstances.Values))
     return [ordered]@{
         schema = 1
         heartbeat = $now.ToString("o")
@@ -171,7 +173,7 @@ function Get-Heartbeat($Status, [bool]$IsActive, $PassState, [string]$State, [st
             removesItselfAt = $removesAt
         }
         passThrough = Get-PassThroughSummary $PassState
-        networks = @(Get-HeartbeatNetworks)
+        networks = $networks
         nodes = @($script:syncthingInstances.Values | ForEach-Object { Get-PublishedInstance $_ })
         foundNodes = @($script:foundNodes.nodes | ForEach-Object { [ordered]@{ id = $_.id; name = $_.name; kind = $_.kind; root = $_.root } })
         problems = $problems

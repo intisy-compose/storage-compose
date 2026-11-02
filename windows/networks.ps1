@@ -35,7 +35,11 @@ directly, never one learned from outside, which a NAT router would hide.
 #>
 function Get-HostNetworks {
     $categories = @{}
-    foreach ($connection in @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)) { $categories[[int]$connection.InterfaceIndex] = "$($connection.NetworkCategory)" }
+    $names = @{}
+    foreach ($connection in @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
+        $categories[[int]$connection.InterfaceIndex] = "$($connection.NetworkCategory)"
+        if ($connection.PSObject.Properties["Name"] -and $connection.Name) { $names[[int]$connection.InterfaceIndex] = "$($connection.Name)" }
+    }
     $networks = @()
     foreach ($entry in @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
         $address = "$($entry.IPAddress)"
@@ -44,6 +48,7 @@ function Get-HostNetworks {
         $network = [ordered]@{ kind = $kind; address = $address }
         $category = "$($categories[[int]$entry.InterfaceIndex])"
         if ($kind -ne "tailnet" -and $networkCategoryNames.ContainsKey($category)) { $network.category = $networkCategoryNames[$category] }
+        if ($kind -ne "tailnet" -and $names.ContainsKey([int]$entry.InterfaceIndex)) { $network.name = $names[[int]$entry.InterfaceIndex] }
         $networks += [pscustomobject]$network
     }
     return $networks

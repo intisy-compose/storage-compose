@@ -204,41 +204,156 @@ function New-ApiKey {
     return [Convert]::ToBase64String($bytes).Replace("+", "a").Replace("/", "b").TrimEnd("=")
 }
 
-function Get-FirewallRuleName($Node) { return "storage-compose syncthing $($Node.id)" }
+$localDiscoveryPort = 21027
+$lanProfiles = "Private,Domain"
+$profileRuleSuffixes = @("tcp private", "udp private", "tcp public", "udp public", "discovery private")
+$tailnetOnlyRuleSuffixes = @("", "udp")
 
-function Get-FirewallUdpRuleName($Node) { return "$(Get-FirewallRuleName $Node) udp" }
+function Get-FirewallRuleName($Node, [string]$Suffix) {
+    $name = "storage-compose syncthing $($Node.id)"
+    if ($Suffix) { return "$name $Suffix" }
+    return $name
+}
 
-function Test-FirewallRuleIsCurrent([string]$Name, [string]$Port) {
-    $existing = Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue
+function New-FirewallRuleSpec($Node, [string]$Suffix, [string]$Action, [string]$Protocol, [string]$LocalPort, [string]$RemoteAddress, [string]$Profiles) {
+    return [pscustomobject]@{
+        Name = Get-FirewallRuleName $Node $Suffix; Action = $Action; Protocol = $Protocol; LocalPort = $LocalPort
+        RemoteAddress = $RemoteAddress; Profile = $Profiles
+    }
+}
+
+function Test-UsesLanMethod($Connections) {
+    return [bool]($Connections -and $Connections.PSObject.Properties["options"] -and $Connections.options -and
+        $Connections.options.PSObject.Properties["localAnnounceEnabled"] -and $Connections.options.localAnnounceEnabled -eq $true)
+}
+
+<#
+.NOTES
+Without the node's connections entry the node is tailnet-only and keeps the rules it always had: TCP
+from the tailnet and a UDP block, so nothing opens on a host that never received the profile. With
+it, the sync port is open on Private and Domain networks to any address (the LAN, and what the
+router forwards after NAT traversal arrives there too) and on Public networks to the tailnet only.
+#>
+function Get-NodeFirewallRules($Node, $Ports, $Connections) {
+    $port = "$($Ports.listen)"
+    if (-not $Connections) {
+        return @(
+            (New-FirewallRuleSpec $Node "" "Allow" "TCP" $port $tailnetAddressRange "Any"),
+            (New-FirewallRuleSpec $Node "udp" "Block" "UDP" "Any" "Any" "Any")
+        )
+    }
+    $rules = @(
+        (New-FirewallRuleSpec $Node "tcp private" "Allow" "TCP" $port "Any" $lanProfiles),
+        (New-FirewallRuleSpec $Node "udp private" "Allow" "UDP" $port "Any" $lanProfiles),
+        (New-FirewallRuleSpec $Node "tcp public" "Allow" "TCP" $port $tailnetAddressRange "Public"),
+        (New-FirewallRuleSpec $Node "udp public" "Allow" "UDP" $port $tailnetAddressRange "Public")
+    )
+    if (Test-UsesLanMethod $Connections) { $rules += New-FirewallRuleSpec $Node "discovery private" "Allow" "UDP" "$localDiscoveryPort" "Any" $lanProfiles }
+    return $rules
+}
+
+function Get-AllNodeFirewallRuleNames($Node) {
+    return @(($tailnetOnlyRuleSuffixes + $profileRuleSuffixes) | ForEach-Object { Get-FirewallRuleName $Node $_ })
+}
+
+<#
+.NOTES
+Windows reports an IPv4 subnet with its mask (100.64.0.0/255.192.0.0) where the rule was made with a
+prefix length.
+#>
+function ConvertTo-PrefixNotation([string]$Address) {
+    if ($Address -notmatch '^(\d{1,3}(\.\d{1,3}){3})/(\d{1,3}(\.\d{1,3}){3})$') { return $Address }
+    $network = $Matches[1]
+    $bits = ([System.Net.IPAddress]::Parse($Matches[3]).GetAddressBytes() | ForEach-Object { [Convert]::ToString($_, 2) }) -join ""
+    return "$network/$(($bits.ToCharArray() | Where-Object { $_ -eq '1' }).Count)"
+}
+
+<#
+.NOTES
+Windows reports a rule's profiles as a flags enum ("Domain, Private"), in its own order.
+#>
+function ConvertTo-ProfileKey([string]$Profiles) {
+    return (@($Profiles -split '[,\s]+' | Where-Object { $_ } | Sort-Object) -join ",")
+}
+
+function Test-FirewallRuleIsCurrent($Rule) {
+    $existing = Get-NetFirewallRule -Name $Rule.Name -ErrorAction SilentlyContinue
     if (-not $existing) { return $false }
-    $filter = $existing | Get-NetFirewallPortFilter
+    $ports = $existing | Get-NetFirewallPortFilter
+    $addresses = $existing | Get-NetFirewallAddressFilter
     $program = ($existing | Get-NetFirewallApplicationFilter).Program
-    if ("$($filter.LocalPort)" -eq $Port -and $program -eq $script:syncthingPath) { return $true }
-    Remove-NetFirewallRule -Name $Name
+    $isCurrent = "$($ports.LocalPort)" -eq $Rule.LocalPort -and "$($ports.Protocol)" -eq $Rule.Protocol -and
+        (ConvertTo-PrefixNotation "$($addresses.RemoteAddress)") -eq $Rule.RemoteAddress -and
+        (ConvertTo-ProfileKey "$($existing.Profile)") -eq (ConvertTo-ProfileKey $Rule.Profile) -and
+        "$($existing.Action)" -eq $Rule.Action -and $program -eq $script:syncthingPath
+    if ($isCurrent) { return $true }
+    Remove-NetFirewallRule -Name $Rule.Name
     return $false
 }
 
 <#
 .NOTES
-Both rules exist before Syncthing first listens. Windows asks "allow access?" for a program no rule
-names, and its answer is a rule open to every address that outlives the stack; with a TCP rule for the
-tailnet and a UDP block (no QUIC, no discovery) for this program, it never asks.
+Every rule exists before Syncthing first listens. Windows asks "allow access?" for a program no rule
+names, and its answer is a rule open to every address that outlives the stack; with rules naming this
+program on every profile, it never asks. Rules of the other set (tailnet-only or profile), including
+the names an agent before the profile made, are removed by name, so switching sets leaves none behind.
 #>
-function Set-SyncthingFirewallRule($Node, $Ports) {
-    $name = Get-FirewallRuleName $Node
-    if (-not (Test-FirewallRuleIsCurrent $name "$($Ports.listen)")) {
-        New-NetFirewallRule -Name $name -DisplayName "$name ($($Node.name))" -Group $agentFirewallGroup -Direction Inbound -Action Allow `
-            -Protocol TCP -LocalPort $Ports.listen -RemoteAddress $tailnetAddressRange -Program $script:syncthingPath -Profile Any | Out-Null
+function Set-SyncthingFirewallRule($Node, $Ports, $Connections) {
+    $rules = @(Get-NodeFirewallRules $Node $Ports $Connections)
+    $wanted = @($rules | ForEach-Object { $_.Name })
+    foreach ($name in Get-AllNodeFirewallRuleNames $Node) {
+        if ($wanted -notcontains $name) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
     }
-    $udpName = Get-FirewallUdpRuleName $Node
-    if (-not (Test-FirewallRuleIsCurrent $udpName "Any")) {
-        New-NetFirewallRule -Name $udpName -DisplayName "$udpName ($($Node.name))" -Group $agentFirewallGroup -Direction Inbound -Action Block `
-            -Protocol UDP -Program $script:syncthingPath -Profile Any | Out-Null
+    foreach ($rule in $rules) {
+        if (Test-FirewallRuleIsCurrent $rule) { continue }
+        New-NetFirewallRule -Name $rule.Name -DisplayName "$($rule.Name) ($($Node.name))" -Group $agentFirewallGroup -Direction Inbound `
+            -Action $rule.Action -Protocol $rule.Protocol -LocalPort $rule.LocalPort -RemoteAddress $rule.RemoteAddress `
+            -Program $script:syncthingPath -Profile $rule.Profile | Out-Null
     }
 }
 
 function Remove-NodeFirewallRules($Node) {
-    foreach ($name in @((Get-FirewallRuleName $Node), (Get-FirewallUdpRuleName $Node))) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
+    foreach ($name in Get-AllNodeFirewallRuleNames $Node) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
+}
+
+function Get-InstanceFirewallShape($Instance, $Connections) {
+    return "$([bool]$Connections) $(Test-UsesLanMethod $Connections) $($Instance.ports.listen)"
+}
+
+<#
+.NOTES
+The profile reaches a running Syncthing through the dashboard's REST calls without a restart, so the
+rules follow the connections entry every round; they are only rewritten when its shape changes, and
+an instance taken over from an earlier agent has no shape yet, which sets them (and removes the
+names an older agent left) on its first round.
+#>
+function Update-InstanceFirewall($Instance) {
+    if ($Instance.state -ne "running" -or -not $Instance.ports) { return }
+    $connections = Get-NodeConnections $Instance.node
+    if ((Get-InstanceFirewallShape $Instance $connections) -eq $Instance.firewallShape) { return }
+    try { Set-InstanceFirewall $Instance $connections } catch { Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): firewall rules not updated: $_" }
+}
+
+function Set-InstanceFirewall($Instance, $Connections) {
+    Set-SyncthingFirewallRule $Instance.node $Instance.ports $Connections
+    $Instance.firewallShape = Get-InstanceFirewallShape $Instance $Connections
+    $Instance.usesLan = Test-UsesLanMethod $Connections
+}
+
+<#
+.NOTES
+The keeper never changes a network's category: Windows gives a Public network no LAN rules, so it
+is reported instead, while some running node wants the LAN method.
+#>
+function Get-LanProblems($Networks, $Instances) {
+    if (@($Instances | Where-Object { $_.state -eq "running" -and $_.PSObject.Properties["usesLan"] -and $_.usesLan }).Count -eq 0) { return @() }
+    $problems = @()
+    foreach ($network in @($Networks | Where-Object { $_.kind -eq "lan" -and $_.PSObject.Properties["category"] -and $_.category -eq "Public" })) {
+        $label = $network.address
+        if ($network.PSObject.Properties["name"] -and $network.name) { $label = "$($network.name) ($($network.address))" }
+        $problems += "LAN unavailable: $label is marked Public"
+    }
+    return $problems
 }
 
 function Get-SyncthingBinFolder {
@@ -321,6 +436,7 @@ function Stop-SyncthingProcess($Instance) {
 function New-SyncthingInstance($Node) {
     return [pscustomobject]@{
         nodeId = $Node.id; node = $Node; ports = $null; apiKey = $null; deviceId = $null; listenAddress = $null; usesProfile = $false
+        firewallShape = $null; usesLan = $false
         processId = 0; state = "stopped"; startedAt = $null; attempts = @(); problem = $null
     }
 }
@@ -357,7 +473,7 @@ function Start-NodeSyncthing($Instance, [string]$ListenHost) {
         $Instance.deviceId = $identity.deviceId
         $Instance.listenAddress = @(Get-NodeListenAddresses $connections $ListenHost $Instance.ports)[0]
         $Instance.usesProfile = [bool]$connections
-        Set-SyncthingFirewallRule $node $Instance.ports
+        Set-InstanceFirewall $Instance $connections
         $Instance.processId = Start-SyncthingProcess $node
         $Instance.state = "running"
         $Instance.startedAt = (Get-Date).ToString("o")
@@ -373,6 +489,8 @@ function Start-NodeSyncthing($Instance, [string]$ListenHost) {
 function Stop-NodeSyncthing($Instance, [string]$Reason) {
     Stop-SyncthingProcess $Instance
     Remove-NodeFirewallRules $Instance.node
+    $Instance.firewallShape = $null
+    $Instance.usesLan = $false
     $Instance.state = "stopped"
     $Instance.processId = 0
     Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): Syncthing stopped, $Reason"
@@ -441,7 +559,7 @@ function Update-NodeInstances([object[]]$Nodes, [bool]$IsActive) {
         if (-not $script:syncthingInstances.ContainsKey($node.id)) {
             $instance = New-SyncthingInstance $node
             $script:syncthingInstances[$node.id] = $instance
-            if (Resume-OrphanedSyncthing $instance) { continue }
+            if (Resume-OrphanedSyncthing $instance) { Update-InstanceFirewall $instance; continue }
         }
         $instance = $script:syncthingInstances[$node.id]
         $instance.node = $node
@@ -452,6 +570,7 @@ function Update-NodeInstances([object[]]$Nodes, [bool]$IsActive) {
             $instance.state = "stopped"
         }
         if ($instance.state -ne "running") { Start-NodeSyncthing $instance $listenHost }
+        Update-InstanceFirewall $instance
     }
     return $binaryProblem
 }

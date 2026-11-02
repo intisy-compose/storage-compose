@@ -17,15 +17,18 @@ $global:tailnetAddress = $null
 function Get-TailnetAddress { return $global:tailnetAddress }
 function Get-NetFirewallRule([string]$Name) { return $global:firewallRules[$Name] }
 function New-NetFirewallRule {
-    param([string]$Name, [string]$DisplayName, [string]$Group, [string]$Direction, [string]$Action, [string]$Protocol, $LocalPort, [string]$RemoteAddress, [string]$Program, [string]$Profile)
-    $global:firewallRules[$Name] = [pscustomobject]@{ Name = $Name; Group = $Group; LocalPort = $LocalPort; RemoteAddress = $RemoteAddress; Program = $Program }
+    param([string]$Name, [string]$DisplayName, [string]$Group, [string]$Direction, [string]$Action, [string]$Protocol, $LocalPort, [string]$RemoteAddress, [string]$Program, $Profile)
+    $global:firewallRules[$Name] = [pscustomobject]@{
+        Name = $Name; Group = $Group; Action = $Action; Protocol = $Protocol; LocalPort = $LocalPort; RemoteAddress = $RemoteAddress; Program = $Program; Profile = "$Profile"
+    }
 }
 function Remove-NetFirewallRule([string]$Name, [string]$Group) {
     if ($Name) { $global:firewallRules.Remove($Name) }
     if ($Group) { foreach ($key in @($global:firewallRules.Keys)) { if ($global:firewallRules[$key].Group -eq $Group) { $global:firewallRules.Remove($key) } } }
 }
 function Remove-ProgramFirewallRules([string]$Folder) { $global:programRuleSweeps += $Folder }
-function Get-NetFirewallPortFilter { param([Parameter(ValueFromPipeline = $true)]$Rule) process { [pscustomobject]@{ LocalPort = $Rule.LocalPort } } }
+function Get-NetFirewallPortFilter { param([Parameter(ValueFromPipeline = $true)]$Rule) process { [pscustomobject]@{ LocalPort = $Rule.LocalPort; Protocol = $Rule.Protocol } } }
+function Get-NetFirewallAddressFilter { param([Parameter(ValueFromPipeline = $true)]$Rule) process { [pscustomobject]@{ RemoteAddress = $Rule.RemoteAddress } } }
 function Get-NetFirewallApplicationFilter { param([Parameter(ValueFromPipeline = $true)]$Rule) process { [pscustomobject]@{ Program = $Rule.Program } } }
 $global:ipAddresses = @()
 $global:connectionProfiles = @()
@@ -318,7 +321,147 @@ Describe "the connection profile in a node's config" {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
 }
 
+function Get-TestRule([string]$NodeId, [string]$Suffix) {
+    $name = "storage-compose syncthing $NodeId"
+    if ($Suffix) { $name = "$name $Suffix" }
+    return $global:firewallRules[$name]
+}
+
+function New-ProfileEntry([bool]$LocalAnnounce) {
+    return [pscustomobject]@{
+        options = [pscustomobject]@{ localAnnounceEnabled = $LocalAnnounce }
+        listenAddresses = @("tcp://0.0.0.0:32120", "quic://0.0.0.0:32120")
+        deviceAddresses = [pscustomobject]@{}
+    }
+}
+
+Describe "the firewall per network profile" {
+    Reset-Agent
+    $ports = [pscustomobject]@{ slot = 0; gui = 18470; listen = 32120 }
+
+    It "on a Public network only the tailnet range is admitted" {
+        Set-SyncthingFirewallRule (New-TestNode "d001" "public") $ports (New-ProfileEntry $true)
+        foreach ($protocol in @("tcp", "udp")) {
+            $rule = Get-TestRule "d001" "$protocol public"
+            $rule.Action | Should Be "Allow"
+            $rule.Protocol | Should Be $protocol.ToUpper()
+            $rule.LocalPort | Should Be 32120
+            $rule.RemoteAddress | Should Be "100.64.0.0/10"
+            $rule.Profile | Should Be "Public"
+            $rule.Program | Should Be $SyncthingPath
+            $rule.Group | Should Be "storage-compose agent"
+        }
+    }
+
+    It "on Private and Domain the sync port is open to any address over TCP and UDP" {
+        Set-SyncthingFirewallRule (New-TestNode "d002" "private") $ports (New-ProfileEntry $true)
+        foreach ($protocol in @("tcp", "udp")) {
+            $rule = Get-TestRule "d002" "$protocol private"
+            $rule.Action | Should Be "Allow"
+            $rule.Protocol | Should Be $protocol.ToUpper()
+            $rule.LocalPort | Should Be 32120
+            $rule.RemoteAddress | Should Be "Any"
+            $rule.Profile | Should Be "Private,Domain"
+            $rule.Group | Should Be "storage-compose agent"
+        }
+        @($global:firewallRules.Values | Where-Object { $_.Name -like "storage-compose syncthing d002*" -and $_.Action -eq "Block" }).Count | Should Be 0
+    }
+
+    It "the old udp block rule is removed" {
+        $node = New-TestNode "d003" "upgraded"
+        Set-SyncthingFirewallRule $node $ports $null
+        Get-TestRule "d003" "udp" | Should Not BeNullOrEmpty
+        Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $true)
+        $global:firewallRules.ContainsKey("storage-compose syncthing d003 udp") | Should Be $false
+        $global:firewallRules.ContainsKey("storage-compose syncthing d003") | Should Be $false
+        Get-TestRule "d003" "tcp private" | Should Not BeNullOrEmpty
+    }
+
+    It "a rule whose RemoteAddress changed is replaced" {
+        $node = New-TestNode "d004" "replaced"
+        Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
+        (Get-TestRule "d004" "tcp public").RemoteAddress = "Any"
+        Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
+        (Get-TestRule "d004" "tcp public").RemoteAddress | Should Be "100.64.0.0/10"
+    }
+
+    It "keeps a rule Windows reports with a subnet mask and its profiles in its own order" {
+        $node = New-TestNode "d005" "kept"
+        Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
+        $public = Get-TestRule "d005" "tcp public"
+        $public.RemoteAddress = "100.64.0.0/255.192.0.0"
+        $public | Add-Member -NotePropertyName marker -NotePropertyValue "original"
+        $private = Get-TestRule "d005" "tcp private"
+        $private.Profile = "Domain, Private"
+        $private | Add-Member -NotePropertyName marker -NotePropertyValue "original"
+        Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
+        (Get-TestRule "d005" "tcp public").marker | Should Be "original"
+        (Get-TestRule "d005" "tcp private").marker | Should Be "original"
+    }
+
+    It "a tailnet-only node keeps today's rules" {
+        Set-SyncthingFirewallRule (New-TestNode "d006" "tailnet-only") $ports $null
+        $tcp = Get-TestRule "d006" ""
+        $tcp.Action | Should Be "Allow"
+        $tcp.Protocol | Should Be "TCP"
+        $tcp.LocalPort | Should Be 32120
+        $tcp.RemoteAddress | Should Be "100.64.0.0/10"
+        $tcp.Profile | Should Be "Any"
+        $udp = Get-TestRule "d006" "udp"
+        $udp.Action | Should Be "Block"
+        $udp.Protocol | Should Be "UDP"
+        $udp.Profile | Should Be "Any"
+        @($global:firewallRules.Keys | Where-Object { $_ -like "storage-compose syncthing d006*" }).Count | Should Be 2
+    }
+
+    It "UDP 21027 only with local announce on" {
+        $node = New-TestNode "d007" "discovery"
+        Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $true)
+        $rule = Get-TestRule "d007" "discovery private"
+        $rule.Protocol | Should Be "UDP"
+        $rule.LocalPort | Should Be 21027
+        $rule.RemoteAddress | Should Be "Any"
+        $rule.Profile | Should Be "Private,Domain"
+        Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
+        $global:firewallRules.ContainsKey("storage-compose syncthing d007 discovery private") | Should Be $false
+    }
+
+    It "removes every rule of a stopped node, whichever set it had" {
+        $node = New-TestNode "d008" "removed"
+        Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $true)
+        Remove-NodeFirewallRules $node
+        @($global:firewallRules.Keys | Where-Object { $_ -like "storage-compose syncthing d008*" }).Count | Should Be 0
+    }
+
+    It "follows a profile that arrives while the node runs" {
+        $instance = New-SyncthingInstance (New-ConfiguredNode "d009" "arrives")
+        $instance.state = "running"
+        $instance.ports = $ports
+        Update-InstanceFirewall $instance
+        Get-TestRule "d009" "udp" | Should Not BeNullOrEmpty
+        Write-ConnectionsFile @{ d009 = (New-ProfileEntry $true) }
+        Update-InstanceFirewall $instance
+        $global:firewallRules.ContainsKey("storage-compose syncthing d009 udp") | Should Be $false
+        Get-TestRule "d009" "udp private" | Should Not BeNullOrEmpty
+    }
+
+    Reset-Agent
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
+}
+
 Describe "the host's networks" {
+    It "reports a LAN marked Public while a node uses the LAN method" {
+        $networks = @(
+            [pscustomobject]@{ kind = "lan"; address = "192.168.68.56"; category = "Public"; name = "Network 3" }
+            [pscustomobject]@{ kind = "lan"; address = "10.0.0.5"; category = "Private"; name = "Home" }
+            [pscustomobject]@{ kind = "tailnet"; address = "100.75.76.90" }
+        )
+        $withLan = [pscustomobject]@{ state = "running"; usesLan = $true }
+        $withoutLan = [pscustomobject]@{ state = "running"; usesLan = $false }
+        @(Get-LanProblems $networks @($withLan)) | Should Be @("LAN unavailable: Network 3 (192.168.68.56) is marked Public")
+        @(Get-LanProblems $networks @($withoutLan)).Count | Should Be 0
+    }
+
     It "Get-HostNetworks reports a Public category as Public" {
         $global:ipAddresses = @(
             [pscustomobject]@{ InterfaceIndex = 1; IPAddress = "127.0.0.1" }
@@ -328,7 +471,7 @@ Describe "the host's networks" {
             [pscustomobject]@{ InterfaceIndex = 41; IPAddress = "172.29.224.1" }
         )
         $global:connectionProfiles = @(
-            [pscustomobject]@{ InterfaceIndex = 11; NetworkCategory = "Public" }
+            [pscustomobject]@{ InterfaceIndex = 11; NetworkCategory = "Public"; Name = "Network 3" }
             [pscustomobject]@{ InterfaceIndex = 12; NetworkCategory = "Private" }
         )
         $networks = @(Get-HostNetworks)
@@ -336,6 +479,7 @@ Describe "the host's networks" {
         $networks[0].kind | Should Be "lan"
         $networks[0].address | Should Be "192.168.68.56"
         $networks[0].category | Should Be "Public"
+        $networks[0].name | Should Be "Network 3"
         $networks[1].kind | Should Be "tailnet"
         $networks[1].address | Should Be "100.75.76.90"
     }
