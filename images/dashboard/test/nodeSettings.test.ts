@@ -272,7 +272,7 @@ describe("a node's general settings, defaults and ignored lists", () => {
     assert.equal(effects.notes.length, 0);
 
     assert.equal((await send("PATCH", "/api/nodes/fb98/general", { minHomeDiskFree: { value: 2, unit: "%" } })).status, 200);
-    assert.equal((await send("PATCH", "/api/nodes/5784/general", { deviceName: "private-array-renamed", crashReportingEnabled: false })).status, 200, "the nodes service rewrites only the listen address");
+    assert.equal((await send("PATCH", "/api/nodes/5784/general", { deviceName: "private-array-renamed", crashReportingEnabled: false })).status, 200, "an array other than ARRAY_PREFIX (the tests' cluster is \"storage\"): the nodes service rewrites only its listen address");
     assert.deepEqual(writesTo(pc).map((write) => write.body), [{ minHomeDiskFree: { value: 2, unit: "%" } }]);
     assert.equal(writesTo(array).length, 2);
   });

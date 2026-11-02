@@ -603,7 +603,7 @@ describe("which keeper rewrites a node's settings", () => {
 
   it("names the host agent, the nodes service, or nothing, by where the node is known from", () => {
     assert.equal(settingsKeeperOf(node("host-agent", "fb98", "F:\\")), "host-agent");
-    assert.equal(settingsKeeperOf(node("array", "5784", "/mnt/storage/5784")), "nodes-service");
+    assert.equal(settingsKeeperOf(node("array", "5784", "/mnt/storage/5784")), "nodes-service", "an array other than ARRAY_PREFIX; on a host whose ARRAY_PREFIX is 5784 it is the cluster");
     assert.equal(settingsKeeperOf(node("registry", "c3d4", "/mnt/nodes/c3d4")), "nodes-service");
     assert.equal(settingsKeeperOf(node("array", clusterArrayId, "/mnt/storage/pool")), null, "the cluster's own service sets only its GUI");
     assert.equal(settingsKeeperOf(node("registry", "d7e5", "/var/syncthing/data")), null, "the test peer runs its own Syncthing");
@@ -612,7 +612,7 @@ describe("which keeper rewrites a node's settings", () => {
 
   it("a node on the page carries its keeper and whether a restart needs its name, by the rules the routes apply", () => {
     assert.deepEqual(localNodeRules("host-agent", "fb98", "F:\\"), { keeper: "host-agent", restartConfirmRequired: true });
-    assert.deepEqual(localNodeRules("array", "5784", "/mnt/storage/5784"), { keeper: "nodes-service", restartConfirmRequired: true });
+    assert.deepEqual(localNodeRules("array", "5784", "/mnt/storage/5784"), { keeper: "nodes-service", restartConfirmRequired: true }, "an array other than ARRAY_PREFIX");
     assert.deepEqual(localNodeRules("array", clusterArrayId, "/mnt/storage/pool"), { keeper: null, restartConfirmRequired: true });
     assert.deepEqual(localNodeRules("registry", "c3d4", "/mnt/nodes/c3d4"), { keeper: "nodes-service", restartConfirmRequired: false });
     assert.deepEqual(localNodeRules("registry", "d7e5", "/var/syncthing/data"), { keeper: null, restartConfirmRequired: false });

@@ -313,7 +313,7 @@ describe("the advanced config editor and restarts", () => {
 
     assert.equal((await send("PATCH", "/api/nodes/fb98/advanced/options", { keepTemporariesH: 12 })).status, 200);
     assert.equal((await send("PATCH", `/api/nodes/fb98/advanced/devices/${otherId}`, { name: "renamed-other" })).status, 200, "only pc's own device name is the host agent's");
-    assert.equal((await send("PATCH", "/api/nodes/5784/advanced/options", { relaysEnabled: true })).status, 200, "the nodes service rewrites only the listen address");
+    assert.equal((await send("PATCH", "/api/nodes/5784/advanced/options", { relaysEnabled: true })).status, 200, "an array other than ARRAY_PREFIX (the tests' cluster is \"storage\"): the nodes service rewrites only its listen address");
     assert.equal((await send("PATCH", `/api/nodes/5784/advanced/devices/${ownId}`, { name: "private-array-renamed" })).status, 200);
     assert.equal((await send("PATCH", "/api/nodes/d7e5/advanced/options", { relaysEnabled: true, listenAddresses: ["tcp://:22006"] })).status, 200, "nothing rewrites the peer's");
     assert.deepEqual(writesTo(pc).map((write) => write.body), [{ keepTemporariesH: 12 }, { name: "renamed-other" }]);

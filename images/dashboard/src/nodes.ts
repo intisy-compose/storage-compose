@@ -179,7 +179,7 @@ async function remoteNodes(warnings: Warning[]): Promise<StorageNode[]> {
       try {
         const answer = await fetchTailnetJson<NodesResponse>(`${dashboardUrl}/api/nodes?scope=local`);
         warnings.push(...answer.warnings.map((entry) => fromOtherHost(entry, answer.host.name)));
-        return answer.nodes.map((node) => ({ ...node, offersWaiting: node.offersWaiting ?? 0, local: false, host: node.host || answer.host.name, dashboardUrl }));
+        return answer.nodes.map((node) => ({ ...node, offersWaiting: node.offersWaiting ?? 0, local: false, host: node.host || answer.host.name, dashboardUrl, keeper: null, restartConfirmRequired: false }));
       } catch (error) {
         const text = `${dashboardUrl} could not be reached (${(error as Error).message}); its nodes show Syncthing's view`;
         warnings.push(warning({ id: `peer:${dashboardUrl}`, level: "warning", kind: "peer", text, nodeId: null }));
