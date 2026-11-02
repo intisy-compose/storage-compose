@@ -1,15 +1,17 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { connectionsRound, startConnectionRounds } from "./applyConnections.js";
 import { listBlockDevices } from "./blockDevices.js";
 import { recordDashboardActivity, startEventFeeds } from "./eventFeed.js";
 import { RequestError, readBody, sendJson } from "./http.js";
-import { type JoinDependencies, JoinError, handleJoin } from "./join.js";
+import { type JoinDependencies, JoinError, admitCaller, handleJoin } from "./join.js";
 import { joinInstances } from "./joinInstances.js";
 import { createJoinListener, dockerDnsResolver } from "./joinListener.js";
 import { invalidateLocalNodes } from "./nodes.js";
 import type { ProxySource } from "./proxyProtocol.js";
 import { handleRequest, joinRecords } from "./routes.js";
+import { type NodeCallerDependencies, joinedNodeConnections, joinedNodePathPattern } from "./routes/connections.js";
 import { dataRepoPullSeconds, joinAllowedUsers, joinGatewayHost, joinPort, joinTag, port, setupRepoDirectory } from "./settings.js";
-import { readLayout, recordDevice, startDataRepoPulls } from "./setupRepo.js";
+import { readLayout, recordDevice } from "./setupRepo.js";
 import { ownLogin, whois } from "./tailnet.js";
 
 const joinDependencies: JoinDependencies = {
@@ -27,10 +29,23 @@ const joinDependencies: JoinDependencies = {
   effects: { invalidate: invalidateLocalNodes, record: (text) => recordDashboardActivity(null, null, text) },
 };
 
-async function handleJoinRequest(request: IncomingMessage, response: ServerResponse, caller: ProxySource): Promise<void> {
+const nodeCallerDependencies: NodeCallerDependencies = {
+  admit: (addresses) => admitCaller(joinDependencies, addresses),
+  records: joinRecords,
+  connectionsOf: (node) => connectionsRound.connectionsFor(node),
+};
+
+async function answerCaller(request: IncomingMessage, caller: ProxySource): Promise<unknown> {
+  const nodePath = joinedNodePathPattern.exec(new URL(request.url ?? "/", "http://join").pathname);
+  if (nodePath) return joinedNodeConnections(nodeCallerDependencies, [caller.address], nodePath[1]);
+  const { response: answer, setup } = await handleJoin(joinDependencies, [caller.address], await readBody(request));
+  if (setup) console.log(`join: ${setup.message}`);
+  return answer;
+}
+
+async function handleCallerRequest(request: IncomingMessage, response: ServerResponse, caller: ProxySource): Promise<void> {
   try {
-    const { response: answer, setup } = await handleJoin(joinDependencies, [caller.address], await readBody(request));
-    if (setup) console.log(`join: ${setup.message}`);
+    const answer = await answerCaller(request, caller);
     sendJson(response, 200, answer);
   } catch (error) {
     if (error instanceof JoinError || error instanceof RequestError) return sendJson(response, error.status, { error: error.message });
@@ -40,10 +55,10 @@ async function handleJoinRequest(request: IncomingMessage, response: ServerRespo
 
 createServer((request, response) => void handleRequest(request, response)).listen(port, () => console.log(`dashboard listening on ${port}`));
 
-createJoinListener(handleJoinRequest, dockerDnsResolver(joinGatewayHost)).listen(joinPort, () =>
+createJoinListener(handleCallerRequest, dockerDnsResolver(joinGatewayHost)).listen(joinPort, () =>
   console.log(`join API listening on ${joinPort}, behind tailscale's PROXY protocol, for ${joinGatewayHost} only`),
 );
 
 void listBlockDevices().catch(() => undefined);
 startEventFeeds();
-startDataRepoPulls(dataRepoPullSeconds);
+startConnectionRounds(dataRepoPullSeconds);

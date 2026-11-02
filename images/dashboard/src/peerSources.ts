@@ -91,18 +91,18 @@ function isPeerTable(value: unknown): value is PeerTable {
   return typeof table === "object" && table !== null && Array.isArray(table.nodes) && Array.isArray(table.bridges) && typeof table.builtAt === "string";
 }
 
-/** @implNote A dashboard that cannot be read leaves its nodes out of this round's table; the next round asks again. */
-async function remoteTable(dashboardUrl: string): Promise<PeerTable[]> {
+/** Another dashboard's own part of the table; null when it cannot be read or answers something else. */
+export async function readRemoteTable(dashboardUrl: string): Promise<PeerTable | null> {
   try {
     const answer = await readDashboard(dashboardUrl, new URL(dashboardUrl).host, "/api/connections/addresses");
-    return isPeerTable(answer) ? [answer] : [];
+    return isPeerTable(answer) ? answer : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
 /** The whole cluster's table: this host's part and every other dashboard's. */
 export async function collectPeerTable(sources: PeerSources = defaultPeerSources, dashboards: string[] = peerDashboards): Promise<PeerTable> {
-  const [local, remote] = await Promise.all([localPeerTable(sources), Promise.all(dashboards.map(remoteTable))]);
-  return buildPeerTable(local.nodes, local.bridges, remote.flat(), local.builtAt);
+  const [local, remote] = await Promise.all([localPeerTable(sources), Promise.all(dashboards.map(readRemoteTable))]);
+  return buildPeerTable(local.nodes, local.bridges, remote.filter((table) => table !== null), local.builtAt);
 }

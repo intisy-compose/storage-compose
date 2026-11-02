@@ -35,15 +35,16 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
   response.end(JSON.stringify(body));
 }
 
-function isJoinRequest(request: IncomingMessage): boolean {
-  return request.method === "POST" && new URL(request.url ?? "/", "http://join").pathname === "/api/join";
+function isCallerRequest(request: IncomingMessage): boolean {
+  const path = new URL(request.url ?? "/", "http://join").pathname;
+  return (request.method === "POST" && path === "/api/join") || (request.method === "GET" && /^\/api\/connections\/node\/[^/]+$/.test(path));
 }
 
 /**
- * The join port inside the stack: the gateway hands on /api/join from 443 opening each connection with
+ * The join port inside the stack: the gateway hands on /api/join and /api/connections/node/ from 443 opening each connection with
  * a PROXY protocol v2 header naming the caller, which is the only way to learn its tailnet address (a
  * plain proxied request carries a loopback address that whois does not know). A connection without a
- * valid header is closed unanswered, and only POST /api/join is served.
+ * valid header is closed unanswered, and only POST /api/join and a joined device's GET /api/connections/node/<node id> are served.
  *
  * @implNote The header is only as trustworthy as its sender, and every container on the stack network
  * can reach this port, so a connection is read only when it comes from the gateway, which takes the
@@ -57,7 +58,7 @@ export function createJoinListener(handleJoin: CallerHandler, gatewayAddresses: 
     if (!caller) return void request.socket.destroy();
     const misdirected = hostRefusal(request, hosts);
     if (misdirected) return sendJson(response, misdirected.status, { error: misdirected.message });
-    if (!isJoinRequest(request)) return sendJson(response, 404, { error: "this port serves only POST /api/join" });
+    if (!isCallerRequest(request)) return sendJson(response, 404, { error: "this port serves only POST /api/join and GET /api/connections/node/<node id>" });
     const refusal = crossSiteRefusal(request);
     if (refusal) return sendJson(response, refusal.status, { error: refusal.message });
     handleJoin(request, response, caller).catch((error: unknown) => {

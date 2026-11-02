@@ -61,7 +61,7 @@ function node(id: string, name: string, deviceId: string | null, overrides: Part
     folders: [],
     dashboardUrl: null,
     keeper: null,
-    restartConfirmRequired: false,
+    restartConfirmRequired: false, connections: "unknown",
     ...overrides,
   };
 }

@@ -308,7 +308,11 @@ export interface StorageNode {
   keeper: SettingsKeeper | null;
   /** Whether restarting the node's Syncthing needs its name typed, as the restart route asks. */
   restartConfirmRequired: boolean;
+  /** Whether the node's Syncthing has the connection profile's values, as this host's last round found it. */
+  connections: ConnectionsState;
 }
+
+export type ConnectionsState = "on-profile" | "not-yet" | "unknown";
 
 export type WarningKind =
   | "array"

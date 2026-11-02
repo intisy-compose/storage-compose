@@ -283,11 +283,3 @@ async function saveNow(profile: ConnectionProfile, message: string, repository: 
   await undoSave(repository, before, savedCommit);
   throw isRejectedPush(push.output) ? new ProfileConflict() : new ProfileUnreachable(lastLine(push.output, "git push failed"));
 }
-
-/** Pulls now and then every `seconds`; the returned function stops the timer. */
-export function startDataRepoPulls(seconds: number, repository = setupRepoDirectory): () => void {
-  if (!repository) return () => {};
-  void pullDataRepo(repository);
-  const timer = setInterval(() => void pullDataRepo(repository), seconds * 1000);
-  return () => clearInterval(timer);
-}

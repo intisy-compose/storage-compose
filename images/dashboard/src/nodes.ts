@@ -7,7 +7,8 @@ import { conflictIndexes } from "./conflicts.js";
 import { type UnreadSources, recordPresentDrives } from "./driveHistory.js";
 import { agentEntries, agentProblem, readHeartbeat } from "./hostAgent.js";
 import { registryWarnings, statusRegistryEntries, syncthingEndpoint } from "./instances.js";
-import { type JoinRecords } from "./join.js";
+import { connectionsStateOf } from "./connectionsDrift.js";
+import { type JoinRecords, joinedNodeId } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { type LocalNodeSource, localNodeRules } from "./nodeSource.js";
 import { parityState } from "./parity.js";
@@ -63,6 +64,7 @@ async function arrayNode(status: ArrayStatus, devices: BlockDevice[], sources: M
     folders: view?.folders ?? [],
     dashboardUrl: null,
     ...localNodeRules("array", status.id, poolPath(status.id)),
+    connections: connectionsStateOf(status.id),
   };
 }
 
@@ -86,6 +88,7 @@ function registryNode(entry: NodeRegistryEntry, source: LocalNodeSource, view: I
     folders: view?.folders ?? [],
     dashboardUrl: null,
     ...localNodeRules(source, entry.id, entry.root),
+    connections: connectionsStateOf(entry.id),
   };
 }
 
@@ -179,7 +182,7 @@ async function remoteNodes(warnings: Warning[]): Promise<StorageNode[]> {
       try {
         const answer = await fetchTailnetJson<NodesResponse>(`${dashboardUrl}/api/nodes?scope=local`);
         warnings.push(...answer.warnings.map((entry) => fromOtherHost(entry, answer.host.name)));
-        return answer.nodes.map((node) => ({ ...node, offersWaiting: node.offersWaiting ?? 0, local: false, host: node.host || answer.host.name, dashboardUrl, keeper: null, restartConfirmRequired: false }));
+        return answer.nodes.map((node) => ({ ...node, offersWaiting: node.offersWaiting ?? 0, local: false, host: node.host || answer.host.name, dashboardUrl, keeper: null, restartConfirmRequired: false, connections: node.connections ?? "unknown" }));
       } catch (error) {
         const text = `${dashboardUrl} could not be reached (${(error as Error).message}); its nodes show Syncthing's view`;
         warnings.push(warning({ id: `peer:${dashboardUrl}`, level: "warning", kind: "peer", text, nodeId: null }));
@@ -206,7 +209,7 @@ export async function syncthingOnlyNodes(known: StorageNode[], views: InstanceVi
       const record = joined.find((device) => device.syncthingDeviceId === peer.deviceId);
       const node = record?.nodes[0];
       nodes.set(peer.deviceId, {
-        id: `device-${peer.deviceId.slice(0, 7).toLowerCase()}`,
+        id: joinedNodeId(peer.deviceId),
         name: record?.name ?? deviceDisplayName(peer.name, peer.deviceId),
         kind: node?.kind ?? "device",
         threshold: node?.threshold ?? 0,
@@ -224,6 +227,7 @@ export async function syncthingOnlyNodes(known: StorageNode[], views: InstanceVi
         dashboardUrl: null,
         keeper: null,
         restartConfirmRequired: false,
+        connections: "unknown",
       });
     }
   }

@@ -766,7 +766,7 @@ describe("tree listing of all nodes", () => {
         folders: [],
         dashboardUrl: `${url}/p53`,
         keeper: null,
-        restartConfirmRequired: false,
+        restartConfirmRequired: false, connections: "unknown",
       };
       dashboardAnswer = () => ({ path: "Documents", view: "a1b2", entries: [], forwarded: true });
       const resolver = { registryDirectory: directory, heartbeatPath: join(directory, "none.json"), otherHostNodes: async () => [remote] };
