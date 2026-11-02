@@ -13,14 +13,6 @@ export interface HostAgentHeartbeat {
   nodes: HostAgentNode[];
   /** The host's networks; absent from an agent that predates them. */
   networks?: HostNetwork[];
-  /** The host's private relay, null while it runs none; absent from an agent that predates it. */
-  bridge?: HostAgentBridge | null;
-}
-
-export interface HostAgentBridge {
-  relayId: string;
-  port: number;
-  state: string;
 }
 
 export interface HostAgentNode {

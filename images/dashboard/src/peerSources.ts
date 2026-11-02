@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { Bridge, HostNetwork, NodeAddresses, PeerTable } from "./api/types.js";
 import { type HostAgentHeartbeat, isAgentAlive, readHeartbeat } from "./hostAgent.js";
-import { type ResolverSources, defaultResolverSources, localNodeInfos, readDashboard } from "./instanceResolver.js";
+import { type LocalNodeInfo, type ResolverSources, defaultResolverSources, localNodeInfos, readDashboard } from "./instanceResolver.js";
 import { clusterSyncPort, registrySyncPort } from "./joinInstances.js";
 import { buildPeerTable } from "./peerTable.js";
 import { clusterArrayId, hostName, peerDashboards, statusDirectory, tailnetHost } from "./settings.js";
@@ -9,6 +9,8 @@ import { clusterArrayId, hostName, peerDashboards, statusDirectory, tailnetHost 
 /** Where this host's addresses are read from; tests point it at a scratch directory. */
 export interface PeerSources {
   resolver: ResolverSources;
+  /** @implNote Injected, so a test never asks a live Syncthing for its device ID. */
+  dockerNodeInfos: () => Promise<LocalNodeInfo[]>;
   /** `{ relayId, port }` of the Docker bridge, written by the bridge service. */
   dockerBridgeFile: string;
   /** The gateway's own tailnet name, which `serve` forwards the sync ports on. */
@@ -17,6 +19,7 @@ export interface PeerSources {
 
 export const defaultPeerSources: PeerSources = {
   resolver: defaultResolverSources,
+  dockerNodeInfos: () => localNodeInfos(defaultResolverSources),
   dockerBridgeFile: `${statusDirectory}/bridge.json`,
   gatewayTailnetName: tailnetHost,
 };
@@ -46,8 +49,9 @@ function agentNodes(heartbeat: HostAgentHeartbeat | null, networks: HostNetwork[
   });
 }
 
-async function dockerNodes(resolver: ResolverSources, networks: HostNetwork[]): Promise<NodeAddresses[]> {
-  const infos = (await localNodeInfos(resolver)).filter((info) => info.source !== "host-agent" && info.instance !== null);
+async function dockerNodes(sources: PeerSources, networks: HostNetwork[]): Promise<NodeAddresses[]> {
+  const resolver = sources.resolver;
+  const infos = (await sources.dockerNodeInfos()).filter((info) => info.source !== "host-agent" && info.instance !== null);
   const nodes = await Promise.all(
     infos.map(async (info) => {
       const syncPort = info.nodeId === clusterArrayId ? clusterSyncPort : await registrySyncPort(resolver.registryDirectory, info.nodeId);
@@ -67,17 +71,10 @@ async function dockerBridge(path: string): Promise<{ relayId: string; port: numb
   }
 }
 
-/**
- * @implNote The Docker bridge is named apart from the host agent's: both can run on one Windows host, and
- * `buildPeerTable` keeps one bridge per name.
- */
-async function localBridges(heartbeat: HostAgentHeartbeat | null, hostNetworks: HostNetwork[], sources: PeerSources, docker: HostNetwork[]): Promise<Bridge[]> {
-  const agentBridge = heartbeat?.bridge?.state === "running" ? heartbeat.bridge : null;
-  const containerBridge = await dockerBridge(sources.dockerBridgeFile);
-  return [
-    ...(agentBridge ? [{ host: heartbeat!.host, relayId: agentBridge.relayId, port: agentBridge.port, addresses: hostNetworks }] : []),
-    ...(containerBridge ? [{ host: `${hostName} (Docker)`, ...containerBridge, addresses: docker }] : []),
-  ];
+/** The host's one bridge is the stack's Docker bridge, reached on the Docker nodes' networks. */
+async function localBridges(sources: PeerSources, docker: HostNetwork[]): Promise<Bridge[]> {
+  const bridge = await dockerBridge(sources.dockerBridgeFile);
+  return bridge ? [{ host: hostName, ...bridge, addresses: docker }] : [];
 }
 
 /** This host's own nodes and bridges: what `GET /api/connections/addresses?scope=local` answers. */
@@ -85,8 +82,8 @@ export async function localPeerTable(sources: PeerSources = defaultPeerSources):
   const heartbeat = liveHeartbeat(await readHeartbeat(sources.resolver.heartbeatPath));
   const hostNetworks = heartbeat?.networks ?? [];
   const docker = dockerNetworks(hostNetworks, sources.gatewayTailnetName);
-  const nodes = [...(await dockerNodes(sources.resolver, docker)), ...agentNodes(heartbeat, hostNetworks)];
-  return buildPeerTable(nodes, await localBridges(heartbeat, hostNetworks, sources, docker), []);
+  const nodes = [...(await dockerNodes(sources, docker)), ...agentNodes(heartbeat, hostNetworks)];
+  return buildPeerTable(nodes, await localBridges(sources, docker), []);
 }
 
 function isPeerTable(value: unknown): value is PeerTable {

@@ -7,6 +7,7 @@ import type { Bridge, ConnectionProfile, NodeAddresses, PeerTable } from "../src
 import { defaultProfile } from "../src/connectionProfile.js";
 import { dockerNetworks, localPeerTable } from "../src/peerSources.js";
 import { buildPeerTable, resolveNode } from "../src/peerTable.js";
+import { hostName } from "../src/settings.js";
 
 const publicPool = "dynamic+https://relays.syncthing.net/endpoint";
 
@@ -144,7 +145,7 @@ describe("this host's part of the peer table", () => {
     ]);
   });
 
-  it("the host agent's nodes and bridge come from its heartbeat, the Docker bridge from bridge.json", async () => {
+  it("the host agent's nodes come from its heartbeat and the host's one bridge from bridge.json", async () => {
     const directory = mkdtempSync(join(tmpdir(), "peer-sources-"));
     try {
       const networks = [{ kind: "lan", address: "192.168.1.5", category: "Private" }, { kind: "tailnet", address: "100.64.0.5" }];
@@ -158,19 +159,15 @@ describe("this host's part of the peer table", () => {
         problems: [],
         nodes: [{ id: "d004", name: "D004", kind: "drive", threshold: 0, assigned: [], root: "D:\\", syncthing }],
         networks,
-        bridge: { relayId: "RELAY-PC", port: 22100, state: "running" },
       };
       writeFileSync(join(directory, "heartbeat.json"), JSON.stringify(heartbeat));
       writeFileSync(join(directory, "bridge.json"), JSON.stringify({ relayId: "RELAY-DOCKER", port: 22100 }));
       const resolver = { registryDirectory: join(directory, "nodes"), heartbeatPath: join(directory, "heartbeat.json"), otherHostNodes: async () => [] };
-      const local = await localPeerTable({ resolver, dockerBridgeFile: join(directory, "bridge.json"), gatewayTailnetName: "storage.example.ts.net" });
+      const local = await localPeerTable({ resolver, dockerNodeInfos: async () => [], dockerBridgeFile: join(directory, "bridge.json"), gatewayTailnetName: "storage.example.ts.net" });
       assert.deepEqual(local.nodes, [{ nodeId: "d004", deviceId: "DEV-AGENT", syncPort: 22004, networks }]);
       assert.deepEqual(
-        local.bridges.map((entry) => [entry.relayId, entry.addresses.map((network) => network.address)]),
-        [
-          ["RELAY-PC", ["192.168.1.5", "100.64.0.5"]],
-          ["RELAY-DOCKER", ["192.168.1.5", "100.64.0.5", "storage.example.ts.net"]],
-        ],
+        local.bridges.map((entry) => [entry.host, entry.relayId, entry.addresses.map((network) => network.address)]),
+        [[hostName, "RELAY-DOCKER", ["192.168.1.5", "100.64.0.5", "storage.example.ts.net"]]],
       );
     } finally {
       rmSync(directory, { recursive: true, force: true });
