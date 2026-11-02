@@ -3,7 +3,7 @@ import { ProfileError, formatProfile, parseProfile } from "../connectionProfile.
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type AnyRoute, hostWritePattern } from "../routes.js";
 import { setupRepoDirectory } from "../settings.js";
-import { readProfile, saveProfile } from "../setupRepo.js";
+import { ProfileConflict, pullDataRepo, readProfile, saveProfile } from "../setupRepo.js";
 
 /** @implNote A body that does not survive being written and read back is refused, so only a profile `parseProfile` accepts is ever committed. */
 function validProfile(body: unknown): ConnectionProfile {
@@ -26,7 +26,10 @@ export function connectionRoutes(repository = setupRepoDirectory): AnyRoute[] {
       pattern: hostWritePattern(/^\/api\/connections\/profile$/),
       handle: async ({ request, response }) => {
         const profile = validProfile(await readBody(request));
-        await saveProfile(profile, "feat(connections): change the connection profile", repository);
+        await saveProfile(profile, "feat(connections): change the connection profile", repository).catch(async (error) => {
+          if (error instanceof ProfileConflict) await pullDataRepo(repository);
+          throw error;
+        });
         sendJson(response, 200, await readProfile(repository));
       },
     },

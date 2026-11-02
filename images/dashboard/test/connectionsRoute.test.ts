@@ -11,7 +11,7 @@ import { defaultProfile, formatProfile } from "../src/connectionProfile.js";
 import { hostAllowlist } from "../src/http.js";
 import { requestHandler } from "../src/routes.js";
 import { connectionRoutes } from "../src/routes/connections.js";
-import { pullDataRepo, readProfile, saveProfile } from "../src/setupRepo.js";
+import { ProfileConflict, pullDataRepo, readProfile, saveProfile } from "../src/setupRepo.js";
 
 function git(directory: string, ...args: string[]): string {
   return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -83,11 +83,10 @@ describe("the connection profile in the data repo", () => {
     git(theirs, "add", ".");
     git(theirs, "commit", "-q", "-m", "elsewhere");
     git(theirs, "push", "-q");
-    const headBefore = git(ours, "rev-parse", "HEAD");
     const fileBefore = readFileSync(join(ours, "connections.toml"), "utf8");
     const answer = await ask("PUT", JSON.stringify(limited(900)));
     assert.equal(answer.status, 409);
-    assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
+    assert.equal(git(ours, "rev-parse", "HEAD"), git(remote, "rev-parse", "main"));
     assert.equal(readFileSync(join(ours, "connections.toml"), "utf8"), fileBefore);
     assert.equal(git(ours, "status", "--porcelain"), "");
   });
@@ -115,11 +114,33 @@ describe("the connection profile in the data repo", () => {
       assert.equal(read.profile.limits.maxSendKbps, 1200);
       assert.equal(read.pulledAt, good.pulledAt);
       assert.equal(typeof read.pullProblem, "string");
+      const headBefore = git(ours, "rev-parse", "HEAD");
       const answer = await ask("PUT", JSON.stringify(limited(1300)));
       assert.equal(answer.status, 503);
+      assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
       assert.equal(existsSync(join(ours, "connections.toml")) && readFileSync(join(ours, "connections.toml"), "utf8").includes("1300"), false);
     } finally {
       renameSync(moved, remote);
     }
+  });
+
+  it("answers 400 to a body that is not a profile, and commits nothing", async () => {
+    const headBefore = git(ours, "rev-parse", "HEAD");
+    const answer = await ask("PUT", JSON.stringify({ methods: 5 }));
+    assert.equal(answer.status, 400);
+    assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
+  });
+
+  it("a commit landing between the save's commit and a rejected push survives", async () => {
+    const third = cloneOf(remote, join(root, "third"));
+    git(theirs, "pull", "-q", "--ff-only");
+    writeFileSync(join(theirs, "other2.txt"), "y");
+    git(theirs, "add", ".");
+    git(theirs, "commit", "-q", "-m", "elsewhere again");
+    git(theirs, "push", "-q");
+    const hook = join(third, ".git", "hooks", "pre-push");
+    writeFileSync(hook, ["#!/bin/sh", "git commit -q --allow-empty -m interleaved", ""].join("\n"), { mode: 0o755 });
+    await assert.rejects(saveProfile(limited(1500), "feat(connections): stale save", third), ProfileConflict);
+    assert.match(git(third, "log", "--format=%s"), /interleaved/);
   });
 });

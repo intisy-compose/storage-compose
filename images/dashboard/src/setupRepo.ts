@@ -149,8 +149,24 @@ function git(...args: string[]): Promise<{ ok: boolean; output: string }> {
   return gitIn(setupRepoDirectory, ...args);
 }
 
+const gitQueues = new Map<string, Promise<unknown>>();
+
+/**
+ * Runs `task` after every earlier git write on the repository has finished.
+ * @implNote One working tree and index are shared by saves, admissions and pulls, so an interleaving would let one commit sweep in another's staged file or undo another's commit.
+ */
+function serializeGit<Result>(repository: string, task: () => Promise<Result>): Promise<Result> {
+  const run = (gitQueues.get(repository) ?? Promise.resolve()).then(task, task);
+  gitQueues.set(repository, run.catch(() => undefined));
+  return run;
+}
+
 /** Writes the device into the layout, commits with the repo's own identity, and pushes. */
-export async function recordDevice(name: string, deviceId: string, root: string | null): Promise<SetupRecordResult> {
+export function recordDevice(name: string, deviceId: string, root: string | null): Promise<SetupRecordResult> {
+  return serializeGit(setupRepoDirectory, () => recordDeviceNow(name, deviceId, root));
+}
+
+async function recordDeviceNow(name: string, deviceId: string, root: string | null): Promise<SetupRecordResult> {
   const path = `${setupRepoDirectory}/${setupLayoutPath}`;
   const before = await readLayoutText();
   if (before === null) return { committed: false, pushed: false, message: `the setup repo has no ${setupLayoutPath}; the admission is recorded on this host only` };
@@ -216,20 +232,23 @@ function lastLine(output: string, fallback: string): string {
 }
 
 /** `git pull --ff-only`; a failure is kept as pullProblem and the profile on disk stays as it was. */
-export async function pullDataRepo(repository = setupRepoDirectory): Promise<void> {
-  if (!repository) return;
+export function pullDataRepo(repository = setupRepoDirectory): Promise<void> {
+  return repository ? serializeGit(repository, () => pullNow(repository)) : Promise.resolve();
+}
+
+async function pullNow(repository: string): Promise<void> {
   const pull = await gitIn(repository, "pull", "--ff-only");
   if (pull.ok) pullStates.set(repository, { pulledAt: new Date().toISOString(), pullProblem: null });
   else pullStates.set(repository, { ...pullStateOf(repository), pullProblem: lastLine(pull.output, "git pull failed") });
 }
 
 function isRejectedPush(output: string): boolean {
-  return /rejected|non-fast-forward|fetch first/i.test(output);
+  return /non-fast-forward|fetch first|\[rejected\]/i.test(output);
 }
 
 /** @implNote Only this file is touched: the data repo may hold other uncommitted work, so a commit is undone with a soft reset and the file restored by hand. */
-async function undoSave(repository: string, before: string | null, committed: boolean): Promise<void> {
-  if (committed) await gitIn(repository, "reset", "--soft", "HEAD~1");
+async function undoSave(repository: string, before: string | null, savedCommit: string | null): Promise<void> {
+  if (savedCommit !== null && (await gitIn(repository, "rev-parse", "HEAD")).output === savedCommit) await gitIn(repository, "reset", "--soft", "HEAD~1");
   await gitIn(repository, "reset", "-q", "--", connectionsProfilePath);
   const path = `${repository}/${connectionsProfilePath}`;
   if (before === null) await rm(path, { force: true });
@@ -239,19 +258,29 @@ async function undoSave(repository: string, before: string | null, committed: bo
 /** Writes the profile, commits and pushes it; a failed commit or push leaves the file and the repo as they were. */
 export async function saveProfile(profile: ConnectionProfile, message: string, repository = setupRepoDirectory): Promise<void> {
   if (!repository) throw new RequestError(503, "this host has no setup repo to keep the connection profile in");
+  return serializeGit(repository, () => saveNow(profile, message, repository));
+}
+
+async function committedProfileText(repository: string): Promise<string | null> {
+  const shown = await gitIn(repository, "show", `HEAD:${connectionsProfilePath}`);
+  return shown.ok ? shown.output : null;
+}
+
+async function saveNow(profile: ConnectionProfile, message: string, repository: string): Promise<void> {
   const before = await readProfileText(repository);
   const after = formatProfile(profile);
-  if (after === before) return;
+  if (after.trim() === (await committedProfileText(repository))) return;
   await writeFile(`${repository}/${connectionsProfilePath}`, after);
   await gitIn(repository, "add", connectionsProfilePath);
   const commit = await gitIn(repository, "commit", "-m", message, "--", connectionsProfilePath);
   if (!commit.ok) {
-    await undoSave(repository, before, false);
+    await undoSave(repository, before, null);
     throw new RequestError(500, `the connection profile could not be committed: ${lastLine(commit.output, "git commit failed")}`);
   }
+  const savedCommit = (await gitIn(repository, "rev-parse", "HEAD")).output;
   const push = await gitIn(repository, "push");
   if (push.ok) return;
-  await undoSave(repository, before, true);
+  await undoSave(repository, before, savedCommit);
   throw isRejectedPush(push.output) ? new ProfileConflict() : new ProfileUnreachable(lastLine(push.output, "git push failed"));
 }
 
