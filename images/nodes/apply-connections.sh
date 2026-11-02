@@ -4,7 +4,8 @@
 # instances and the cluster alike (POSIX sh: the cluster's image has busybox only). Only the options
 # and listen addresses; each device's addresses stay the dashboard's, which adds no device. A missing
 # file or entry changes nothing; an option of the wrong type is left out, and a listen list with any
-# address of an unknown scheme is left out whole, as the host agent does (windows/syncthing.ps1).
+# address of an unknown scheme is left out whole while the valid options are still applied. The host
+# agent (windows/syncthing.ps1) is stricter: it ignores the whole entry on such a listen list.
 set -u
 
 node=$1
