@@ -85,7 +85,7 @@ describe("the connection profile in the data repo", () => {
     git(theirs, "commit", "-q", "-m", "elsewhere");
     git(theirs, "push", "-q");
     const fileBefore = readFileSync(join(ours, "connections.toml"), "utf8");
-    const answer = await ask("PUT", JSON.stringify(limited(900)));
+    const answer = await ask("PUT", JSON.stringify({ ...limited(900), base: limited(500) }));
     assert.equal(answer.status, 409);
     assert.equal(git(ours, "rev-parse", "HEAD"), git(remote, "rev-parse", "main"));
     assert.equal(readFileSync(join(ours, "connections.toml"), "utf8"), fileBefore);
@@ -116,13 +116,25 @@ describe("the connection profile in the data repo", () => {
       assert.equal(read.pulledAt, good.pulledAt);
       assert.equal(typeof read.pullProblem, "string");
       const headBefore = git(ours, "rev-parse", "HEAD");
-      const answer = await ask("PUT", JSON.stringify(limited(1300)));
+      const answer = await ask("PUT", JSON.stringify({ ...limited(1300), base: good.profile }));
       assert.equal(answer.status, 503);
       assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
       assert.equal(existsSync(join(ours, "connections.toml")) && readFileSync(join(ours, "connections.toml"), "utf8").includes("1300"), false);
     } finally {
       renameSync(moved, remote);
     }
+  });
+
+  it("a PUT whose base differs from the file is 409 and commits nothing", async () => {
+    await pullDataRepo(ours);
+    const headBefore = git(ours, "rev-parse", "HEAD");
+    const onDisk = (await readProfile(ours)).profile;
+    const answer = await ask("PUT", JSON.stringify({ ...limited(2000), base: limited(onDisk.limits.maxSendKbps + 1) }));
+    assert.equal(answer.status, 409);
+    assert.equal(JSON.parse(answer.body).error, "the profile changed since you read it; it has been reloaded");
+    assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
+    assert.equal((await readProfile(ours)).profile.limits.maxSendKbps, onDisk.limits.maxSendKbps);
+    assert.equal((await ask("PUT", JSON.stringify(limited(2000)))).status, 400, "a save names the profile it was made from");
   });
 
   it("answers 400 to a body that is not a profile, and commits nothing", async () => {

@@ -12,6 +12,7 @@ import { hostAllowlist } from "../src/http.js";
 import { pairsWithoutCommonMethod } from "../src/reachability.js";
 import { requestHandler } from "../src/routes.js";
 import { connectionRoutes } from "../src/routes/connections.js";
+import { readProfile } from "../src/setupRepo.js";
 
 const lanAndTailnet: NodeAddresses = {
   nodeId: "aa01",
@@ -99,8 +100,10 @@ describe("saving a profile that strands pairs", () => {
 
   after(() => rmSync(root, { recursive: true, force: true }));
 
-  async function put(body: unknown): Promise<{ status: number; body: { error?: string } }> {
-    const peers = table([lanAndTailnet, tailnetOnly, lanOnly]);
+  async function put(profile: object): Promise<{ status: number; body: { error?: string } }> {
+    const named = (node: NodeAddresses, name: string): NodeAddresses => ({ ...node, name });
+    const peers = table([named(lanAndTailnet, "alpha"), named(tailnetOnly, "bravo"), lanOnly]);
+    const body = { ...profile, base: (await readProfile(ours)).profile };
     const handler = requestHandler(connectionRoutes(ours, { local: async () => peers, all: async () => peers }), { invalidate: () => {}, record: () => {} }, hostAllowlist(["localhost"]));
     const server: Server = createServer((request, response) => void handler(request, response));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
@@ -129,7 +132,7 @@ describe("saving a profile that strands pairs", () => {
     const stranding = withoutRelays((profile) => (profile.methods.tailnet = false));
     const refused = await put(stranding);
     assert.equal(refused.status, 409);
-    assert.equal(refused.body.error, "aa01 and bb02, bb02 and cc03 would share no connection method; confirm to save anyway");
+    assert.equal(refused.body.error, "alpha and bravo, bravo and cc03 would share no connection method; confirm to save anyway");
     assert.equal(git(ours, "rev-parse", "HEAD"), headBefore, "nothing is committed");
 
     const confirmed = await put({ ...stranding, confirmUnreachable: true });

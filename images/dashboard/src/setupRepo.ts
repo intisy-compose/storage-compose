@@ -2,6 +2,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import type { ConnectionProfile, PriorityBand, ProfileRead } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
+import { profileChangedText } from "./api/profileText.js";
 import { RequestError } from "./http.js";
 import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
 import { type TomlTable, parseToml } from "./toml.js";
@@ -189,6 +190,13 @@ export class ProfileConflict extends RequestError {
 }
 
 /** A save that git could not make reach the remote; nothing of the save remains. */
+/** A save made from a profile that is no longer the one on disk: another host's change was pulled in meanwhile. */
+export class ProfileChanged extends RequestError {
+  constructor() {
+    super(409, profileChangedText);
+  }
+}
+
 export class ProfileUnreachable extends RequestError {
   constructor(reason: string) {
     super(503, `the data repo's remote could not be reached: ${reason}`);
@@ -251,9 +259,18 @@ async function undoSave(repository: string, before: string | null, savedCommit: 
 }
 
 /** Writes the profile, commits and pushes it; a failed commit or push leaves the file and the repo as they were. */
-export async function saveProfile(profile: ConnectionProfile, message: string, repository = setupRepoDirectory): Promise<void> {
+/** Commits and pushes `profile`; with `base`, only while the profile on disk is still `base`, checked under the repo's lock. */
+export async function saveProfile(profile: ConnectionProfile, message: string, repository = setupRepoDirectory, base?: ConnectionProfile): Promise<void> {
   if (!repository) throw new RequestError(503, "this host has no setup repo to keep the connection profile in");
-  return serializeGit(repository, () => saveNow(profile, message, repository));
+  return serializeGit(repository, async () => {
+    if (base && !(await isProfileOnDisk(repository, base))) throw new ProfileChanged();
+    return saveNow(profile, message, repository);
+  });
+}
+
+async function isProfileOnDisk(repository: string, profile: ConnectionProfile): Promise<boolean> {
+  const text = await readProfileText(repository);
+  return formatProfile(text === null ? defaultProfile() : parseProfile(text)) === formatProfile(profile);
 }
 
 async function committedProfileText(repository: string): Promise<string | null> {

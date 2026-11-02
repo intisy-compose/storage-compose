@@ -1,7 +1,7 @@
 import { type SettingsKeeper, keeperManagedKeys } from "../api/keeperText.js";
 import { connectionOptionLabels } from "../api/optionsText.js";
 import { profileProblem } from "../api/profileText.js";
-import type { ConnectionOptionKey, ConnectionOptionsChange, HostSettings, NodeOptionsResponse } from "../api/types.js";
+import type { ConnectionOptionKey, HostSettings, NodeOptionsResponse } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type ResolvedInstance, callSyncthing, forwardRead, requireLocal, resolveInstance, settingsKeeperOf } from "../instanceResolver.js";
 import type { AnyRoute } from "../routes.js";
@@ -77,7 +77,8 @@ function optionName(key: string): string {
  */
 export function refuseNodeOptions(instance: ResolvedInstance, change: unknown): never {
   requireLocal(instance);
-  const problem = optionsChangeProblem(change) ?? profileProblem(Object.keys(change as ConnectionOptionsChange), optionName);
+  const keys = typeof change === "object" && change !== null ? Object.keys(change) : [];
+  const problem = profileProblem(keys, optionName) ?? optionsChangeProblem(change);
   throw new RequestError(400, problem ?? "nothing to change");
 }
 

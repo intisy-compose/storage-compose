@@ -34,7 +34,8 @@ function strands(next) {
 }
 
 export function saveProfileFixture(body) {
-  const { confirmUnreachable, ...next } = body;
+  const { confirmUnreachable, base, ...next } = body;
+  if (JSON.stringify(base) !== JSON.stringify(profile)) return { status: 409, body: { error: "the profile changed since you read it; it has been reloaded" } };
   if (!confirmUnreachable && strands(next)) return { status: 409, body: { error: "17aa and 2b90 would share no connection method; confirm to save anyway" } };
   profile = next;
   pulledAt = new Date().toISOString();

@@ -341,6 +341,7 @@ describe("a node's connection options", () => {
       const profileWords = "set by the connection profile, so changed for the whole cluster in Settings under Connections, a node's limits as its override there";
       assert.deepEqual(await refusal(`${server.url}/api/nodes/fb98/options`, { maxSendKbps: 100 }), { status: 400, error: `Send limit: ${profileWords}` });
       assert.deepEqual(await refusal(`${server.url}/api/nodes/5784/options`, { listenAddresses: ["tcp://:22021"], relaysEnabled: false }), { status: 400, error: `Listen addresses, Relays: ${profileWords}` });
+      assert.deepEqual(await refusal(`${server.url}/api/nodes/5784/options`, { relaysEnabled: "yes" }), { status: 400, error: `Relays: ${profileWords}` }, "the profile is named before the value's shape");
       assert.deepEqual(await refusal(`${server.url}/api/nodes/5784/options`, { deviceName: "x" }), { status: 400, error: "deviceName is not a connection option" });
       assert.deepEqual(await refusal(`${server.url}/api/nodes/p53n/options`, { natEnabled: true }), { status: 409, error: "act on p53's dashboard" });
       for (const node of [pc, array]) assert.deepEqual(writesTo(node), [], "nothing reaches any node");

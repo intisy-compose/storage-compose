@@ -153,7 +153,7 @@ import { changesActivityType } from "../../src/api/types.js";
 export { connectionOptionKeys, connectionOptionsOf, deviceDefaultKeys, folderDefaultKeys } from "../../src/api/types.js";
 export { type SettingsKeeper, generalSettingKeys, isKeeperManaged, keeperManagedText } from "../../src/api/keeperText.js";
 export { connectionOptionLabels, discoveryServerProblem, generalSettingLabels, listenAddressProblem } from "../../src/api/optionsText.js";
-export { pairsText, profileOwnedText } from "../../src/api/profileText.js";
+export { pairsText, profileAddressesHint, profileChangedText, profileOwnedText } from "../../src/api/profileText.js";
 export { nodeLimitsOf, withNodeLimits } from "../../src/connectionProfile.js";
 export { newlyStrandedPairs } from "../../src/reachability.js";
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
@@ -263,9 +263,12 @@ export function fetchPeerTable(): Promise<PeerTable> {
   return getJson("api/connections/addresses");
 }
 
-/** Saves the whole profile for the cluster; `confirmUnreachable` saves one that leaves pairs of nodes without a common method. */
-export function saveConnectionProfile(profile: ConnectionProfile, confirmUnreachable: boolean): Promise<SaveResult<ProfileRead>> {
-  const body: ProfileSaveBody = confirmUnreachable ? { ...profile, confirmUnreachable: true } : profile;
+/**
+ * Saves the whole profile for the cluster, made from `base` as last read; `confirmUnreachable` saves one that leaves pairs of
+ * nodes without a common method.
+ */
+export function saveConnectionProfile(profile: ConnectionProfile, base: ConnectionProfile, confirmUnreachable: boolean): Promise<SaveResult<ProfileRead>> {
+  const body: ProfileSaveBody = confirmUnreachable ? { ...profile, base, confirmUnreachable: true } : { ...profile, base };
   return sendWrite("api/connections/profile", "PUT", body);
 }
 

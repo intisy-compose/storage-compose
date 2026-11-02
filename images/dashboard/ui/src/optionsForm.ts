@@ -9,9 +9,12 @@ import {
   connectionOptionLabels,
   nodeLimitsOf,
   profileOwnedText,
+  fetchConnectionProfile,
+  profileChangedText,
   saveConnectionProfile,
   withNodeLimits,
 } from "./api.js";
+import { isProfileChangedRefusal } from "./connectionsForm.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element, keyValueList } from "./dom.js";
 import { type FieldForm, numberControl, setting, toggleControl } from "./fieldKit.js";
@@ -32,7 +35,7 @@ function hasUnsavedChange(form: LimitsFormState): boolean {
 }
 
 /** The node's limits form, following each new read of the profile while it holds nothing unsaved. */
-function formFor(nodeId: string, read: ProfileRead): LimitsFormState {
+export function limitsFormFor(nodeId: string, read: ProfileRead): LimitsFormState {
   const limits = nodeLimitsOf(read.profile, nodeId);
   const form = forms.get(nodeId);
   if (!form) {
@@ -48,6 +51,15 @@ function formFor(nodeId: string, read: ProfileRead): LimitsFormState {
     form.followed = read;
   }
   return form;
+}
+
+/** Takes the profile another host saved after this form was opened, keeping only the limits the person changed over it. */
+export function followChangedLimits(nodeId: string, form: LimitsFormState, latest: ProfileRead): void {
+  const changed = changedFields(form.saved, form.draft);
+  form.followed = latest;
+  form.saved = nodeLimitsOf(latest.profile, nodeId);
+  form.draft = { ...form.saved, ...changed };
+  form.result = { text: `Not saved: ${profileChangedText}. Your changes are kept: save again.`, tone: "warn" };
 }
 
 function onOff(value: boolean): string {
@@ -110,19 +122,20 @@ function limitFields(form: LimitsFormState, profile: ConnectionProfile, nodeId: 
 }
 
 async function saveLimits(nodeId: string, form: LimitsFormState, limits: BandwidthLimits): Promise<void> {
-  const read = appState.connectionProfile;
-  if (!read) return;
-  const profile = withNodeLimits(read.profile, nodeId, limits);
-  if (JSON.stringify(profile.nodeLimits) === JSON.stringify(read.profile.nodeLimits)) {
+  const base = form.followed.profile;
+  const profile = withNodeLimits(base, nodeId, limits);
+  if (JSON.stringify(profile.nodeLimits) === JSON.stringify(base.nodeLimits)) {
     form.result = { text: "Nothing changed.", tone: "ok" };
     return requestRender();
   }
   form.saving = true;
   form.result = null;
   requestRender();
-  const result = await saveConnectionProfile(profile, false);
+  const result = await saveConnectionProfile(profile, base, false);
   form.saving = false;
-  if (result.ok) {
+  if (!result.ok && !result.maybeSaved && isProfileChangedRefusal(result.message)) {
+    await followLatestLimits(nodeId, form);
+  } else if (result.ok) {
     appState.connectionProfile = result.value;
     form.followed = result.value;
     form.saved = nodeLimitsOf(result.value.profile, nodeId);
@@ -134,6 +147,15 @@ async function saveLimits(nodeId: string, form: LimitsFormState, limits: Bandwid
   requestRender();
 }
 
+async function followLatestLimits(nodeId: string, form: LimitsFormState): Promise<void> {
+  try {
+    appState.connectionProfile = await fetchConnectionProfile();
+    followChangedLimits(nodeId, form, appState.connectionProfile);
+  } catch (error) {
+    form.result = { text: `Not saved: ${profileChangedText}, but it could not be read again: ${(error as Error).message}`, tone: "bad" };
+  }
+}
+
 function revert(form: LimitsFormState): void {
   form.draft = { ...form.saved };
   form.result = null;
@@ -141,7 +163,7 @@ function revert(form: LimitsFormState): void {
 }
 
 function limitsForm(node: StorageNode, read: ProfileRead): HTMLElement {
-  const form = formFor(node.id, read);
+  const form = limitsFormFor(node.id, read);
   const hasOverride = read.profile.nodeLimits[node.id] !== undefined;
   return element(
     "div",

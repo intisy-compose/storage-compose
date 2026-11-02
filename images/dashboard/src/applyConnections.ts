@@ -1,5 +1,5 @@
 import type { ConnectionProfile, NodeAddresses, PeerTable } from "./api/types.js";
-import { type ApplyReport, recordBridges, recordDrift } from "./connectionsDrift.js";
+import { type ApplyReport, recordDrift, recordPeerTable } from "./connectionsDrift.js";
 import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances, writeConfirmed } from "./instanceResolver.js";
 import { localPeerTable, readRemoteTable } from "./peerSources.js";
 import { type NodeConnections, buildPeerTable, resolveNode, writeConnectionsFile } from "./peerTable.js";
@@ -67,7 +67,7 @@ export class ConnectionsRound {
       await writeConnectionsFile(path, byNode).catch((error) => console.error(`connections: ${path} not written: ${reasonOf(error)}`));
     }
     this.last = { profile, table };
-    recordBridges(table.bridges);
+    recordPeerTable(table);
     const report = await this.applyAll(byNode);
     recordDrift(report);
     return report;

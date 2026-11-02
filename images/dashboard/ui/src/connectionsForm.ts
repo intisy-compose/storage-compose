@@ -1,4 +1,4 @@
-import { type ConnectionProfile, type ProfileRead, changedFields, newlyStrandedPairs, pairsText, saveConnectionProfile } from "./api.js";
+import { type ConnectionProfile, type ProfileRead, changedFields, fetchConnectionProfile, newlyStrandedPairs, pairsText, profileChangedText, saveConnectionProfile } from "./api.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element, keyValueList } from "./dom.js";
 import { type FieldForm, listControl, numberControl, setting, toggleControl } from "./fieldKit.js";
@@ -23,8 +23,8 @@ interface ProfileValues {
 
 interface ClusterFormState extends FieldForm<ProfileValues> {
   result: Notice | null;
-  /** The read the form last took, so only a newer one replaces what a save left. */
-  followed: ProfileRead | null;
+  /** The read the form last took, so only a newer one replaces what a save left; a save names its profile as its base. */
+  followed: ProfileRead;
   /** The person's answer to saving although pairs of nodes would then share no method. */
   confirmUnreachable: boolean;
   /** Set once the server refused a save for the pairs it would strand, so the confirmation is offered even when this page's table names none. */
@@ -63,7 +63,7 @@ function hasUnsavedChange(state: ClusterFormState): boolean {
 }
 
 /** The cluster's form, following each new read of the profile while it holds nothing unsaved. */
-function formFor(read: ProfileRead): ClusterFormState {
+export function clusterFormFor(read: ProfileRead): ClusterFormState {
   if (!form) {
     registerForm(formId);
     const values = valuesOf(read.profile);
@@ -86,9 +86,27 @@ function currentNodeLimits(): ConnectionProfile["nodeLimits"] {
   return appState.connectionProfile?.profile.nodeLimits ?? {};
 }
 
+/**
+ * Takes the profile another host saved after this form was opened: its values become the saved ones, and the draft keeps only
+ * the fields the person changed over them.
+ */
+export function followChangedProfile(state: ClusterFormState, latest: ProfileRead): void {
+  const changed = changedFields(state.saved, state.draft);
+  state.followed = latest;
+  state.saved = valuesOf(latest.profile);
+  state.draft = { ...structuredClone(state.saved), ...changed };
+  state.refusedForPairs = false;
+  state.result = { text: `Not saved: ${profileChangedText}. Your changes are kept: save again.`, tone: "warn" };
+}
+
+/** Whether a refused save was made from a profile that is no longer the one on disk, here or on another host. */
+export function isProfileChangedRefusal(message: string): boolean {
+  return message === profileChangedText || message.startsWith("another host saved the connection profile first");
+}
+
 /** The pairs the draft would leave without a common method that the saved profile still connects, by this host's last table. */
 function strandedPairs(state: ClusterFormState): Array<[string, string]> {
-  if (!appState.peerTable || !state.followed) return [];
+  if (!appState.peerTable) return [];
   return newlyStrandedPairs(state.followed.profile, profileOf(state.draft, currentNodeLimits()), appState.peerTable);
 }
 
@@ -198,14 +216,25 @@ async function save(state: ClusterFormState): Promise<void> {
   state.saving = true;
   state.result = null;
   requestRender();
-  const result = await saveConnectionProfile(profileOf(state.draft, currentNodeLimits()), state.confirmUnreachable);
+  const base = state.followed.profile;
+  const result = await saveConnectionProfile(profileOf(state.draft, base.nodeLimits), base, state.confirmUnreachable);
   state.saving = false;
   if (result.ok) settle(state, result.value);
+  else if (!result.maybeSaved && isProfileChangedRefusal(result.message)) await followLatest(state);
   else {
     state.result = editFailureNotice(result);
     state.refusedForPairs = /would share no connection method/.test(result.message);
   }
   requestRender();
+}
+
+async function followLatest(state: ClusterFormState): Promise<void> {
+  try {
+    appState.connectionProfile = await fetchConnectionProfile();
+    followChangedProfile(state, appState.connectionProfile);
+  } catch (error) {
+    state.result = { text: `Not saved: ${profileChangedText}, but it could not be read again: ${(error as Error).message}`, tone: "bad" };
+  }
 }
 
 function revert(state: ClusterFormState): void {
@@ -243,5 +272,5 @@ export function connectionsCard(): HTMLElement {
   const read = appState.connectionProfile;
   const heading = element("h2", { className: "settings-heading" }, "Connections", element("small", {}, "how the cluster's nodes reach each other, for every host"));
   if (!read) return element("section", { className: "settings-card connections-card" }, heading, element("p", { className: appState.connectionProfileError ? "warning" : "muted" }, appState.connectionProfileError ?? "Reading the connection profile…"));
-  return element("section", { className: "settings-card connections-card" }, heading, formBody(formFor(read), read));
+  return element("section", { className: "settings-card connections-card" }, heading, formBody(clusterFormFor(read), read));
 }

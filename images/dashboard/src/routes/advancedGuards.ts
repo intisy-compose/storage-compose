@@ -1,8 +1,9 @@
 import { deviceSettingLabels } from "../api/deviceText.js";
 import { keeperProblem } from "../api/keeperText.js";
 import { generalSettingLabels } from "../api/optionsText.js";
-import { profileProblem } from "../api/profileText.js";
+import { profileAddressesProblem, profileProblem } from "../api/profileText.js";
 import { type AdvancedTarget, type DeviceSettingsChange, type FolderSettingsChange, type FolderType, folderSettingLabels } from "../api/types.js";
+import { isClusterNodeDevice } from "../connectionsDrift.js";
 import { type LocalInstance, settingsKeeperOf } from "../instanceResolver.js";
 import { deviceChangeProblem, folderChangeProblem, isSecretKey, minDiskFreeCheck } from "../syncthingConfig.js";
 import { arrayAutomationProblem } from "./devices.js";
@@ -99,8 +100,9 @@ function folderProblem(current: SyncthingObject, change: SyncthingObject): strin
   return folderChangeProblem(settings) ?? typeChangeProblem({ id: String(current.id ?? ""), label: String(current.label ?? ""), type: String(current.type ?? "") as FolderType }, settings);
 }
 
-function deviceProblem(instance: LocalInstance, change: SyncthingObject): string | null {
+function deviceProblem(instance: LocalInstance, deviceId: string, change: SyncthingObject): string | null {
   if (Object.hasOwn(change, "deviceID")) return "the device ID cannot be changed";
+  if (Object.hasOwn(change, "addresses") && isClusterNodeDevice(deviceId)) return profileAddressesProblem("addresses");
   const settings = picked(change, Object.keys(deviceSettingLabels)) as DeviceSettingsChange;
   if (!Object.keys(settings).length) return null;
   return deviceChangeProblem(settings) ?? arrayAutomationProblem(instance, settings);
@@ -119,5 +121,5 @@ export function advancedChangeProblem(instance: LocalInstance, target: AdvancedT
   }
   if (target.kind === "options") return optionsProblem(instance, change);
   if (target.kind === "folder") return folderProblem(current, change);
-  return deviceProblem(instance, change);
+  return deviceProblem(instance, target.id, change);
 }

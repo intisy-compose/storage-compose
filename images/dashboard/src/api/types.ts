@@ -781,10 +781,12 @@ export interface DeviceSettings {
   maxRecvKbps: number;
   /** 0 lets Syncthing choose. */
   numConnections: number;
+  /** Set when the device is a cluster node, whose addresses the connection profile gives every node each round. */
+  addressesFromProfile?: true;
 }
 
 /** `PATCH /api/nodes/<nodeId>/devices/<deviceId>`: only the fields the person changed. */
-export type DeviceSettingsChange = Partial<Omit<DeviceSettings, "deviceId">>;
+export type DeviceSettingsChange = Partial<Omit<DeviceSettings, "deviceId" | "addressesFromProfile">>;
 
 /**
  * `POST /api/nodes/<nodeId>/devices`: the new device's ID and only the settings that differ from the
@@ -1317,8 +1319,12 @@ export interface ProfileRead {
   pullProblem: string | null;
 }
 
-/** `PUT /api/connections/profile`; `confirmUnreachable` saves a profile that leaves pairs of nodes without a common method. */
+/**
+ * `PUT /api/connections/profile`: `base` is the profile the change was made from, as `GET` last served it, so a save never
+ * overwrites a change another host made since; `confirmUnreachable` saves a profile that leaves pairs of nodes without a common method.
+ */
 export interface ProfileSaveBody extends ConnectionProfile {
+  base: ConnectionProfile;
   confirmUnreachable?: boolean;
 }
 
@@ -1336,6 +1342,8 @@ export interface HostNetwork {
 /** A storage node's sync port and the networks it is reached on. */
 export interface NodeAddresses {
   nodeId: string;
+  /** The node's name, for messages; a table from an older dashboard has none. */
+  name?: string;
   deviceId: string;
   syncPort: number;
   networks: HostNetwork[];

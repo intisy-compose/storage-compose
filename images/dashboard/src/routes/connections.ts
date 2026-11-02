@@ -9,16 +9,21 @@ import type { NodeConnections } from "../peerTable.js";
 import { newlyStrandedPairs } from "../reachability.js";
 import { type AnyRoute, hostWritePattern } from "../routes.js";
 import { setupRepoDirectory } from "../settings.js";
-import { ProfileConflict, pullDataRepo, readProfile, saveProfile } from "../setupRepo.js";
+import { ProfileChanged, ProfileConflict, pullDataRepo, readProfile, saveProfile } from "../setupRepo.js";
 import type { WhoIs } from "../tailnet.js";
 
 /** @implNote A body that does not survive being written and read back is refused, so only a profile `parseProfile` accepts is ever committed. */
-function validProfile(body: unknown): ConnectionProfile {
+function validProfile(body: unknown, what = "the body"): ConnectionProfile {
   try {
     return parseProfile(formatProfile(body as ConnectionProfile));
   } catch (error) {
-    throw new RequestError(400, error instanceof ProfileError ? error.message : "the body is not a connection profile");
+    throw new RequestError(400, error instanceof ProfileError ? error.message : `${what} is not a connection profile`);
   }
+}
+
+function validBase(body: Partial<ProfileSaveBody> | null): ConnectionProfile {
+  if (!body?.base) throw new RequestError(400, "a save names its base, the profile it was made from");
+  return validProfile(body.base, "base");
 }
 
 /**
@@ -30,7 +35,8 @@ async function refuseStranding(profile: ConnectionProfile, repository: string, p
   const table = await peerTables.all().catch(() => null);
   if (!table) return;
   const pairs = newlyStrandedPairs((await readProfile(repository)).profile, profile, table);
-  if (pairs.length) throw new RequestError(409, strandedText(pairs));
+  const names = new Map(table.nodes.flatMap((node) => (node.name ? [[node.nodeId, node.name] as const] : [])));
+  if (pairs.length) throw new RequestError(409, strandedText(pairs, (nodeId) => names.get(nodeId) ?? nodeId));
 }
 
 export interface PeerTableReads {
@@ -66,10 +72,12 @@ export function connectionRoutes(repository = setupRepoDirectory, peerTables = d
       method: "PUT",
       pattern: hostWritePattern(/^\/api\/connections\/profile$/),
       handle: async ({ request, response }) => {
-        const body = (await readBody(request)) as ProfileSaveBody;
+        const body = (await readBody(request)) as ProfileSaveBody | null;
         const profile = validProfile(body);
+        const base = validBase(body);
+        if (formatProfile((await readProfile(repository)).profile) !== formatProfile(base)) throw new ProfileChanged();
         if (body?.confirmUnreachable !== true) await refuseStranding(profile, repository, peerTables);
-        await saveProfile(profile, "feat(connections): change the connection profile", repository).catch(async (error) => {
+        await saveProfile(profile, "feat(connections): change the connection profile", repository, base).catch(async (error) => {
           if (error instanceof ProfileConflict) await pullDataRepo(repository);
           throw error;
         });

@@ -45,7 +45,7 @@ function agentNodes(heartbeat: HostAgentHeartbeat | null, networks: HostNetwork[
   return (heartbeat?.nodes ?? []).flatMap((node) => {
     const deviceId = node.syncthing?.deviceId;
     const syncPort = node.syncthing?.listenPort;
-    return deviceId && syncPort ? [{ nodeId: node.id, deviceId, syncPort, networks }] : [];
+    return deviceId && syncPort ? [{ nodeId: node.id, name: node.name, deviceId, syncPort, networks }] : [];
   });
 }
 
@@ -56,7 +56,7 @@ async function dockerNodes(sources: PeerSources, networks: HostNetwork[]): Promi
     infos.map(async (info) => {
       const syncPort = info.nodeId === clusterArrayId ? clusterSyncPort : await registrySyncPort(resolver.registryDirectory, info.nodeId);
       const deviceId = await info.instance!.client.myId().catch(() => null);
-      return deviceId && syncPort ? [{ nodeId: info.nodeId, deviceId, syncPort, networks }] : [];
+      return deviceId && syncPort ? [{ nodeId: info.nodeId, name: info.name, deviceId, syncPort, networks }] : [];
     }),
   );
   return nodes.flat();

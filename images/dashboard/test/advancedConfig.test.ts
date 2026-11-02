@@ -3,6 +3,7 @@ import { type IncomingMessage, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { AdvancedConfig, NodeRestartState, RestartAnswer } from "../src/api/types.js";
+import { recordPeerTable } from "../src/connectionsDrift.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
@@ -294,6 +295,17 @@ describe("the advanced config editor and restarts", () => {
 
     const refusedBySyncthing = await send("PATCH", "/api/nodes/d7e5/advanced/folders/dashboard-test-a", { maxConflicts: 11, markerName: ".stmarker" });
     assert.equal(refusedBySyncthing.status, 200);
+  });
+
+  it("a cluster node's addresses are refused in the advanced editor, another device's still save", async () => {
+    recordPeerTable({ nodes: [{ nodeId: "e1e1", deviceId: otherId, syncPort: 22003, networks: [] }], bridges: [], builtAt: "2026-11-02T10:00:00.000Z" });
+    try {
+      await refused(`/api/nodes/d7e5/advanced/devices/${otherId}`, { addresses: ["tcp://192.0.2.4:22000"] }, "addresses: set by the connection profile, which gives every node a cluster node's addresses each round, so not changed here");
+      assert.deepEqual(writesTo(peer), []);
+    } finally {
+      recordPeerTable({ nodes: [], bridges: [], builtAt: "" });
+    }
+    assert.equal((await send("PATCH", `/api/nodes/d7e5/advanced/devices/${otherId}`, { addresses: ["tcp://192.0.2.4:22000"] })).status, 200);
   });
 
   it("a key the node's keeper or the connection profile sets is refused, and an ordinary one still saves", async () => {

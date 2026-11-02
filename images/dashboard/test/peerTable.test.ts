@@ -164,7 +164,7 @@ describe("this host's part of the peer table", () => {
       writeFileSync(join(directory, "bridge.json"), JSON.stringify({ relayId: "RELAY-DOCKER", port: 22100 }));
       const resolver = { registryDirectory: join(directory, "nodes"), heartbeatPath: join(directory, "heartbeat.json"), otherHostNodes: async () => [] };
       const local = await localPeerTable({ resolver, dockerNodeInfos: async () => [], dockerBridgeFile: join(directory, "bridge.json"), gatewayTailnetName: "storage.example.ts.net" });
-      assert.deepEqual(local.nodes, [{ nodeId: "d004", deviceId: "DEV-AGENT", syncPort: 22004, networks }]);
+      assert.deepEqual(local.nodes, [{ nodeId: "d004", name: "D004", deviceId: "DEV-AGENT", syncPort: 22004, networks }]);
       assert.deepEqual(
         local.bridges.map((entry) => [entry.host, entry.relayId, entry.addresses.map((network) => network.address)]),
         [[hostName, "RELAY-DOCKER", ["192.168.1.5", "100.64.0.5", "storage.example.ts.net"]]],
