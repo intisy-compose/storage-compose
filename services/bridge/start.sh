@@ -27,7 +27,8 @@ publish() {
 rm -f "$status"
 run_as=
 if [ "$(id -u)" = 0 ]; then
-    chown -R "${PUID:-1000}:${PGID:-1000}" "$keys"
+    # A bind from a Windows folder may refuse chown and is writable by every user anyway.
+    chown -R "${PUID:-1000}:${PGID:-1000}" "$keys" || true
     run_as="su-exec ${PUID:-1000}:${PGID:-1000}"
 fi
 
