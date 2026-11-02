@@ -22,7 +22,7 @@ import { arrayConfirmField, isArrayConfirmed } from "./arrayConfirm.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element, section } from "./dom.js";
 import { plural } from "./format.js";
-import { followSavedConfig } from "./formFollow.js";
+import { folderConfigForForm, followSavedConfig } from "./formFollow.js";
 import { controlId, registerForm } from "./forms.js";
 import { icon } from "./icons.js";
 import { outOfSyncCount } from "./outOfSync.js";
@@ -372,7 +372,7 @@ function formHeader(form: EditFolderFormState, detail: FolderDetailResponse, cop
 /** After an advanced save the form and the folder's detail take the saved values; a field the person changed keeps what they typed. */
 function followAdvancedSave(form: EditFolderFormState, config: Record<string, unknown>): void {
   if (form.saving || !form.saved || !form.draft) return;
-  const followed = followSavedConfig(form.saved, form.draft, config);
+  const followed = followSavedConfig(form.saved, form.draft, folderConfigForForm(config));
   form.saved = followed.saved;
   form.draft = followed.draft;
   showSavedInDetail(form, followed.saved);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { FolderSettings, InstanceOptions } from "../src/api/types.js";
-import { followSavedConfig } from "../ui/src/formFollow.js";
+import { folderConfigForForm, followSavedConfig } from "../ui/src/formFollow.js";
 import { generalFormFor, settleGeneralSave } from "../ui/src/generalForm.js";
 
 function folder(): FolderSettings {
@@ -55,6 +55,17 @@ describe("a form beside the advanced editor follows its save", () => {
     const followed = followSavedConfig(folder(), folder(), advancedFolder({ maxConflicts: "11", order: 3 }));
     assert.equal(followed.saved.maxConflicts, 10);
     assert.equal(followed.saved.order, "random");
+  });
+
+  it("takes versioning's type and params whole from the editor, with only the new type's params", () => {
+    const simple = { ...advancedFolder({}), versioning: { type: "simple", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "", fsType: "basic" } };
+    const first = followSavedConfig(folder(), folder(), folderConfigForForm(simple));
+    assert.deepEqual(first.saved.versioning, { type: "simple", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "" });
+    assert.deepEqual(first.draft.versioning, first.saved.versioning);
+    const trashcan = { ...advancedFolder({}), versioning: { type: "trashcan", params: { keep: "5", cleanoutDays: "7" }, cleanupIntervalS: 3600, fsPath: "", fsType: "basic" } };
+    const second = followSavedConfig(first.saved, first.draft, folderConfigForForm(trashcan));
+    assert.deepEqual(second.saved.versioning, { type: "trashcan", params: { cleanoutDays: "7" }, cleanupIntervalS: 3600, fsPath: "" }, "a param Syncthing keeps from an earlier type is left out, as the server's read leaves it out");
+    assert.deepEqual(second.draft.versioning, second.saved.versioning);
   });
 });
 
