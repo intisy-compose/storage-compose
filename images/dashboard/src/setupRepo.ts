@@ -1,7 +1,9 @@
-import { readFile, writeFile } from "node:fs/promises";
-import type { PriorityBand } from "./api/types.js";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import type { ConnectionProfile, PriorityBand } from "./api/types.js";
 import { runCommand } from "./commands.js";
-import { setupLayoutPath, setupRepoDirectory } from "./settings.js";
+import { defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
+import { RequestError } from "./http.js";
+import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
 import { type TomlTable, parseToml } from "./toml.js";
 
 export interface LayoutFolder {
@@ -138,9 +140,13 @@ export function withoutUrlCredentials(text: string): string {
   return text.replace(urlCredentials, "$1***@");
 }
 
-async function git(...args: string[]): Promise<{ ok: boolean; output: string }> {
-  const result = await runCommand("git", ["-C", setupRepoDirectory, ...args], 60_000);
+async function gitIn(repository: string, ...args: string[]): Promise<{ ok: boolean; output: string }> {
+  const result = await runCommand("git", ["-C", repository, ...args], 60_000);
   return { ok: result.exitCode === 0, output: withoutUrlCredentials(`${result.stdout}${result.stderr}`.trim()) };
+}
+
+function git(...args: string[]): Promise<{ ok: boolean; output: string }> {
+  return gitIn(setupRepoDirectory, ...args);
 }
 
 /** Writes the device into the layout, commits with the repo's own identity, and pushes. */
@@ -157,4 +163,102 @@ export async function recordDevice(name: string, deviceId: string, root: string 
   const push = await git("push");
   if (!push.ok) return { committed: true, pushed: false, message: `committed, not pushed yet: ${push.output.split("\n").pop()}` };
   return { committed: true, pushed: true, message: `committed and pushed to the setup repo` };
+}
+
+/** A save whose push the remote refused because another host pushed first; nothing of the save remains. */
+export class ProfileConflict extends RequestError {
+  constructor() {
+    super(409, "another host saved the connection profile first; reload it and save again");
+  }
+}
+
+/** A save that git could not make reach the remote; nothing of the save remains. */
+export class ProfileUnreachable extends RequestError {
+  constructor(reason: string) {
+    super(503, `the data repo's remote could not be reached: ${reason}`);
+  }
+}
+
+export interface ProfileRead {
+  profile: ConnectionProfile;
+  pulledAt: string | null;
+  pullProblem: string | null;
+}
+
+interface PullState {
+  pulledAt: string | null;
+  pullProblem: string | null;
+}
+
+const pullStates = new Map<string, PullState>();
+
+function pullStateOf(repository: string): PullState {
+  return pullStates.get(repository) ?? { pulledAt: null, pullProblem: null };
+}
+
+async function readProfileText(repository: string): Promise<string | null> {
+  try {
+    return await readFile(`${repository}/${connectionsProfilePath}`, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/** The profile on disk, the defaults while the repo holds none, with how the last pull went. */
+export async function readProfile(repository = setupRepoDirectory): Promise<ProfileRead> {
+  const text = repository ? await readProfileText(repository) : null;
+  return { profile: text === null ? defaultProfile() : parseProfile(text), ...pullStateOf(repository) };
+}
+
+function lastLine(output: string, fallback: string): string {
+  return output.split("\n").pop() || fallback;
+}
+
+/** `git pull --ff-only`; a failure is kept as pullProblem and the profile on disk stays as it was. */
+export async function pullDataRepo(repository = setupRepoDirectory): Promise<void> {
+  if (!repository) return;
+  const pull = await gitIn(repository, "pull", "--ff-only");
+  if (pull.ok) pullStates.set(repository, { pulledAt: new Date().toISOString(), pullProblem: null });
+  else pullStates.set(repository, { ...pullStateOf(repository), pullProblem: lastLine(pull.output, "git pull failed") });
+}
+
+function isRejectedPush(output: string): boolean {
+  return /rejected|non-fast-forward|fetch first/i.test(output);
+}
+
+/** @implNote Only this file is touched: the data repo may hold other uncommitted work, so a commit is undone with a soft reset and the file restored by hand. */
+async function undoSave(repository: string, before: string | null, committed: boolean): Promise<void> {
+  if (committed) await gitIn(repository, "reset", "--soft", "HEAD~1");
+  await gitIn(repository, "reset", "-q", "--", connectionsProfilePath);
+  const path = `${repository}/${connectionsProfilePath}`;
+  if (before === null) await rm(path, { force: true });
+  else await writeFile(path, before);
+}
+
+/** Writes the profile, commits and pushes it; a failed commit or push leaves the file and the repo as they were. */
+export async function saveProfile(profile: ConnectionProfile, message: string, repository = setupRepoDirectory): Promise<void> {
+  if (!repository) throw new RequestError(503, "this host has no setup repo to keep the connection profile in");
+  const before = await readProfileText(repository);
+  const after = formatProfile(profile);
+  if (after === before) return;
+  await writeFile(`${repository}/${connectionsProfilePath}`, after);
+  await gitIn(repository, "add", connectionsProfilePath);
+  const commit = await gitIn(repository, "commit", "-m", message, "--", connectionsProfilePath);
+  if (!commit.ok) {
+    await undoSave(repository, before, false);
+    throw new RequestError(500, `the connection profile could not be committed: ${lastLine(commit.output, "git commit failed")}`);
+  }
+  const push = await gitIn(repository, "push");
+  if (push.ok) return;
+  await undoSave(repository, before, true);
+  throw isRejectedPush(push.output) ? new ProfileConflict() : new ProfileUnreachable(lastLine(push.output, "git push failed"));
+}
+
+/** Pulls now and then every `seconds`; the returned function stops the timer. */
+export function startDataRepoPulls(seconds: number, repository = setupRepoDirectory): () => void {
+  if (!repository) return () => {};
+  void pullDataRepo(repository);
+  const timer = setInterval(() => void pullDataRepo(repository), seconds * 1000);
+  return () => clearInterval(timer);
 }

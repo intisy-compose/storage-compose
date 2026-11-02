@@ -8,8 +8,8 @@ import { createJoinListener, dockerDnsResolver } from "./joinListener.js";
 import { invalidateLocalNodes } from "./nodes.js";
 import type { ProxySource } from "./proxyProtocol.js";
 import { handleRequest, joinRecords } from "./routes.js";
-import { joinAllowedUsers, joinGatewayHost, joinPort, joinTag, port, setupRepoDirectory } from "./settings.js";
-import { readLayout, recordDevice } from "./setupRepo.js";
+import { dataRepoPullSeconds, joinAllowedUsers, joinGatewayHost, joinPort, joinTag, port, setupRepoDirectory } from "./settings.js";
+import { readLayout, recordDevice, startDataRepoPulls } from "./setupRepo.js";
 import { ownLogin, whois } from "./tailnet.js";
 
 const joinDependencies: JoinDependencies = {
@@ -46,3 +46,4 @@ createJoinListener(handleJoinRequest, dockerDnsResolver(joinGatewayHost)).listen
 
 void listBlockDevices().catch(() => undefined);
 startEventFeeds();
+startDataRepoPulls(dataRepoPullSeconds);
