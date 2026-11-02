@@ -28,6 +28,8 @@ api_key_of() { sed -n 's:.*<apikey>\(.*\)</apikey>.*:\1:p' "$1/config.xml" | hea
 
 device_api() { curl -fsS -H "X-API-Key: $(api_key_of /data/.storage/syncthing)" "http://127.0.0.1:8384$1"; }
 
+device_patch() { curl -fsS -X PATCH -H "X-API-Key: $(api_key_of /data/.storage/syncthing)" -H "Content-Type: application/json" -d "$2" "http://127.0.0.1:8384$1"; }
+
 peer_api() {
     local method="$1" path="$2"
     shift 2
@@ -45,6 +47,7 @@ start_peer() {
 
 start_dashboard() {
     python3 /tests/fake-dashboard.py "$dashboard_port" "http://$peer_gui" "$(api_key_of "$peer_home")" "tcp://127.0.0.1:22100" /tmp/dashboard &
+    dashboard_pid=$!
     for _ in $(seq 1 30); do curl -s -o /dev/null "http://127.0.0.1:$dashboard_port/" && break; sleep 0.5; done
 }
 
@@ -92,6 +95,10 @@ check "~/code is linked" /data/Documents/GitHub "$(readlink /home/finn/code)"
 check "what ~/Documents held was moved, not lost" kept "$(cat /data/Documents/letter.txt)"
 check "the request" "{\"name\":\"p53\",\"os\":\"linux\",\"syncthingDeviceId\":\"$device_id\",\"nodes\":[{\"kind\":\"drive\",\"path\":\"/data\",\"threshold\":50}]}" "$(head -n 1 /tmp/dashboard/requests.jsonl | jq -c .)"
 check "the peer connects to the device over the tailnet address" true "$(wait_for_connection "$device_id")"
+step=/usr/local/lib/storage-join/storage-connections
+node_id="device-$(printf '%s' "${device_id:0:7}" | tr '[:upper:]' '[:lower:]')"
+check "the unit runs the connections step before syncthing" "-$step http://127.0.0.1:$dashboard_port $node_id /data/.storage/syncthing" "$(sed -n 's/^ExecStartPre=//p' /etc/systemd/system/storage-syncthing.service)"
+check "the step is the join's own, installed beside the unit" "$(sha256sum < /join/storage-connections.sh)" "$(sha256sum < "$step")"
 
 echo "The second run changes nothing:"
 node_before="$(sha256sum /data/.storage/node.toml)"
@@ -104,6 +111,42 @@ check "Syncthing's config unchanged" "$config_before" "$(sha256sum /data/.storag
 check "unit unchanged" "$unit_before" "$(sha256sum /etc/systemd/system/storage-syncthing.service)"
 check "tailscale up not called again" 1 "$(wc -l < /run/fake-tailscale/up-calls)"
 check "the dashboard was asked again, harmlessly" 2 "$(wc -l < /tmp/dashboard/requests.jsonl)"
+
+echo "The connections step at every start:"
+entry="/tmp/dashboard/connections/$node_id.json"
+mkdir -p /tmp/dashboard/connections
+restart_device() {
+    systemctl restart storage-syncthing.service
+    for _ in $(seq 1 60); do device_api /rest/system/status > /dev/null 2>&1 && return; sleep 1; done
+}
+options_now() { device_api /rest/config/options | jq -c '{listen: .listenAddresses, global: .globalAnnounceEnabled, relays: .relaysEnabled, nat: .natEnabled, send: .maxSendKbps}'; }
+tailnet_only='{"listen":["tcp://127.0.0.1:22000"],"global":false,"relays":false,"nat":false,"send":0}'
+on_profile='{"listen":["tcp://0.0.0.0:22000","quic://0.0.0.0:22000"],"global":true,"relays":false,"nat":false,"send":100}'
+printf '{"options": {"natEnabled": true}, "listenAddresses": ["tcp://0.0.0.0:22000", "udp://0.0.0.0:22000"], "deviceAddresses": {}}' > "$entry"
+restart_device
+check "a listen list with one invalid address keeps the current addresses" '{"listen":["tcp://127.0.0.1:22000"],"global":false,"relays":false,"nat":true,"send":0}' "$(options_now)"
+printf '{"options": {"globalAnnounceEnabled": true, "natEnabled": false, "maxSendKbps": 100, "relaysEnabled": "yes"}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://0.0.0.0:22000"], "deviceAddresses": {}}' > "$entry"
+restart_device
+check "the dashboard's entry is applied before syncthing starts, a wrongly typed option left out" "$on_profile" "$(options_now)"
+check "and kept in the node's home" "$(jq -c . "$entry")" "$(jq -c . /data/.storage/syncthing/connections.json 2> /dev/null)"
+check "owned by the node's owner" finn "$(stat -c %U /data/.storage/syncthing/connections.json 2> /dev/null)"
+kill "$dashboard_pid" && wait "$dashboard_pid" 2> /dev/null
+device_patch /rest/config/options "$(jq -n '{listenAddresses: ["tcp://127.0.0.1:22000"], globalAnnounceEnabled: false, maxSendKbps: 0}')" > /dev/null
+restart_device
+check "an unreachable dashboard uses the kept copy" "$on_profile" "$(options_now)"
+start_dashboard
+check "the join run again: exit code" 0 "$(run_join)"
+check "and keeps the profile, never back to the tailnet only" "$on_profile" "$(options_now)"
+kill "$dashboard_pid" && wait "$dashboard_pid" 2> /dev/null
+rm -f /data/.storage/syncthing/connections.json
+device_patch /rest/config/options "$(jq -n '{listenAddresses: ["tcp://127.0.0.1:22000"], globalAnnounceEnabled: false, maxSendKbps: 0}')" > /dev/null
+config_before="$(sha256sum < /data/.storage/syncthing/config.xml)"
+restart_device
+check "with no copy and no dashboard syncthing starts unchanged" "$tailnet_only" "$(options_now)"
+check "its config untouched by the step" "$config_before" "$(sha256sum < /data/.storage/syncthing/config.xml)"
+check "and no copy is made up" false "$([[ -e /data/.storage/syncthing/connections.json ]] && echo true || echo false)"
+check "the step itself exits 0 without a dashboard" 0 "$(su-exec finn "$step" http://127.0.0.1:1 "$node_id" /data/.storage/syncthing > /dev/null 2>&1; echo $?)"
+start_dashboard
 
 echo "The auth key from the stick's personal folder:"
 echo NeedsLogin > /run/fake-tailscale/state

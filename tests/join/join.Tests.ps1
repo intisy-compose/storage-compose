@@ -53,8 +53,9 @@ function Register-ScheduledTask { [CmdletBinding()] param([string]$TaskName, $Ac
     $global:registrations++
 }
 function Start-ScheduledTask { [CmdletBinding()] param([string]$TaskName); 
-    $action = $global:tasks[$TaskName].Actions[0]
-    Start-Process -FilePath $action.Execute -ArgumentList $action.Arguments -WindowStyle Hidden
+    $actions = @($global:tasks[$TaskName].Actions)
+    foreach ($action in $actions[0..($actions.Count - 2)]) { if ($actions.Count -gt 1) { Start-Process -FilePath $action.Execute -ArgumentList $action.Arguments -WindowStyle Hidden -Wait } }
+    Start-Process -FilePath $actions[-1].Execute -ArgumentList $actions[-1].Arguments -WindowStyle Hidden
 }
 
 $global:answers = New-Object System.Collections.Queue
@@ -165,8 +166,15 @@ try {
         }
         It "runs Syncthing at logon from a task, with its home on the node" {
             $task = $global:tasks["storage-compose syncthing pc-test"]
-            $task.Actions[0].Execute | Should Be $script:syncthingPath
-            $task.Actions[0].Arguments | Should Match ([regex]::Escape("--home=`"$($script:nodeRoot).storage\syncthing`""))
+            @($task.Actions)[-1].Execute | Should Be $script:syncthingPath
+            @($task.Actions)[-1].Arguments | Should Match ([regex]::Escape("--home=`"$($script:nodeRoot).storage\syncthing`""))
+        }
+        It "the logon task runs the connections step before syncthing" {
+            $nodeId = "device-$((Invoke-Device "/rest/system/status").myID.Substring(0, 7).ToLower())"
+            $actions = @($global:tasks["storage-compose syncthing pc-test"].Actions)
+            $actions.Count | Should Be 2
+            $actions[0].Execute | Should Be (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe")
+            $actions[0].Arguments | Should Be "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $repository "join\storage-connections.ps1")`" -Dashboard `"$Dashboard`" -NodeId $nodeId -SyncthingHome `"$($script:nodeRoot).storage\syncthing`""
         }
         It "opens its sync port to the tailnet only, before Windows can ask" {
             $node = Read-NodeFile $script:nodeRoot
@@ -224,6 +232,59 @@ try {
             $global:registrations | Should Be $registrationsBefore
             @($global:tailscaleUps).Count | Should Be 1
             @(Get-RequestLines).Count | Should Be 2
+        }
+    }
+
+    Describe "the connections step" {
+        $stepHome = Join-Path $scratch "step-home"
+        $stepConfig = Join-Path $stepHome "config.xml"
+        $kept = Join-Path $stepHome "connections.json"
+        New-Item -ItemType Directory -Force -Path $stepHome, (Join-Path $scratch "dashboard\connections") | Out-Null
+        Copy-Item "$($script:nodeRoot).storage\syncthing\config.xml" $stepConfig
+        $entry = Join-Path $scratch "dashboard\connections\device-steptst.json"
+        function Invoke-Step([string]$Url) {
+            & (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repository "join\storage-connections.ps1") -Dashboard $Url -NodeId "device-steptst" -SyncthingHome $stepHome | Out-Null
+            return $LASTEXITCODE
+        }
+        function Get-StepOptions {
+            $options = ([xml][System.IO.File]::ReadAllText($stepConfig)).configuration.options
+            return "$(@($options.SelectNodes('listenAddress') | ForEach-Object { $_.InnerText }) -join ',') global=$($options.globalAnnounceEnabled) relays=$($options.relaysEnabled) nat=$($options.natEnabled) send=$($options.maxSendKbps)"
+        }
+        $tailnetOnly = "tcp://127.0.0.1:$userSyncthingListenPort global=false relays=false nat=false send=0"
+        $onProfile = "tcp://0.0.0.0:22000,quic://0.0.0.0:22000 global=true relays=false nat=false send=100"
+
+        It "with no copy and no dashboard syncthing starts unchanged" {
+            $before = (Get-FileHash $stepConfig).Hash
+            Invoke-Step "http://127.0.0.1:1" | Should Be 0
+            (Get-FileHash $stepConfig).Hash | Should Be $before
+            Test-Path $kept | Should Be $false
+        }
+        It "a listen list with one invalid address keeps the current addresses" {
+            [System.IO.File]::WriteAllText($entry, '{"options": {"natEnabled": true}, "listenAddresses": ["tcp://0.0.0.0:22000", "udp://0.0.0.0:22000"], "deviceAddresses": {}}')
+            Invoke-Step $Dashboard | Should Be 0
+            Get-StepOptions | Should Be "tcp://127.0.0.1:$userSyncthingListenPort global=false relays=false nat=true send=0"
+        }
+        It "applies the dashboard's entry, a wrongly typed option left out, and keeps it" {
+            $text = '{"options": {"globalAnnounceEnabled": true, "natEnabled": false, "maxSendKbps": 100, "relaysEnabled": "yes"}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://0.0.0.0:22000"], "deviceAddresses": {}}'
+            [System.IO.File]::WriteAllText($entry, $text)
+            Invoke-Step $Dashboard | Should Be 0
+            Get-StepOptions | Should Be $onProfile
+            [System.IO.File]::ReadAllText($kept) | Should Be $text
+        }
+        It "an unreachable dashboard uses the kept copy" {
+            $document = [xml][System.IO.File]::ReadAllText($stepConfig)
+            foreach ($listen in @($document.configuration.options.SelectNodes("listenAddress"))) { [void]$document.configuration.options.RemoveChild($listen) }
+            $document.configuration.options.globalAnnounceEnabled = "false"
+            $document.Save($stepConfig)
+            Invoke-Step "http://127.0.0.1:1" | Should Be 0
+            Get-StepOptions | Should Be $onProfile
+        }
+        It "an entry that is no object changes nothing and keeps the last copy" {
+            [System.IO.File]::WriteAllText($entry, '"tailnet"')
+            $before = (Get-FileHash $stepConfig).Hash
+            Invoke-Step $Dashboard | Should Be 0
+            (Get-FileHash $stepConfig).Hash | Should Be $before
+            [System.IO.File]::ReadAllText($kept) | Should Match "quic://"
         }
     }
 
@@ -298,6 +359,13 @@ try {
             Set-Heartbeats @($running)
             @(Remove-AgentNodeSyncthingTasks $repository) | Should Be @("storage-compose syncthing pc-test")
             @(Remove-AgentNodeSyncthingTasks $repository).Count | Should Be 0
+        }
+        It "the leave path removes the step: the join's own task goes once the agent runs the node" {
+            Register-UserSyncthingTask $node
+            @($global:tasks["storage-compose syncthing pc-test"].Actions).Count | Should Be 2
+            Set-Heartbeats @($running)
+            @(Remove-AgentNodeSyncthingTasks $repository) | Should Be @("storage-compose syncthing pc-test")
+            $global:tasks.ContainsKey("storage-compose syncthing pc-test") | Should Be $false
         }
         It "removes nothing while the agent lists no node" {
             Add-Task "storage-compose syncthing pc-test" $nodeHome

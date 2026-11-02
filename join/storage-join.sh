@@ -24,6 +24,7 @@ set -euo pipefail
 
 readonly HOME_LINKS="Documents:Documents Pictures:Pictures Music:Music Videos:Videos Downloads:Downloads Desktop:Desktop Templates:Templates Public:Public Documents/GitHub:code"
 readonly UNIT_NAME="storage-syncthing.service"
+readonly STEP_NAME="storage-connections"
 
 readonly ESSENTIAL_THRESHOLD=80 WORKING_THRESHOLD=50
 
@@ -31,6 +32,7 @@ join_kind="${STORAGE_JOIN_KIND:-drive}"
 join_threshold="${STORAGE_JOIN_THRESHOLD:-50}"
 allow_keep_all="${STORAGE_JOIN_ALLOW_KEEP_ALL:-}"
 unit_dir="${STORAGE_JOIN_UNIT_DIR:-/etc/systemd/system}"
+step_dir="${STORAGE_JOIN_STEP_DIR:-/usr/local/lib/storage-join}"
 gui_port="${STORAGE_JOIN_GUI_PORT:-8384}"
 listen_port="${STORAGE_JOIN_LISTEN_PORT:-22000}"
 changes=0
@@ -164,7 +166,26 @@ as_owner() {
     if [[ "$owner" == "$(id -un)" ]]; then "$@"; else runuser -u "$owner" -- "$@"; fi
 }
 
+joined_node_id() {
+    local device_id
+    device_id="$(local_device_id || true)"
+    [[ -n "$device_id" ]] || fail "Syncthing in $syncthing_home has no device ID"
+    printf 'device-%s' "$(printf '%s' "${device_id:0:7}" | tr '[:upper:]' '[:lower:]')"
+}
+
+step_source() { printf '%s/storage-connections.sh' "$(dirname "${BASH_SOURCE[0]}")"; }
+
+install_step() {
+    local step="$step_dir/$STEP_NAME"
+    [[ -f "$step" && "$(cksum < "$(step_source)")" == "$(cksum < "$step")" ]] && return 0
+    mkdir -p "$step_dir"
+    install -m 755 "$(step_source)" "$step"
+    changed "installed $step"
+}
+
 unit_text() {
+    local step_command
+    step_command="$step_dir/$STEP_NAME $(dashboard_url) $(joined_node_id) $syncthing_home"
     cat << EOF
 [Unit]
 Description=Syncthing for the storage node at $join_root
@@ -174,6 +195,7 @@ Wants=network-online.target
 [Service]
 User=$(node_owner)
 Environment=STNOUPGRADE=1
+ExecStartPre=-$step_command
 ExecStart=$(command -v syncthing) serve --home=$syncthing_home --no-browser --gui-address=127.0.0.1:$gui_port
 Restart=on-failure
 
@@ -183,10 +205,11 @@ EOF
 }
 
 install_unit() {
-    local unit="$unit_dir/$UNIT_NAME"
-    if [[ ! -f "$unit" ]] || [[ "$(cat "$unit")" != "$(unit_text)" ]]; then
+    local unit="$unit_dir/$UNIT_NAME" text
+    text="$(unit_text)"
+    if [[ ! -f "$unit" ]] || [[ "$(cat "$unit")" != "$text" ]]; then
         mkdir -p "$unit_dir"
-        unit_text > "$unit"
+        printf '%s\n' "$text" > "$unit"
         systemctl daemon-reload
         changed "wrote $unit"
         systemctl enable "$UNIT_NAME" > /dev/null 2>&1 || true
@@ -201,6 +224,7 @@ install_unit() {
 
 start_syncthing() {
     generate_keys
+    install_step
     install_unit
 }
 
@@ -228,13 +252,17 @@ wait_for_syncthing() {
 
 tailnet_address() { tailscale ip -4 | head -n 1; }
 
-# Peers reach a node only over the tailnet, by the address the dashboard hands out (the port table's
-# kind `protocol`), so discovery, relays and NAT traversal stay off.
+# Until the dashboard has handed the node its connections entry, peers reach it only over the
+# tailnet (the port table's kind `protocol`), so discovery, relays and NAT traversal stay off; once
+# the unit's start step keeps an entry, those settings are the entry's and stay untouched here.
 configure_options() {
     local wanted current
     wanted="$(jq -n --arg listen "tcp://$(tailnet_address):$listen_port" '{
         listenAddresses: [$listen], globalAnnounceEnabled: false, localAnnounceEnabled: false,
         relaysEnabled: false, natEnabled: false, urAccepted: -1, autoUpgradeIntervalH: 0, crashReportingEnabled: false }')"
+    if [[ -f "$syncthing_home/connections.json" ]]; then
+        wanted="$(jq 'del(.listenAddresses, .globalAnnounceEnabled, .localAnnounceEnabled, .relaysEnabled, .natEnabled)' <<< "$wanted")"
+    fi
     current="$(api GET /rest/config/options | jq --argjson wanted "$wanted" 'with_entries(select(.key as $key | $wanted | has($key)))')"
     if [[ "$(jq -S . <<< "$current")" != "$(jq -S . <<< "$wanted")" ]]; then
         api PATCH /rest/config/options -d "$wanted" > /dev/null

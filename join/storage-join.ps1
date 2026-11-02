@@ -238,19 +238,48 @@ function Get-UserTaskName($Node) { return "$nodeSyncthingTaskPrefix $($Node.name
 
 function Get-UserSyncthingArguments($Node) { return Get-NodeSyncthingTaskArguments (Get-SyncthingHome $Node) }
 
-function Test-UserTaskIsCurrent($Node) {
+function Get-PowerShellPath { return Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe" }
+
+function Get-JoinedNodeId($Node) {
+    $deviceId = Get-SyncthingDeviceId $Node
+    if (-not $deviceId) { throw "Syncthing in $(Get-SyncthingHome $Node) has no device ID" }
+    return "device-$($deviceId.Substring(0, 7).ToLower())"
+}
+
+function Get-ConnectionsStepArguments($Node) {
+    return "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $repository "join\storage-connections.ps1")`" -Dashboard `"$(Get-DashboardUrl)`" -NodeId $(Get-JoinedNodeId $Node) -SyncthingHome `"$(Get-SyncthingHome $Node)`""
+}
+
+<#
+.NOTES
+Task Scheduler runs a task's actions one after the other, so the connections step has written the
+node's profile into config.xml before Syncthing starts.
+#>
+function Get-UserTaskActions($Node) {
+    return @(
+        [pscustomobject]@{ Execute = Get-PowerShellPath; Arguments = Get-ConnectionsStepArguments $Node }
+        [pscustomobject]@{ Execute = $script:syncthingPath; Arguments = Get-UserSyncthingArguments $Node }
+    )
+}
+
+function Test-UserTaskIsCurrent($Node, $Wanted) {
     $task = Get-ScheduledTask -TaskName (Get-UserTaskName $Node) -ErrorAction SilentlyContinue
     if (-not $task) { return $false }
-    $action = @($task.Actions)[0]
-    return $action.Execute -eq $script:syncthingPath -and $action.Arguments -eq (Get-UserSyncthingArguments $Node)
+    $actions = @($task.Actions)
+    if ($actions.Count -ne $Wanted.Count) { return $false }
+    for ($index = 0; $index -lt $Wanted.Count; $index++) {
+        if ($actions[$index].Execute -ne $Wanted[$index].Execute -or $actions[$index].Arguments -ne $Wanted[$index].Arguments) { return $false }
+    }
+    return $true
 }
 
 function Register-UserSyncthingTask($Node) {
-    if (Test-UserTaskIsCurrent $Node) { return }
-    $action = New-ScheduledTaskAction -Execute $script:syncthingPath -Argument (Get-UserSyncthingArguments $Node)
+    $wanted = Get-UserTaskActions $Node
+    if (Test-UserTaskIsCurrent $Node $wanted) { return }
+    $actions = @($wanted | ForEach-Object { New-ScheduledTaskAction -Execute $_.Execute -Argument $_.Arguments })
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-    Register-ScheduledTask -TaskName (Get-UserTaskName $Node) -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+    Register-ScheduledTask -TaskName (Get-UserTaskName $Node) -Action $actions -Trigger $trigger -Settings $settings -Force | Out-Null
     Write-JoinChange "registered the logon task '$(Get-UserTaskName $Node)'"
 }
 
