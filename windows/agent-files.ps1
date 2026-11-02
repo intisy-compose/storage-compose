@@ -3,7 +3,7 @@
 $agentServiceName = "storage-compose-agent"
 $agentServiceDisplayName = "storage-compose host agent"
 $agentInstallFolder = Join-Path $env:ProgramFiles "storage-compose-agent"
-$agentScriptNames = @("agent.ps1", "agent-files.ps1", "disks.ps1", "passthrough.ps1", "nodes.ps1", "syncthing.ps1")
+$agentScriptNames = @("agent.ps1", "agent-files.ps1", "disks.ps1", "passthrough.ps1", "nodes.ps1", "syncthing.ps1", "networks.ps1")
 $agentServiceSourceName = "service\AgentService.cs"
 $agentExecutableName = "storage-compose-agent.exe"
 $agentConfigName = "agent-config.json"
@@ -13,6 +13,8 @@ $agentRemovedItselfExitCode = 3
 
 $agentFolderName = "host-agent"
 $agentStatusFolderName = "status"
+$agentConnectionsFolderName = "connections"
+$agentConnectionsName = "connections.json"
 $agentHeartbeatName = "heartbeat.json"
 $agentStateName = "state.json"
 $agentLogName = "agent.log"
@@ -30,6 +32,8 @@ $tailnetAddressRange = "100.64.0.0/10"
 function Get-AgentFolder([string]$StackFolder) { return Join-Path $StackFolder $agentFolderName }
 
 function Get-AgentStatusFolder([string]$StackFolder) { return Join-Path (Get-AgentFolder $StackFolder) $agentStatusFolderName }
+
+function Get-AgentConnectionsFile([string]$StackFolder) { return Join-Path (Join-Path (Get-AgentFolder $StackFolder) $agentConnectionsFolderName) $agentConnectionsName }
 
 function Get-SyncthingArchitecture {
     if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { return "arm64" }

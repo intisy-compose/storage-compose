@@ -15,6 +15,7 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "passthrough.ps1")
 . (Join-Path $PSScriptRoot "nodes.ps1")
 . (Join-Path $PSScriptRoot "syncthing.ps1")
+. (Join-Path $PSScriptRoot "networks.ps1")
 
 $agentRoundSeconds = 5
 $nodeScanIntervalSeconds = 60
@@ -26,6 +27,7 @@ $runningContainerStates = @("running", "restarting")
 $agentConfig = $null
 $agentState = $null
 $agentStateChanged = $false
+$connectionsFile = $null
 $stackGoneSince = $null
 $requestFirstSeen = @{}
 $lastNodeScan = [datetime]::MinValue
@@ -54,6 +56,7 @@ function Initialize-Agent($Config) {
     $script:stateFile = Join-Path $Config.stackFolder $attachStateFileName
     $script:logFile = Join-Path $agentFolder $agentLogName
     $script:agentStateFile = Join-Path $agentFolder $agentStateName
+    $script:connectionsFile = Get-AgentConnectionsFile $Config.stackFolder
     $script:heartbeatFile = Join-Path (Get-AgentStatusFolder $Config.stackFolder) $agentHeartbeatName
     if (Test-Path -LiteralPath $Config.stackFolder) { New-Item -ItemType Directory -Force -Path (Get-AgentStatusFolder $Config.stackFolder) | Out-Null }
     $script:agentState = New-AgentState (Read-JsonFile $script:agentStateFile)
@@ -168,6 +171,7 @@ function Get-Heartbeat($Status, [bool]$IsActive, $PassState, [string]$State, [st
             removesItselfAt = $removesAt
         }
         passThrough = Get-PassThroughSummary $PassState
+        networks = @(Get-HostNetworks)
         nodes = @($script:syncthingInstances.Values | ForEach-Object { Get-PublishedInstance $_ })
         foundNodes = @($script:foundNodes.nodes | ForEach-Object { [ordered]@{ id = $_.id; name = $_.name; kind = $_.kind; root = $_.root } })
         problems = $problems

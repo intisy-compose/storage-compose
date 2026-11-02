@@ -64,14 +64,62 @@ function Set-XmlChildText($Parent, [string]$Name, [string]$Value) {
     return $true
 }
 
-function Set-ListenAddress($Options, [string]$Address) {
-    $current = @($Options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
-    if ($current.Count -eq 1 -and $current[0] -eq $Address) { return $false }
-    foreach ($element in @($Options.SelectNodes("listenAddress"))) { [void]$Options.RemoveChild($element) }
-    $element = $Options.OwnerDocument.CreateElement("listenAddress")
-    $element.InnerText = $Address
-    [void]$Options.PrependChild($element)
+function Set-XmlChildList($Parent, [string]$Name, [string[]]$Values) {
+    $existing = @($Parent.SelectNodes($Name))
+    $current = @($existing | ForEach-Object { $_.InnerText })
+    if ($current.Count -eq @($Values).Count -and ($current -join "`n") -ceq (@($Values) -join "`n")) { return $false }
+    foreach ($element in $existing) { [void]$Parent.RemoveChild($element) }
+    foreach ($value in $Values) {
+        $element = $Parent.OwnerDocument.CreateElement($Name)
+        $element.InnerText = $value
+        [void]$Parent.AppendChild($element)
+    }
     return $true
+}
+
+function Set-ListenAddresses($Options, [string[]]$Addresses) { return Set-XmlChildList $Options "listenAddress" $Addresses }
+
+<#
+.NOTES
+The node's entry of the connections file the dashboard writes through a read-write bind (the agent
+never writes it). Null without the file, without an entry for the node or without listen addresses
+in it, which leaves the node tailnet-only.
+#>
+function Get-NodeConnections($Node) {
+    if (-not $script:connectionsFile) { return $null }
+    $byNode = Read-JsonFile $script:connectionsFile
+    if (-not $byNode -or -not $byNode.PSObject.Properties[$Node.id]) { return $null }
+    $entry = $byNode.($Node.id)
+    if (-not $entry.PSObject.Properties["listenAddresses"] -or @($entry.listenAddresses | Where-Object { $_ }).Count -eq 0) { return $null }
+    return $entry
+}
+
+function Get-NodeListenAddresses($Connections, [string]$ListenHost, $Ports) {
+    if ($Connections) { return @($Connections.listenAddresses | Where-Object { $_ } | ForEach-Object { "$_" }) }
+    return @("tcp://$ListenHost`:$($Ports.listen)")
+}
+
+function ConvertTo-XmlValue($Value) {
+    if ($Value -is [bool]) { return $(if ($Value) { "true" } else { "false" }) }
+    return "$Value"
+}
+
+$profileOptionNames = @("globalAnnounceEnabled", "localAnnounceEnabled", "relaysEnabled", "natEnabled", "maxSendKbps", "maxRecvKbps", "limitBandwidthInLan")
+$tailnetOnlyOptions = [ordered]@{ globalAnnounceEnabled = "false"; localAnnounceEnabled = "false"; relaysEnabled = "false"; natEnabled = "false" }
+$keptOptions = [ordered]@{ urAccepted = "-1"; autoUpgradeIntervalH = "0"; crashReportingEnabled = "false"; startBrowser = "false" }
+
+function Get-ProfileOptionValues($Connections) {
+    $values = [ordered]@{}
+    if (-not $Connections.PSObject.Properties["options"] -or -not $Connections.options) { return $values }
+    foreach ($name in $profileOptionNames) {
+        if ($Connections.options.PSObject.Properties[$name]) { $values[$name] = ConvertTo-XmlValue $Connections.options.$name }
+    }
+    return $values
+}
+
+function Set-ProfileAnnounceServers($Options, $Connections) {
+    if (-not $Connections.PSObject.Properties["options"] -or -not $Connections.options -or -not $Connections.options.PSObject.Properties["globalAnnounceServers"]) { return $false }
+    return Set-XmlChildList $Options "globalAnnounceServer" @($Connections.options.globalAnnounceServers | ForEach-Object { "$_" })
 }
 
 function Save-XmlDocument($Document, [string]$Path) {
@@ -87,12 +135,15 @@ function Save-XmlDocument($Document, [string]$Path) {
 
 <#
 .NOTES
-Discovery, relays and NAT traversal are off because peers reach a node only over the tailnet, by the
-address the dashboard hands out; usage reporting is declined once so Syncthing never asks. The host
-check is off because the dashboard's container calls as host.docker.internal, which Syncthing
-otherwise answers with 403; the GUI listens on loopback only and every call needs the API key.
+With the node's entry of the connections file, its discovery, relay, NAT, limit and listen settings
+are the cluster profile's, applied before Syncthing starts so it never listens with stale ones;
+without it they are tailnet-only (discovery, relays and NAT off, listening on the tailnet address),
+which is also what a device joined without the host agent runs. Usage reporting is declined once so
+Syncthing never asks, in both cases. The host check is off because the dashboard's container calls as
+host.docker.internal, which Syncthing otherwise answers with 403; the GUI listens on loopback only
+and every call needs the API key.
 #>
-function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost) {
+function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost, $Connections) {
     $path = Get-SyncthingConfigPath $Node
     $document = New-Object System.Xml.XmlDocument
     $document.PreserveWhitespace = $false
@@ -105,12 +156,12 @@ function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost) {
     if (-not $gui.SelectSingleNode("apikey").InnerText) { $changed = (Set-XmlChildText $gui "apikey" (New-ApiKey)) -or $changed }
     $changed = (Set-XmlChildText $gui "insecureSkipHostcheck" "true") -or $changed
     $options = $configuration.SelectSingleNode("options")
-    $changed = (Set-ListenAddress $options "tcp://$ListenHost`:$($Ports.listen)") -or $changed
-    $settings = [ordered]@{
-        globalAnnounceEnabled = "false"; localAnnounceEnabled = "false"; relaysEnabled = "false"; natEnabled = "false"
-        urAccepted = "-1"; autoUpgradeIntervalH = "0"; crashReportingEnabled = "false"; startBrowser = "false"
+    $changed = (Set-ListenAddresses $options @(Get-NodeListenAddresses $Connections $ListenHost $Ports)) -or $changed
+    $settings = $(if ($Connections) { Get-ProfileOptionValues $Connections } else { $tailnetOnlyOptions })
+    if ($Connections) { $changed = (Set-ProfileAnnounceServers $options $Connections) -or $changed }
+    foreach ($values in @($settings, $keptOptions)) {
+        foreach ($name in @($values.Keys)) { $changed = (Set-XmlChildText $options $name $values[$name]) -or $changed }
     }
-    foreach ($name in $settings.Keys) { $changed = (Set-XmlChildText $options $name $settings[$name]) -or $changed }
     $self = Get-SelfDeviceElement $configuration $Node
     if ($self -and $self.GetAttribute("name") -ne $Node.name) { $self.SetAttribute("name", $Node.name); $changed = $true }
     if ($changed) { Save-XmlDocument $document $path }
@@ -251,7 +302,7 @@ function Stop-SyncthingProcess($Instance) {
 
 function New-SyncthingInstance($Node) {
     return [pscustomobject]@{
-        nodeId = $Node.id; node = $Node; ports = $null; apiKey = $null; deviceId = $null; listenAddress = $null
+        nodeId = $Node.id; node = $Node; ports = $null; apiKey = $null; deviceId = $null; listenAddress = $null; usesProfile = $false
         processId = 0; state = "stopped"; startedAt = $null; attempts = @(); problem = $null
     }
 }
@@ -282,10 +333,12 @@ function Start-NodeSyncthing($Instance, [string]$ListenHost) {
         $Instance.ports = Get-NodePorts $node
         New-Item -ItemType Directory -Force -Path (Get-SyncthingHome $node) | Out-Null
         if (-not (Test-Path -LiteralPath (Get-SyncthingConfigPath $node))) { New-SyncthingConfig $node }
-        $identity = Set-SyncthingConfig $node $Instance.ports $ListenHost
+        $connections = Get-NodeConnections $node
+        $identity = Set-SyncthingConfig $node $Instance.ports $ListenHost $connections
         $Instance.apiKey = $identity.apiKey
         $Instance.deviceId = $identity.deviceId
-        $Instance.listenAddress = "tcp://$ListenHost`:$($Instance.ports.listen)"
+        $Instance.listenAddress = @(Get-NodeListenAddresses $connections $ListenHost $Instance.ports)[0]
+        $Instance.usesProfile = [bool]$connections
         Set-SyncthingFirewallRule $node $Instance.ports
         $Instance.processId = Start-SyncthingProcess $node
         $Instance.state = "running"
@@ -324,12 +377,19 @@ function Resume-OrphanedSyncthing($Instance) {
         $Instance.apiKey = $document.configuration.gui.apikey
         $Instance.listenAddress = $document.configuration.options.listenAddress | Select-Object -First 1
     } catch { }
+    $Instance.usesProfile = [bool](Get-NodeConnections $Instance.node)
     $Instance.deviceId = Get-SyncthingDeviceId $Instance.node
     Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): took over the running Syncthing, pid $($Instance.processId)"
     return $true
 }
 
+<#
+.NOTES
+Only a tailnet-only node listens on the tailnet address itself; one under the connection profile
+listens on 0.0.0.0 and keeps listening when that address changes.
+#>
 function Test-NeedsRestartForAddress($Instance, [string]$ListenHost) {
+    if ($Instance.usesProfile) { return $false }
     return $Instance.state -eq "running" -and $Instance.ports -and $Instance.listenAddress -ne "tcp://$ListenHost`:$($Instance.ports.listen)"
 }
 

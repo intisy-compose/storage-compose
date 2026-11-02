@@ -27,6 +27,10 @@ function Remove-NetFirewallRule([string]$Name, [string]$Group) {
 function Remove-ProgramFirewallRules([string]$Folder) { $global:programRuleSweeps += $Folder }
 function Get-NetFirewallPortFilter { param([Parameter(ValueFromPipeline = $true)]$Rule) process { [pscustomobject]@{ LocalPort = $Rule.LocalPort } } }
 function Get-NetFirewallApplicationFilter { param([Parameter(ValueFromPipeline = $true)]$Rule) process { [pscustomobject]@{ Program = $Rule.Program } } }
+$global:ipAddresses = @()
+$global:connectionProfiles = @()
+function Get-NetIPAddress { [CmdletBinding()] param([string]$AddressFamily) return $global:ipAddresses }
+function Get-NetConnectionProfile { [CmdletBinding()] param() return $global:connectionProfiles }
 
 function Reset-Agent {
     Stop-AllNodeInstances "test reset"
@@ -34,6 +38,7 @@ function Reset-Agent {
     $script:syncthingSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $SyncthingPath).Hash.ToLower()
     $script:agentState = New-AgentState $null
     $script:logFile = Join-Path $scratch "agent.log"
+    $script:connectionsFile = Join-Path $scratch "host-agent\connections\connections.json"
     $global:firewallRules = @{}
     $global:programRuleSweeps = @()
     $global:tailnetAddress = $null
@@ -192,4 +197,116 @@ Describe "a node's native Syncthing" {
 
     Reset-Agent
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
+}
+
+function Write-ConnectionsFile($ByNode) {
+    New-Item -ItemType Directory -Force -Path (Split-Path $script:connectionsFile) | Out-Null
+    [System.IO.File]::WriteAllText($script:connectionsFile, (ConvertTo-Json -InputObject $ByNode -Depth 10))
+}
+
+function New-ConfiguredNode([string]$Id, [string]$Name) {
+    $node = New-TestNode $Id $Name
+    New-Item -ItemType Directory -Force -Path (Get-SyncthingHome $node) | Out-Null
+    New-SyncthingConfig $node
+    return $node
+}
+
+function Read-ConfigOptions($Node) { return ([xml][System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node))).configuration.options }
+
+function Get-ConfiguredListenAddresses($Node) { return @((Read-ConfigOptions $Node).SelectNodes("listenAddress") | ForEach-Object { $_.InnerText }) }
+
+Describe "the connection profile in a node's config" {
+    Reset-Agent
+    $ports = [pscustomobject]@{ slot = 0; gui = 18460; listen = 32110 }
+    $listenAddresses = @("tcp://0.0.0.0:32110", "quic://0.0.0.0:32110", "relay://192.168.1.5:22100/?id=RELAY", "dynamic+https://relays.syncthing.net/endpoint")
+    $profiled = @{
+        options = [ordered]@{
+            localAnnounceEnabled = $true; natEnabled = $true; globalAnnounceEnabled = $true; globalAnnounceServers = @("default")
+            relaysEnabled = $true; maxSendKbps = 500; maxRecvKbps = 250; limitBandwidthInLan = $true
+        }
+        listenAddresses = $listenAddresses
+        deviceAddresses = @{}
+    }
+
+    It "with connections.json it writes the profile's options" {
+        $node = New-ConfiguredNode "c001" "profiled"
+        Write-ConnectionsFile @{ c001 = $profiled }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        $options = Read-ConfigOptions $node
+        $options.localAnnounceEnabled | Should Be "true"
+        $options.natEnabled | Should Be "true"
+        $options.globalAnnounceEnabled | Should Be "true"
+        @($options.SelectNodes("globalAnnounceServer") | ForEach-Object { $_.InnerText }) | Should Be @("default")
+        $options.relaysEnabled | Should Be "true"
+        $options.maxSendKbps | Should Be "500"
+        $options.maxRecvKbps | Should Be "250"
+        $options.limitBandwidthInLan | Should Be "true"
+        $options.urAccepted | Should Be "-1"
+        $options.autoUpgradeIntervalH | Should Be "0"
+        $options.crashReportingEnabled | Should Be "false"
+        $options.startBrowser | Should Be "false"
+    }
+
+    It "with connections.json it writes every listen address in order" {
+        $node = New-ConfiguredNode "c002" "ordered"
+        Write-ConnectionsFile @{ c002 = $profiled }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        (Get-ConfiguredListenAddresses $node) -join " " | Should Be ($listenAddresses -join " ")
+    }
+
+    It "without connections.json it listens on the tailnet address only" {
+        $node = New-ConfiguredNode "c003" "tailnet-only"
+        Write-ConnectionsFile @{ c003 = $profiled }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        Remove-Item -LiteralPath $script:connectionsFile
+        Get-NodeConnections $node | Should BeNullOrEmpty
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        (Get-ConfiguredListenAddresses $node) -join " " | Should Be "tcp://100.100.1.2:32110"
+        $options = Read-ConfigOptions $node
+        foreach ($name in @("globalAnnounceEnabled", "localAnnounceEnabled", "relaysEnabled", "natEnabled")) { $options.$name | Should Be "false" }
+    }
+
+    It "reports no change for the listen addresses it already has, and a change for a reordered list" {
+        $options = Read-ConfigOptions (New-ConfiguredNode "c004" "unchanged")
+        Set-ListenAddresses $options $listenAddresses | Should Be $true
+        Set-ListenAddresses $options $listenAddresses | Should Be $false
+        Set-ListenAddresses $options @($listenAddresses[1], $listenAddresses[0]) | Should Be $true
+    }
+
+    It "restarts only a tailnet-only node when the tailnet address changes" {
+        $instance = New-SyncthingInstance (New-TestNode "c005" "restarts")
+        $instance.state = "running"
+        $instance.ports = $ports
+        $instance.listenAddress = "tcp://0.0.0.0:32110"
+        $instance.usesProfile = $true
+        Test-NeedsRestartForAddress $instance "100.100.1.3" | Should Be $false
+        $instance.usesProfile = $false
+        Test-NeedsRestartForAddress $instance "100.100.1.3" | Should Be $true
+    }
+
+    Reset-Agent
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
+}
+
+Describe "the host's networks" {
+    It "Get-HostNetworks reports a Public category as Public" {
+        $global:ipAddresses = @(
+            [pscustomobject]@{ InterfaceIndex = 1; IPAddress = "127.0.0.1" }
+            [pscustomobject]@{ InterfaceIndex = 11; IPAddress = "192.168.68.56" }
+            [pscustomobject]@{ InterfaceIndex = 12; IPAddress = "100.75.76.90" }
+            [pscustomobject]@{ InterfaceIndex = 17; IPAddress = "169.254.145.31" }
+            [pscustomobject]@{ InterfaceIndex = 41; IPAddress = "172.29.224.1" }
+        )
+        $global:connectionProfiles = @(
+            [pscustomobject]@{ InterfaceIndex = 11; NetworkCategory = "Public" }
+            [pscustomobject]@{ InterfaceIndex = 12; NetworkCategory = "Private" }
+        )
+        $networks = @(Get-HostNetworks)
+        $networks.Count | Should Be 2
+        $networks[0].kind | Should Be "lan"
+        $networks[0].address | Should Be "192.168.68.56"
+        $networks[0].category | Should Be "Public"
+        $networks[1].kind | Should Be "tailnet"
+        $networks[1].address | Should Be "100.75.76.90"
+    }
 }
