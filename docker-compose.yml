@@ -242,8 +242,9 @@ services:
         condition: service_healthy
 
   # The host's one bridge: a private relay (no public pool, no status listener) for peers that share
-  # no network with a Docker node. Its key lives in the data repo's gitignored secrets, not on the
-  # array, so the relay id survives a rebuild and the bridge runs while the drives are out.
+  # no network with a Docker node. Its key lives in the data repo's gitignored secrets, so the relay id
+  # survives a rebuild. Once started it does not need the array, but it starts with the gateway, which
+  # today waits for the array.
   bridge:
     image: syncthing/relaysrv:2.1.7@sha256:300b85361ff06f46940e24912c67d6230af3e74d84c6edc38a640d847ac76828
     container_name: storage-bridge

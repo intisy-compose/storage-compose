@@ -32,13 +32,17 @@ if [ "$(id -u)" = 0 ]; then
     run_as="su-exec ${PUID:-1000}:${PGID:-1000}"
 fi
 
+relay_pid=
+stop_requested=
+trap 'stop_requested=yes; [ -z "$relay_pid" ] || kill -TERM "$relay_pid" 2>/dev/null || true' TERM INT
+
 output=$(mktemp -u)
 mkfifo "$output"
 $run_as "$relay" -pools="" -status-srv="" -listen=":$port" -keys="$keys" >"$output" 2>&1 &
 relay_pid=$!
 publish <"$output" &
 publisher_pid=$!
-trap 'kill -TERM "$relay_pid" 2>/dev/null || true' TERM INT
+[ -z "$stop_requested" ] || kill -TERM "$relay_pid" 2>/dev/null || true
 
 set +e
 wait "$relay_pid"

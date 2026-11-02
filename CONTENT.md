@@ -20,7 +20,7 @@ Samba, Syncthing and Kopia); the migration onto the real drives follows.
 | `samba` | `ghcr.io/crazy-max/samba:4.23.8` | the pool as one SMB share, `\\storage.<tailnet>.ts.net\storage` |
 | `syncthing` | built, `ghcr.io/syncthing/syncthing:2.1.6` + jq | a Syncthing peer whose folders live anywhere in the pool, nested ones too (`pool/Documents`, `pool/Documents/GitHub`); its GUI is on this host only, `http://localhost:8443`; it applies the connection profile at each start |
 | `nodes` | built, `debian:trixie-slim` + Syncthing 2.1.6 | one Syncthing per drive node, folder node and array other than the cluster, each with the identity kept on its own storage, on sync ports 22021 and up (22001 to 22020 are the host agent's), applying the connection profile at each start |
-| `bridge` | `syncthing/relaysrv:2.1.7` | the host's one private Syncthing relay on port 22100, in the gateway's network, for peers that share no network with a Docker node; its key lives in `data/secrets/bridge` (gitignored), so its relay id survives a rebuild and it runs while the array is out |
+| `bridge` | `syncthing/relaysrv:2.1.7` | the host's one private Syncthing relay on port 22100, in the gateway's network, for peers that share no network with a Docker node; its key lives in `data/secrets/bridge` (gitignored), so its relay id survives a rebuild; once started it does not need the array, but on a fresh start it comes up with the rest of the stack, which today needs the array |
 | `kopia` | built from the Kopia 0.23.1 release binary | a Kopia repository server on `pool/kopia`, `https://storage.<tailnet>.ts.net:51515` |
 
 Every image is pinned to a version.
