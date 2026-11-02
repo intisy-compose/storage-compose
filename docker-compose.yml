@@ -123,6 +123,8 @@ services:
       - ${SETUP_REPO_DIR:-./data}:/setup
       - ${SETUP_GIT_HOME:-./setup-repo-unset}:/setup-home:ro
       - ./host-agent/status:/host-agent:ro
+      # The host agent's copy of /status/connections.json; its status folder above stays read-only.
+      - ./host-agent/connections:/host-agent-connections
       # A drive node's volume must show as mounted here, or it is offered as a drive to erase.
       - ${NODE_VOLUMES:-./node-volumes-unset}:/mnt/nodes:rslave
     # The Windows host agent's native Syncthing instances answer on the host.
