@@ -277,10 +277,16 @@ async function committedProfileText(repository: string): Promise<string | null> 
   return shown.ok ? shown.output : null;
 }
 
+/** A no-op save still leaves the file as committed, so a stale copy on disk never outlives a save that HEAD already holds. */
+async function restoreCommittedProfile(repository: string, before: string | null, committed: string): Promise<void> {
+  if (before?.trim() !== committed) await gitIn(repository, "checkout", "-q", "HEAD", "--", connectionsProfilePath);
+}
+
 async function saveNow(profile: ConnectionProfile, message: string, repository: string): Promise<void> {
   const before = await readProfileText(repository);
   const after = formatProfile(profile);
-  if (after.trim() === (await committedProfileText(repository))) return;
+  const committed = await committedProfileText(repository);
+  if (committed !== null && after.trim() === committed) return restoreCommittedProfile(repository, before, committed);
   await writeFile(`${repository}/${connectionsProfilePath}`, after);
   await gitIn(repository, "add", connectionsProfilePath);
   const commit = await gitIn(repository, "commit", "-m", message, "--", connectionsProfilePath);
