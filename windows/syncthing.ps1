@@ -130,13 +130,15 @@ function Test-IsTailnetOnlyListen($Addresses) {
 
 <#
 .NOTES
-The entry a node's config.xml already runs with: its listen addresses and whether local announce is
-on, which is all the start and the firewall read from an entry. Null for a tailnet-only config.
+The entry a node's config.xml already runs with: its listen addresses and whether local announce and
+NAT traversal are on, which is all the start and the firewall read from an entry. Null for a
+tailnet-only config.
 #>
 function Get-ConfiguredConnections($Node) {
     try { $options = ([xml][System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node))).configuration.options } catch { return $null }
     $addresses = @($options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
-    $entry = [pscustomobject]@{ options = [pscustomobject]@{ localAnnounceEnabled = "$($options.localAnnounceEnabled)" -eq "true" }; listenAddresses = $addresses }
+    $switches = [pscustomobject]@{ localAnnounceEnabled = "$($options.localAnnounceEnabled)" -eq "true"; natEnabled = "$($options.natEnabled)" -eq "true" }
+    $entry = [pscustomobject]@{ options = $switches; listenAddresses = $addresses }
     if ((Test-IsTailnetOnlyListen $addresses) -or -not (Test-HasProfileListenAddresses $entry)) { return $null }
     return $entry
 }

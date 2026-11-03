@@ -477,6 +477,26 @@ Describe "the firewall with local discovery and NAT off" {
         Get-TestRule "f003" "tcp private" | Should Not BeNullOrEmpty
     }
 
+    It "a start with an unreadable connections file reads NAT from the config too, so a closed LAN stays closed" {
+        Mock Stop-NodeSyncthingProcesses { }
+        Mock Start-SyncthingProcess { return 4242 }
+        Mock Get-NodePorts { return $ports }
+        $node = New-ConfiguredNode "f005" "closed-unreadable"
+        $natOn = New-ProfileEntry $false
+        $natOn.options | Add-Member -NotePropertyName natEnabled -NotePropertyValue $true
+        Write-ConnectionsFile @{ f005 = $natOn }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        Test-ClosesLan (Get-ConfiguredConnections $node) | Should Be $false
+        Write-ConnectionsFile @{ f005 = (New-ClosedLanEntry) }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        [System.IO.File]::WriteAllText($script:connectionsFile, "")
+        Test-ClosesLan (Get-ConfiguredConnections $node) | Should Be $true
+        $instance = New-SyncthingInstance $node
+        Start-NodeSyncthing $instance "100.100.1.2"
+        $instance.usesProfile | Should Be $true
+        foreach ($protocol in @("tcp", "udp")) { (Get-TestRule "f005" "$protocol private").RemoteAddress | Should Be "100.64.0.0/10" }
+    }
+
     Context "while setting a rule fails" {
         It "a failure to set a node's rules is logged once while it lasts" {
             $instance = New-SyncthingInstance (New-ConfiguredNode "f004" "failing")
