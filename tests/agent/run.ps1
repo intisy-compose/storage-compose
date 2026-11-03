@@ -48,6 +48,7 @@ function Invoke-AgentTests([string]$Syncthing) {
     $scripts = @(
         (Join-Path $PSScriptRoot "nodes.Tests.ps1"),
         (Join-Path $PSScriptRoot "firewall.Tests.ps1"),
+        (Join-Path $PSScriptRoot "entry.Tests.ps1"),
         (Join-Path $PSScriptRoot "agent.Tests.ps1"),
         (Join-Path $PSScriptRoot "backoff.Tests.ps1"),
         (Join-Path $PSScriptRoot "install.Tests.ps1"),

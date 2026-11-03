@@ -22,37 +22,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path (Split-Path $PSScriptRoot) "windows\syncthing.ps1")
-
-$fetchTimeoutSeconds = 10
+. (Join-Path (Split-Path $PSScriptRoot) "windows\dashboard-entry.ps1")
 
 function Get-KeptConnectionsPath { return [System.IO.Path]::Combine($SyncthingHome, "connections.json") }
 
-function ConvertFrom-ConnectionsText([string]$Text) {
-    try { $entry = $Text | ConvertFrom-Json } catch { return $null }
-    if ($entry -isnot [System.Management.Automation.PSCustomObject]) { return $null }
-    return $entry
-}
-
-<#
-.NOTES
-Waits on the request as a task, so the bound covers the whole request: on .NET Framework the timeouts
-of Invoke-WebRequest and HttpClient leave out the name lookup, which can take 15 s and more.
-#>
-function Get-DashboardEntryText {
-    Add-Type -AssemblyName System.Net.Http
-    $client = New-Object System.Net.Http.HttpClient
-    try {
-        $request = $client.GetStringAsync("$($Dashboard.TrimEnd('/'))/api/connections/node/$NodeId")
-        if (-not $request.Wait([TimeSpan]::FromSeconds($fetchTimeoutSeconds))) { throw "no answer within $fetchTimeoutSeconds s" }
-        return $request.Result
-    } finally {
-        $client.Dispose()
-    }
-}
-
 function Save-DashboardEntry {
     try {
-        $text = Get-DashboardEntryText
+        $text = Get-DashboardEntryText $Dashboard $NodeId
     } catch {
         Write-Host "storage-connections: the dashboard at $Dashboard gave no entry; using the kept copy, if any"
         return
@@ -63,24 +39,13 @@ function Save-DashboardEntry {
     Move-Item -Force -LiteralPath "$kept.partial" -Destination $kept
 }
 
-<#
-.NOTES
-The dashboard assumes 22000 for every joined device and leaves the device's own port to this step.
-#>
-function ConvertTo-OwnListenPort($Address) {
-    if ($Address -isnot [string] -or $ListenPort -notmatch '^\d+$' -or $Address -cnotmatch '^(tcp|quic)[46]?://') { return $Address }
-    return $Address -replace ':\d+((?:[/?].*)?)$', ":$ListenPort`$1"
-}
-
 function Set-KeptConnections {
     $kept = Get-KeptConnectionsPath
     $configPath = [System.IO.Path]::Combine($SyncthingHome, "config.xml")
     if (-not ((Test-Path -LiteralPath $kept) -and (Test-Path -LiteralPath $configPath))) { return }
     $entry = ConvertFrom-ConnectionsText ([System.IO.File]::ReadAllText($kept))
     if (-not $entry) { return }
-    if ($entry.PSObject.Properties["listenAddresses"] -and $entry.listenAddresses -is [array]) {
-        $entry.listenAddresses = @($entry.listenAddresses | ForEach-Object { ConvertTo-OwnListenPort $_ })
-    }
+    Set-OwnListenPort $entry $ListenPort
     $document = New-Object System.Xml.XmlDocument
     $document.Load($configPath)
     $options = $document.DocumentElement.SelectSingleNode("options")
