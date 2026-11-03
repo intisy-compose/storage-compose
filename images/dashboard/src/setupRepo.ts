@@ -202,6 +202,8 @@ async function recordDeviceNow(name: string, deviceId: string, root: string | nu
   await gitIn(repository, "add", setupLayoutPath);
   const commit = await commitAsDashboard(repository, `feat(devices): admit ${name} to the storage network`);
   if (!commit.ok) return { committed: false, pushed: false, message: `written to ${setupLayoutPath} but not committed: ${commit.output.split("\n").pop()}` };
+  const held = await heldUnpushedProblem(repository);
+  if (held) return { committed: true, pushed: false, message: `committed, not pushed: ${held}` };
   const push = await pushToUpstream(repository);
   if (!push.ok) return { committed: true, pushed: false, message: `committed, not pushed yet: ${push.output.split("\n").pop()}` };
   return { committed: true, pushed: true, message: `committed and pushed to the setup repo` };
@@ -232,6 +234,13 @@ export class ProfileUnreachable extends RequestError {
 export class ProfileStuck extends RequestError {
   constructor(commit: string) {
     super(503, profileStuckText(commit));
+  }
+}
+
+/** A save refused before its push because a commit that is not the dashboard's would go with it; the save is undone. */
+export class ProfileHeld extends RequestError {
+  constructor(problem: string) {
+    super(503, problem);
   }
 }
 
@@ -324,6 +333,12 @@ async function rebaseOnto(repository: string, commits: string[]): Promise<PullOu
  * After every pull, pushes the dashboard's own commits the remote does not have yet, or names why they stay.
  * @implNote Checked each round, not only after a rebase: a fast-forward pull of an unchanged remote succeeds and would otherwise clear the problem of a push that failed.
  */
+/** Why a push of HEAD would carry a commit the dashboard may not push, naming it, or null. */
+async function heldUnpushedProblem(repository: string): Promise<string | null> {
+  const unpushed = await revisions(repository, "@{upstream}..HEAD");
+  return unpushed?.length ? heldCommitProblem(repository, unpushed) : null;
+}
+
 async function pushOwnCommits(repository: string): Promise<string | null> {
   const unpushed = await revisions(repository, "@{upstream}..HEAD");
   if (!unpushed?.length) return null;
@@ -442,8 +457,15 @@ async function saveNow(profile: ConnectionProfile, message: string, repository: 
     throw new RequestError(500, `the connection profile could not be committed: ${lastLine(commit.output, "git commit failed")}`);
   }
   const savedCommit = (await gitIn(repository, "rev-parse", "HEAD")).output;
+  const held = await heldUnpushedProblem(repository);
+  if (held) return refuseAfterUndo(repository, before, savedCommit, new ProfileHeld(held));
   const push = await pushToUpstream(repository);
   if (push.ok) return;
+  return refuseAfterUndo(repository, before, savedCommit, isRejectedPush(push.output) ? new ProfileConflict() : new ProfileUnreachable(lastLine(push.output, "git push failed")));
+}
+
+/** Undoes the save and throws `refusal`, or ProfileStuck when another commit landed on top of the save's. */
+async function refuseAfterUndo(repository: string, before: string | null, savedCommit: string, refusal: RequestError): Promise<never> {
   if (!(await undoSave(repository, before, savedCommit))) throw new ProfileStuck(await shortCommitOf(repository, savedCommit));
-  throw isRejectedPush(push.output) ? new ProfileConflict() : new ProfileUnreachable(lastLine(push.output, "git push failed"));
+  throw refusal;
 }

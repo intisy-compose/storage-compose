@@ -324,6 +324,33 @@ describe("keeping the data repo in step with its remote", () => {
     });
   });
 
+  describe("a save or admission above a commit that is not the dashboard's", () => {
+    it("refuses the save with 503 naming the commit, and sends nothing", async () => {
+      const foreign = commitFile(ours, "notes.txt", "mine", "docs: a note made by hand");
+      const remoteBefore = git(remote, "rev-parse", "main");
+      const error = await saveProfile(limited(500), "feat(connections): limit sending", ours).then(
+        () => assert.fail("the save was refused"),
+        (refusal: unknown) => refusal,
+      );
+      assert.equal((error as RequestError).status, 503);
+      assert.match((error as Error).message, new RegExp(`${shortCommit(ours, foreign)}.*not the dashboard's`));
+      assert.equal(git(remote, "rev-parse", "main"), remoteBefore);
+      assert.equal(git(ours, "rev-parse", "HEAD"), foreign);
+      assert.equal(git(ours, "status", "--porcelain"), "");
+    });
+
+    it("commits the admission without pushing it and names the commit", async () => {
+      const foreign = commitFile(ours, "notes.txt", "mine", "docs: a note made by hand");
+      const remoteBefore = git(remote, "rev-parse", "main");
+      const result = await recordDevice("box", "BOX-ID", null, ours);
+      assert.equal(result.committed, true);
+      assert.equal(result.pushed, false);
+      assert.match(result.message, new RegExp(`${shortCommit(ours, foreign)}.*not the dashboard's`));
+      assert.equal(git(remote, "rev-parse", "main"), remoteBefore);
+      assert.equal(git(ours, "rev-parse", "HEAD~1"), foreign);
+    });
+  });
+
   describe("a save whose commit cannot be undone", () => {
     it("answers 503 naming the commit left unpushed, and keeps the file as committed", async () => {
       pushElsewhere("other.txt", "x", "elsewhere");
