@@ -36,6 +36,14 @@ export const profileAddressesHint = "Read only: set by the connection profile, w
 /** The 409 of a profile save made from a profile that is no longer the one on disk. */
 export const profileChangedText = "the profile changed since you read it; it has been reloaded";
 
+/** The 409 of a profile save whose push the remote refused because another host pushed first. */
+export const profileConflictText = "another host saved the connection profile first; reload it and save again";
+
+/** Whether a refused save was made from a profile that is no longer the one on disk, here or on another host. */
+export function isProfileChangedRefusal(message: string): boolean {
+  return message === profileChangedText || message === profileConflictText;
+}
+
 /** `aa01 and bb02, bb02 and cc03`, each node by `nameOf`. */
 export function pairsText(pairs: readonly (readonly [string, string])[], nameOf: (nodeId: string) => string = (nodeId) => nodeId): string {
   return pairs.map(([first, second]) => `${nameOf(first)} and ${nameOf(second)}`).join(", ");
@@ -43,5 +51,12 @@ export function pairsText(pairs: readonly (readonly [string, string])[], nameOf:
 
 /** The 409 of a profile save that would leave pairs of nodes without a common connection method. */
 export function strandedText(pairs: readonly (readonly [string, string])[], nameOf?: (nodeId: string) => string): string {
-  return `${pairsText(pairs, nameOf)} would share no connection method; confirm to save anyway`;
+  return `${pairsText(pairs, nameOf)} ${strandedEnding}`;
+}
+
+const strandedEnding = "would share no connection method; confirm to save anyway";
+
+/** Whether a refused save is the one `strandedText` words, whichever pairs it names. */
+export function isStrandedRefusal(message: string): boolean {
+  return message.endsWith(` ${strandedEnding}`);
 }

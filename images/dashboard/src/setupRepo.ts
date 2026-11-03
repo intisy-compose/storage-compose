@@ -2,7 +2,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import type { ConnectionProfile, PriorityBand, ProfileRead } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
-import { profileChangedText } from "./api/profileText.js";
+import { profileChangedText, profileConflictText } from "./api/profileText.js";
 import { RequestError } from "./http.js";
 import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
 import { type TomlTable, parseToml } from "./toml.js";
@@ -185,11 +185,10 @@ async function recordDeviceNow(name: string, deviceId: string, root: string | nu
 /** A save whose push the remote refused because another host pushed first; nothing of the save remains. */
 export class ProfileConflict extends RequestError {
   constructor() {
-    super(409, "another host saved the connection profile first; reload it and save again");
+    super(409, profileConflictText);
   }
 }
 
-/** A save that git could not make reach the remote; nothing of the save remains. */
 /** A save made from a profile that is no longer the one on disk: another host's change was pulled in meanwhile. */
 export class ProfileChanged extends RequestError {
   constructor() {
@@ -197,12 +196,12 @@ export class ProfileChanged extends RequestError {
   }
 }
 
+/** A save that git could not make reach the remote; nothing of the save remains. */
 export class ProfileUnreachable extends RequestError {
   constructor(reason: string) {
     super(503, `the data repo's remote could not be reached: ${reason}`);
   }
 }
-
 
 interface PullState {
   pulledAt: string | null;
