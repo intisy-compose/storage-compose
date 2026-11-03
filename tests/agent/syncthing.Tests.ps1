@@ -286,7 +286,7 @@ Describe "the connection profile in a node's config" {
         $node = New-ConfiguredNode "c008" "kept-listen"
         Write-ConnectionsFile @{ c008 = $profiled }
         Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
-        foreach ($invalid in @(@(32110, "tcp://0.0.0.0:32110"), @("ftp://0.0.0.0:32110"), "tcp://0.0.0.0:32110", @())) {
+        foreach ($invalid in @(@(32110, "tcp://0.0.0.0:32110"), @("ftp://0.0.0.0:32110"), @("TCP://0.0.0.0:32110"), "tcp://0.0.0.0:32110", @())) {
             Write-ConnectionsFile @{ c008 = @{ options = @{ relaysEnabled = $false; natEnabled = $false; maxSendKbps = 75 }; listenAddresses = $invalid; deviceAddresses = @{} } }
             Get-NodeConnections $node | Should Not BeNullOrEmpty
             $identity = Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node)
@@ -299,6 +299,14 @@ Describe "the connection profile in a node's config" {
             Write-ConnectionsFile @{ c008 = $profiled }
             Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
         }
+    }
+
+    It "takes the address families Syncthing knows" {
+        $node = New-ConfiguredNode "c012" "families"
+        $families = @("tcp4://0.0.0.0:32110", "tcp6://[::]:32110", "quic4://0.0.0.0:32110", "quic6://[::]:32110")
+        Write-ConnectionsFile @{ c012 = @{ options = @{}; listenAddresses = $families; deviceAddresses = @{} } }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        (Get-ConfiguredListenAddresses $node) -join " " | Should Be ($families -join " ")
     }
 
     It "listens on the tailnet address when such a list meets a config without profile addresses, the valid options applied" {

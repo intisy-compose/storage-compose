@@ -96,6 +96,14 @@ cat > "$profile" << 'EOF'
   "c9d0": {
     "options": { "natEnabled": true },
     "listenAddresses": ["tcp://0.0.0.0:22025", "dynamic+http://relays.example/endpoint"]
+  },
+  "b1c2": {
+    "options": { "natEnabled": false },
+    "listenAddresses": ["tcp4://0.0.0.0:22026", "tcp6://[::]:22026", "quic4://0.0.0.0:22026", "quic6://[::]:22026"]
+  },
+  "d3e4": {
+    "options": { "relaysEnabled": true },
+    "listenAddresses": ["TCP://0.0.0.0:22027"]
   }
 }
 EOF
@@ -114,6 +122,10 @@ exit 0' "$(run_apply "$profile" a7b8)"
 check "a listen list takes the host agent's schemes, dynamic+http included" \
     'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"natEnabled":true,"listenAddresses":["tcp://0.0.0.0:22025","dynamic+http://relays.example/endpoint"]}
 exit 0' "$(run_apply "$profile" c9d0)"
+check "a listen list takes the address families Syncthing knows"     'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"natEnabled":false,"listenAddresses":["tcp4://0.0.0.0:22026","tcp6://[::]:22026","quic4://0.0.0.0:22026","quic6://[::]:22026"]}
+exit 0' "$(run_apply "$profile" b1c2)"
+check "a scheme in upper case is unknown, as in the host agent"     'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"relaysEnabled":true}
+exit 0' "$(run_apply "$profile" d3e4)"
 echo '{"a1b2": ' > "$scratch/broken.json"
 check "an unreadable file changes nothing" "exit 0" "$(run_apply "$scratch/broken.json" a1b2)"
 check "a Syncthing that never answers is sent nothing" "exit 1" "$(CURL_PING_FAILS=1 run_apply "$profile" a1b2)"

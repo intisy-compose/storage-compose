@@ -132,10 +132,10 @@ check "the dashboard's entry is applied before syncthing starts, a wrongly typed
 check "and kept in the node's home" "$(jq -c . "$entry")" "$(jq -c . /data/.storage/syncthing/connections.json 2> /dev/null)"
 check "owned by the node's owner" finn "$(stat -c %U /data/.storage/syncthing/connections.json 2> /dev/null)"
 cp -a /data/.storage/syncthing /tmp/port-home && rm -f /tmp/port-home/connections.json
-printf '{"options": {}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://[::]:22000", "relay://10.0.0.1:22100/?id=RELAY", "dynamic+https://relays.syncthing.net/endpoint"], "deviceAddresses": {}}' > /tmp/dashboard/connections/device-porttst.json
+printf '{"options": {}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://[::]:22000", "tcp4://0.0.0.0:22000", "tcp6://[::]:22000", "quic4://0.0.0.0:22000", "quic6://[::]:22000", "relay://10.0.0.1:22100/?id=RELAY", "dynamic+https://relays.syncthing.net/endpoint"], "deviceAddresses": {}}' > /tmp/dashboard/connections/device-porttst.json
 su-exec finn "$step" "http://127.0.0.1:$dashboard_port" device-porttst /tmp/port-home 22001 > /dev/null 2>&1
 check "a device joined on 22001 keeps 22001 after the step, relay and pool addresses untouched" \
-    "tcp://0.0.0.0:22001,quic://[::]:22001,relay://10.0.0.1:22100/?id=RELAY,dynamic+https://relays.syncthing.net/endpoint" \
+    "tcp://0.0.0.0:22001,quic://[::]:22001,tcp4://0.0.0.0:22001,tcp6://[::]:22001,quic4://0.0.0.0:22001,quic6://[::]:22001,relay://10.0.0.1:22100/?id=RELAY,dynamic+https://relays.syncthing.net/endpoint" \
     "$(sed -n 's:.*<listenAddress>\(.*\)</listenAddress>.*:\1:p' /tmp/port-home/config.xml | sed 's/&amp;/\&/g' | paste -sd, -)"
 kill "$dashboard_pid" && wait "$dashboard_pid" 2> /dev/null
 device_patch /rest/config/options "$(jq -n '{listenAddresses: ["tcp://127.0.0.1:22000"], globalAnnounceEnabled: false, maxSendKbps: 0}')" > /dev/null

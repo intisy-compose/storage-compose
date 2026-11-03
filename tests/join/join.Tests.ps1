@@ -287,10 +287,10 @@ try {
             [System.IO.File]::ReadAllText($kept) | Should Match "quic://"
         }
         It "a device joined on 22001 keeps 22001 after the step, relay and pool addresses untouched" {
-            [System.IO.File]::WriteAllText($entry, '{"options": {}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://[::]:22000", "relay://10.0.0.1:22100/?id=RELAY", "dynamic+https://relays.syncthing.net/endpoint"], "deviceAddresses": {}}')
+            [System.IO.File]::WriteAllText($entry, '{"options": {}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://[::]:22000", "tcp4://0.0.0.0:22000", "tcp6://[::]:22000", "quic4://0.0.0.0:22000", "quic6://[::]:22000", "relay://10.0.0.1:22100/?id=RELAY", "dynamic+https://relays.syncthing.net/endpoint"], "deviceAddresses": {}}')
             Invoke-Step $Dashboard "22001" | Should Be 0
             $options = ([xml][System.IO.File]::ReadAllText($stepConfig)).configuration.options
-            (@($options.SelectNodes('listenAddress') | ForEach-Object { $_.InnerText }) -join ',') | Should Be "tcp://0.0.0.0:22001,quic://[::]:22001,relay://10.0.0.1:22100/?id=RELAY,dynamic+https://relays.syncthing.net/endpoint"
+            (@($options.SelectNodes('listenAddress') | ForEach-Object { $_.InnerText }) -join ',') | Should Be "tcp://0.0.0.0:22001,quic://[::]:22001,tcp4://0.0.0.0:22001,tcp6://[::]:22001,quic4://0.0.0.0:22001,quic6://[::]:22001,relay://10.0.0.1:22100/?id=RELAY,dynamic+https://relays.syncthing.net/endpoint"
         }
         It "new keys drop the copy kept for the old device ID" {
             $freshRoot = Join-Path $scratch "keys-root"

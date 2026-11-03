@@ -4,7 +4,7 @@
 The start step of a node's Syncthing on a device joined without the host agent: the join's logon task
 runs it before Syncthing. Fetches the node's entry from the dashboard's GET
 /api/connections/node/<NodeId>, keeps it as connections.json in the Syncthing home, and writes its
-options and listen addresses into config.xml before Syncthing starts, each tcp:// and quic:// listen
+options and listen addresses into config.xml before Syncthing starts, each tcp and quic listen
 address on the device's own -ListenPort.
 
 .DESCRIPTION
@@ -51,7 +51,7 @@ function Save-DashboardEntry {
 The dashboard assumes 22000 for every joined device and leaves the device's own port to this step.
 #>
 function ConvertTo-OwnListenPort($Address) {
-    if ($Address -isnot [string] -or $ListenPort -notmatch '^\d+$' -or $Address -notmatch '^(tcp|quic)://') { return $Address }
+    if ($Address -isnot [string] -or $ListenPort -notmatch '^\d+$' -or $Address -cnotmatch '^(tcp|quic)[46]?://') { return $Address }
     return $Address -replace ':\d+((?:[/?].*)?)$', ":$ListenPort`$1"
 }
 

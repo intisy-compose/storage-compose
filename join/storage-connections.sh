@@ -3,9 +3,9 @@
 # (ExecStartPre) of a joined Linux device's Syncthing unit, which storage-join.sh installs. Fetches the
 # node's entry from the dashboard's GET /api/connections/node/<node id>, keeps it as connections.json
 # in the home, and writes its options and listen addresses into config.xml before Syncthing starts,
-# each tcp:// and quic:// listen address on the device's own port (the dashboard assumes 22000 for
-# every joined device and leaves the real one to this step). A dashboard that
-# does not answer within 10 s leaves the kept copy in use; without a copy nothing changes. Validated by
+# each tcp and quic listen address on the device's own port (the dashboard assumes 22000 for every
+# joined device and leaves the real one to this step). A dashboard that does not answer within 10 s
+# leaves the kept copy in use; without a copy nothing changes. Validated by
 # the same connection-profile.jq as images/nodes/apply-connections.sh, which the join installs beside
 # this step. Always exits 0, so it never stops the start.
 set -u
@@ -37,7 +37,7 @@ wanted_settings() {
         include "connection-profile";
         def escaped: tostring | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\t"; "&#9;") | gsub("\n"; "&#10;") | gsub("\r"; "&#13;");
         def list($name; $values): "list\t\($name)", ($values[] | "item\t\($name)\t\(escaped)");
-        def on_own_port: if type == "string" and ($port | test("^[0-9]+$")) and test("^(tcp|quic)://")
+        def on_own_port: if type == "string" and ($port | test("^[0-9]+$")) and test("^(tcp|quic)[46]?://")
             then sub(":[0-9]+(?<tail>([/?].*)?)$"; ":\($port)\(.tail)") else . end;
         select(type == "object")
         | if .listenAddresses | type == "array" then .listenAddresses |= map(on_own_port) else . end

@@ -12,7 +12,7 @@ def is_valid_option($key):
         or $key == "globalAnnounceEnabled" or $key == "relaysEnabled" then type == "boolean"
     else false end;
 
-def is_listen_address: type == "string" and test("^(tcp|quic|relay|dynamic\\+https?)://");
+def is_listen_address: type == "string" and test("^((tcp|quic)[46]?|relay|dynamic\\+https?)://");
 
 def is_listen_list: type == "array" and length > 0 and all(.[]; is_listen_address);
 

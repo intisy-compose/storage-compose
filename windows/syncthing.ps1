@@ -79,9 +79,9 @@ function Set-XmlChildList($Parent, [string]$Name, [string[]]$Values) {
 
 function Set-ListenAddresses($Options, [string[]]$Addresses) { return Set-XmlChildList $Options "listenAddress" $Addresses }
 
-$profileListenAddressPattern = '^(tcp|quic|relay|dynamic\+https?)://'
+$profileListenAddressPattern = '^((tcp|quic)[46]?|relay|dynamic\+https?)://'
 
-function Test-IsProfileListenAddress($Address) { return $Address -is [string] -and $Address -match $profileListenAddressPattern }
+function Test-IsProfileListenAddress($Address) { return $Address -is [string] -and $Address -cmatch $profileListenAddressPattern }
 
 function Test-IsProfileListenList($Addresses) {
     $list = @($Addresses)
