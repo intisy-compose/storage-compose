@@ -337,19 +337,27 @@ function ConvertTo-ListKey($Values) {
     return (@(@($Values) | ForEach-Object { "$_" -split '[,\s]+' } | Where-Object { $_ } | ForEach-Object { (ConvertTo-PrefixNotation $_).ToLower() } | Sort-Object) -join ",")
 }
 
-function Test-FirewallRuleIsCurrent($Rule) {
-    $existing = Get-NetFirewallRule -Name $Rule.Name -ErrorAction SilentlyContinue
-    if (-not $existing) { return $false }
-    $ports = $existing | Get-NetFirewallPortFilter
-    $addresses = $existing | Get-NetFirewallAddressFilter
-    $program = ($existing | Get-NetFirewallApplicationFilter).Program
-    $isCurrent = (ConvertTo-ListKey $ports.LocalPort) -eq (ConvertTo-ListKey $Rule.LocalPort) -and "$($ports.Protocol)" -eq $Rule.Protocol -and
+function Test-FirewallRuleMatches($Existing, $Rule) {
+    $ports = $Existing | Get-NetFirewallPortFilter
+    $addresses = $Existing | Get-NetFirewallAddressFilter
+    $program = ($Existing | Get-NetFirewallApplicationFilter).Program
+    return (ConvertTo-ListKey $ports.LocalPort) -eq (ConvertTo-ListKey $Rule.LocalPort) -and "$($ports.Protocol)" -eq $Rule.Protocol -and
         (ConvertTo-ListKey $addresses.RemoteAddress) -eq (ConvertTo-ListKey $Rule.RemoteAddress) -and
-        (ConvertTo-ProfileKey "$($existing.Profile)") -eq (ConvertTo-ProfileKey $Rule.Profile) -and
-        "$($existing.Action)" -eq $Rule.Action -and $program -eq $Rule.Program
-    if ($isCurrent) { return $true }
-    Remove-NetFirewallRule -Name $Rule.Name
-    return $false
+        (ConvertTo-ProfileKey "$($Existing.Profile)") -eq (ConvertTo-ProfileKey $Rule.Profile) -and
+        "$($Existing.Action)" -eq $Rule.Action -and $program -eq $Rule.Program
+}
+
+<#
+.NOTES
+A rule that differs is changed in place rather than removed and made again, so its port is never
+left without a rule in between.
+#>
+function Set-AgentFirewallRule($Rule, [string]$DisplayName) {
+    $existing = Get-NetFirewallRule -Name $Rule.Name -ErrorAction SilentlyContinue
+    if (-not $existing) { New-AgentFirewallRule $Rule $DisplayName; return }
+    if (Test-FirewallRuleMatches $existing $Rule) { return }
+    Set-NetFirewallRule -Name $Rule.Name -Action $Rule.Action -Protocol $Rule.Protocol -LocalPort @($Rule.LocalPort -split ',') `
+        -RemoteAddress @($Rule.RemoteAddress -split ',') -Program $Rule.Program -Profile $Rule.Profile
 }
 
 <#
@@ -357,17 +365,15 @@ function Test-FirewallRuleIsCurrent($Rule) {
 Every rule exists before Syncthing first listens. Windows asks "allow access?" for a program no rule
 names, and its answer is a rule open to every address that outlives the stack; with rules naming this
 program on every profile, it never asks. Rules of the other set (tailnet-only or profile), including
-the names an agent before the profile made, are removed by name, so switching sets leaves none behind.
+the names an agent before the profile made, are removed by name once the wanted set is in place, so
+switching sets leaves none behind and no moment without a rule.
 #>
 function Set-SyncthingFirewallRule($Node, $Ports, $Connections) {
     $rules = @(Get-NodeFirewallRules $Node $Ports $Connections)
+    foreach ($rule in $rules) { Set-AgentFirewallRule $rule "$($rule.Name) ($($Node.name))" }
     $wanted = @($rules | ForEach-Object { $_.Name })
     foreach ($name in Get-AllNodeFirewallRuleNames $Node) {
         if ($wanted -notcontains $name) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
-    }
-    foreach ($rule in $rules) {
-        if (Test-FirewallRuleIsCurrent $rule) { continue }
-        New-AgentFirewallRule $rule "$($rule.Name) ($($Node.name))"
     }
 }
 
@@ -475,9 +481,7 @@ function Update-DockerBackendBlock([bool]$IsActive) {
     }
     if ($script:dockerBackendBlockShape -eq $program) { return }
     try {
-        foreach ($rule in Get-DockerBackendBlockRules $program) {
-            if (-not (Test-FirewallRuleIsCurrent $rule)) { New-AgentFirewallRule $rule $rule.Name }
-        }
+        foreach ($rule in Get-DockerBackendBlockRules $program) { Set-AgentFirewallRule $rule $rule.Name }
         $script:dockerBackendBlockShape = $program
     } catch { Write-WatcherLog "the Docker backend's block rules were not set: $_" }
 }

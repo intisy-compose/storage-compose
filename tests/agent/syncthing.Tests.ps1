@@ -11,6 +11,7 @@ $syncthingGuiPortBase = 18450
 $syncthingListenPortBase = 32100
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "agent-syncthing-$([guid]::NewGuid())"
 $global:firewallRules = @{}
+$global:firewallEvents = @()
 $global:programRuleSweeps = @()
 $global:tailnetAddress = $null
 
@@ -21,8 +22,17 @@ function New-NetFirewallRule {
     $global:firewallRules[$Name] = [pscustomobject]@{
         Name = $Name; Group = $Group; Action = $Action; Protocol = $Protocol; LocalPort = $LocalPort; RemoteAddress = $RemoteAddress; Program = $Program; Profile = "$Profile"
     }
+    $global:firewallEvents += "new $Name"
+}
+function Set-NetFirewallRule {
+    param([string]$Name, [string]$Action, [string]$Protocol, $LocalPort, $RemoteAddress, [string]$Program, $Profile)
+    $rule = $global:firewallRules[$Name]
+    if (-not $rule) { throw "no rule $Name to set" }
+    $rule.Action = $Action; $rule.Protocol = $Protocol; $rule.LocalPort = $LocalPort; $rule.RemoteAddress = $RemoteAddress; $rule.Program = $Program; $rule.Profile = "$Profile"
+    $global:firewallEvents += "set $Name"
 }
 function Remove-NetFirewallRule([string]$Name, [string]$Group) {
+    if ($Name -and $global:firewallRules.ContainsKey($Name)) { $global:firewallEvents += "remove $Name" }
     if ($Name) { $global:firewallRules.Remove($Name) }
     if ($Group) { foreach ($key in @($global:firewallRules.Keys)) { if ($global:firewallRules[$key].Group -eq $Group) { $global:firewallRules.Remove($key) } } }
 }
@@ -45,6 +55,7 @@ function Reset-Agent {
     $script:logFile = Join-Path $scratch "agent.log"
     $script:connectionsFile = Join-Path $scratch "host-agent\connections\connections.json"
     $global:firewallRules = @{}
+    $global:firewallEvents = @()
     $global:programRuleSweeps = @()
     $global:tailnetAddress = $null
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
@@ -444,12 +455,29 @@ Describe "the firewall per network profile" {
         Get-TestRule "d003" "tcp private" | Should Not BeNullOrEmpty
     }
 
-    It "a rule whose RemoteAddress changed is replaced" {
+    It "a rule whose RemoteAddress changed is changed in place, never removed first" {
         $node = New-TestNode "d004" "replaced"
         Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
-        (Get-TestRule "d004" "tcp public").RemoteAddress = "Any"
+        $rule = Get-TestRule "d004" "tcp public"
+        $rule.RemoteAddress = "Any"
+        $rule | Add-Member -NotePropertyName marker -NotePropertyValue "original"
+        $global:firewallEvents = @()
         Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
         (Get-TestRule "d004" "tcp public").RemoteAddress | Should Be "100.64.0.0/10"
+        (Get-TestRule "d004" "tcp public").marker | Should Be "original"
+        $global:firewallEvents | Should Be @("set storage-compose syncthing d004 tcp public")
+    }
+
+    It "switching between the tailnet-only and the profile set makes the new rules before it removes the old" {
+        $node = New-TestNode "d012" "switched"
+        Set-SyncthingFirewallRule $node $ports $null
+        foreach ($connections in @((New-ProfileEntry $true), $null)) {
+            $global:firewallEvents = @()
+            Set-SyncthingFirewallRule $node $ports $connections
+            $lastNew = [array]::LastIndexOf([string[]]$global:firewallEvents, @($global:firewallEvents | Where-Object { $_ -like "new *" })[-1])
+            $firstRemove = [array]::IndexOf([string[]]$global:firewallEvents, @($global:firewallEvents | Where-Object { $_ -like "remove *" })[0])
+            ($lastNew -lt $firstRemove) | Should Be $true
+        }
     }
 
     It "keeps a rule Windows reports with a subnet mask and its profiles in its own order" {
@@ -598,8 +626,10 @@ Describe "the Docker backend on untrusted networks" {
         foreach ($name in $blockNames) { $global:firewallRules[$name].marker | Should Be "original" }
         $global:firewallRules[$blockNames[0]].RemoteAddress = @("Any")
         $script:dockerBackendBlockShape = $null
+        $global:firewallEvents = @()
         Update-DockerBackendBlock $true
-        $global:firewallRules[$blockNames[0]].PSObject.Properties["marker"] | Should BeNullOrEmpty
+        @($global:firewallRules[$blockNames[0]].RemoteAddress) -join "," | Should Be ($outsideTailnet -join ",")
+        $global:firewallEvents | Should Be @("set $($blockNames[0])")
         $global:firewallRules[$blockNames[1]].marker | Should Be "original"
     }
 
