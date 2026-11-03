@@ -579,6 +579,20 @@ Describe "the firewall per network profile" {
         $global:firewallEvents.Count | Should Be 0
     }
 
+    It "a taken-over Syncthing whose config cannot be read counts as on the profile by its entry" {
+        $node = New-TestNode "d014" "unreadable-config"
+        Mock Find-SyncthingProcess { return [pscustomobject]@{ ProcessId = 4246 } }
+        Mock Get-NodePorts { return $ports }
+        Mock Get-SyncthingDeviceId { return "ORPHAN" }
+        New-Item -ItemType Directory -Force -Path (Get-SyncthingHome $node) | Out-Null
+        [System.IO.File]::WriteAllText((Get-SyncthingConfigPath $node), "<configuration")
+        Write-ConnectionsFile @{ d014 = (New-ProfileEntry $false) }
+        $instance = New-SyncthingInstance $node
+        Resume-OrphanedSyncthing $instance | Should Be $true
+        $instance.usesProfile | Should Be $true
+        Test-NeedsRestartForAddress $instance "100.100.1.3" | Should Be $false
+    }
+
     It "a start with an unreadable connections file keeps the profile settings and rules" {
         Mock Stop-NodeSyncthingProcesses { }
         Mock Start-SyncthingProcess { return 4242 }

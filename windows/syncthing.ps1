@@ -677,7 +677,9 @@ function Resume-OrphanedSyncthing($Instance) {
         $addresses = @($document.configuration.options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
         $Instance.listenAddress = $addresses | Select-Object -First 1
         $Instance.usesProfile = $addresses.Count -gt 0 -and -not (Test-IsTailnetOnlyListen $addresses)
-    } catch { }
+    } catch {
+        $Instance.usesProfile = Test-HasProfileListenAddresses (Get-NodeConnections $Instance.node)
+    }
     $Instance.deviceId = Get-SyncthingDeviceId $Instance.node
     Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): took over the running Syncthing, pid $($Instance.processId)"
     return $true
