@@ -347,16 +347,19 @@ async function subjectOf(repository: string, commit: string): Promise<string> {
   return (await gitIn(repository, "log", "-1", "--format=%s", commit)).output;
 }
 
-/** `feat(devices): admit <name> to the storage network`, as the dashboard committed an admission before it marked its commits. */
-const unmarkedAdmissionSubject = /^feat\(devices\): admit .+ to the storage network$/;
+/** `feat(devices): admit <name> to the storage network`, as the dashboard committed an admission before it marked its commits; the name as `isDeviceName` takes it. */
+const unmarkedAdmissionSubject = /^feat\(devices\): admit [a-z0-9][a-z0-9-]* to the storage network$/;
 
-/** Whether the dashboard made `commit`: it touches only the dashboard's files and carries its trailer, or an admission's subject. */
+/**
+ * Whether the dashboard made `commit`: one with its trailer touching only the dashboard's files, or an unmarked admission touching the layout alone.
+ * @implNote A merge lists no files here, so it never counts.
+ */
 async function isDashboardCommit(repository: string, commit: string): Promise<boolean> {
   const changed = await gitIn(repository, "diff-tree", "--no-commit-id", "--name-only", "-r", commit);
   const files = changed.ok ? changed.output.split("\n").filter(Boolean) : [];
-  const dashboardFiles = [setupLayoutPath, connectionsProfilePath];
-  if (!files.length || files.some((file) => !dashboardFiles.includes(file))) return false;
-  return (await hasDashboardTrailer(repository, commit)) || unmarkedAdmissionSubject.test(await subjectOf(repository, commit));
+  if (!files.length) return false;
+  if (await hasDashboardTrailer(repository, commit)) return files.every((file) => file === setupLayoutPath || file === connectionsProfilePath);
+  return files.length === 1 && files[0] === setupLayoutPath && unmarkedAdmissionSubject.test(await subjectOf(repository, commit));
 }
 
 function isRejectedPush(output: string): boolean {

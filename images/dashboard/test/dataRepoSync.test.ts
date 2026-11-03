@@ -167,6 +167,16 @@ describe("keeping the data repo in step with its remote", () => {
       await assertLeftAlone(commit, /not the dashboard's/);
     });
 
+    it("refuses an unmarked admission that touches the connection profile", async () => {
+      const commit = commitFiles({ "drive-sync.toml": admissionLayout, "connections.toml": formatProfile(limited(5)) }, "feat(devices): admit box to the storage network");
+      await assertLeftAlone(commit, /not the dashboard's/);
+    });
+
+    it("refuses an unmarked admission whose name no join would accept", async () => {
+      const commit = commitFiles({ "drive-sync.toml": admissionLayout }, "feat(devices): admit Box and more to the storage network");
+      await assertLeftAlone(commit, /not the dashboard's/);
+    });
+
     it("refuses a merge commit in the range", async () => {
       git(ours, "checkout", "-q", "-b", "side");
       commitFiles({ "drive-sync.toml": admissionLayout }, "feat(devices): admit box to the storage network");
