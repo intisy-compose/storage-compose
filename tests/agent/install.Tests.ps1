@@ -5,10 +5,13 @@
 $repository = Split-Path (Split-Path $PSScriptRoot)
 . (Join-Path $repository "windows\disks.ps1")
 . (Join-Path $repository "windows\agent-files.ps1")
+. (Join-Path $repository "windows\nodes.ps1")
 . (Join-Path $repository "windows\agent-install.ps1")
 
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "agent-install-$([guid]::NewGuid())"
 $agentInstallFolder = Join-Path $scratch "Program Files\storage-compose-agent"
+$agentServiceName = "storage-compose-agent-test-never-installed"
+$agentFirewallGroup = "storage-compose test group"
 $global:downloads = @()
 $global:fakeService = $null
 
@@ -150,6 +153,111 @@ Describe "install and removal without an admin shell" {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $agentInstallFolder
         Uninstall-HostAgent $stack | Should Be "absent"
     }
+}
+
+function New-JoinedRoot([string]$Name, [switch]$WithNodeFile) {
+    $root = Join-Path $scratch "joined\$Name"
+    New-Item -ItemType Directory -Force -Path (Join-Path $root ".storage") | Out-Null
+    if ($WithNodeFile) { Set-Content -Path (Join-Path $root ".storage\node.toml") -Value "[node]`nid = `"a001`"`nname = `"laptop`"`nkind = `"drive`"" }
+    return $root
+}
+
+function Write-InstalledConfig([string]$ProjectName, [object[]]$JoinedNodes) {
+    New-Item -ItemType Directory -Force -Path $agentInstallFolder | Out-Null
+    Write-JsonFile (Join-Path $agentInstallFolder $agentConfigName) ([pscustomobject]@{ stackFolder = "C:\elsewhere"; projectName = $ProjectName; joinedNodes = @($JoinedNodes) })
+}
+
+Describe "the joined nodes in the agent's config" {
+    $stack = New-StackCopy
+    $binary = Join-Path $scratch "syncthing-for-config.exe"
+    Set-Content -Path $binary -Value "binary"
+    function Get-SyncthingBinary([string]$StackFolder) { return $binary }
+    function Install-AgentService($Desired, [string]$ElevationHint) { $global:desired = $Desired; return "installed" }
+    $kept = New-JoinedRoot "kept" -WithNodeFile
+    $left = New-JoinedRoot "left"
+
+    It "up installs stack mode and carries the installed joined nodes as they are" {
+        Write-InstalledConfig "" @([pscustomobject]@{ root = $left; dashboard = "https://storage.tail-test.ts.net" })
+        Install-HostAgent $stack "storage-compose" "wsl" | Should Be "installed"
+        Get-AgentMode $global:desired | Should Be "stack"
+        @($global:desired.joinedNodes | ForEach-Object { $_.root }) | Should Be @($left)
+    }
+
+    It "a join installs joined mode and adds its node to the remaining ones, once per root" {
+        Write-InstalledConfig "" @(
+            [pscustomobject]@{ root = $kept; dashboard = "https://old.tail-test.ts.net" },
+            [pscustomobject]@{ root = $left; dashboard = "https://storage.tail-test.ts.net" }
+        )
+        Install-JoinedAgent $stack "$($kept.ToUpper())\" "https://storage.tail-test.ts.net" | Should Be "installed"
+        Get-AgentMode $global:desired | Should Be "joined"
+        $global:desired.passThrough | Should Be "none"
+        $global:desired.stackFolder | Should Be $stack
+        @($global:desired.joinedNodes).Count | Should Be 1
+        $global:desired.joinedNodes[0].dashboard | Should Be "https://storage.tail-test.ts.net"
+    }
+
+    It "the joined nodes survive a round trip through the installed config" {
+        $desired = Get-DesiredAgentConfig $stack "" "none" $binary 0 @([pscustomobject]@{ root = $kept; dashboard = "https://storage.tail-test.ts.net" })
+        Write-JsonFile (Join-Path $agentInstallFolder $agentConfigName) $desired
+        (ConvertTo-ComparableJson (Get-InstalledAgentConfig)) | Should Be (ConvertTo-ComparableJson $desired)
+    }
+}
+
+Describe "a join without an admin shell" {
+    $stack = New-StackCopy
+    $binary = Join-Path $scratch "syncthing-for-admin.exe"
+    Set-Content -Path $binary -Value "binary"
+    function Get-SyncthingBinary([string]$StackFolder) { return $binary }
+    function Test-IsElevated { return $false }
+
+    It "refuses to install the agent and says how" {
+        $global:fakeService = $null
+        { Install-JoinedAgent $stack (New-JoinedRoot "admin" -WithNodeFile) "https://storage.tail-test.ts.net" } | Should Throw "run the join once in an admin shell"
+    }
+}
+
+Describe "down" {
+    $stack = New-StackCopy
+    $global:downCalls = @()
+    function Test-IsElevated { return $true }
+    function Stop-AgentService { $global:downCalls += "stop service" }
+    function Invoke-ServiceControl([string[]]$Arguments) { $global:downCalls += "sc $($Arguments[0])" }
+    function Stop-StackSyncthings([string]$StackFolder) { $global:downCalls += "stop syncthings" }
+    function Remove-NetFirewallRule { [CmdletBinding()] param([string]$Group, [string]$Name) $global:downCalls += "remove rules" }
+    function Remove-ProgramFirewallRules([string]$Folder) { $global:downCalls += "remove program rules" }
+    function Install-JoinedAgentService([string]$Folder, [object[]]$JoinedNodes) { $global:downCalls += "install joined"; $global:joinedInstall = @($Folder, @($JoinedNodes)); return "installed" }
+    $kept = New-JoinedRoot "down-kept" -WithNodeFile
+    $left = New-JoinedRoot "down-left"
+    $global:fakeService = [pscustomobject]@{ State = "Running"; PathName = "agent"; ProcessId = 0 }
+
+    It "removes the agent when no joined node is left" {
+        $global:downCalls = @()
+        Write-InstalledConfig "storage-compose" @([pscustomobject]@{ root = $left; dashboard = "https://storage.tail-test.ts.net" })
+        Uninstall-HostAgent $stack | Should Be "removed"
+        $global:downCalls -contains "install joined" | Should Be $false
+        $global:downCalls -contains "remove rules" | Should Be $true
+        Test-Path $agentInstallFolder | Should Be $false
+    }
+
+    It "removes what the stack added and hands the agent back to the joined nodes that are left" {
+        $global:downCalls = @()
+        Write-InstalledConfig "storage-compose" @(
+            [pscustomobject]@{ root = $kept; dashboard = "https://storage.tail-test.ts.net" },
+            [pscustomobject]@{ root = $left; dashboard = "https://storage.tail-test.ts.net" }
+        )
+        Uninstall-HostAgent $stack | Should Be "joined"
+        $global:downCalls | Should Be @("stop service", "sc delete", "stop syncthings", "remove rules", "remove program rules", "install joined")
+        $global:joinedInstall[0] | Should Be $stack
+        @($global:joinedInstall[1] | ForEach-Object { $_.root }) | Should Be @($kept)
+    }
+
+    It "leaves a joined-mode agent alone" {
+        $global:downCalls = @()
+        Write-InstalledConfig "" @([pscustomobject]@{ root = $kept; dashboard = "https://storage.tail-test.ts.net" })
+        Uninstall-HostAgent $stack | Should Be "joined"
+        @($global:downCalls).Count | Should Be 0
+    }
+    $global:fakeService = $null
 }
 
 Describe "replacing the old logon task" {
