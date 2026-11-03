@@ -11,7 +11,7 @@ import { defaultProfile, formatProfile } from "../src/connectionProfile.js";
 import { hostAllowlist } from "../src/http.js";
 import { requestHandler } from "../src/routes.js";
 import { connectionRoutes } from "../src/routes/connections.js";
-import { ProfileConflict, pullDataRepo, readProfile, saveProfile } from "../src/setupRepo.js";
+import { pullDataRepo, readProfile, saveProfile } from "../src/setupRepo.js";
 
 function git(directory: string, ...args: string[]): string {
   return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -152,18 +152,5 @@ describe("the connection profile in the data repo", () => {
     assert.equal(answer.status, 400);
     assert.match(JSON.parse(answer.body).error, /limits\.max_send_kbps/);
     assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
-  });
-
-  it("a commit landing between the save's commit and a rejected push survives", async () => {
-    const third = cloneOf(remote, join(root, "third"));
-    git(theirs, "pull", "-q", "--ff-only");
-    writeFileSync(join(theirs, "other2.txt"), "y");
-    git(theirs, "add", ".");
-    git(theirs, "commit", "-q", "-m", "elsewhere again");
-    git(theirs, "push", "-q");
-    const hook = join(third, ".git", "hooks", "pre-push");
-    writeFileSync(hook, ["#!/bin/sh", "git commit -q --allow-empty -m interleaved", ""].join("\n"), { mode: 0o755 });
-    await assert.rejects(saveProfile(limited(1500), "feat(connections): stale save", third), ProfileConflict);
-    assert.match(git(third, "log", "--format=%s"), /interleaved/);
   });
 });

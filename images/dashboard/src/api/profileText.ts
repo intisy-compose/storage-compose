@@ -39,6 +39,11 @@ export const profileChangedText = "the profile changed since you read it; it has
 /** The 409 of a profile save whose push the remote refused because another host pushed first. */
 export const profileConflictText = "another host saved the connection profile first; reload it and save again";
 
+/** The 503 of a save whose push failed after another commit landed on top of its commit, so the commit could not be undone. */
+export function profileStuckText(commit: string): string {
+  return `this host committed the save as ${commit} but could not push it, and another commit landed on top of it in the data repo, so it was not undone; push or drop ${commit} there by hand`;
+}
+
 /** Whether a refused save was made from a profile that is no longer the one on disk, here or on another host. */
 export function isProfileChangedRefusal(message: string): boolean {
   return message === profileChangedText || message === profileConflictText;

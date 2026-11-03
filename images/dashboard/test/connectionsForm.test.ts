@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { isProfileChangedRefusal, isStrandedRefusal, strandedText } from "../src/api/profileText.js";
 import type { ConnectionProfile, ProfileRead } from "../src/api/types.js";
 import { defaultProfile } from "../src/connectionProfile.js";
-import { ProfileChanged, ProfileConflict, ProfileUnreachable } from "../src/setupRepo.js";
+import { ProfileChanged, ProfileConflict, ProfileStuck, ProfileUnreachable } from "../src/setupRepo.js";
 import { clusterFormFor, followChangedProfile } from "../ui/src/connectionsForm.js";
 import { followChangedLimits, limitsFormFor } from "../ui/src/optionsForm.js";
 
@@ -43,6 +43,11 @@ describe("the form recognises a refused save by the server's own texts", () => {
     assert.equal(isProfileChangedRefusal(new ProfileChanged().message), true);
     assert.equal(isProfileChangedRefusal(new ProfileConflict().message), true);
     assert.equal(isProfileChangedRefusal(new ProfileUnreachable("could not resolve host").message), false);
+  });
+
+  it("a save left unpushed beneath another commit is a failure to show, not a changed profile to reload", () => {
+    assert.equal(isProfileChangedRefusal(new ProfileStuck("abc1234").message), false);
+    assert.equal(isStrandedRefusal(new ProfileStuck("abc1234").message), false);
   });
 
   it("a save that would strand pairs is recognised whatever the pairs", () => {

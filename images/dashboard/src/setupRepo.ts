@@ -2,7 +2,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import type { ConnectionProfile, PriorityBand, ProfileRead } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
-import { profileChangedText, profileConflictText } from "./api/profileText.js";
+import { profileChangedText, profileConflictText, profileStuckText } from "./api/profileText.js";
 import { RequestError } from "./http.js";
 import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
 import { type TomlTable, parseToml } from "./toml.js";
@@ -203,6 +203,13 @@ export class ProfileUnreachable extends RequestError {
   }
 }
 
+/** A save whose push failed after HEAD moved past its commit outside this process, so the commit stays unpushed. */
+export class ProfileStuck extends RequestError {
+  constructor(commit: string) {
+    super(503, profileStuckText(commit));
+  }
+}
+
 interface PullState {
   pulledAt: string | null;
   pullProblem: string | null;
@@ -248,17 +255,31 @@ function isRejectedPush(output: string): boolean {
   return /non-fast-forward|fetch first|\[rejected\]/i.test(output);
 }
 
-/** @implNote Only this file is touched: the data repo may hold other uncommitted work, so a commit is undone with a soft reset and the file restored by hand. */
-async function undoSave(repository: string, before: string | null, savedCommit: string | null): Promise<void> {
-  if (savedCommit !== null && (await gitIn(repository, "rev-parse", "HEAD")).output === savedCommit) await gitIn(repository, "reset", "--soft", "HEAD~1");
+/**
+ * Undoes the save, false when `savedCommit` is no longer HEAD: then the commit and its file stay as committed.
+ * @implNote Only this file is touched: the data repo may hold other uncommitted work, so a commit is undone with a soft reset and the file restored by hand.
+ */
+async function undoSave(repository: string, before: string | null, savedCommit: string | null): Promise<boolean> {
+  if (savedCommit !== null) {
+    if ((await gitIn(repository, "rev-parse", "HEAD")).output !== savedCommit) return false;
+    await gitIn(repository, "reset", "--soft", "HEAD~1");
+  }
   await gitIn(repository, "reset", "-q", "--", connectionsProfilePath);
   const path = `${repository}/${connectionsProfilePath}`;
   if (before === null) await rm(path, { force: true });
   else await writeFile(path, before);
+  return true;
 }
 
-/** Writes the profile, commits and pushes it; a failed commit or push leaves the file and the repo as they were. */
-/** Commits and pushes `profile`; with `base`, only while the profile on disk is still `base`, checked under the repo's lock. */
+async function shortCommitOf(repository: string, commit: string): Promise<string> {
+  const short = await gitIn(repository, "rev-parse", "--short", commit);
+  return short.ok ? short.output : commit;
+}
+
+/**
+ * Commits and pushes `profile`; with `base`, only while the profile on disk is still `base`, checked under the repo's lock.
+ * A failed commit or push leaves the file and the repo as they were, except a commit another landed on top of: that one stays, answered with ProfileStuck.
+ */
 export async function saveProfile(profile: ConnectionProfile, message: string, repository = setupRepoDirectory, base?: ConnectionProfile): Promise<void> {
   if (!repository) throw new RequestError(503, "this host has no setup repo to keep the connection profile in");
   return serializeGit(repository, async () => {
@@ -297,6 +318,6 @@ async function saveNow(profile: ConnectionProfile, message: string, repository: 
   const savedCommit = (await gitIn(repository, "rev-parse", "HEAD")).output;
   const push = await gitIn(repository, "push");
   if (push.ok) return;
-  await undoSave(repository, before, savedCommit);
+  if (!(await undoSave(repository, before, savedCommit))) throw new ProfileStuck(await shortCommitOf(repository, savedCommit));
   throw isRejectedPush(push.output) ? new ProfileConflict() : new ProfileUnreachable(lastLine(push.output, "git push failed"));
 }
