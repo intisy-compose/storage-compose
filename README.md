@@ -181,6 +181,15 @@ so a fresh clone runs, holding an example `drive-sync.toml`. Swap in your own pr
 back to the template) and check which one is in place with `data status`. Commit and push inside
 `data/`; the submodule pointer in this repo stays on the template.
 
+The dashboard commits there too (a device it admits, the connection profile `connections.toml`),
+each commit with the trailer `Committed-by: storage dashboard`. It pulls with `--ff-only`; when the
+remote moved on it rebases only its own unpushed commits, and every push is HEAD to the branch's
+upstream. While a rebase is in progress neither a save nor an admission commits; while an unpushed
+commit that is not the dashboard's sits there, a profile save is refused and undone and an
+admission stays committed but unpushed, so the dashboard never pushes a hand commit. Settings shows a failed pull (`pullProblem`) under Last
+pull, and under Applied a `connections.toml` that does not parse, with the profile still applied in
+its place; saving the form writes a valid profile over it.
+
 ## drive-sync
 
 `tools/drive-sync` applies the device list in `data/drive-sync.toml` to a device's own Syncthing:
@@ -251,12 +260,30 @@ a deleted stack leaves nothing behind. It does three things:
   `.storage\node.toml` is a drive node, and the folders listed in a root's `.storage\nodes.toml`
   are folder nodes; nothing below a root is ever searched. It looks when a volume arrives and once a
   minute. Each Syncthing keeps its home in the node's `.storage\syncthing`, so the node keeps its
-  device ID on any host, listens on the tailnet only (ports 22001 and up) with its API on
-  `127.0.0.1` (8450 and up), and is the pinned release that `up` downloads once into
-  `host-agent\bin` and checks against its SHA-256;
+  device ID on any host, listens on its own port (22001 and up), on the tailnet address until the
+  connection profile reaches the node and then on the profile's addresses (`0.0.0.0`, with the
+  firewall rules below deciding who gets in), has its API on `127.0.0.1` (8450 and up), and is the
+  pinned release that `up` downloads once into `host-agent\bin` and checks against its SHA-256;
 - writes `host-agent\status\heartbeat.json` every 5 seconds for the dashboard, with each node's
   Syncthing, the drives passed through and when the agent would remove itself. Its log is
   `host-agent\agent.log`.
+
+**Firewall.** A node without a connections entry keeps TCP from the tailnet and a UDP block on its
+port. With one, Public networks admit the tailnet only (`100.64.0.0/10` and `fd7a:115c:a1e0::/48`),
+and Private and Domain networks admit any address, or the tailnet only when the entry turns local
+discovery and NAT traversal both off; UDP 21027 opens on Private and Domain while local discovery is
+on. The Docker backend gets a Public Block and a Private and Domain Allow on 22000, 22021-22099 and
+22100, by the same rule over every entry of the host: any address while one keeps local discovery or
+NAT on, else the tailnet. A rule that differs is changed in place, and a connections file that cannot
+be read keeps the rules as they are.
+
+**Keepers.** Every Syncthing that applies the profile (the agent's, the `syncthing` and `nodes`
+containers, a joined Linux device's start step) follows one rule: a listen list with any invalid
+address is ignored whole while the entry's valid options still apply, so the node keeps the profile
+addresses its config has, or the tailnet address when it has none. The Linux keepers share their
+checks in `images/nodes/connection-profile.jq` and restart Syncthing when it reports, after the
+change, that a restart is required. Without that file a container's step logs it and fails, and a
+joined device's step logs it and applies nothing.
 
 ## Windows: how the drives reach Docker Desktop
 
@@ -293,13 +320,16 @@ It installs Tailscale and Syncthing if they are missing (on Arch from the stick'
 first) and joins the tailnet with the auth key in `STORAGE_JOIN_KEY` or the stick's
 `personal/tailscale.key`; writes the node file for the device's data root (`/data`, or `F:\` on
 Windows; `STORAGE_JOIN_ROOT`) and starts Syncthing with its home on the node, listening on the
-tailnet only; registers with the storage dashboard (`STORAGE_DASHBOARD`, default
+tailnet only until the connection profile reaches it; registers with the storage dashboard (`STORAGE_DASHBOARD`, default
 `https://storage.<tailnet>`), adds the devices and folders it answers with, and on Linux links the
 home folders (`~/Documents`, `~/code`, ...) into the node, moving what they held. On Windows the
 node's Syncthing is the host agent's when this stack runs there, otherwise a logon task of the user
 runs it. A new device node keeps the working and essential bands (threshold 50,
 `STORAGE_JOIN_THRESHOLD`); 0, which keeps everything the network holds, is for the cluster, and the
-scripts refuse it unless `STORAGE_JOIN_ALLOW_KEEP_ALL=1`.
+scripts refuse it unless `STORAGE_JOIN_ALLOW_KEEP_ALL=1`. The Linux script runs from a checkout:
+it installs Syncthing's start step (`join/storage-connections.sh`) with
+`images/nodes/connection-profile.jq` beside it, and without that file it still joins, with a step
+that applies no profile.
 
 Run from a terminal with no parameters and no `STORAGE_JOIN_*` variable set, either script asks the
 three questions of imprint's review screen first: the node (a drive root, a folder, or none), the
