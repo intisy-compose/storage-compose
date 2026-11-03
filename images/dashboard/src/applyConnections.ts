@@ -5,6 +5,7 @@ import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstan
 import { localPeerTable, readRemoteTable } from "./peerSources.js";
 import { type NodeConnections, buildPeerTable, resolveNode, writeConnectionsFile } from "./peerTable.js";
 import { connectionsFile, hostAgentConnectionsFile, peerDashboards } from "./settings.js";
+import { requiresRestart } from "./routes/nodeRestart.js";
 import { pullDataRepo, readProfile } from "./setupRepo.js";
 import { isChangeInPlace } from "./syncthingConfig.js";
 
@@ -54,6 +55,9 @@ function pendingOptions(current: SyncthingObject, wanted: SyncthingObject): Sync
  */
 export class ConnectionsRound {
   private readonly remoteTables = new Map<string, PeerTable>();
+  /** Nodes a round wrote to whose restart need is not yet known to be cleared. */
+  private readonly awaitingRestart = new Set<string>();
+  private readonly restartLogged = new Set<string>();
   private last: LastRound | null = null;
   private profileProblem: string | null = null;
 
@@ -62,7 +66,7 @@ export class ConnectionsRound {
   async run(): Promise<ApplyReport> {
     await this.dependencies.pull().catch(() => undefined);
     const profile = await this.readProfile();
-    if (!profile) return { applied: [], notYet: [], failed: {} };
+    if (!profile) return { applied: [], restartNeeded: [], notYet: [], failed: {} };
     const local = await this.dependencies.localTable();
     const table = buildPeerTable(local.nodes, local.bridges, await this.readRemoteTables(), local.builtAt);
     const byNode = Object.fromEntries(local.nodes.map((node) => [node.nodeId, resolveNode(profile, table, node.nodeId)]));
@@ -126,7 +130,7 @@ export class ConnectionsRound {
   }
 
   private async applyAll(byNode: Record<string, NodeConnections>): Promise<ApplyReport> {
-    const report: ApplyReport = { applied: [], notYet: [], failed: {} };
+    const report: ApplyReport = { applied: [], restartNeeded: [], notYet: [], failed: {} };
     const instances = await this.dependencies.instances();
     for (const instance of instances) {
       const entry = byNode[instance.nodeId];
@@ -135,8 +139,9 @@ export class ConnectionsRound {
         continue;
       }
       try {
-        await this.applyOne(instance, entry);
-        report.applied.push(instance.nodeId);
+        const wrote = await this.applyOne(instance, entry);
+        const waits = await this.waitsForRestart(instance, wrote);
+        (waits ? report.restartNeeded : report.applied).push(instance.nodeId);
       } catch (error) {
         report.failed[instance.nodeId] = reasonOf(error);
       }
@@ -146,11 +151,43 @@ export class ConnectionsRound {
     return report;
   }
 
-  /** @implNote Only `addresses` of devices the node already has: never a device added, never introducer or auto-accept, never a folder, so an array's pending folders stay pending. */
-  private async applyOne(instance: LocalInstance, entry: NodeConnections): Promise<void> {
+  /**
+   * Whether the node holds the profile's values in its config but runs without them until its Syncthing restarts.
+   * @implNote A round never restarts a node: a restart stops every folder of the node until it is back, and an array or the PC asks for its
+   * name typed. The node's restart banner and Restart action, which read Syncthing's own flag, leave that to the person; the keepers also
+   * apply the profile at the node's next start. The flag is read only after this round wrote or while an earlier write still waits, so a
+   * restart left pending by some other change is never taken for the profile's.
+   */
+  private async waitsForRestart(instance: LocalInstance, wrote: boolean): Promise<boolean> {
+    if (!wrote && !this.awaitingRestart.has(instance.nodeId)) return false;
+    let required: boolean;
+    try {
+      required = await requiresRestart(instance);
+    } catch {
+      this.awaitingRestart.add(instance.nodeId);
+      return false;
+    }
+    if (!required) {
+      this.awaitingRestart.delete(instance.nodeId);
+      this.restartLogged.delete(instance.nodeId);
+      return false;
+    }
+    this.awaitingRestart.add(instance.nodeId);
+    if (!this.restartLogged.has(instance.nodeId)) console.error(`connections: ${instance.nodeId} has the profile's values saved; its Syncthing applies them after it restarts`);
+    this.restartLogged.add(instance.nodeId);
+    return true;
+  }
+
+  /**
+   * Answers whether anything was written.
+   * @implNote Only `addresses` of devices the node already has: never a device added, never introducer or auto-accept, never a folder, so an array's pending folders stay pending.
+   */
+  private async applyOne(instance: LocalInstance, entry: NodeConnections): Promise<boolean> {
     const delays = this.dependencies.readBackDelaysMs;
+    let wrote = false;
     const options = pendingOptions(await configuredOptions(instance), { ...entry.options, listenAddresses: entry.listenAddresses });
     if (Object.keys(options).length > 0) {
+      wrote = true;
       await writeConfirmed(
         instance,
         (client) => client.request("PATCH", "/config/options", options),
@@ -162,6 +199,7 @@ export class ConnectionsRound {
       const deviceId = String(device.deviceID);
       const addresses = entry.deviceAddresses[deviceId];
       if (!addresses || isChangeInPlace(device, { addresses })) continue;
+      wrote = true;
       await writeConfirmed(
         instance,
         (client) => client.request("PATCH", `/config/devices/${encodeURIComponent(deviceId)}`, { addresses }),
@@ -169,6 +207,7 @@ export class ConnectionsRound {
         delays,
       );
     }
+    return wrote;
   }
 }
 

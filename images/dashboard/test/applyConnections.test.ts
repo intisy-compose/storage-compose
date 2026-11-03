@@ -39,10 +39,13 @@ interface Sent {
 
 type SyncthingObject = Record<string, unknown>;
 
-/** A node's Syncthing in memory: GET and PATCH of `/config/options` and `/config/devices`, every write kept. */
+/** A node's Syncthing in memory: GET and PATCH of `/config/options` and `/config/devices`, every write kept, and its restart need. */
 class FakeSyncthing {
   sent: Sent[] = [];
   answers = true;
+  /** What `/config/restart-required` answers; an Error makes the read fail. */
+  requiresRestart: boolean | Error = false;
+  restartReads = 0;
 
   constructor(
     public options: SyncthingObject,
@@ -52,6 +55,11 @@ class FakeSyncthing {
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (!this.answers) throw new SyncthingUnavailable(`${method} ${path}: connection refused`);
     if (method !== "GET") this.sent.push({ method, path, body });
+    if (method === "GET" && path === "/config/restart-required") {
+      this.restartReads++;
+      if (this.requiresRestart instanceof Error) throw this.requiresRestart;
+      return { requiresRestart: this.requiresRestart } as T;
+    }
     if (method === "GET" && path === "/config/options") return structuredClone(this.options) as T;
     if (method === "GET" && path === "/config/devices") return structuredClone(this.devices) as T;
     if (method === "PATCH" && path === "/config/options") {
@@ -171,7 +179,7 @@ describe("applying the connection profile to this host's nodes", () => {
 
     const report = await connections.run();
 
-    assert.deepEqual(report, { applied: [], notYet: [], failed: {} });
+    assert.deepEqual(report, { applied: [], restartNeeded: [], notYet: [], failed: {} });
     assert.deepEqual(cluster.sent, []);
     assert.equal(existsSync(files[0]), false);
     assert.equal(connections.appliedProfile(), null);
@@ -242,6 +250,58 @@ describe("applying the connection profile to this host's nodes", () => {
     assert.deepEqual(written.storage.deviceAddresses[remoteDevice], resolveNode(defaultProfile(), wholeTable, "storage").deviceAddresses[remoteDevice]);
   });
 
+  it("a write that needs a restart leaves the node restart-needed, logged once, and never restarts it", async (context) => {
+    const errors = context.mock.method(console, "error", () => undefined);
+    const array = onProfile(defaultProfile(), wholeTable, "a1b2");
+    array.requiresRestart = true;
+    const { round: connections } = round([instanceOf("a1b2", array, "array")], { profile: async () => limitedProfile(750) });
+
+    const first = await connections.run();
+    const second = await connections.run();
+
+    assert.deepEqual(array.sent, [{ method: "PATCH", path: "/config/options", body: { maxSendKbps: 750 } }], "no POST /system/restart");
+    for (const report of [first, second]) {
+      assert.deepEqual(report.restartNeeded, ["a1b2"]);
+      assert.deepEqual(report.applied, []);
+    }
+    assert.equal(connectionsStateOf("a1b2"), "restart-needed");
+    assert.deepEqual(errors.mock.calls.map((call) => call.arguments[0]), ["connections: a1b2 has the profile's values saved; its Syncthing applies them after it restarts"]);
+
+    array.requiresRestart = false;
+    const afterRestart = await connections.run();
+
+    assert.deepEqual(afterRestart.applied, ["a1b2"]);
+    assert.deepEqual(afterRestart.restartNeeded, []);
+    assert.equal(connectionsStateOf("a1b2"), "on-profile");
+  });
+
+  it("the restart need is read only after a write or while one is outstanding", async () => {
+    const cluster = onProfile(defaultProfile(), wholeTable, "storage");
+    cluster.requiresRestart = true;
+    const { round: connections } = round([instanceOf("storage", cluster, "array")]);
+
+    const report = await connections.run();
+
+    assert.deepEqual(cluster.sent, []);
+    assert.equal(cluster.restartReads, 0, "a restart another change left pending is not the profile's");
+    assert.deepEqual(report.applied, ["storage"]);
+  });
+
+  it("a restart need that cannot be read after a write leaves the node on the profile and is read again next round", async () => {
+    const cluster = onProfile(defaultProfile(), wholeTable, "storage");
+    cluster.requiresRestart = new SyncthingUnavailable("GET /config/restart-required: connection refused");
+    const { round: connections } = round([instanceOf("storage", cluster, "array")], { profile: async () => limitedProfile(300) });
+
+    const first = await connections.run();
+    cluster.requiresRestart = true;
+    const second = await connections.run();
+
+    assert.deepEqual(first.applied, ["storage"]);
+    assert.deepEqual(first.failed, {});
+    assert.deepEqual(second.restartNeeded, ["storage"], "the next round asks again although it writes nothing");
+    assert.equal(cluster.sent.length, 1);
+  });
+
   it("a peer missing from the table keeps the addresses it has", async () => {
     const cluster = onProfile(defaultProfile(), wholeTable, "storage");
     const { round: connections } = round([instanceOf("storage", cluster)], { remoteTable: async () => null });
@@ -289,7 +349,7 @@ describe("the connection rounds", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(started, 1, "a round still running is not started again");
-    finish({ applied: [], notYet: [], failed: {} });
+    finish({ applied: [], restartNeeded: [], notYet: [], failed: {} });
     stop();
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(started, 1, "no round after stop");

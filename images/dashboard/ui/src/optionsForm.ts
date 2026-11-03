@@ -73,6 +73,7 @@ function listText(values: string[]): string {
 
 const stateWords: Record<ConnectionsState, string> = {
   "on-profile": "on the profile",
+  "restart-needed": "on the profile once its Syncthing restarts",
   "not-yet": "not yet on the profile",
   unknown: "not known yet",
 };
@@ -85,7 +86,7 @@ function profileOwnedList(node: StorageNode, options: InstanceOptions): HTMLElem
   ];
   const untrustedWhy = node.untrustedNetworks ? untrustedNetworksText : undefined;
   return keyValueList([
-    ["This node", element("span", { className: node.connections === "not-yet" ? "tone-text-warn" : "" }, stateWords[node.connections])],
+    ["This node", element("span", { className: node.connections === "not-yet" || node.connections === "restart-needed" ? "tone-text-warn" : "" }, stateWords[node.connections])],
     row("listenAddresses", listText(options.listenAddresses)),
     row("localAnnounceEnabled", onOff(options.localAnnounceEnabled), untrustedWhy),
     row("globalAnnounceEnabled", onOff(options.globalAnnounceEnabled)),
