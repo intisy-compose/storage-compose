@@ -350,7 +350,9 @@ function Test-FirewallRuleMatches($Existing, $Rule) {
 <#
 .NOTES
 A rule that differs is changed in place rather than removed and made again, so its port is never
-left without a rule in between.
+left without a rule in between. A rule's name is bound to its role (protocol, network profile,
+Allow or Block), so an in-place change only moves a role's ports or addresses, never widens it
+into another role.
 #>
 function Set-AgentFirewallRule($Rule, [string]$DisplayName) {
     $existing = Get-NetFirewallRule -Name $Rule.Name -ErrorAction SilentlyContinue
