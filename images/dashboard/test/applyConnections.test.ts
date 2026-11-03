@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { ConnectionProfile, NodeAddresses, PeerTable } from "../src/api/types.js";
 import { type ApplyDependencies, type ApplyReport, ConnectionsRound, startConnectionRounds } from "../src/applyConnections.js";
-import { defaultProfile } from "../src/connectionProfile.js";
+import { ProfileError, defaultProfile } from "../src/connectionProfile.js";
 import { connectionsStateOf } from "../src/connectionsDrift.js";
 import type { LocalInstance } from "../src/instanceResolver.js";
 import { type JoinedDevice, type JoinRecords, joinedNodeId } from "../src/join.js";
@@ -128,6 +128,48 @@ describe("applying the connection profile to this host's nodes", () => {
     assert.deepEqual(Object.keys(written).sort(), ["a1b2", "storage"], "only this host's nodes");
     assert.deepEqual(written.storage, expected);
     assert.equal(readFileSync(files[1], "utf8"), readFileSync(files[0], "utf8"), "the host agent's copy is the same file");
+  });
+
+  it("a profile that cannot be read keeps the last one applied and is logged once", async (context) => {
+    const errors = context.mock.method(console, "error", () => undefined);
+    let currentProfile: ConnectionProfile | Error = limitedProfile(1000);
+    const cluster = onProfile(limitedProfile(1000), wholeTable, "storage");
+    const { round: connections, files } = round([instanceOf("storage", cluster)], {
+      profile: async () => {
+        if (currentProfile instanceof Error) throw currentProfile;
+        return currentProfile;
+      },
+    });
+    await connections.run();
+    currentProfile = new ProfileError("limits.max_send_kbps must be a whole number from 0");
+
+    const reports = [await connections.run(), await connections.run()];
+
+    assert.deepEqual(cluster.sent, []);
+    for (const report of reports) assert.deepEqual(report.applied, ["storage"]);
+    assert.deepEqual(JSON.parse(readFileSync(files[0], "utf8")).storage, resolveNode(limitedProfile(1000), wholeTable, "storage"));
+    assert.deepEqual(errors.mock.calls.map((call) => call.arguments[0]), [
+      "connections: the profile cannot be read, the last one read stays applied until it is fixed: limits.max_send_kbps must be a whole number from 0",
+    ]);
+    currentProfile = limitedProfile(1000);
+    await connections.run();
+    assert.equal(errors.mock.calls.at(-1)?.arguments[0], "connections: the profile can be read again");
+  });
+
+  it("a profile never read writes and sends nothing", async (context) => {
+    context.mock.method(console, "error", () => undefined);
+    const cluster = new FakeSyncthing({ listenAddresses: ["default"], urAccepted: -1 }, []);
+    const { round: connections, files } = round([instanceOf("storage", cluster)], {
+      profile: async () => {
+        throw new ProfileError("relays.bridge_port must be a whole number from 1 to 65535");
+      },
+    });
+
+    const report = await connections.run();
+
+    assert.deepEqual(report, { applied: [], notYet: [], failed: {} });
+    assert.deepEqual(cluster.sent, []);
+    assert.equal(existsSync(files[0]), false);
   });
 
   it("a second round with nothing changed sends nothing", async () => {
