@@ -1,6 +1,6 @@
 # Pester 3.4: the agent's rounds and lifetime against fakes for Docker, the clock, the volumes, the
-# pass-through and the native Syncthings. Nothing here reaches Docker, WSL, a disk or the service
-# manager; the first test proves the shadowing holds.
+# pass-through and the native Syncthings. Nothing here reaches Docker, WSL, a disk, the service
+# manager or the live agent's mutex; the first test proves the shadowing holds.
 
 $repository = Split-Path (Split-Path $PSScriptRoot)
 . (Join-Path $repository "windows\agent.ps1")
@@ -21,6 +21,12 @@ function Remove-AllDisks($State) { $global:actions += "release disks" }
 function Remove-AgentService { $global:actions += "remove service" }
 function Register-VolumeEvents { return $false }
 function Open-StopSignal([string]$Name) { return $null }
+<#
+.NOTES
+The installed agent holds Global\storage-compose-agent while it runs on this host, so the real check
+would end every Start-Agent here at once.
+#>
+function Enter-AgentInstance { return $true }
 function Wait-ForNextRound($StopHandle, [bool]$HasVolumeEvents) {
     $global:now = $global:now.AddSeconds(5)
     $global:waits++
