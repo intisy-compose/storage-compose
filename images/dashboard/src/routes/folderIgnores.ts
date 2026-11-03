@@ -2,7 +2,7 @@ import { ignoreLinesProblem, ignoresChangeWords } from "../api/ignorePatterns.js
 import type { FolderIgnores, IgnoresChange } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
-import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
+import type { AnyRoute, NothingWritten, WriteNote } from "../routeTypes.js";
 import { ownPatternCores, patternCore, shownSyncthingError } from "../shownSyncthingError.js";
 import type { SyncthingFolderConfig } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";

@@ -4,7 +4,8 @@ import { type AddressInfo, connect } from "node:net";
 import { after, before, describe, it } from "node:test";
 import { hostAllowlist } from "../src/http.js";
 import { createJoinListener } from "../src/joinListener.js";
-import { type AnyRoute, type WriteNote, requestHandler } from "../src/routes.js";
+import { type AnyRoute, type WriteNote } from "../src/routeTypes.js";
+import { requestHandler } from "../src/routes.js";
 import { dashboardHostsOf } from "../src/settings.js";
 
 const pauseNote: WriteNote = { nodeId: "d7e5", nodeName: "peer", folderId: null, text: "peer: paused every device" };

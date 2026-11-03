@@ -11,7 +11,7 @@ import { defaultProfile, formatProfile } from "../src/connectionProfile.js";
 import { hostAllowlist } from "../src/http.js";
 import { requestHandler } from "../src/routes.js";
 import { connectionRoutes } from "../src/routes/connections.js";
-import { ProfileConflict, pullDataRepo, readProfile, saveProfile } from "../src/setupRepo.js";
+import { pullDataRepo, readProfile, saveProfile } from "../src/setupRepo.js";
 
 function git(directory: string, ...args: string[]): string {
   return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -51,9 +51,9 @@ describe("the connection profile in the data repo", () => {
 
   after(() => rmSync(root, { recursive: true, force: true }));
 
-  async function ask(method: string, body: string): Promise<{ status: number; body: string }> {
+  async function ask(method: string, body: string, appliedProfile: () => ConnectionProfile | null = () => null): Promise<{ status: number; body: string }> {
     const noPeers = { nodes: [], bridges: [], builtAt: "2026-11-02T10:00:00.000Z" };
-    const handler = requestHandler(connectionRoutes(ours, { local: async () => noPeers, all: async () => noPeers }), { invalidate: () => {}, record: () => {} }, hostAllowlist(["localhost"]));
+    const handler = requestHandler(connectionRoutes(ours, { local: async () => noPeers, all: async () => noPeers }, appliedProfile),{ invalidate: () => {}, record: () => {} }, hostAllowlist(["localhost"]));
     const server: Server = createServer((request, response) => void handler(request, response));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     const port = (server.address() as AddressInfo).port;
@@ -154,16 +154,58 @@ describe("the connection profile in the data repo", () => {
     assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
   });
 
-  it("a commit landing between the save's commit and a rejected push survives", async () => {
-    const third = cloneOf(remote, join(root, "third"));
-    git(theirs, "pull", "-q", "--ff-only");
-    writeFileSync(join(theirs, "other2.txt"), "y");
-    git(theirs, "add", ".");
-    git(theirs, "commit", "-q", "-m", "elsewhere again");
-    git(theirs, "push", "-q");
-    const hook = join(third, ".git", "hooks", "pre-push");
-    writeFileSync(hook, ["#!/bin/sh", "git commit -q --allow-empty -m interleaved", ""].join("\n"), { mode: 0o755 });
-    await assert.rejects(saveProfile(limited(1500), "feat(connections): stale save", third), ProfileConflict);
-    assert.match(git(third, "log", "--format=%s"), /interleaved/);
+  it("a connections.toml that does not parse is shown with the profile still applied, or with nothing applied", async () => {
+    const path = join(ours, "connections.toml");
+    const saved = readFileSync(path, "utf8");
+    writeFileSync(path, "[limits]\nmax_send_kbps = -5\n");
+    try {
+      const previous = JSON.parse((await ask("GET", "", () => limited(700))).body);
+      assert.equal(previous.profile.limits.maxSendKbps, 700);
+      assert.match(previous.profileProblem, /^connections\.toml rejected: limits\.max_send_kbps must be a whole number from 0.*; the previous profile is still applied$/);
+      const none = JSON.parse((await ask("GET", "", () => null)).body);
+      assert.deepEqual(none.profile, defaultProfile());
+      assert.match(none.profileProblem, /^connections\.toml cannot be read: limits\.max_send_kbps .*; nothing applied$/);
+    } finally {
+      writeFileSync(path, saved);
+    }
+    assert.equal(JSON.parse((await ask("GET", "")).body).profileProblem, null);
+  });
+
+  function pushHandEdit(text: string): void {
+    writeFileSync(join(ours, "connections.toml"), text);
+    git(ours, "add", "connections.toml");
+    git(ours, "commit", "-q", "-m", "hand edit");
+    git(ours, "push", "-q", "origin", "HEAD:main");
+  }
+
+  it("a save made from the view of a connections.toml that does not parse repairs the file", async () => {
+    await pullDataRepo(ours);
+    pushHandEdit("[limits]\nmax_send_kbps = -5\n");
+    const applied = () => limited(700);
+    const view = JSON.parse((await ask("GET", "", applied)).body);
+    assert.notEqual(view.profileProblem, null);
+    const answer = await ask("PUT", JSON.stringify({ ...limited(900), base: view.profile }), applied);
+    assert.equal(answer.status, 200, answer.body);
+    assert.equal(JSON.parse(answer.body).profileProblem, null);
+    assert.equal((await readProfile(ours)).profile.limits.maxSendKbps, 900);
+    assert.equal(git(remote, "show", "main:connections.toml"), formatProfile(limited(900)).trim());
+    assert.equal(JSON.parse((await ask("GET", "", applied)).body).profileProblem, null);
+  });
+
+  it("a save over a connections.toml that does not parse is still 409 when its base is not the profile shown", async () => {
+    await pullDataRepo(ours);
+    const broken = "[limits\nmax_send_kbps = 1\n";
+    pushHandEdit(broken);
+    const applied = () => limited(700);
+    const view = JSON.parse((await ask("GET", "", applied)).body);
+    assert.match(view.profileProblem, /^connections\.toml rejected: line 2: unclosed table header;/);
+    const headBefore = git(ours, "rev-parse", "HEAD");
+    const answer = await ask("PUT", JSON.stringify({ ...limited(900), base: limited(701) }), applied);
+    assert.equal(answer.status, 409);
+    assert.equal(JSON.parse(answer.body).error, "the profile changed since you read it; it has been reloaded");
+    assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
+    assert.equal(readFileSync(join(ours, "connections.toml"), "utf8"), broken);
+    const repaired = await ask("PUT", JSON.stringify({ ...limited(900), base: defaultProfile() }), () => null);
+    assert.equal(repaired.status, 200, "with nothing ever applied the defaults stand in");
   });
 });

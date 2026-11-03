@@ -35,6 +35,30 @@ function Invoke-NativeCommand([string]$FilePath, [string[]]$Arguments, [string]$
     }
 }
 function Get-TailnetAddress { return "127.0.0.1" }
+
+<#
+.NOTES
+The join's rules are real ones in an admin shell, named after the node id, and a tailnet-only set
+removes the profile names of the same id; a random id could draw a live node's and take its rules.
+Node ids are 4 hex digits with no reserved range, so the tests count up from 0000 and skip every id
+a storage-compose rule on this host already names.
+#>
+function Get-LiveRuleNodeIds {
+    $ids = @()
+    foreach ($rule in @(Get-NetFirewallRule -ErrorAction SilentlyContinue)) {
+        if ("$($rule.Name)" -match '^storage-compose syncthing ([0-9a-f]{4})( |$)') { $ids += $Matches[1] }
+    }
+    return $ids
+}
+$global:liveRuleNodeIds = Get-LiveRuleNodeIds
+$global:nextTestNodeId = 0
+function New-NodeId {
+    while ($true) {
+        $id = $global:nextTestNodeId.ToString("x4")
+        $global:nextTestNodeId++
+        if ($global:liveRuleNodeIds -notcontains $id) { return $id }
+    }
+}
 $global:layoutPath = Join-Path $scratch "drive-sync.toml"
 function Get-LayoutPath { return $global:layoutPath }
 $global:agentPresent = $false
@@ -163,6 +187,7 @@ try {
             $node.name | Should Be "pc-test"
             $node.threshold | Should Be 50
             $node.id | Should Match '^[0-9a-f]{4}$'
+            $global:liveRuleNodeIds -contains $node.id | Should Be $false
         }
         It "runs Syncthing at logon from a task, with its home on the node" {
             $task = $global:tasks["storage-compose syncthing pc-test"]
@@ -180,7 +205,7 @@ try {
             $node = Read-NodeFile $script:nodeRoot
             $rule = Get-NetFirewallRule -Name "storage-compose syncthing $($node.id)" -ErrorAction SilentlyContinue
             ($rule | Get-NetFirewallPortFilter).LocalPort | Should Be "$userSyncthingListenPort"
-            ($rule | Get-NetFirewallAddressFilter).RemoteAddress | Should Be "100.64.0.0/255.192.0.0"
+            @(($rule | Get-NetFirewallAddressFilter).RemoteAddress | Sort-Object) -join "," | Should Be "100.64.0.0/255.192.0.0,fd7a:115c:a1e0::/48"
             [bool](Get-NetFirewallRule -Name "storage-compose syncthing $($node.id) udp" -ErrorAction SilentlyContinue) | Should Be $true
         }
         It "listens on the tailnet only" {
@@ -259,6 +284,17 @@ try {
             (Get-FileHash $stepConfig).Hash | Should Be $before
             Test-Path $kept | Should Be $false
         }
+        It "gives up on a dashboard that takes the connection and never answers, within the step's bound" {
+            $silent = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Loopback), 0
+            $silent.Start()
+            try {
+                $before = (Get-FileHash $stepConfig).Hash
+                $started = Get-Date
+                Invoke-Step "http://127.0.0.1:$($silent.LocalEndpoint.Port)" | Should Be 0
+                ((Get-Date) - $started).TotalSeconds | Should BeLessThan 25
+                (Get-FileHash $stepConfig).Hash | Should Be $before
+            } finally { $silent.Stop() }
+        }
         It "a listen list with one invalid address keeps the current addresses" {
             [System.IO.File]::WriteAllText($entry, '{"options": {"natEnabled": true}, "listenAddresses": ["tcp://0.0.0.0:22000", "udp://0.0.0.0:22000"], "deviceAddresses": {}}')
             Invoke-Step $Dashboard | Should Be 0
@@ -287,10 +323,10 @@ try {
             [System.IO.File]::ReadAllText($kept) | Should Match "quic://"
         }
         It "a device joined on 22001 keeps 22001 after the step, relay and pool addresses untouched" {
-            [System.IO.File]::WriteAllText($entry, '{"options": {}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://[::]:22000", "relay://10.0.0.1:22100/?id=RELAY", "dynamic+https://relays.syncthing.net/endpoint"], "deviceAddresses": {}}')
+            [System.IO.File]::WriteAllText($entry, '{"options": {}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://[::]:22000", "tcp4://0.0.0.0:22000", "tcp6://[::]:22000", "quic4://0.0.0.0:22000", "quic6://[::]:22000", "relay://10.0.0.1:22100/?id=RELAY", "dynamic+https://relays.syncthing.net/endpoint"], "deviceAddresses": {}}')
             Invoke-Step $Dashboard "22001" | Should Be 0
             $options = ([xml][System.IO.File]::ReadAllText($stepConfig)).configuration.options
-            (@($options.SelectNodes('listenAddress') | ForEach-Object { $_.InnerText }) -join ',') | Should Be "tcp://0.0.0.0:22001,quic://[::]:22001,relay://10.0.0.1:22100/?id=RELAY,dynamic+https://relays.syncthing.net/endpoint"
+            (@($options.SelectNodes('listenAddress') | ForEach-Object { $_.InnerText }) -join ',') | Should Be "tcp://0.0.0.0:22001,quic://[::]:22001,tcp4://0.0.0.0:22001,tcp6://[::]:22001,quic4://0.0.0.0:22001,quic6://[::]:22001,relay://10.0.0.1:22100/?id=RELAY,dynamic+https://relays.syncthing.net/endpoint"
         }
         It "new keys drop the copy kept for the old device ID" {
             $freshRoot = Join-Path $scratch "keys-root"
@@ -711,6 +747,17 @@ try {
             Invoke-JoinCapturingFailure | Should Be "ok"
             $script:joinChanges | Should Be 0
             @(Get-IndexPaths $volume).Count | Should Be 4
+        }
+    }
+
+    Describe "the test node ids" {
+        It "skip every id a live rule names" {
+            $live = $global:liveRuleNodeIds
+            $next = $global:nextTestNodeId
+            try {
+                $global:liveRuleNodeIds = @($next.ToString("x4"), ($next + 1).ToString("x4"))
+                New-NodeId | Should Be ($next + 2).ToString("x4")
+            } finally { $global:liveRuleNodeIds = $live }
         }
     }
 } finally {

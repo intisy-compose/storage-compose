@@ -12,7 +12,8 @@ import { type DebugFacilities, type NodeErrors, type NodeLog, type ParityJob, ch
 import { versionsReadLongestSeconds, versionsSlotWaitMs } from "../src/api/versioningText.js";
 import { RequestError } from "../src/http.js";
 import { type LocalInstance, type RemoteInstance, type ResolvedInstance, forwardedListTimeoutMs } from "../src/instanceResolver.js";
-import { type WriteEffects, type WriteNote, errorAnswer, requestHandler } from "../src/routes.js";
+import { type WriteNote } from "../src/routeTypes.js";
+import { type WriteEffects, errorAnswer, requestHandler } from "../src/routes.js";
 import { shownUnscopedText } from "../src/shownSyncthingError.js";
 import { logLevelOf, nodeLogRoutes } from "../src/routes/activity.js";
 import { zipEntries } from "../src/supportBundle.js";

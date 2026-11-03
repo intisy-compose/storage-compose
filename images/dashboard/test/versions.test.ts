@@ -6,7 +6,8 @@ import { restoreConsequences } from "../src/api/versioningText.js";
 import type { FileVersion, RestoredVersions, Versioning, VersionsPage } from "../src/api/types.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, ResolvedInstance } from "../src/instanceResolver.js";
-import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
+import { type WriteNote } from "../src/routeTypes.js";
+import { type WriteEffects, requestHandler } from "../src/routes.js";
 import { versionRoutes } from "../src/routes/versions.js";
 import { SyncthingClient } from "../src/syncthing.js";
 

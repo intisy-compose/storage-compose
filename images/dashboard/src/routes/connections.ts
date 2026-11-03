@@ -1,15 +1,15 @@
-import { strandedText } from "../api/profileText.js";
-import type { ConnectionProfile, HostNetwork, NodeAddresses, PeerTable, ProfileSaveBody } from "../api/types.js";
+import { profileFileProblemText, strandedText } from "../api/profileText.js";
+import type { ConnectionProfile, HostNetwork, NodeAddresses, PeerTable, ProfileRead, ProfileSaveBody } from "../api/types.js";
 import { connectionsRound } from "../applyConnections.js";
-import { ProfileError, formatProfile, parseProfile } from "../connectionProfile.js";
+import { ProfileError, defaultProfile, formatProfile, parseProfile } from "../connectionProfile.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type JoinRecords, joinedNodeId } from "../join.js";
 import { collectPeerTable, localPeerTable } from "../peerSources.js";
 import type { NodeConnections } from "../peerTable.js";
 import { newlyStrandedPairs } from "../reachability.js";
-import { type AnyRoute, hostWritePattern } from "../routes.js";
+import { type AnyRoute, hostWritePattern } from "../routeTypes.js";
 import { setupRepoDirectory } from "../settings.js";
-import { ProfileChanged, ProfileConflict, pullDataRepo, readProfile, saveProfile } from "../setupRepo.js";
+import { ProfileChanged, ProfileConflict, profileToSaveOver, pullDataRepo, pullStateOf, readProfile, saveProfile } from "../setupRepo.js";
 import type { WhoIs } from "../tailnet.js";
 
 /** @implNote A body that does not survive being written and read back is refused, so only a profile `parseProfile` accepts is ever committed. */
@@ -31,10 +31,10 @@ function validBase(body: Partial<ProfileSaveBody> | null): ConnectionProfile {
  * @implNote Only newly stranded pairs count: a pair no profile connects would otherwise make every later save, a node's limit
  * included, ask again. A table that cannot be read strands nothing, as the save must not wait on every dashboard answering.
  */
-async function refuseStranding(profile: ConnectionProfile, repository: string, peerTables: PeerTableReads): Promise<void> {
+async function refuseStranding(profile: ConnectionProfile, saved: ConnectionProfile, peerTables: PeerTableReads): Promise<void> {
   const table = await peerTables.all().catch(() => null);
   if (!table) return;
-  const pairs = newlyStrandedPairs((await readProfile(repository)).profile, profile, table);
+  const pairs = newlyStrandedPairs(saved, profile, table);
   const names = new Map(table.nodes.flatMap((node) => (node.name ? [[node.nodeId, node.name] as const] : [])));
   if (pairs.length) throw new RequestError(409, strandedText(pairs, (nodeId) => names.get(nodeId) ?? nodeId));
 }
@@ -44,12 +44,27 @@ export interface PeerTableReads {
   all: () => Promise<PeerTable>;
 }
 
-/** @implNote A function, not a constant: `routes.ts` and this module import each other, and a default built at load time is not there yet when `routes.ts` calls `connectionRoutes`. */
 function defaultPeerTableReads(): PeerTableReads {
   return { local: () => localPeerTable(), all: async () => connectionsRound.lastTable() ?? collectPeerTable() };
 }
 
-export function connectionRoutes(repository = setupRepoDirectory, peerTables = defaultPeerTableReads()): AnyRoute[] {
+/** What stands in for a `connections.toml` that does not parse: the profile the rounds still apply, the defaults when none ever was. */
+function standInFor(appliedProfile: () => ConnectionProfile | null): () => ConnectionProfile {
+  return () => appliedProfile() ?? defaultProfile();
+}
+
+/** The profile on disk, or while it does not parse its stand-in, with the reason. */
+async function profileForView(repository: string, appliedProfile: () => ConnectionProfile | null): Promise<ProfileRead> {
+  try {
+    return await readProfile(repository);
+  } catch (error) {
+    if (!(error instanceof ProfileError)) throw error;
+    const isPreviousApplied = appliedProfile() !== null;
+    return { profile: standInFor(appliedProfile)(), ...pullStateOf(repository), profileProblem: profileFileProblemText(error.message, isPreviousApplied) };
+  }
+}
+
+export function connectionRoutes(repository = setupRepoDirectory, peerTables = defaultPeerTableReads(), appliedProfile = () => connectionsRound.appliedProfile()): AnyRoute[] {
   return [
     {
       method: "GET",
@@ -66,7 +81,7 @@ export function connectionRoutes(repository = setupRepoDirectory, peerTables = d
     {
       method: "GET",
       pattern: /^\/api\/connections\/profile$/,
-      handle: async ({ response }) => sendJson(response, 200, await readProfile(repository)),
+      handle: async ({ response }) => sendJson(response, 200, await profileForView(repository, appliedProfile)),
     },
     {
       method: "PUT",
@@ -75,13 +90,15 @@ export function connectionRoutes(repository = setupRepoDirectory, peerTables = d
         const body = (await readBody(request)) as ProfileSaveBody | null;
         const profile = validProfile(body);
         const base = validBase(body);
-        if (formatProfile((await readProfile(repository)).profile) !== formatProfile(base)) throw new ProfileChanged();
-        if (body?.confirmUnreachable !== true) await refuseStranding(profile, repository, peerTables);
-        await saveProfile(profile, "feat(connections): change the connection profile", repository, base).catch(async (error) => {
+        const standIn = standInFor(appliedProfile);
+        const saved = await profileToSaveOver(repository, standIn);
+        if (formatProfile(saved) !== formatProfile(base)) throw new ProfileChanged();
+        if (body?.confirmUnreachable !== true) await refuseStranding(profile, saved, peerTables);
+        await saveProfile(profile, "feat(connections): change the connection profile", repository, base, standIn).catch(async (error) => {
           if (error instanceof ProfileConflict) await pullDataRepo(repository);
           throw error;
         });
-        sendJson(response, 200, await readProfile(repository));
+        sendJson(response, 200, await profileForView(repository, appliedProfile));
       },
     },
   ];

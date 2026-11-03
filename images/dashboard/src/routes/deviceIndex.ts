@@ -5,7 +5,7 @@ import { sendJson } from "../http.js";
 import { readDashboard } from "../instanceResolver.js";
 import type { JoinRecords, JoinedDevice } from "../join.js";
 import { cachedOtherHostNodes, otherHostNodes, sharedLocalNodes } from "../nodes.js";
-import type { Route } from "../routes.js";
+import type { Route } from "../routeTypes.js";
 import { type DeviceSeen, deviceSeenStore } from "../seenStore.js";
 import { hostName, peerDashboards } from "../settings.js";
 

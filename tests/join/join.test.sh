@@ -99,6 +99,7 @@ step=/usr/local/lib/storage-join/storage-connections
 node_id="device-$(printf '%s' "${device_id:0:7}" | tr '[:upper:]' '[:lower:]')"
 check "the unit runs the connections step before syncthing" "-$step http://127.0.0.1:$dashboard_port $node_id /data/.storage/syncthing 22000" "$(sed -n 's/^ExecStartPre=//p' /etc/systemd/system/storage-syncthing.service)"
 check "the step is the join's own, installed beside the unit" "$(sha256sum < /join/storage-connections.sh)" "$(sha256sum < "$step")"
+check "with the nodes image's profile checks beside it, one source for both" "$(sha256sum < /images/nodes/connection-profile.jq)" "$(sha256sum < "${step%/*}/connection-profile.jq")"
 
 echo "The second run changes nothing:"
 node_before="$(sha256sum /data/.storage/node.toml)"
@@ -131,10 +132,10 @@ check "the dashboard's entry is applied before syncthing starts, a wrongly typed
 check "and kept in the node's home" "$(jq -c . "$entry")" "$(jq -c . /data/.storage/syncthing/connections.json 2> /dev/null)"
 check "owned by the node's owner" finn "$(stat -c %U /data/.storage/syncthing/connections.json 2> /dev/null)"
 cp -a /data/.storage/syncthing /tmp/port-home && rm -f /tmp/port-home/connections.json
-printf '{"options": {}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://[::]:22000", "relay://10.0.0.1:22100/?id=RELAY", "dynamic+https://relays.syncthing.net/endpoint"], "deviceAddresses": {}}' > /tmp/dashboard/connections/device-porttst.json
+printf '{"options": {}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://[::]:22000", "tcp4://0.0.0.0:22000", "tcp6://[::]:22000", "quic4://0.0.0.0:22000", "quic6://[::]:22000", "relay://10.0.0.1:22100/?id=RELAY", "dynamic+https://relays.syncthing.net/endpoint"], "deviceAddresses": {}}' > /tmp/dashboard/connections/device-porttst.json
 su-exec finn "$step" "http://127.0.0.1:$dashboard_port" device-porttst /tmp/port-home 22001 > /dev/null 2>&1
 check "a device joined on 22001 keeps 22001 after the step, relay and pool addresses untouched" \
-    "tcp://0.0.0.0:22001,quic://[::]:22001,relay://10.0.0.1:22100/?id=RELAY,dynamic+https://relays.syncthing.net/endpoint" \
+    "tcp://0.0.0.0:22001,quic://[::]:22001,tcp4://0.0.0.0:22001,tcp6://[::]:22001,quic4://0.0.0.0:22001,quic6://[::]:22001,relay://10.0.0.1:22100/?id=RELAY,dynamic+https://relays.syncthing.net/endpoint" \
     "$(sed -n 's:.*<listenAddress>\(.*\)</listenAddress>.*:\1:p' /tmp/port-home/config.xml | sed 's/&amp;/\&/g' | paste -sd, -)"
 kill "$dashboard_pid" && wait "$dashboard_pid" 2> /dev/null
 device_patch /rest/config/options "$(jq -n '{listenAddresses: ["tcp://127.0.0.1:22000"], globalAnnounceEnabled: false, maxSendKbps: 0}')" > /dev/null
@@ -152,6 +153,17 @@ check "with no copy and no dashboard syncthing starts unchanged" "$tailnet_only"
 check "its config untouched by the step" "$config_before" "$(sha256sum < /data/.storage/syncthing/config.xml)"
 check "and no copy is made up" false "$([[ -e /data/.storage/syncthing/connections.json ]] && echo true || echo false)"
 check "the step itself exits 0 without a dashboard" 0 "$(su-exec finn "$step" http://127.0.0.1:1 "$node_id" /data/.storage/syncthing > /dev/null 2>&1; echo $?)"
+mkdir -p /tmp/lone-step && cp "$step" /tmp/lone-step/storage-connections
+cp -a /tmp/port-home /tmp/lone-home
+config_before="$(sha256sum < /tmp/lone-home/config.xml)"
+lone_status="$(/tmp/lone-step/storage-connections http://127.0.0.1:1 device-porttst /tmp/lone-home 22002 2> /tmp/lone-step.err; echo $?)"
+check "a step without its profile checks applies nothing, says so and still exits 0" \
+    "0 1 $config_before" "$lone_status $(grep -c 'connection-profile.jq is missing beside the script; nothing applied' /tmp/lone-step.err) $(sha256sum < /tmp/lone-home/config.xml)"
+mkdir -p /tmp/lone-join/join && cp "$join" /join/storage-connections.sh /tmp/lone-join/join/
+lone_install="$(STORAGE_JOIN_STEP_DIR=/tmp/lone-join/lib bash -c "source /tmp/lone-join/join/storage-join.sh; install_step" 2>&1; echo "exit $?")"
+check_match "a checkout without the profile checks installs the step without them, says so and goes on" \
+    "connection-profile.jq is missing from this checkout.*installed /tmp/lone-join/lib/storage-connections.*exit 0" "$(tr '\n' ' ' <<< "$lone_install")"
+check "and makes up no profile checks" "true false" "$([[ -x /tmp/lone-join/lib/storage-connections ]] && echo true || echo false) $([[ -e /tmp/lone-join/lib/connection-profile.jq ]] && echo true || echo false)"
 start_dashboard
 mkdir -p /data5/.storage/syncthing && echo '{"listenAddresses": ["tcp://0.0.0.0:22000"]}' > /data5/.storage/syncthing/connections.json && chown -R finn:finn /data5
 bash -c "source $join; use_root /data5; generate_keys" > /dev/null

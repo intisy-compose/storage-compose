@@ -208,6 +208,7 @@ services:
       - ./services/syncthing/start.sh:/start.sh:ro
       - ./services/syncthing/guard.sh:/guard.sh:ro
       - ./images/nodes/apply-connections.sh:/apply-connections.sh:ro
+      - ./images/nodes/connection-profile.jq:/connection-profile.jq:ro
       - storage-status:/status:ro
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/syncthing:/var/syncthing/config
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/secrets:/secrets:ro

@@ -1,6 +1,6 @@
 import { RequestError, sendJson } from "../http.js";
 import { type LocalNodeInfo, type ResolverSources, defaultResolverSources, findLocalNode, forwardRead, forwardedListTimeoutMs, localNodeInfos, readDashboard, resolveRemote } from "../instanceResolver.js";
-import type { Route } from "../routes.js";
+import type { Route } from "../routeTypes.js";
 import { cachedOtherHostNodes } from "../nodes.js";
 import { explorerSettings, hostName, peerDashboards } from "../settings.js";
 import { readLayout } from "../setupRepo.js";

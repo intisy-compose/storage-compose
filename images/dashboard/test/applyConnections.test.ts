@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { ConnectionProfile, NodeAddresses, PeerTable } from "../src/api/types.js";
 import { type ApplyDependencies, type ApplyReport, ConnectionsRound, startConnectionRounds } from "../src/applyConnections.js";
-import { defaultProfile } from "../src/connectionProfile.js";
+import { ProfileError, defaultProfile } from "../src/connectionProfile.js";
 import { connectionsStateOf } from "../src/connectionsDrift.js";
 import type { LocalInstance } from "../src/instanceResolver.js";
 import { type JoinedDevice, type JoinRecords, joinedNodeId } from "../src/join.js";
+import { readRemoteTable } from "../src/peerSources.js";
 import { resolveNode } from "../src/peerTable.js";
 import { joinedNodeConnections } from "../src/routes/connections.js";
 import { type SyncthingClient, SyncthingUnavailable } from "../src/syncthing.js";
@@ -130,6 +133,53 @@ describe("applying the connection profile to this host's nodes", () => {
     assert.equal(readFileSync(files[1], "utf8"), readFileSync(files[0], "utf8"), "the host agent's copy is the same file");
   });
 
+  it("a profile that cannot be read keeps the last one applied and is logged once", async (context) => {
+    const errors = context.mock.method(console, "error", () => undefined);
+    let currentProfile: ConnectionProfile | Error = limitedProfile(1000);
+    const cluster = onProfile(limitedProfile(1000), wholeTable, "storage");
+    const { round: connections, files } = round([instanceOf("storage", cluster)], {
+      profile: async () => {
+        if (currentProfile instanceof Error) throw currentProfile;
+        return currentProfile;
+      },
+    });
+    await connections.run();
+    currentProfile = new ProfileError("limits.max_send_kbps must be a whole number from 0");
+
+    const reports = [await connections.run(), await connections.run()];
+
+    assert.deepEqual(cluster.sent, []);
+    for (const report of reports) assert.deepEqual(report.applied, ["storage"]);
+    assert.deepEqual(JSON.parse(readFileSync(files[0], "utf8")).storage, resolveNode(limitedProfile(1000), wholeTable, "storage"));
+    assert.deepEqual(errors.mock.calls.map((call) => call.arguments[0]), [
+      "connections: connections.toml rejected: limits.max_send_kbps must be a whole number from 0; the previous profile is still applied",
+    ]);
+    assert.deepEqual(connections.appliedProfile(), limitedProfile(1000));
+    currentProfile = limitedProfile(1000);
+    await connections.run();
+    assert.equal(errors.mock.calls.at(-1)?.arguments[0], "connections: the profile can be read again");
+  });
+
+  it("a profile never read writes and sends nothing", async (context) => {
+    const errors = context.mock.method(console, "error", () => undefined);
+    const cluster = new FakeSyncthing({ listenAddresses: ["default"], urAccepted: -1 }, []);
+    const { round: connections, files } = round([instanceOf("storage", cluster)], {
+      profile: async () => {
+        throw new ProfileError("relays.bridge_port must be a whole number from 1 to 65535");
+      },
+    });
+
+    const report = await connections.run();
+
+    assert.deepEqual(report, { applied: [], notYet: [], failed: {} });
+    assert.deepEqual(cluster.sent, []);
+    assert.equal(existsSync(files[0]), false);
+    assert.equal(connections.appliedProfile(), null);
+    assert.deepEqual(errors.mock.calls.map((call) => call.arguments[0]), [
+      "connections: connections.toml cannot be read: relays.bridge_port must be a whole number from 1 to 65535; nothing applied",
+    ]);
+  });
+
   it("a second round with nothing changed sends nothing", async () => {
     const cluster = new FakeSyncthing({ listenAddresses: ["default"], urAccepted: -1 }, [device(arrayDevice, ["dynamic"]), device(remoteDevice, ["dynamic"])]);
     const { round: connections } = round([instanceOf("storage", cluster)]);
@@ -199,6 +249,33 @@ describe("applying the connection profile to this host's nodes", () => {
     await connections.run();
 
     assert.deepEqual(cluster.sent, []);
+  });
+});
+
+describe("another host's part of the table", () => {
+  it("is asked for that host's own nodes only, so a node removed there leaves this host's table", async () => {
+    const paths: string[] = [];
+    let answer: PeerTable = remoteTable;
+    const server = createServer((request, response) => {
+      paths.push(request.url ?? "");
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify(answer));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const dashboardUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const { round: connections } = round([], { dashboards: [dashboardUrl], remoteTable: readRemoteTable });
+      await connections.run();
+      assert.ok(connections.lastTable()?.nodes.some((node) => node.nodeId === remoteNode.nodeId));
+      answer = { ...remoteTable, nodes: [] };
+
+      await connections.run();
+
+      assert.deepEqual(paths, ["/api/connections/addresses?scope=local", "/api/connections/addresses?scope=local"]);
+      assert.deepEqual(connections.lastTable()?.nodes.map((node) => node.nodeId), ["a1b2", "storage"]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

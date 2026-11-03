@@ -2,7 +2,7 @@ import type { FolderDetailResponse, FoldersResponse } from "../api/types.js";
 import { type FolderIndexSources, folderDetail, foldersResponse } from "../folderIndex.js";
 import { sendJson } from "../http.js";
 import { localInstances, readDashboard } from "../instanceResolver.js";
-import type { Route } from "../routes.js";
+import type { Route } from "../routeTypes.js";
 import { hostName, peerDashboards } from "../settings.js";
 import { readLayout } from "../setupRepo.js";
 import { decodedSegment } from "./devices.js";

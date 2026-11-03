@@ -11,5 +11,6 @@ host_path() { if command -v cygpath > /dev/null 2>&1; then cygpath -w "$1"; else
 
 docker build --quiet -t "$image" "$(host_path "$here")" > /dev/null
 MSYS_NO_PATHCONV=1 docker run --rm \
-    -v "$(host_path "$here"):/tests:ro" -v "$(host_path "$repository/join"):/join:ro" --tmpfs /vol --tmpfs /vol2 \
+    -v "$(host_path "$here"):/tests:ro" -v "$(host_path "$repository/join"):/join:ro" \
+    -v "$(host_path "$repository/images/nodes"):/images/nodes:ro" --tmpfs /vol --tmpfs /vol2 \
     "$image" bash /tests/join.test.sh

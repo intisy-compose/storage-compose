@@ -91,7 +91,12 @@ function isPeerTable(value: unknown): value is PeerTable {
   return typeof table === "object" && table !== null && Array.isArray(table.nodes) && Array.isArray(table.bridges) && typeof table.builtAt === "string";
 }
 
-/** Another dashboard's own part of the table; null when it cannot be read or answers something else. */
+/**
+ * Another dashboard's own part of the table (`readDashboard` asks with `scope=local`); null when it cannot be read or
+ * answers something else.
+ * @implNote Never its whole table: two dashboards reading each other's would hand a node removed on one host back and
+ * forth for ever.
+ */
 export async function readRemoteTable(dashboardUrl: string): Promise<PeerTable | null> {
   try {
     const answer = await readDashboard(dashboardUrl, new URL(dashboardUrl).host, "/api/connections/addresses");

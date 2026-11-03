@@ -12,7 +12,9 @@ function Get-TailnetAddress { return "127.0.0.1" }
 function Stop-NodeSyncthingProcesses($Node) { }
 function Get-NodePorts($Node) { return [pscustomobject]@{ slot = 0; gui = 18490; listen = 32190 } }
 function New-SyncthingConfig($Node) { }
-function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost) { return [pscustomobject]@{ apiKey = "test-key"; deviceId = "TEST" } }
+function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost) {
+    return [pscustomobject]@{ apiKey = "test-key"; deviceId = "TEST"; listen = [pscustomobject]@{ addresses = @("tcp://127.0.0.1:32190"); isTailnetOnly = $true } }
+}
 function Set-SyncthingFirewallRule($Node, $Ports) { }
 function Start-SyncthingProcess($Node) { $global:processStarts++; return 0 }
 function Test-ProcessIsRunning($ProcessId) { return $false }

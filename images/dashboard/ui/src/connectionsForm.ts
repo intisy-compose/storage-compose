@@ -1,4 +1,15 @@
-import { type ConnectionProfile, type ProfileRead, changedFields, fetchConnectionProfile, newlyStrandedPairs, pairsText, profileChangedText, saveConnectionProfile } from "./api.js";
+import {
+  type ConnectionProfile,
+  type ProfileRead,
+  changedFields,
+  fetchConnectionProfile,
+  isProfileChangedRefusal,
+  isStrandedRefusal,
+  newlyStrandedPairs,
+  pairsText,
+  profileChangedText,
+  saveConnectionProfile,
+} from "./api.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element, keyValueList } from "./dom.js";
 import { type FieldForm, listControl, numberControl, setting, toggleControl } from "./fieldKit.js";
@@ -99,11 +110,6 @@ export function followChangedProfile(state: ClusterFormState, latest: ProfileRea
   state.result = { text: `Not saved: ${profileChangedText}. Your changes are kept: save again.`, tone: "warn" };
 }
 
-/** Whether a refused save was made from a profile that is no longer the one on disk, here or on another host. */
-export function isProfileChangedRefusal(message: string): boolean {
-  return message === profileChangedText || message.startsWith("another host saved the connection profile first");
-}
-
 /** The pairs the draft would leave without a common method that the saved profile still connects, by this host's last table. */
 function strandedPairs(state: ClusterFormState): Array<[string, string]> {
   if (!appState.peerTable) return [];
@@ -173,6 +179,7 @@ function profileState(read: ProfileRead): HTMLElement {
   const behind = (appState.data?.nodes ?? []).filter((node) => node.connections === "not-yet").map((node) => node.name);
   return keyValueList([
     ["Kept in", "connections.toml in the data repo, pulled by every host's dashboard"],
+    ["Applied", read.profileProblem ? element("span", { className: "tone-text-bad" }, read.profileProblem) : "as saved"],
     ["Last pull", read.pullProblem ? element("span", { className: "tone-text-bad" }, `failed: ${read.pullProblem}`) : read.pulledAt ? formatAge(read.pulledAt) : "not pulled yet"],
     ["Not yet on it", behind.length ? behind.join(", ") : "none"],
   ]);
@@ -223,7 +230,7 @@ async function save(state: ClusterFormState): Promise<void> {
   else if (!result.maybeSaved && isProfileChangedRefusal(result.message)) await followLatest(state);
   else {
     state.result = editFailureNotice(result);
-    state.refusedForPairs = /would share no connection method/.test(result.message);
+    state.refusedForPairs = isStrandedRefusal(result.message);
   }
   requestRender();
 }

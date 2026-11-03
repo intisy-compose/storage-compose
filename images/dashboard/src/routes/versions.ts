@@ -3,7 +3,7 @@ import { folderSettings } from "../folderIndex.js";
 import { RequestError, UnconfirmedWrite, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type RemoteInstance, type ResolvedInstance, arrayConfirmProblem, callSyncthing, forwardRead, forwardedListTimeoutMs, requireLocal, resolveInstance } from "../instanceResolver.js";
 import { folderSubpathProblem } from "../pathGuard.js";
-import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
+import type { AnyRoute, NothingWritten, WriteNote } from "../routeTypes.js";
 import { versionsSettings } from "../settings.js";
 import { shownUnscopedText } from "../shownSyncthingError.js";
 import { versionsSlotWaitMs } from "../api/versioningText.js";
