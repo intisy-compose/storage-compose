@@ -18,7 +18,7 @@ import { appState, deviceLocation, driveLocation } from "./state.js";
 
 function connectionChip(device: DeviceSummary): HTMLElement | null {
   if (device.thisHost) return chip("this device");
-  if (device.connection) return chip(connectionKindText(device.connection.kind), "chip", device.connection.address);
+  if (device.connection) return chip(connectionKindText(device.connection.kind, device.connection.bridgeHost), "chip", device.connection.address);
   if (device.lastConnection) return chip(connectionKindText(device.lastConnection.kind), "chip chip-muted", "how it was connected last time");
   return null;
 }

@@ -3,6 +3,7 @@
 It admits the caller into a real Syncthing (the "storage" peer), shares two folders with it and
 answers with that peer, as the real dashboard does. A name in REFUSED gets 403, a name it knows
 with another device ID gets 409. Every request is appended to requests.jsonl in the state folder.
+GET /api/connections/node/<id> answers connections/<id>.json of the state folder as it is, else 404.
 """
 import json
 import sys
@@ -73,6 +74,18 @@ def handler_for(peer: Peer, state: Path, known: dict):
                 "devices": [{"name": "storage", "syncthingDeviceId": peer.device_id(), "addresses": [peer.address]}],
                 "folders": FOLDERS,
             })
+
+        def do_GET(self):
+            prefix = "/api/connections/node/"
+            entry = state / "connections" / f"{self.path[len(prefix):]}.json"
+            if not self.path.startswith(prefix) or not entry.is_file():
+                return self.answer(404, {"error": "no such node"})
+            text = entry.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(text)))
+            self.end_headers()
+            self.wfile.write(text)
 
         def log_message(self, *arguments):
             pass

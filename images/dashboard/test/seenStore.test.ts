@@ -158,7 +158,7 @@ describe("devices of this host", () => {
   const noRecords = { all: async () => ({}), put: async () => {} };
 
   function remoteNode(overrides: Partial<StorageNode>): StorageNode {
-    return { id: "5784", name: "private-array", kind: "array", threshold: 0, assigned: [], local: false, online: true, host: "p53", space: null, sync: { state: "idle", completion: 100, lastSeen: null }, offersWaiting: 0, syncthing: null, instance: null, peers: [], folders: [], dashboardUrl: "https://storage-p53.example", keeper: null, restartConfirmRequired: false, ...overrides };
+    return { id: "5784", name: "private-array", kind: "array", threshold: 0, assigned: [], local: false, online: true, host: "p53", space: null, sync: { state: "idle", completion: 100, lastSeen: null }, offersWaiting: 0, syncthing: null, instance: null, peers: [], folders: [], dashboardUrl: "https://storage-p53.example", keeper: null, restartConfirmRequired: false, connections: "unknown", ...overrides };
   }
 
   it("an absent node this host still lists keeps its remembered device as this host's", () => {

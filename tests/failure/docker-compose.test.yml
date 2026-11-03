@@ -42,6 +42,7 @@ services:
     container_name: c24t-kopia
 
   syncthing:
+    image: storage-syncthing:c24test
     container_name: c24t-syncthing
     network_mode: "service:lab"
     depends_on: !override

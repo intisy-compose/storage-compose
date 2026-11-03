@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Stands in for systemctl in a container without systemd: a unit's ExecStart runs in the background as
-# its User=, with its Environment=, and its pid is kept in $FAKE_SYSTEMD_DIR.
+# Stands in for systemctl in a container without systemd: a unit's ExecStartPre runs to its end and
+# then its ExecStart in the background, both as its User= with its Environment=; a failing step stops
+# the start unless it is prefixed with "-", as systemd does. The pid is kept in $FAKE_SYSTEMD_DIR.
 set -euo pipefail
 state_dir="${FAKE_SYSTEMD_DIR:-/run/fake-systemd}"
 unit_dir="${STORAGE_JOIN_UNIT_DIR:-/etc/systemd/system}"
@@ -17,10 +18,15 @@ is_active() {
 start() {
     if [[ "$1" == tailscaled* ]]; then touch "$state_dir/tailscaled"; return; fi
     is_active "$1" && return
-    local user environment command
+    local user environment command step
     user="$(unit_value "$1" User)"
     environment="$(unit_value "$1" Environment)"
     command="$(unit_value "$1" ExecStart)"
+    step="$(unit_value "$1" ExecStartPre)"
+    if [[ -n "$step" ]]; then
+        # shellcheck disable=SC2086
+        env $environment su-exec "$user" ${step#-} >> "$state_dir/$1.pre.log" 2>&1 || [[ "$step" == -* ]] || return 1
+    fi
     # shellcheck disable=SC2086
     env $environment su-exec "$user" $command > "$state_dir/$1.log" 2>&1 &
     echo $! > "$state_dir/$1.pid"

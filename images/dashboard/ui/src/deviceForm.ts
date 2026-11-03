@@ -13,6 +13,7 @@ import {
   generalSettingKeys,
   isKeeperManaged,
   keeperManagedText,
+  profileAddressesHint,
   removeDevice,
   saveDeviceSettings,
   saveFolderSettings,
@@ -50,6 +51,13 @@ export interface SettingsContext {
   isArray: boolean;
   /** The node's defaults for new devices, which hold no name and are never paused. */
   isDefaults?: boolean;
+}
+
+function addressesField(context: SettingsContext): HTMLElement {
+  const area = listInput(context, "addresses");
+  if (!context.saved.addressesFromProfile) return labelled(context, "addresses", area, "One per line: dynamic, tcp://host:port, quic://host:port or relay://host:port?id=…");
+  area.disabled = true;
+  return labelled(context, "addresses", area, profileAddressesHint);
 }
 
 const arrayLockedToggles: readonly ToggleField[] = ["introducer", "autoAcceptFolders"];
@@ -131,7 +139,7 @@ export function settingFields(context: SettingsContext): HTMLElement {
     "div",
     { className: "form-fields device-fields" },
     context.isDefaults ? null : labelled(context, "name", textInput(context, "name"), "Empty shows the short device ID."),
-    labelled(context, "addresses", listInput(context, "addresses"), "One per line: dynamic, tcp://host:port, quic://host:port or relay://host:port?id=…"),
+    addressesField(context),
     labelled(context, "compression", compressionSelect(context)),
     element(
       "div",

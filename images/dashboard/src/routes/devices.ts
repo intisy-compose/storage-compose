@@ -2,7 +2,9 @@ import type { ServerResponse } from "node:http";
 import { deviceDisplayName, deviceSettingLabels, shortDeviceId } from "../api/deviceText.js";
 import { generalSettingKeys, keeperProblem } from "../api/keeperText.js";
 import { generalSettingLabels } from "../api/optionsText.js";
+import { profileAddressesProblem } from "../api/profileText.js";
 import type { AddedDevice, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, NearbyDevice, NewDevice, RemoveDeviceBody } from "../api/types.js";
+import { isClusterNodeDevice } from "../connectionsDrift.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, isArrayInstance, requireLocal, resolveInstance, settingsKeeperOf, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
@@ -39,7 +41,17 @@ export async function readDeviceSettings(instance: ResolvedInstance, deviceId: s
     const answer = redactConfig(await forwardRead(instance, devicePath(instance.nodeId, deviceId))) as SyncthingObject | null;
     return deviceSettings({ ...(answer ?? {}), deviceID: deviceId });
   }
-  return deviceSettings(await configuredDevice(instance, deviceId));
+  return withProfileMark(deviceSettings(await configuredDevice(instance, deviceId)));
+}
+
+/** A cluster node's device marked as one whose addresses the connection profile sets, so the form shows them read only. */
+function withProfileMark(settings: DeviceSettings): DeviceSettings {
+  return isClusterNodeDevice(settings.deviceId) ? { ...settings, addressesFromProfile: true } : settings;
+}
+
+/** Why the device's addresses are not changed here, or null: a cluster node's are given to every node by each round. */
+function profileAddressesRefusal(deviceId: string, change: DeviceSettingsChange): string | null {
+  return change.addresses !== undefined && isClusterNodeDevice(deviceId) ? profileAddressesProblem(deviceSettingLabels.addresses) : null;
 }
 
 type WordedField = Exclude<keyof DeviceSettingsChange, "name" | "paused">;
@@ -113,7 +125,11 @@ async function ownNameKeptProblem(instance: LocalInstance, deviceId: string, cha
  */
 export async function editDevice(instance: ResolvedInstance, deviceId: string, change: unknown, readBackDelaysMs: readonly number[] = defaultReadBackDelaysMs): Promise<DeviceEdit> {
   const local = requireLocal(instance);
-  const problem = deviceChangeProblem(change) ?? arrayAutomationProblem(local, change as DeviceSettingsChange) ?? (await ownNameKeptProblem(local, deviceId, change as DeviceSettingsChange));
+  const problem =
+    deviceChangeProblem(change) ??
+    profileAddressesRefusal(deviceId, change as DeviceSettingsChange) ??
+    arrayAutomationProblem(local, change as DeviceSettingsChange) ??
+    (await ownNameKeptProblem(local, deviceId, change as DeviceSettingsChange));
   if (problem) throw new RequestError(400, problem);
   const valid = change as DeviceSettingsChange;
   const before = await configuredDevice(local, deviceId);
@@ -135,9 +151,9 @@ export async function editDevice(instance: ResolvedInstance, deviceId: string, c
  */
 async function settingsAfter(instance: LocalInstance, deviceId: string, expected: SyncthingObject): Promise<DeviceSettings> {
   try {
-    return deviceSettings(await configuredDevice(instance, deviceId));
+    return withProfileMark(deviceSettings(await configuredDevice(instance, deviceId)));
   } catch {
-    return deviceSettings(expected);
+    return withProfileMark(deviceSettings(expected));
   }
 }
 

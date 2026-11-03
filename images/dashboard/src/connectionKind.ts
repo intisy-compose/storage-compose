@@ -13,9 +13,11 @@ export interface ConnectionInput {
   address: string | null;
   /** The Syncthing device IDs of this host's own instances. */
   localDeviceIds: ReadonlySet<string>;
+  /** Each address of the cluster's bridges, as a plain host, to the host that runs the bridge. */
+  bridges?: ReadonlyMap<string, string>;
 }
 
-const kindsByCloseness: readonly ConnectionKind[] = ["this-device", "local-network", "tailscale", "internet", "relay"];
+const kindsByCloseness: readonly ConnectionKind[] = ["this-device", "local-network", "tailscale", "internet", "bridge", "relay"];
 
 function subnets(entries: [string, number, "ipv4" | "ipv6"][]): BlockList {
   const list = new BlockList();
@@ -65,8 +67,14 @@ function networkKind(address: string): ConnectionKind {
 export function connectionKind(input: ConnectionInput): ConnectionKind | null {
   if (!input.connected) return null;
   if (input.localDeviceIds.has(input.deviceId)) return "this-device";
-  if (input.type?.startsWith("relay")) return "relay";
+  if (input.type?.startsWith("relay")) return bridgeHostOf(input) ? "bridge" : "relay";
   return input.address ? networkKind(input.address) : "internet";
+}
+
+/** The host whose bridge carries a relayed connection, or null for a public relay or a connection that is not relayed. */
+export function bridgeHostOf(input: ConnectionInput): string | null {
+  if (!input.connected || !input.type?.startsWith("relay") || !input.address) return null;
+  return input.bridges?.get(addressHost(input.address).toLowerCase()) ?? null;
 }
 
 export function closestKind(kinds: ConnectionKind[]): ConnectionKind | null {

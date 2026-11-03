@@ -134,7 +134,7 @@ function addPeer(book: DeviceBook, node: StorageNode, peer: Peer): void {
   device.sources.add("syncthing");
   device.name ??= peer.name || null;
   device.peerLastSeen.push(peer.lastSeen);
-  device.reach.push({ connection: { nodeId: node.id, nodeName: node.name, connected: peer.connected, kind: peer.connectionKind, address: peer.address }, type: peer.connectionType });
+  device.reach.push({ connection: { nodeId: node.id, nodeName: node.name, connected: peer.connected, kind: peer.connectionKind, ...(peer.bridgeHost ? { bridgeHost: peer.bridgeHost } : {}), address: peer.address }, type: peer.connectionType });
 }
 
 function addJoin(book: DeviceBook, joined: JoinedDevice): void {
@@ -170,7 +170,7 @@ function currentConnection(reach: Reach[]): DeviceSummary["connection"] {
   const kind = closestKind(connected.map((entry) => entry.connection.kind as ConnectionKind));
   const closest = connected.find((entry) => entry.connection.kind === kind);
   if (!closest || !kind) return null;
-  return { kind, address: closest.connection.address ?? "", type: closest.type ?? "", nodeId: closest.connection.nodeId };
+  return { kind, ...(closest.connection.bridgeHost ? { bridgeHost: closest.connection.bridgeHost } : {}), address: closest.connection.address ?? "", type: closest.type ?? "", nodeId: closest.connection.nodeId };
 }
 
 function lastConnection(history: DeviceSeen[]): DeviceSummary["lastConnection"] {

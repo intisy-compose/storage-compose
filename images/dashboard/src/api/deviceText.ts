@@ -12,6 +12,7 @@ const connectionKindLabels: Record<ConnectionKind, string> = {
   "local-network": "local network",
   tailscale: "Tailscale",
   internet: "internet",
+  bridge: "bridge",
   relay: "relay",
 };
 
@@ -68,8 +69,9 @@ export function deviceDisplayName(name: string | null | undefined, deviceId: str
   return name?.trim() ? name : shortDeviceId(deviceId);
 }
 
-export function connectionKindText(kind: ConnectionKind): string {
-  return connectionKindLabels[kind];
+/** `bridgeHost` names the host of a `bridge` connection: `bridge via pc`. */
+export function connectionKindText(kind: ConnectionKind, bridgeHost?: string): string {
+  return kind === "bridge" && bridgeHost ? `bridge via ${bridgeHost}` : connectionKindLabels[kind];
 }
 
 const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

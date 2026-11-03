@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { hostSettingsFixture, nodeOptionsFixture, peerTableFixture, profileFixture, saveProfileFixture } from "./connections.mjs";
 import { deviceSettingsFixture, devicesFixture } from "./devices.mjs";
 import { folderDefaultsFixture, folderDetailFixture } from "./folders.mjs";
 import { needFixture, remoteNeedFixture } from "./items.mjs";
@@ -46,6 +47,19 @@ async function route(request, response) {
   if (request.method === "GET" && path === "/api/tree") return sendJson(response, 200, treeFixture(url.searchParams.get("node") ?? "all", url.searchParams.get("path") ?? ""));
   if (request.method === "GET" && path === "/api/fixture/actions") return sendJson(response, 200, actionLog);
   if (request.method === "GET" && path === "/api/requests") return sendJson(response, 200, requestsFixture());
+  if (request.method === "GET" && path === "/api/settings") return sendJson(response, 200, hostSettingsFixture());
+  if (request.method === "GET" && path === "/api/connections/profile") return sendJson(response, 200, profileFixture());
+  if (request.method === "GET" && path === "/api/connections/addresses") return sendJson(response, 200, peerTableFixture());
+  if (request.method === "PUT" && path === "/api/connections/profile") {
+    const saved = saveProfileFixture(await readBody(request));
+    actionLog.push({ action: "profile", status: saved.status });
+    return sendJson(response, saved.status, saved.body);
+  }
+  const nodeOptions = path.match(/^\/api\/nodes\/([^/]+)\/(options|restart-required)$/);
+  if (request.method === "GET" && nodeOptions) {
+    const nodeId = decodeURIComponent(nodeOptions[1]);
+    return sendJson(response, 200, nodeOptions[2] === "options" ? nodeOptionsFixture(nodeId) : { restartRequired: false, confirmRequired: false });
+  }
   const offerDefaults = path.match(/^\/api\/nodes\/([^/]+)\/pending\/folders\/([^/]+)\/defaults$/);
   if (request.method === "GET" && offerDefaults) {
     const defaults = acceptDefaultsFixture(decodeURIComponent(offerDefaults[1]), decodeURIComponent(offerDefaults[2]), url.searchParams.get("offeredBy"));

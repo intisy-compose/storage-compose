@@ -1,9 +1,11 @@
 import { deviceSettingLabels } from "../api/deviceText.js";
 import { keeperProblem } from "../api/keeperText.js";
-import { connectionOptionLabels, generalSettingLabels } from "../api/optionsText.js";
+import { generalSettingLabels } from "../api/optionsText.js";
+import { profileAddressesProblem, profileProblem } from "../api/profileText.js";
 import { type AdvancedTarget, type DeviceSettingsChange, type FolderSettingsChange, type FolderType, folderSettingLabels } from "../api/types.js";
+import { isClusterNodeDevice } from "../connectionsDrift.js";
 import { type LocalInstance, settingsKeeperOf } from "../instanceResolver.js";
-import { deviceChangeProblem, folderChangeProblem, isSecretKey, minDiskFreeCheck, optionsChangeProblem } from "../syncthingConfig.js";
+import { deviceChangeProblem, folderChangeProblem, isSecretKey, minDiskFreeCheck } from "../syncthingConfig.js";
 import { arrayAutomationProblem } from "./devices.js";
 import { typeChangeProblem } from "./nodeFolders.js";
 
@@ -66,14 +68,13 @@ function optionKeyProblem(key: string, value: unknown): string | null {
 }
 
 function optionsProblem(instance: LocalInstance, change: SyncthingObject): string | null {
-  const kept = keeperProblem(settingsKeeperOf(instance), Object.keys(change));
-  if (kept) return kept;
+  const owned = keeperProblem(settingsKeeperOf(instance), Object.keys(change)) ?? profileProblem(Object.keys(change));
+  if (owned) return owned;
   for (const [key, value] of Object.entries(change)) {
     const problem = optionKeyProblem(key, value);
     if (problem) return problem;
   }
-  const connection = picked(change, Object.keys(connectionOptionLabels));
-  return Object.keys(connection).length ? optionsChangeProblem(connection, false) : null;
+  return null;
 }
 
 function isPlainName(value: unknown): boolean {
@@ -99,8 +100,9 @@ function folderProblem(current: SyncthingObject, change: SyncthingObject): strin
   return folderChangeProblem(settings) ?? typeChangeProblem({ id: String(current.id ?? ""), label: String(current.label ?? ""), type: String(current.type ?? "") as FolderType }, settings);
 }
 
-function deviceProblem(instance: LocalInstance, change: SyncthingObject): string | null {
+function deviceProblem(instance: LocalInstance, deviceId: string, change: SyncthingObject): string | null {
   if (Object.hasOwn(change, "deviceID")) return "the device ID cannot be changed";
+  if (Object.hasOwn(change, "addresses") && isClusterNodeDevice(deviceId)) return profileAddressesProblem("addresses");
   const settings = picked(change, Object.keys(deviceSettingLabels)) as DeviceSettingsChange;
   if (!Object.keys(settings).length) return null;
   return deviceChangeProblem(settings) ?? arrayAutomationProblem(instance, settings);
@@ -110,10 +112,7 @@ function isPlainObject(value: unknown): value is SyncthingObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * Why an advanced change cannot be sent as it is, or null: every key is judged by the same check its form uses, so the editor bypasses no guard.
- * @implNote A listen address is also checked against the ports this host's other nodes list, which needs a read and is done by the caller.
- */
+/** Why an advanced change cannot be sent as it is, or null: every key is judged by the same check its form uses, so the editor bypasses no guard. */
 export function advancedChangeProblem(instance: LocalInstance, target: AdvancedTarget, current: SyncthingObject, change: unknown, what: string): string | null {
   if (!isPlainObject(change) || Object.keys(change).length === 0) return "nothing to change";
   for (const [key, value] of Object.entries(change)) {
@@ -122,5 +121,5 @@ export function advancedChangeProblem(instance: LocalInstance, target: AdvancedT
   }
   if (target.kind === "options") return optionsProblem(instance, change);
   if (target.kind === "folder") return folderProblem(current, change);
-  return deviceProblem(instance, change);
+  return deviceProblem(instance, target.id, change);
 }

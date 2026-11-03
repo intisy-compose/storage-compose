@@ -7,21 +7,11 @@ export type SettingsKeeper = "host-agent" | "nodes-service";
  * The settings each keeper rewrites at every start: keys of Syncthing's options, and `deviceName` for the node's own device entry.
  * @implNote Mirrors `Set-SyncthingConfig` in windows/syncthing.ps1 and `prepare_home` in images/nodes/nodes.sh; a value saved here
  * would be undone at the keeper's next start, which a one-click restart triggers, so a change to either script is made here too.
+ * The connection options are the connection profile's on every node (`profileText.ts`), not a keeper's.
  */
 export const keeperManagedKeys: Record<SettingsKeeper, readonly string[]> = {
-  "host-agent": [
-    "listenAddresses",
-    "globalAnnounceEnabled",
-    "localAnnounceEnabled",
-    "relaysEnabled",
-    "natEnabled",
-    "urAccepted",
-    "autoUpgradeIntervalH",
-    "crashReportingEnabled",
-    "startBrowser",
-    "deviceName",
-  ],
-  "nodes-service": ["listenAddresses"],
+  "host-agent": ["urAccepted", "autoUpgradeIntervalH", "crashReportingEnabled", "startBrowser", "deviceName"],
+  "nodes-service": [],
 };
 
 const keeperNames: Record<SettingsKeeper, string> = { "host-agent": "the host agent", "nodes-service": "the nodes service" };
@@ -54,9 +44,4 @@ export function keeperProblem(
 ): string | null {
   const managed = fields.filter((field) => isKeeperManaged(keeper, keyOf(field)));
   return keeper && managed.length ? `${managed.map(nameOf).join(", ")}: ${keeperManagedText(keeper)}, so not changed here` : null;
-}
-
-/** What an edit applied to the whole host left out on one node: `left out Relays: set by the host agent at each start`. */
-export function keeperLeftOutText(keeper: SettingsKeeper, names: readonly string[]): string {
-  return `left out ${names.join(", ")}: ${keeperManagedText(keeper)}`;
 }

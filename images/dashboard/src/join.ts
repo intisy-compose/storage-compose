@@ -70,6 +70,11 @@ export function isDeviceId(value: string): boolean {
   return deviceIdPattern.test(value);
 }
 
+/** The node ID a device without a dashboard of its own is shown by, taken from its Syncthing device ID. */
+export function joinedNodeId(deviceId: string): string {
+  return `device-${deviceId.slice(0, 7).toLowerCase()}`;
+}
+
 /**
  * A caller not on our tailnet, or neither owned by an allowed user nor tagged for storage, is refused. The
  * caller may be known by several addresses (the proxied connection's local port, a forwarded tailnet

@@ -95,7 +95,7 @@ export function matchesNodeSearch(node: StorageNode, search: string): boolean {
 }
 
 export function matchesDeviceSearch(device: DeviceSummary, search: string): boolean {
-  const kind = device.thisHost ? "this device" : device.connection ? connectionKindText(device.connection.kind) : null;
+  const kind = device.thisHost ? "this device" : device.connection ? connectionKindText(device.connection.kind, device.connection.bridgeHost) : null;
   return matchesTerms([device.name, device.key, kind, ...device.deviceIds], search);
 }
 
