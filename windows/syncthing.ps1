@@ -280,12 +280,32 @@ function Test-UsesLanMethod($Connections) {
         $Connections.options.PSObject.Properties["localAnnounceEnabled"] -and $Connections.options.localAnnounceEnabled -eq $true)
 }
 
+function Test-IsOptionOff($Connections, [string]$Name) {
+    return [bool]($Connections -and $Connections.PSObject.Properties["options"] -and $Connections.options -and
+        $Connections.options.PSObject.Properties[$Name] -and $Connections.options.$Name -is [bool] -and -not $Connections.options.$Name)
+}
+
+<#
+.NOTES
+Ruled 2026-11-03: with local discovery and NAT traversal both off nobody is told this node's LAN or
+public address, so nothing but the tailnet needs to reach it on a trusted network either.
+#>
+function Test-ClosesLan($Connections) {
+    return (Test-IsOptionOff $Connections "localAnnounceEnabled") -and (Test-IsOptionOff $Connections "natEnabled")
+}
+
+function Get-LanRemoteAddress($Connections) {
+    if (Test-ClosesLan $Connections) { return $tailnetAddressRange }
+    return "Any"
+}
+
 <#
 .NOTES
 Without the node's connections entry the node is tailnet-only and keeps the rules it always had: TCP
 from the tailnet and a UDP block, so nothing opens on a host that never received the profile. With
 it, the sync port is open on Private and Domain networks to any address (the LAN, and what the
-router forwards after NAT traversal arrives there too) and on Public networks to the tailnet only.
+router forwards after NAT traversal arrives there too), or to the tailnet only when the entry turns
+both off, and on Public networks to the tailnet only.
 #>
 function Get-NodeFirewallRules($Node, $Ports, $Connections) {
     $port = "$($Ports.listen)"
@@ -295,9 +315,10 @@ function Get-NodeFirewallRules($Node, $Ports, $Connections) {
             (New-FirewallRuleSpec $Node "udp" "Block" "UDP" "Any" "Any" "Any")
         )
     }
+    $lanRemote = Get-LanRemoteAddress $Connections
     $rules = @(
-        (New-FirewallRuleSpec $Node "tcp private" "Allow" "TCP" $port "Any" $lanProfiles),
-        (New-FirewallRuleSpec $Node "udp private" "Allow" "UDP" $port "Any" $lanProfiles),
+        (New-FirewallRuleSpec $Node "tcp private" "Allow" "TCP" $port $lanRemote $lanProfiles),
+        (New-FirewallRuleSpec $Node "udp private" "Allow" "UDP" $port $lanRemote $lanProfiles),
         (New-FirewallRuleSpec $Node "tcp public" "Allow" "TCP" $port $tailnetAddressRange "Public"),
         (New-FirewallRuleSpec $Node "udp public" "Allow" "UDP" $port $tailnetAddressRange "Public")
     )
@@ -389,9 +410,16 @@ function Remove-NodeFirewallRules($Node) {
     foreach ($name in Get-AllNodeFirewallRuleNames $Node) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
 }
 
+<#
+.NOTES
+An empty list without a config, null when the config exists but cannot be read (Syncthing caught
+saving it, say), so the caller can keep the rules it has instead of taking it for no addresses.
+#>
 function Read-ConfiguredListenAddresses($Node) {
-    try { $options = ([xml][System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node))).configuration.options } catch { return @() }
-    return @($options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
+    $path = Get-SyncthingConfigPath $Node
+    if (-not [System.IO.File]::Exists($path)) { return , @() }
+    try { $options = ([xml][System.IO.File]::ReadAllText($path)).configuration.options } catch { return $null }
+    return , @($options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
 }
 
 <#
@@ -407,7 +435,15 @@ function Get-FirewallConnections($Connections, [string[]]$Configured) {
 }
 
 function Get-InstanceFirewallShape($Instance, $Connections) {
-    return "$([bool]$Connections) $(Test-UsesLanMethod $Connections) $($Instance.ports.listen)"
+    return "$([bool]$Connections) $(Test-UsesLanMethod $Connections) $(Test-ClosesLan $Connections) $($Instance.ports.listen)"
+}
+
+function Test-NeedsConfiguredListen($Connections) { return $Connections -and -not (Test-HasProfileListenAddresses $Connections) }
+
+function Write-InstanceFirewallProblem($Instance, [string]$Problem) {
+    if ($Problem -eq "$($Instance.firewallProblem)") { return }
+    if ($Problem) { Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): firewall rules not updated: $Problem" }
+    $Instance.firewallProblem = $Problem
 }
 
 <#
@@ -415,15 +451,21 @@ function Get-InstanceFirewallShape($Instance, $Connections) {
 The profile reaches a running Syncthing through the dashboard's REST calls without a restart, so the
 rules follow the connections entry every round; they are only rewritten when its shape changes, and
 an instance taken over from an earlier agent has no shape yet, which sets them (and removes the
-names an older agent left) on its first round.
+names an older agent left) on its first round. A connections file or config that cannot be read
+this round keeps the rules as they are. A failure is logged when it starts or changes.
 #>
 function Update-InstanceFirewall($Instance) {
     if ($Instance.state -ne "running" -or -not $Instance.ports) { return }
     $connections = Get-NodeConnections $Instance.node
     if (Test-IsUnreadableConnections $connections) { return }
-    $connections = Get-FirewallConnections $connections (Read-ConfiguredListenAddresses $Instance.node)
+    $configured = Read-ConfiguredListenAddresses $Instance.node
+    if ($null -eq $configured -and (Test-NeedsConfiguredListen $connections)) { return }
+    $connections = Get-FirewallConnections $connections $configured
     if ((Get-InstanceFirewallShape $Instance $connections) -eq $Instance.firewallShape) { return }
-    try { Set-InstanceFirewall $Instance $connections } catch { Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): firewall rules not updated: $_" }
+    try {
+        Set-InstanceFirewall $Instance $connections
+        Write-InstanceFirewallProblem $Instance ""
+    } catch { Write-InstanceFirewallProblem $Instance "$_" }
 }
 
 function Set-InstanceFirewall($Instance, $Connections) {
@@ -473,6 +515,9 @@ $dockerBackendRuleNames = @(
     "storage-compose docker backend tcp private", "storage-compose docker backend udp private"
 )
 $dockerBackendRulesShape = $null
+$dockerBackendLanRemote = $null
+$dockerBackendRulesProblem = ""
+$tailnetAddressRanges = "$tailnetAddressRange,fd7a:115c:a1e0::/48"
 
 <#
 .NOTES
@@ -502,11 +547,28 @@ tailnet reaches the stack's sync and relay ports there. On a Private or Domain n
 no rule for the backend (the one it adds when it asks "allow access?" names the Public profile
 only), so without the Allow the LAN would never reach a Docker node or the bridge relay.
 #>
-function Get-DockerBackendRules([string]$Program) {
+function Get-DockerBackendRules([string]$Program, [string]$LanRemoteAddress) {
     return @("TCP", "UDP") | ForEach-Object {
         New-DockerBackendRule $_ "public" "Block" $outsideTailnetRanges "Public" $Program
-        New-DockerBackendRule $_ "private" "Allow" "Any" $lanProfiles $Program
+        New-DockerBackendRule $_ "private" "Allow" $LanRemoteAddress $lanProfiles $Program
     }
+}
+
+<#
+.NOTES
+The Docker ports serve every node of the host that runs in Docker, and the bridge, and the
+connections file holds an entry for each of this host's nodes, so the host-wide rule reads them
+all: the LAN stays open while any entry keeps local discovery or NAT on, and is closed to all but
+the tailnet (both address families, as the Public block exempts both) when every entry turns both
+off or there is none. Null when the file cannot be read, so the rules stay as they are.
+#>
+function Get-DockerBackendLanRemoteAddress {
+    if (-not $script:connectionsFile -or -not (Test-Path -LiteralPath $script:connectionsFile)) { return $tailnetAddressRanges }
+    $byNode = Read-ConnectionsFile $script:connectionsFile
+    if (Test-IsUnreadableConnections $byNode) { return $null }
+    $entries = @($byNode.PSObject.Properties | ForEach-Object { $_.Value } | Where-Object { Test-IsConnectionsEntry $_ })
+    if (@($entries | Where-Object { -not (Test-ClosesLan $_) }).Count -gt 0) { return "Any" }
+    return $tailnetAddressRanges
 }
 
 function Remove-DockerBackendRules {
@@ -514,11 +576,19 @@ function Remove-DockerBackendRules {
     $script:dockerBackendRulesShape = $null
 }
 
+function Write-DockerBackendRulesProblem([string]$Problem) {
+    if ($Problem -eq $script:dockerBackendRulesProblem) { return }
+    if ($Problem) { Write-WatcherLog "the Docker backend's rules were not set: $Problem" }
+    $script:dockerBackendRulesProblem = $Problem
+}
+
 <#
 .NOTES
 The ports exist only while the stack runs, which is when the rules are kept; they are rewritten
-only when the backend's path changes, and they belong to the agent's group, so removing the agent's
-rules removes them too.
+only when the backend's path or the LAN's remote address changes, and they belong to the agent's
+group, so removing the agent's rules removes them too. While the connections file cannot be read
+the last address stands, the tailnet's before any was read. A failure is logged when it starts or
+changes.
 #>
 function Update-DockerBackendRules([bool]$IsActive) {
     if (-not $IsActive) {
@@ -531,11 +601,16 @@ function Update-DockerBackendRules([bool]$IsActive) {
         $script:dockerBackendRulesShape = "missing"
         return
     }
-    if ($script:dockerBackendRulesShape -eq $program) { return }
+    $lanRemote = Get-DockerBackendLanRemoteAddress
+    if (-not $lanRemote) { $lanRemote = $(if ($script:dockerBackendLanRemote) { $script:dockerBackendLanRemote } else { $tailnetAddressRanges }) }
+    $shape = "$program $lanRemote"
+    if ($script:dockerBackendRulesShape -eq $shape) { return }
     try {
-        foreach ($rule in Get-DockerBackendRules $program) { Set-AgentFirewallRule $rule $rule.Name }
-        $script:dockerBackendRulesShape = $program
-    } catch { Write-WatcherLog "the Docker backend's rules were not set: $_" }
+        foreach ($rule in Get-DockerBackendRules $program $lanRemote) { Set-AgentFirewallRule $rule $rule.Name }
+        $script:dockerBackendRulesShape = $shape
+        $script:dockerBackendLanRemote = $lanRemote
+        Write-DockerBackendRulesProblem ""
+    } catch { Write-DockerBackendRulesProblem "$_" }
 }
 
 function Get-SyncthingBinFolder {
@@ -619,7 +694,7 @@ function Stop-SyncthingProcess($Instance) {
 function New-SyncthingInstance($Node) {
     return [pscustomobject]@{
         nodeId = $Node.id; node = $Node; ports = $null; apiKey = $null; deviceId = $null; listenAddress = $null; usesProfile = $false
-        firewallShape = $null; usesLan = $false; hasProfileRules = $false
+        firewallShape = $null; usesLan = $false; hasProfileRules = $false; firewallProblem = ""
         processId = 0; state = "stopped"; startedAt = $null; attempts = @(); problem = $null
     }
 }

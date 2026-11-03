@@ -58,6 +58,9 @@ function Reset-Agent {
     $global:firewallEvents = @()
     $global:programRuleSweeps = @()
     $global:tailnetAddress = $null
+    $script:dockerBackendRulesShape = $null
+    $script:dockerBackendLanRemote = $null
+    $script:dockerBackendRulesProblem = ""
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
     New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 }
@@ -413,6 +416,86 @@ function New-ProfileEntry([bool]$LocalAnnounce) {
     }
 }
 
+function New-ClosedLanEntry {
+    $entry = New-ProfileEntry $false
+    $entry.options | Add-Member -NotePropertyName natEnabled -NotePropertyValue $false
+    return $entry
+}
+
+function Get-RuleEventKinds { return @($global:firewallEvents | ForEach-Object { ($_ -split ' ')[0] } | Sort-Object -Unique) }
+
+Describe "the firewall with local discovery and NAT off" {
+    Reset-Agent
+    $ports = [pscustomobject]@{ slot = 0; gui = 18475; listen = 32125 }
+
+    It "admits only the tailnet on Private and Domain, and Any again once either is on, changing the rules in place" {
+        $node = New-TestNode "f001" "closed"
+        Set-SyncthingFirewallRule $node $ports (New-ClosedLanEntry)
+        foreach ($protocol in @("tcp", "udp")) { (Get-TestRule "f001" "$protocol private").RemoteAddress | Should Be "100.64.0.0/10" }
+        foreach ($entry in @((New-ProfileEntry $false), (New-ClosedLanEntry))) {
+            $global:firewallEvents = @()
+            Set-SyncthingFirewallRule $node $ports $entry
+            Get-RuleEventKinds | Should Be @("set")
+            @($global:firewallEvents).Count | Should Be 2
+        }
+        (Get-TestRule "f001" "tcp private").RemoteAddress | Should Be "100.64.0.0/10"
+        $open = New-ProfileEntry $false
+        $open.options | Add-Member -NotePropertyName natEnabled -NotePropertyValue $true
+        Set-SyncthingFirewallRule $node $ports $open
+        (Get-TestRule "f001" "tcp private").RemoteAddress | Should Be "Any"
+    }
+
+    It "a running node follows the switch on the next round" {
+        $instance = New-SyncthingInstance (New-ConfiguredNode "f002" "switches")
+        $instance.state = "running"
+        $instance.ports = $ports
+        Write-ConnectionsFile @{ f002 = (New-ProfileEntry $true) }
+        Update-InstanceFirewall $instance
+        (Get-TestRule "f002" "udp private").RemoteAddress | Should Be "Any"
+        Write-ConnectionsFile @{ f002 = (New-ClosedLanEntry) }
+        Update-InstanceFirewall $instance
+        (Get-TestRule "f002" "udp private").RemoteAddress | Should Be "100.64.0.0/10"
+        $global:firewallEvents = @()
+        Update-InstanceFirewall $instance
+        $global:firewallEvents.Count | Should Be 0
+    }
+
+    It "a config that cannot be read keeps a kept-listen node's rules" {
+        $node = New-ConfiguredNode "f003" "kept-listen-unreadable"
+        $instance = New-SyncthingInstance $node
+        $instance.state = "running"
+        $instance.ports = $ports
+        Write-ConnectionsFile @{ f003 = (New-ProfileEntry $true) }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        Write-ConnectionsFile @{ f003 = @{ options = @{ localAnnounceEnabled = $true }; listenAddresses = @("udp://0.0.0.0:32125"); deviceAddresses = @{} } }
+        Update-InstanceFirewall $instance
+        Get-TestRule "f003" "tcp private" | Should Not BeNullOrEmpty
+        [System.IO.File]::WriteAllText((Get-SyncthingConfigPath $node), "<configuration")
+        $global:firewallEvents = @()
+        Update-InstanceFirewall $instance
+        $global:firewallEvents.Count | Should Be 0
+        Get-TestRule "f003" "tcp private" | Should Not BeNullOrEmpty
+    }
+
+    Context "while setting a rule fails" {
+        It "a failure to set a node's rules is logged once while it lasts" {
+            $instance = New-SyncthingInstance (New-ConfiguredNode "f004" "failing")
+            $instance.state = "running"
+            $instance.ports = $ports
+            Write-ConnectionsFile @{ f004 = (New-ProfileEntry $true) }
+            $global:logged = @()
+            Mock Write-WatcherLog { $global:logged += $Message }
+            Mock Set-SyncthingFirewallRule { throw "access denied" }
+            foreach ($round in 1..3) { Update-InstanceFirewall $instance }
+            @($global:logged).Count | Should Be 1
+            $global:logged[0] | Should Be "node failing (f004): firewall rules not updated: access denied"
+        }
+    }
+
+    Reset-Agent
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
+}
+
 Describe "the firewall per network profile" {
     Reset-Agent
     $ports = [pscustomobject]@{ slot = 0; gui = 18470; listen = 32120 }
@@ -630,7 +713,8 @@ Describe "the Docker backend's published ports" {
     $blockNames = @("storage-compose docker backend tcp public", "storage-compose docker backend udp public")
     $allowNames = @("storage-compose docker backend tcp private", "storage-compose docker backend udp private")
 
-    It "the docker backend is open to any address on Private and Domain networks" {
+    It "the docker backend is open to any address on Private and Domain networks while a node keeps the LAN or NAT on" {
+        Write-ConnectionsFile @{ storage = (New-ClosedLanEntry); a1b2 = (New-ProfileEntry $true) }
         Update-DockerBackendRules $true
         foreach ($protocol in @("TCP", "UDP")) {
             $rule = $global:firewallRules["storage-compose docker backend $($protocol.ToLower()) private"]
@@ -652,6 +736,47 @@ Describe "the Docker backend's published ports" {
         Update-DockerBackendRules $true
         Remove-SyncthingFirewallRules
         foreach ($name in $allowNames) { $global:firewallRules.ContainsKey($name) | Should Be $false }
+    }
+
+    It "admits only the tailnet on Private and Domain with LAN and NAT off on every entry, or no entry, and switches in place" {
+        $tailnetOnly = "100.64.0.0/10,fd7a:115c:a1e0::/48"
+        Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $script:connectionsFile
+        Update-DockerBackendRules $true
+        foreach ($name in $allowNames) { @($global:firewallRules[$name].RemoteAddress) -join "," | Should Be $tailnetOnly }
+        foreach ($step in @(@{ entries = @{ storage = (New-ClosedLanEntry); a1b2 = (New-ProfileEntry $true) }; remote = "Any" }, @{ entries = @{ storage = (New-ClosedLanEntry); a1b2 = (New-ClosedLanEntry) }; remote = $tailnetOnly })) {
+            Write-ConnectionsFile $step.entries
+            $global:firewallEvents = @()
+            Update-DockerBackendRules $true
+            Get-RuleEventKinds | Should Be @("set")
+            @($global:firewallEvents).Count | Should Be 2
+            foreach ($name in $allowNames) { @($global:firewallRules[$name].RemoteAddress) -join "," | Should Be $step.remote }
+        }
+        $global:firewallEvents = @()
+        Update-DockerBackendRules $true
+        $global:firewallEvents.Count | Should Be 0
+    }
+
+    It "keeps the Docker backend's rules while the connections file cannot be read" {
+        Write-ConnectionsFile @{ a1b2 = (New-ProfileEntry $true) }
+        Update-DockerBackendRules $true
+        [System.IO.File]::WriteAllText($script:connectionsFile, '{ "a1b2": ')
+        $global:firewallEvents = @()
+        Update-DockerBackendRules $true
+        $global:firewallEvents.Count | Should Be 0
+        @($global:firewallRules[$allowNames[0]].RemoteAddress) -join "," | Should Be "Any"
+    }
+
+    Context "while setting a rule fails" {
+        It "a failure to set the Docker backend's rules is logged once while it lasts" {
+            $script:dockerBackendRulesShape = $null
+            $global:logged = @()
+            Mock Write-WatcherLog { $global:logged += $Message }
+            Mock Set-AgentFirewallRule { throw "access denied" }
+            foreach ($round in 1..3) { Update-DockerBackendRules $true }
+            $global:logged | Should Be @("the Docker backend's rules were not set: access denied")
+            Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $script:connectionsFile
+            $script:dockerBackendRulesProblem = ""
+        }
     }
     $outsideTailnet = @("0.0.0.0-100.63.255.255", "100.128.0.0-255.255.255.255", "::-fd7a:115c:a1df:ffff:ffff:ffff:ffff:ffff", "fd7a:115c:a1e1::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
 
