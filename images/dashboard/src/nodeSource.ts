@@ -1,6 +1,6 @@
 import type { SettingsKeeper } from "./api/keeperText.js";
 import type { StorageNode } from "./api/types.js";
-import { clusterArrayId, nodeVolumesDirectory } from "./settings.js";
+import { nodeVolumesDirectory } from "./settings.js";
 
 /** Where this host knows a node from: the mounter's arrays, the registry the mounter and nodes service write, or the Windows host agent. */
 export type LocalNodeSource = "array" | "registry" | "host-agent";
@@ -13,13 +13,14 @@ interface SourcedNode {
 
 /**
  * What rewrites some of the node's Syncthing settings at each start: the host agent for its Windows nodes, the nodes service for every
- * array but the cluster and for each node volume it runs; nothing for the cluster, whose start script sets only its GUI, nor for any other Syncthing.
+ * array and for each node volume it runs, the cluster included, whose start script applies the same connection profile with the nodes
+ * service's script; nothing for any other Syncthing.
  * @implNote The nodes service runs a registry node's Syncthing only when its root lies under the node volumes (`wanted_nodes` in images/nodes/nodes.sh);
  * the test peer's root does not, as it runs its own.
  */
 export function settingsKeeperOf(node: SourcedNode): SettingsKeeper | null {
   if (node.source === "host-agent") return "host-agent";
-  if (node.source === "array") return node.nodeId === clusterArrayId ? null : "nodes-service";
+  if (node.source === "array") return "nodes-service";
   return node.root?.startsWith(nodeVolumesDirectory) ? "nodes-service" : null;
 }
 

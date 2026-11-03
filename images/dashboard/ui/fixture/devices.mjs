@@ -85,8 +85,11 @@ export function devicesFixture(startedAt) {
 export function deviceSettingsFixture(nodes, nodeId, deviceId) {
   const peer = nodes.find((node) => node.id === nodeId && node.local)?.peers.find((candidate) => candidate.deviceId === deviceId);
   if (!peer) return null;
+  const clusterNode = ["finn-pc-disk", "p53"].includes(peer.name);
   return {
-    deviceId, name: peer.name, addresses: ["dynamic"], compression: "metadata", introducer: false, autoAcceptFolders: false, paused: peer.paused,
+    deviceId, name: peer.name, addresses: clusterNode ? ["tcp://192.168.0.101:22001", "quic://192.168.0.101:22001", "relay://192.168.0.10:22100/?id=RELAY-FINN", "dynamic"] : ["dynamic"],
+    compression: "metadata", introducer: false, autoAcceptFolders: false, paused: peer.paused,
     untrusted: peer.untrusted, allowedNetworks: [], maxSendKbps: 0, maxRecvKbps: 0, numConnections: 0,
+    ...(clusterNode ? { addressesFromProfile: true } : {}),
   };
 }

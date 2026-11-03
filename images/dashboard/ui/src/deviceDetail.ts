@@ -20,7 +20,7 @@ function connectionNow(response: NodesResponse, device: DeviceSummary): string {
   if (device.thisHost) return "this device";
   const connection = device.connection;
   if (!connection) return device.online ? "its dashboard answers; no Syncthing connection" : "not connected";
-  return `${connectionKindText(connection.kind)} through ${nodeName(response, connection.nodeId)}, ${addressLabel(connection.address)} (${connection.type})`;
+  return `${connectionKindText(connection.kind, connection.bridgeHost)} through ${nodeName(response, connection.nodeId)}, ${addressLabel(connection.address)} (${connection.type})`;
 }
 
 function connectionLast(device: DeviceSummary, now: Date): string {
@@ -46,7 +46,7 @@ function instanceRow(instance: InstanceConnection): HTMLElement {
     element(
       "span",
       { className: "peer-name" },
-      element("span", { className: "peer-title" }, element("strong", {}, instance.nodeName), instance.kind ? element("span", { className: "chip" }, connectionKindText(instance.kind)) : null),
+      element("span", { className: "peer-title" }, element("strong", {}, instance.nodeName), instance.kind ? element("span", { className: "chip" }, connectionKindText(instance.kind, instance.bridgeHost)) : null),
       element("small", {}, instance.connected ? (instance.address ? addressLabel(instance.address) : "connected") : "not connected"),
     ),
   );

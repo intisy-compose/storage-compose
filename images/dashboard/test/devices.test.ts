@@ -3,6 +3,7 @@ import { type IncomingMessage, type Server, type ServerResponse, createServer } 
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it, mock } from "node:test";
 import { deviceDisplayName } from "../src/api/deviceText.js";
+import { recordPeerTable } from "../src/connectionsDrift.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance } from "../src/instanceResolver.js";
 import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
@@ -252,6 +253,22 @@ describe("a node's devices", () => {
     assert.match(deviceChangeProblem({ addresses: [] }) ?? "", /^Addresses needs at least one address/);
     await assert.rejects(editDevice(pc(), peerId, { addresses: ["tcp://ok:22000", "ftp://bad"] }), (error: Error & { status?: number }) => error.status === 400 && /ftp:\/\/bad/.test(error.message));
     assert.deepEqual(writes, []);
+  });
+
+  it("a cluster node's addresses are set by the connection profile, another device's stay editable", async () => {
+    const tableNaming = (deviceId: string) => ({ nodes: [{ nodeId: "d7e5", deviceId, syncPort: 22002, networks: [] }], bridges: [], builtAt: "2026-11-02T10:00:00.000Z" });
+    recordPeerTable(tableNaming(peerId));
+    try {
+      await assert.rejects(editDevice(pc(), peerId, { addresses: ["tcp://192.0.2.8:22000"] }), (error: Error & { status?: number }) => error.status === 400 && error.message === "Addresses: set by the connection profile, which gives every node a cluster node's addresses each round, so not changed here");
+      assert.deepEqual(writes, []);
+      assert.equal((await readDeviceSettings(pc(), peerId)).addressesFromProfile, true);
+      recordPeerTable(tableNaming(newId));
+      assert.equal((await readDeviceSettings(pc(), peerId)).addressesFromProfile, undefined);
+      await editDevice(pc(), peerId, { addresses: ["tcp://192.0.2.8:22000"] });
+      assert.deepEqual(writes, [{ method: "PATCH", path: `/rest/config/devices/${peerId}`, body: { addresses: ["tcp://192.0.2.8:22000"] } }]);
+    } finally {
+      recordPeerTable({ nodes: [], bridges: [], builtAt: "" });
+    }
   });
 
   it("the device ID, a field the form does not show and a wrong type are refused, named by the form's labels", () => {

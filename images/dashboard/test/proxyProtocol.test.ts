@@ -110,12 +110,18 @@ describe("the join listener", () => {
     assert.match(answer, /"caller":"fd7a:115c:a1e0::ca38:4c5c"/);
   });
 
-  it("serves nothing but POST /api/join", async () => {
-    for (const [method, path] of [["GET", "/"], ["GET", "/api/nodes"], ["POST", "/api/arrays/storage/sync"], ["GET", "/api/join"]]) {
+  it("serves nothing but POST /api/join and a joined device's GET of its node's connections", async () => {
+    for (const [method, path] of [["GET", "/"], ["GET", "/api/nodes"], ["POST", "/api/arrays/storage/sync"], ["GET", "/api/join"], ["POST", "/api/connections/node/device-laptopx"], ["GET", "/api/connections/profile"]]) {
       const answer = await exchange(server, Buffer.concat([ipv4Header(), httpRequest(method, path)]));
       assert.match(answer, /^HTTP\/1.1 404/, `${method} ${path}`);
-      assert.match(answer, /serves only POST \/api\/join/);
+      assert.match(answer, /serves only POST \/api\/join and GET \/api\/connections\/node\/<node id>/);
     }
+  });
+
+  it("hands a joined device's GET of its node's connections the caller from the header", async () => {
+    const answer = await exchange(server, Buffer.concat([ipv4Header(), httpRequest("GET", "/api/connections/node/device-laptopx")]));
+    assert.match(answer, /^HTTP\/1.1 200/);
+    assert.match(answer, /"caller":"100.75.76.90"/);
   });
 
   it("refuses a join a page on another site sent through the browser, and hands it on to nothing", async () => {

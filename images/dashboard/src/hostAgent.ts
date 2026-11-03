@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { NodeRegistryEntry } from "./api/types.js";
+import type { HostNetwork, NodeRegistryEntry } from "./api/types.js";
 import { hostAgentExpected, hostAgentHeartbeatFile, hostAgentSyncthingHost } from "./settings.js";
 
 /** `host-agent/status/heartbeat.json`, schema 1, written by the Windows host agent every 5 s. */
@@ -11,6 +11,8 @@ export interface HostAgentHeartbeat {
   state: "running" | "stopped" | "removed";
   problems: string[];
   nodes: HostAgentNode[];
+  /** The host's networks; absent from an agent that predates them. */
+  networks?: HostNetwork[];
 }
 
 export interface HostAgentNode {
@@ -21,7 +23,15 @@ export interface HostAgentNode {
   assigned: string[];
   root: string;
   space?: { size: number; free: number } | null;
-  syncthing: { state: string; deviceId: string | null; guiPort: number | null; listenPort: number | null; apiKey: string | null; problem: string | null } | null;
+  syncthing: {
+    state: string;
+    deviceId: string | null;
+    guiPort: number | null;
+    listenPort: number | null;
+    listenAddress?: string | null;
+    apiKey: string | null;
+    problem: string | null;
+  } | null;
 }
 
 const staleAfterSeconds = 30;

@@ -1,5 +1,5 @@
 import { type ActivityEntry, type ConflictFile, type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type ReadResult, activityFiltersOf, activityFiltersQuery, defaultActivityFilters, defaultItemsPerPage } from "./api.js";
-import type { ActivityFilters, ActivityResponse, DebugFacilities, LogLevel, LogMessage, NodeErrors, FileVersion, VersionsPage, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, IgnoredLists, NodeOptionsResponse, NodeRestartState, NodesResponse, RequestsResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, DebugFacilities, LogLevel, LogMessage, NodeErrors, FileVersion, VersionsPage, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, IgnoredLists, NodeOptionsResponse, NodeRestartState, NodesResponse, PeerTable, ProfileRead, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -300,6 +300,11 @@ export interface AppState {
   requestsError: string | null;
   hostSettings: HostSettings | null;
   hostSettingsError: string | null;
+  /** The cluster's connection profile as this host's data repo holds it. */
+  connectionProfile: ProfileRead | null;
+  connectionProfileError: string | null;
+  /** The addresses the Connections form judges a change by; null until read, or when it cannot be read. */
+  peerTable: PeerTable | null;
   /** Each local node's options by node ID, or why they could not be read. */
   nodeOptions: Map<string, NodeOptionsResponse | { error: string }>;
   /** Whether each local node's Syncthing needs a restart, read with its options. */
@@ -359,6 +364,9 @@ export const appState: AppState = {
   requestsError: null,
   hostSettings: null,
   hostSettingsError: null,
+  connectionProfile: null,
+  connectionProfileError: null,
+  peerTable: null,
   nodeOptions: new Map(),
   restartStates: new Map(),
   ignoredLists: new Map(),

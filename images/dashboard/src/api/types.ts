@@ -109,6 +109,7 @@ export interface InstanceConnection {
   nodeName: string;
   connected: boolean;
   kind: ConnectionKind | null;
+  bridgeHost?: string;
   address: string | null;
 }
 
@@ -119,7 +120,7 @@ export interface DeviceSummary {
   thisHost: boolean;
   online: boolean;
   /** The closest connection any instance of this host has to it now; null while none is connected and for this host. */
-  connection: { kind: ConnectionKind; address: string; type: string; nodeId: string } | null;
+  connection: { kind: ConnectionKind; bridgeHost?: string; address: string; type: string; nodeId: string } | null;
   perInstance: InstanceConnection[];
   lastSeen: string | null;
   lastConnection: { kind: ConnectionKind; address: string | null; at: string } | null;
@@ -258,7 +259,7 @@ export interface SyncthingInstance {
 export type RemoteState = "valid" | "unknown" | "notSharing" | "paused" | "unavailable";
 
 /** How a connection reaches the other device, closest first. */
-export type ConnectionKind = "this-device" | "local-network" | "tailscale" | "internet" | "relay";
+export type ConnectionKind = "this-device" | "local-network" | "tailscale" | "internet" | "bridge" | "relay";
 
 export interface Peer {
   deviceId: string;
@@ -270,6 +271,8 @@ export interface Peer {
   connectionType: string | null;
   /** Null while not connected. */
   connectionKind: ConnectionKind | null;
+  /** The host whose bridge carries a `bridge` connection. */
+  bridgeHost?: string;
   address: string | null;
   version: string | null;
   inRate: number;
@@ -308,7 +311,13 @@ export interface StorageNode {
   keeper: SettingsKeeper | null;
   /** Whether restarting the node's Syncthing needs its name typed, as the restart route asks. */
   restartConfirmRequired: boolean;
+  /** Whether the node's Syncthing has the connection profile's values, as this host's last round found it. */
+  connections: ConnectionsState;
+  /** Whether the node's host is on networks the person does not own only, so its local discovery and NAT are off; absent when not known. */
+  untrustedNetworks?: boolean;
 }
+
+export type ConnectionsState = "on-profile" | "not-yet" | "unknown";
 
 export type WarningKind =
   | "array"
@@ -653,29 +662,11 @@ export const connectionOptionKeys = [
 
 export type ConnectionOptionKey = (typeof connectionOptionKeys)[number];
 export type ConnectionOptions = Pick<InstanceOptions, ConnectionOptionKey>;
-/** `PATCH /api/nodes/<nodeId>/options`, with `?applyTo=host` for every node of this host: only the options the person changed. */
+/** A change of connection options; `PATCH /api/nodes/<nodeId>/options` refuses every one, as the connection profile sets them. */
 export type ConnectionOptionsChange = Partial<ConnectionOptions>;
 
 export function connectionOptionsOf(options: InstanceOptions): ConnectionOptions {
   return Object.fromEntries(connectionOptionKeys.map((key) => [key, structuredClone(options[key])])) as ConnectionOptions;
-}
-
-/** What an options edit did on one node: `unchanged` when every option already had its value, so nothing was sent. */
-export type OptionsEditOutcome = "saved" | "unchanged" | "maybe saved" | "failed" | "not connected" | "skipped";
-
-export interface NodeOptionsEdit {
-  nodeId: string;
-  name: string;
-  outcome: OptionsEditOutcome;
-  /** Why the node was not changed, or may not have been; null when it was. */
-  problem: string | null;
-  /** The node's options as they now stand, null when they could not be read. */
-  options: InstanceOptions | null;
-}
-
-/** The answer of an options edit: the node in the path first, then each other node of the host it was applied to. */
-export interface OptionsEditResponse {
-  nodes: NodeOptionsEdit[];
 }
 
 /** The person's answer to Syncthing's usage reporting question; it is never answered for them. */
@@ -792,10 +783,12 @@ export interface DeviceSettings {
   maxRecvKbps: number;
   /** 0 lets Syncthing choose. */
   numConnections: number;
+  /** Set when the device is a cluster node, whose addresses the connection profile gives every node each round. */
+  addressesFromProfile?: true;
 }
 
 /** `PATCH /api/nodes/<nodeId>/devices/<deviceId>`: only the fields the person changed. */
-export type DeviceSettingsChange = Partial<Omit<DeviceSettings, "deviceId">>;
+export type DeviceSettingsChange = Partial<Omit<DeviceSettings, "deviceId" | "addressesFromProfile">>;
 
 /**
  * `POST /api/nodes/<nodeId>/devices`: the new device's ID and only the settings that differ from the
@@ -1304,4 +1297,74 @@ export interface NodeRegistryEntry {
   updated: string;
   /** False for an ephemeral node such as a test peer: its instance ID and drive are never written to the seen files. Absent means true. */
   remember?: boolean;
+}
+
+export interface BandwidthLimits {
+  maxSendKbps: number;
+  maxRecvKbps: number;
+  limitLan: boolean;
+}
+
+/** The cluster's connection profile, `connections.toml` in the data repo; `nodeLimits` is keyed by node id. */
+export interface ConnectionProfile {
+  methods: { lan: boolean; tailnet: boolean; nat: boolean };
+  discovery: { global: string | string[] };
+  relays: { public: boolean; bridges: boolean; bridgePort: number };
+  limits: BandwidthLimits;
+  nodeLimits: Record<string, Partial<BandwidthLimits>>;
+}
+
+/** `GET /api/connections/profile`: the profile on disk, and when the data repo was last pulled and why that pull failed. */
+export interface ProfileRead {
+  profile: ConnectionProfile;
+  pulledAt: string | null;
+  pullProblem: string | null;
+}
+
+/**
+ * `PUT /api/connections/profile`: `base` is the profile the change was made from, as `GET` last served it, so a save never
+ * overwrites a change another host made since; `confirmUnreachable` saves a profile that leaves pairs of nodes without a common method.
+ */
+export interface ProfileSaveBody extends ConnectionProfile {
+  base: ConnectionProfile;
+  confirmUnreachable?: boolean;
+}
+
+/**
+ * One network a host is on, as its keeper detected it. `category` is the Windows network profile.
+ * @implNote `tcpOnly` marks a Docker node's tailnet address: `serve` forwards TCP only, so QUIC does not reach it there.
+ */
+export interface HostNetwork {
+  kind: "lan" | "tailnet" | "public";
+  address: string;
+  category?: "Private" | "Domain" | "Public";
+  tcpOnly?: boolean;
+}
+
+/** A storage node's sync port and the networks it is reached on. */
+export interface NodeAddresses {
+  nodeId: string;
+  /** The node's name, for messages; a table from an older dashboard has none. */
+  name?: string;
+  deviceId: string;
+  syncPort: number;
+  networks: HostNetwork[];
+}
+
+/** A host's private relay, which nodes on any of its networks reach each other through. */
+export interface Bridge {
+  host: string;
+  relayId: string;
+  port: number;
+  addresses: HostNetwork[];
+}
+
+/**
+ * Every node's addresses and every bridge, as one dashboard last built them; `GET /api/connections/addresses?scope=local`
+ * answers this host's own part.
+ */
+export interface PeerTable {
+  nodes: NodeAddresses[];
+  bridges: Bridge[];
+  builtAt: string;
 }

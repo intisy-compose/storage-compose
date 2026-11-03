@@ -64,14 +64,116 @@ function Set-XmlChildText($Parent, [string]$Name, [string]$Value) {
     return $true
 }
 
-function Set-ListenAddress($Options, [string]$Address) {
-    $current = @($Options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
-    if ($current.Count -eq 1 -and $current[0] -eq $Address) { return $false }
-    foreach ($element in @($Options.SelectNodes("listenAddress"))) { [void]$Options.RemoveChild($element) }
-    $element = $Options.OwnerDocument.CreateElement("listenAddress")
-    $element.InnerText = $Address
-    [void]$Options.PrependChild($element)
+function Set-XmlChildList($Parent, [string]$Name, [string[]]$Values) {
+    $existing = @($Parent.SelectNodes($Name))
+    $current = @($existing | ForEach-Object { $_.InnerText })
+    if ($current.Count -eq @($Values).Count -and ($current -join "`n") -ceq (@($Values) -join "`n")) { return $false }
+    foreach ($element in $existing) { [void]$Parent.RemoveChild($element) }
+    foreach ($value in $Values) {
+        $element = $Parent.OwnerDocument.CreateElement($Name)
+        $element.InnerText = $value
+        [void]$Parent.AppendChild($element)
+    }
     return $true
+}
+
+function Set-ListenAddresses($Options, [string[]]$Addresses) { return Set-XmlChildList $Options "listenAddress" $Addresses }
+
+$profileListenAddressPattern = '^(tcp|quic|relay|dynamic\+https?)://'
+
+function Test-IsProfileListenAddress($Address) { return $Address -is [string] -and $Address -match $profileListenAddressPattern }
+
+function Test-IsConnectionsEntry($Entry) {
+    if ($Entry -isnot [System.Management.Automation.PSCustomObject] -or -not $Entry.PSObject.Properties["listenAddresses"]) { return $false }
+    $addresses = @($Entry.listenAddresses)
+    return $addresses.Count -gt 0 -and @($addresses | Where-Object { -not (Test-IsProfileListenAddress $_) }).Count -eq 0
+}
+
+$unreadableConnections = [pscustomobject]@{ unreadable = $true }
+
+function Test-IsUnreadableConnections($Connections) { return [object]::ReferenceEquals($Connections, $unreadableConnections) }
+
+function Read-ConnectionsFile([string]$Path) {
+    try { $byNode = Get-Content -Raw -LiteralPath $Path -ErrorAction Stop | ConvertFrom-Json } catch { return $unreadableConnections }
+    if ($byNode -isnot [System.Management.Automation.PSCustomObject]) { return $unreadableConnections }
+    return $byNode
+}
+
+<#
+.NOTES
+The node's entry of the connections file the dashboard writes through a read-write bind (the agent
+never writes it). Null without the file, without an entry for the node, or with an entry that is not
+an object whose listen addresses are all Syncthing address strings: a malformed value written into
+config.xml can keep Syncthing from loading it, so such a node stays tailnet-only instead. A file that
+exists but cannot be read or parsed (caught mid-write, say) is $unreadableConnections, never null, so
+the callers keep the node's current rules and settings instead of swapping it to tailnet-only.
+#>
+function Get-NodeConnections($Node) {
+    if (-not $script:connectionsFile -or -not (Test-Path -LiteralPath $script:connectionsFile)) { return $null }
+    $byNode = Read-ConnectionsFile $script:connectionsFile
+    if (Test-IsUnreadableConnections $byNode) { return $byNode }
+    if (-not $byNode.PSObject.Properties[$Node.id]) { return $null }
+    $entry = $byNode.($Node.id)
+    if (-not (Test-IsConnectionsEntry $entry)) { return $null }
+    return $entry
+}
+
+function Test-IsTailnetOnlyListen($Addresses) {
+    return @($Addresses).Count -eq 1 -and "$(@($Addresses)[0])" -match '^tcp://(?!0\.0\.0\.0:)'
+}
+
+<#
+.NOTES
+The entry a node's config.xml already runs with: its listen addresses and whether local announce is
+on, which is all the start and the firewall read from an entry. Null for a tailnet-only config.
+#>
+function Get-ConfiguredConnections($Node) {
+    try { $options = ([xml][System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node))).configuration.options } catch { return $null }
+    $addresses = @($options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
+    $entry = [pscustomobject]@{ options = [pscustomobject]@{ localAnnounceEnabled = "$($options.localAnnounceEnabled)" -eq "true" }; listenAddresses = $addresses }
+    if ((Test-IsTailnetOnlyListen $addresses) -or -not (Test-IsConnectionsEntry $entry)) { return $null }
+    return $entry
+}
+
+function Get-StartConnections($Node) {
+    $connections = Get-NodeConnections $Node
+    if (Test-IsUnreadableConnections $connections) { return Get-ConfiguredConnections $Node }
+    return $connections
+}
+
+function Get-NodeListenAddresses($Connections, [string]$ListenHost, $Ports) {
+    if ($Connections) { return @($Connections.listenAddresses) }
+    return @("tcp://$ListenHost`:$($Ports.listen)")
+}
+
+$profileSwitchNames = @("globalAnnounceEnabled", "localAnnounceEnabled", "relaysEnabled", "natEnabled", "limitBandwidthInLan")
+$profileRateNames = @("maxSendKbps", "maxRecvKbps")
+$tailnetOnlyOptions = [ordered]@{
+    globalAnnounceEnabled = "false"; localAnnounceEnabled = "false"; relaysEnabled = "false"; natEnabled = "false"
+    maxSendKbps = "0"; maxRecvKbps = "0"; limitBandwidthInLan = "false"
+}
+
+function Test-IsRate($Value) { return ($Value -is [int] -or $Value -is [long]) -and $Value -ge 0 }
+$keptOptions = [ordered]@{ urAccepted = "-1"; autoUpgradeIntervalH = "0"; crashReportingEnabled = "false"; startBrowser = "false" }
+
+function Get-ProfileOptionValues($Connections) {
+    $values = [ordered]@{}
+    if (-not $Connections.PSObject.Properties["options"] -or -not $Connections.options) { return $values }
+    $options = $Connections.options
+    foreach ($name in $profileSwitchNames) {
+        if ($options.PSObject.Properties[$name] -and $options.$name -is [bool]) { $values[$name] = $(if ($options.$name) { "true" } else { "false" }) }
+    }
+    foreach ($name in $profileRateNames) {
+        if ($options.PSObject.Properties[$name] -and (Test-IsRate $options.$name)) { $values[$name] = "$($options.$name)" }
+    }
+    return $values
+}
+
+function Set-ProfileAnnounceServers($Options, $Connections) {
+    if (-not $Connections.PSObject.Properties["options"] -or -not $Connections.options -or -not $Connections.options.PSObject.Properties["globalAnnounceServers"]) { return $false }
+    $servers = @($Connections.options.globalAnnounceServers)
+    if (@($servers | Where-Object { $_ -isnot [string] }).Count -gt 0) { return $false }
+    return Set-XmlChildList $Options "globalAnnounceServer" $servers
 }
 
 function Save-XmlDocument($Document, [string]$Path) {
@@ -87,12 +189,15 @@ function Save-XmlDocument($Document, [string]$Path) {
 
 <#
 .NOTES
-Discovery, relays and NAT traversal are off because peers reach a node only over the tailnet, by the
-address the dashboard hands out; usage reporting is declined once so Syncthing never asks. The host
-check is off because the dashboard's container calls as host.docker.internal, which Syncthing
-otherwise answers with 403; the GUI listens on loopback only and every call needs the API key.
+With the node's entry of the connections file, its discovery, relay, NAT, limit and listen settings
+are the cluster profile's, applied before Syncthing starts so it never listens with stale ones;
+without it they are tailnet-only (discovery, relays and NAT off, listening on the tailnet address),
+which is also what a device joined without the host agent runs. Usage reporting is declined once so
+Syncthing never asks, in both cases. The host check is off because the dashboard's container calls as
+host.docker.internal, which Syncthing otherwise answers with 403; the GUI listens on loopback only
+and every call needs the API key.
 #>
-function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost) {
+function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost, $Connections) {
     $path = Get-SyncthingConfigPath $Node
     $document = New-Object System.Xml.XmlDocument
     $document.PreserveWhitespace = $false
@@ -105,12 +210,12 @@ function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost) {
     if (-not $gui.SelectSingleNode("apikey").InnerText) { $changed = (Set-XmlChildText $gui "apikey" (New-ApiKey)) -or $changed }
     $changed = (Set-XmlChildText $gui "insecureSkipHostcheck" "true") -or $changed
     $options = $configuration.SelectSingleNode("options")
-    $changed = (Set-ListenAddress $options "tcp://$ListenHost`:$($Ports.listen)") -or $changed
-    $settings = [ordered]@{
-        globalAnnounceEnabled = "false"; localAnnounceEnabled = "false"; relaysEnabled = "false"; natEnabled = "false"
-        urAccepted = "-1"; autoUpgradeIntervalH = "0"; crashReportingEnabled = "false"; startBrowser = "false"
+    $changed = (Set-ListenAddresses $options @(Get-NodeListenAddresses $Connections $ListenHost $Ports)) -or $changed
+    $settings = $(if ($Connections) { Get-ProfileOptionValues $Connections } else { $tailnetOnlyOptions })
+    if ($Connections) { $changed = (Set-ProfileAnnounceServers $options $Connections) -or $changed }
+    foreach ($values in @($settings, $keptOptions)) {
+        foreach ($name in @($values.Keys)) { $changed = (Set-XmlChildText $options $name $values[$name]) -or $changed }
     }
-    foreach ($name in $settings.Keys) { $changed = (Set-XmlChildText $options $name $settings[$name]) -or $changed }
     $self = Get-SelfDeviceElement $configuration $Node
     if ($self -and $self.GetAttribute("name") -ne $Node.name) { $self.SetAttribute("name", $Node.name); $changed = $true }
     if ($changed) { Save-XmlDocument $document $path }
@@ -135,41 +240,229 @@ function New-ApiKey {
     return [Convert]::ToBase64String($bytes).Replace("+", "a").Replace("/", "b").TrimEnd("=")
 }
 
-function Get-FirewallRuleName($Node) { return "storage-compose syncthing $($Node.id)" }
+$localDiscoveryPort = 21027
+$lanProfiles = "Private,Domain"
+$profileRuleSuffixes = @("tcp private", "udp private", "tcp public", "udp public", "discovery private")
+$tailnetOnlyRuleSuffixes = @("", "udp")
 
-function Get-FirewallUdpRuleName($Node) { return "$(Get-FirewallRuleName $Node) udp" }
+function Get-FirewallRuleName($Node, [string]$Suffix) {
+    $name = "storage-compose syncthing $($Node.id)"
+    if ($Suffix) { return "$name $Suffix" }
+    return $name
+}
 
-function Test-FirewallRuleIsCurrent([string]$Name, [string]$Port) {
-    $existing = Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue
+function New-FirewallRuleSpec($Node, [string]$Suffix, [string]$Action, [string]$Protocol, [string]$LocalPort, [string]$RemoteAddress, [string]$Profiles) {
+    return [pscustomobject]@{
+        Name = Get-FirewallRuleName $Node $Suffix; Action = $Action; Protocol = $Protocol; LocalPort = $LocalPort
+        RemoteAddress = $RemoteAddress; Profile = $Profiles; Program = $script:syncthingPath
+    }
+}
+
+function Test-UsesLanMethod($Connections) {
+    return [bool]($Connections -and $Connections.PSObject.Properties["options"] -and $Connections.options -and
+        $Connections.options.PSObject.Properties["localAnnounceEnabled"] -and $Connections.options.localAnnounceEnabled -eq $true)
+}
+
+<#
+.NOTES
+Without the node's connections entry the node is tailnet-only and keeps the rules it always had: TCP
+from the tailnet and a UDP block, so nothing opens on a host that never received the profile. With
+it, the sync port is open on Private and Domain networks to any address (the LAN, and what the
+router forwards after NAT traversal arrives there too) and on Public networks to the tailnet only.
+#>
+function Get-NodeFirewallRules($Node, $Ports, $Connections) {
+    $port = "$($Ports.listen)"
+    if (-not $Connections) {
+        return @(
+            (New-FirewallRuleSpec $Node "" "Allow" "TCP" $port $tailnetAddressRange "Any"),
+            (New-FirewallRuleSpec $Node "udp" "Block" "UDP" "Any" "Any" "Any")
+        )
+    }
+    $rules = @(
+        (New-FirewallRuleSpec $Node "tcp private" "Allow" "TCP" $port "Any" $lanProfiles),
+        (New-FirewallRuleSpec $Node "udp private" "Allow" "UDP" $port "Any" $lanProfiles),
+        (New-FirewallRuleSpec $Node "tcp public" "Allow" "TCP" $port $tailnetAddressRange "Public"),
+        (New-FirewallRuleSpec $Node "udp public" "Allow" "UDP" $port $tailnetAddressRange "Public")
+    )
+    if (Test-UsesLanMethod $Connections) { $rules += New-FirewallRuleSpec $Node "discovery private" "Allow" "UDP" "$localDiscoveryPort" "Any" $lanProfiles }
+    return $rules
+}
+
+function Get-AllNodeFirewallRuleNames($Node) {
+    return @(($tailnetOnlyRuleSuffixes + $profileRuleSuffixes) | ForEach-Object { Get-FirewallRuleName $Node $_ })
+}
+
+<#
+.NOTES
+Windows reports an IPv4 subnet with its mask (100.64.0.0/255.192.0.0) where the rule was made with a
+prefix length.
+#>
+function ConvertTo-PrefixNotation([string]$Address) {
+    if ($Address -notmatch '^(\d{1,3}(\.\d{1,3}){3})/(\d{1,3}(\.\d{1,3}){3})$') { return $Address }
+    $network = $Matches[1]
+    $bits = ([System.Net.IPAddress]::Parse($Matches[3]).GetAddressBytes() | ForEach-Object { [Convert]::ToString($_, 2) }) -join ""
+    return "$network/$(($bits.ToCharArray() | Where-Object { $_ -eq '1' }).Count)"
+}
+
+<#
+.NOTES
+Windows reports a rule's profiles as a flags enum ("Domain, Private"), in its own order.
+#>
+function ConvertTo-ProfileKey([string]$Profiles) {
+    return (@($Profiles -split '[,\s]+' | Where-Object { $_ } | Sort-Object) -join ",")
+}
+
+<#
+.NOTES
+A rule made with several ports or addresses is reported as a list, in Windows' own order.
+#>
+function ConvertTo-ListKey($Values) {
+    return (@(@($Values) | ForEach-Object { "$_" -split '[,\s]+' } | Where-Object { $_ } | ForEach-Object { (ConvertTo-PrefixNotation $_).ToLower() } | Sort-Object) -join ",")
+}
+
+function Test-FirewallRuleIsCurrent($Rule) {
+    $existing = Get-NetFirewallRule -Name $Rule.Name -ErrorAction SilentlyContinue
     if (-not $existing) { return $false }
-    $filter = $existing | Get-NetFirewallPortFilter
+    $ports = $existing | Get-NetFirewallPortFilter
+    $addresses = $existing | Get-NetFirewallAddressFilter
     $program = ($existing | Get-NetFirewallApplicationFilter).Program
-    if ("$($filter.LocalPort)" -eq $Port -and $program -eq $script:syncthingPath) { return $true }
-    Remove-NetFirewallRule -Name $Name
+    $isCurrent = (ConvertTo-ListKey $ports.LocalPort) -eq (ConvertTo-ListKey $Rule.LocalPort) -and "$($ports.Protocol)" -eq $Rule.Protocol -and
+        (ConvertTo-ListKey $addresses.RemoteAddress) -eq (ConvertTo-ListKey $Rule.RemoteAddress) -and
+        (ConvertTo-ProfileKey "$($existing.Profile)") -eq (ConvertTo-ProfileKey $Rule.Profile) -and
+        "$($existing.Action)" -eq $Rule.Action -and $program -eq $Rule.Program
+    if ($isCurrent) { return $true }
+    Remove-NetFirewallRule -Name $Rule.Name
     return $false
 }
 
 <#
 .NOTES
-Both rules exist before Syncthing first listens. Windows asks "allow access?" for a program no rule
-names, and its answer is a rule open to every address that outlives the stack; with a TCP rule for the
-tailnet and a UDP block (no QUIC, no discovery) for this program, it never asks.
+Every rule exists before Syncthing first listens. Windows asks "allow access?" for a program no rule
+names, and its answer is a rule open to every address that outlives the stack; with rules naming this
+program on every profile, it never asks. Rules of the other set (tailnet-only or profile), including
+the names an agent before the profile made, are removed by name, so switching sets leaves none behind.
 #>
-function Set-SyncthingFirewallRule($Node, $Ports) {
-    $name = Get-FirewallRuleName $Node
-    if (-not (Test-FirewallRuleIsCurrent $name "$($Ports.listen)")) {
-        New-NetFirewallRule -Name $name -DisplayName "$name ($($Node.name))" -Group $agentFirewallGroup -Direction Inbound -Action Allow `
-            -Protocol TCP -LocalPort $Ports.listen -RemoteAddress $tailnetAddressRange -Program $script:syncthingPath -Profile Any | Out-Null
+function Set-SyncthingFirewallRule($Node, $Ports, $Connections) {
+    $rules = @(Get-NodeFirewallRules $Node $Ports $Connections)
+    $wanted = @($rules | ForEach-Object { $_.Name })
+    foreach ($name in Get-AllNodeFirewallRuleNames $Node) {
+        if ($wanted -notcontains $name) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
     }
-    $udpName = Get-FirewallUdpRuleName $Node
-    if (-not (Test-FirewallRuleIsCurrent $udpName "Any")) {
-        New-NetFirewallRule -Name $udpName -DisplayName "$udpName ($($Node.name))" -Group $agentFirewallGroup -Direction Inbound -Action Block `
-            -Protocol UDP -Program $script:syncthingPath -Profile Any | Out-Null
+    foreach ($rule in $rules) {
+        if (Test-FirewallRuleIsCurrent $rule) { continue }
+        New-AgentFirewallRule $rule "$($rule.Name) ($($Node.name))"
     }
 }
 
+function New-AgentFirewallRule($Rule, [string]$DisplayName) {
+    New-NetFirewallRule -Name $Rule.Name -DisplayName $DisplayName -Group $agentFirewallGroup -Direction Inbound `
+        -Action $Rule.Action -Protocol $Rule.Protocol -LocalPort @($Rule.LocalPort -split ',') -RemoteAddress @($Rule.RemoteAddress -split ',') `
+        -Program $Rule.Program -Profile $Rule.Profile | Out-Null
+}
+
 function Remove-NodeFirewallRules($Node) {
-    foreach ($name in @((Get-FirewallRuleName $Node), (Get-FirewallUdpRuleName $Node))) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
+    foreach ($name in Get-AllNodeFirewallRuleNames $Node) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
+}
+
+function Get-InstanceFirewallShape($Instance, $Connections) {
+    return "$([bool]$Connections) $(Test-UsesLanMethod $Connections) $($Instance.ports.listen)"
+}
+
+<#
+.NOTES
+The profile reaches a running Syncthing through the dashboard's REST calls without a restart, so the
+rules follow the connections entry every round; they are only rewritten when its shape changes, and
+an instance taken over from an earlier agent has no shape yet, which sets them (and removes the
+names an older agent left) on its first round.
+#>
+function Update-InstanceFirewall($Instance) {
+    if ($Instance.state -ne "running" -or -not $Instance.ports) { return }
+    $connections = Get-NodeConnections $Instance.node
+    if (Test-IsUnreadableConnections $connections) { return }
+    if ((Get-InstanceFirewallShape $Instance $connections) -eq $Instance.firewallShape) { return }
+    try { Set-InstanceFirewall $Instance $connections } catch { Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): firewall rules not updated: $_" }
+}
+
+function Set-InstanceFirewall($Instance, $Connections) {
+    Set-SyncthingFirewallRule $Instance.node $Instance.ports $Connections
+    $Instance.firewallShape = Get-InstanceFirewallShape $Instance $Connections
+    $Instance.usesLan = Test-UsesLanMethod $Connections
+}
+
+<#
+.NOTES
+The keeper never changes a network's category: Windows gives a Public network no LAN rules, so it
+is reported instead, while some running node wants the LAN method.
+#>
+function Get-LanProblems($Networks, $Instances) {
+    if (@($Instances | Where-Object { $_.state -eq "running" -and $_.PSObject.Properties["usesLan"] -and $_.usesLan }).Count -eq 0) { return @() }
+    $problems = @()
+    foreach ($network in @($Networks | Where-Object { $_.kind -eq "lan" -and $_.PSObject.Properties["category"] -and $_.category -eq "Public" })) {
+        $label = $network.address
+        if ($network.PSObject.Properties["name"] -and $network.name) { $label = "$($network.name) ($($network.address))" }
+        $problems += "LAN unavailable: $label is marked Public"
+    }
+    return $problems
+}
+
+$stackSyncPorts = "22000,22021-22099,22100"
+$outsideTailnetRanges = "0.0.0.0-100.63.255.255,100.128.0.0-255.255.255.255,::-fd7a:115c:a1df:ffff:ffff:ffff:ffff:ffff,fd7a:115c:a1e1::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+$dockerBackendBlockNames = @("storage-compose docker backend tcp public", "storage-compose docker backend udp public")
+$dockerBackendBlockShape = $null
+
+<#
+.NOTES
+The process Windows' own "Docker Desktop Backend" rules name; the installed copy when it cannot be
+read (an elevated process's path is hidden from a non-elevated caller).
+#>
+function Get-DockerBackendPath {
+    $process = Get-Process -Name "com.docker.backend" -ErrorAction SilentlyContinue | Where-Object { $_.Path } | Select-Object -First 1
+    if ($process) { return $process.Path }
+    $installed = Join-Path $env:ProgramFiles "Docker\Docker\resources\com.docker.backend.exe"
+    if (Test-Path -LiteralPath $installed) { return $installed }
+    return $null
+}
+
+function Get-DockerBackendBlockRules([string]$Program) {
+    return @("TCP", "UDP") | ForEach-Object {
+        [pscustomobject]@{
+            Name = "storage-compose docker backend $($_.ToLower()) public"; Action = "Block"; Protocol = $_; LocalPort = $stackSyncPorts
+            RemoteAddress = $outsideTailnetRanges; Profile = "Public"; Program = $Program
+        }
+    }
+}
+
+function Remove-DockerBackendBlock {
+    foreach ($name in $dockerBackendBlockNames) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
+    $script:dockerBackendBlockShape = $null
+}
+
+<#
+.NOTES
+Spec section 9: Docker Desktop's own rule admits every address to its published ports on a Public
+network, a network the person does not own, and a Block rule wins over it, so only the tailnet
+reaches the stack's sync and relay ports there. The ports exist only while the stack runs, which is
+when the rule is kept; it is rewritten only when the backend's path changes, and it belongs to the
+agent's group, so removing the agent's rules removes it too.
+#>
+function Update-DockerBackendBlock([bool]$IsActive) {
+    if (-not $IsActive) {
+        if ($script:dockerBackendBlockShape) { Remove-DockerBackendBlock }
+        return
+    }
+    $program = Get-DockerBackendPath
+    if (-not $program) {
+        if ($script:dockerBackendBlockShape -ne "missing") { Write-WatcherLog "Docker Desktop's backend was not found; the stack's sync ports are not blocked on Public networks" }
+        $script:dockerBackendBlockShape = "missing"
+        return
+    }
+    if ($script:dockerBackendBlockShape -eq $program) { return }
+    try {
+        foreach ($rule in Get-DockerBackendBlockRules $program) {
+            if (-not (Test-FirewallRuleIsCurrent $rule)) { New-AgentFirewallRule $rule $rule.Name }
+        }
+        $script:dockerBackendBlockShape = $program
+    } catch { Write-WatcherLog "the Docker backend's block rules were not set: $_" }
 }
 
 function Get-SyncthingBinFolder {
@@ -179,6 +472,7 @@ function Get-SyncthingBinFolder {
 
 function Remove-SyncthingFirewallRules {
     Remove-NetFirewallRule -Group $agentFirewallGroup -ErrorAction SilentlyContinue
+    $script:dockerBackendBlockShape = $null
     Remove-ProgramFirewallRules (Get-SyncthingBinFolder)
 }
 
@@ -251,7 +545,8 @@ function Stop-SyncthingProcess($Instance) {
 
 function New-SyncthingInstance($Node) {
     return [pscustomobject]@{
-        nodeId = $Node.id; node = $Node; ports = $null; apiKey = $null; deviceId = $null; listenAddress = $null
+        nodeId = $Node.id; node = $Node; ports = $null; apiKey = $null; deviceId = $null; listenAddress = $null; usesProfile = $false
+        firewallShape = $null; usesLan = $false
         processId = 0; state = "stopped"; startedAt = $null; attempts = @(); problem = $null
     }
 }
@@ -282,11 +577,13 @@ function Start-NodeSyncthing($Instance, [string]$ListenHost) {
         $Instance.ports = Get-NodePorts $node
         New-Item -ItemType Directory -Force -Path (Get-SyncthingHome $node) | Out-Null
         if (-not (Test-Path -LiteralPath (Get-SyncthingConfigPath $node))) { New-SyncthingConfig $node }
-        $identity = Set-SyncthingConfig $node $Instance.ports $ListenHost
+        $connections = Get-StartConnections $node
+        $identity = Set-SyncthingConfig $node $Instance.ports $ListenHost $connections
         $Instance.apiKey = $identity.apiKey
         $Instance.deviceId = $identity.deviceId
-        $Instance.listenAddress = "tcp://$ListenHost`:$($Instance.ports.listen)"
-        Set-SyncthingFirewallRule $node $Instance.ports
+        $Instance.listenAddress = @(Get-NodeListenAddresses $connections $ListenHost $Instance.ports)[0]
+        $Instance.usesProfile = [bool]$connections
+        Set-InstanceFirewall $Instance $connections
         $Instance.processId = Start-SyncthingProcess $node
         $Instance.state = "running"
         $Instance.startedAt = (Get-Date).ToString("o")
@@ -302,6 +599,8 @@ function Start-NodeSyncthing($Instance, [string]$ListenHost) {
 function Stop-NodeSyncthing($Instance, [string]$Reason) {
     Stop-SyncthingProcess $Instance
     Remove-NodeFirewallRules $Instance.node
+    $Instance.firewallShape = $null
+    $Instance.usesLan = $false
     $Instance.state = "stopped"
     $Instance.processId = 0
     Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): Syncthing stopped, $Reason"
@@ -324,12 +623,19 @@ function Resume-OrphanedSyncthing($Instance) {
         $Instance.apiKey = $document.configuration.gui.apikey
         $Instance.listenAddress = $document.configuration.options.listenAddress | Select-Object -First 1
     } catch { }
+    $Instance.usesProfile = [bool](Get-StartConnections $Instance.node)
     $Instance.deviceId = Get-SyncthingDeviceId $Instance.node
     Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): took over the running Syncthing, pid $($Instance.processId)"
     return $true
 }
 
+<#
+.NOTES
+Only a tailnet-only node listens on the tailnet address itself; one under the connection profile
+listens on 0.0.0.0 and keeps listening when that address changes.
+#>
 function Test-NeedsRestartForAddress($Instance, [string]$ListenHost) {
+    if ($Instance.usesProfile) { return $false }
     return $Instance.state -eq "running" -and $Instance.ports -and $Instance.listenAddress -ne "tcp://$ListenHost`:$($Instance.ports.listen)"
 }
 
@@ -363,7 +669,7 @@ function Update-NodeInstances([object[]]$Nodes, [bool]$IsActive) {
         if (-not $script:syncthingInstances.ContainsKey($node.id)) {
             $instance = New-SyncthingInstance $node
             $script:syncthingInstances[$node.id] = $instance
-            if (Resume-OrphanedSyncthing $instance) { continue }
+            if (Resume-OrphanedSyncthing $instance) { Update-InstanceFirewall $instance; continue }
         }
         $instance = $script:syncthingInstances[$node.id]
         $instance.node = $node
@@ -374,6 +680,7 @@ function Update-NodeInstances([object[]]$Nodes, [bool]$IsActive) {
             $instance.state = "stopped"
         }
         if ($instance.state -ne "running") { Start-NodeSyncthing $instance $listenHost }
+        Update-InstanceFirewall $instance
     }
     return $binaryProblem
 }

@@ -61,6 +61,10 @@ export const joinTag = "tag:storage";
 /** The setup repo inside the container: SETUP_REPO_DIR, by default the stack's own data repo. */
 export const setupRepoDirectory = process.env.SETUP_REPO_DIR ? "/setup" : "";
 export const setupLayoutPath = process.env.SETUP_LAYOUT ?? "drive-sync.toml";
+/** The cluster connection profile, kept in the data repo beside the layout. */
+export const connectionsProfilePath = "connections.toml";
+/** How often the data repo is pulled, so another host's profile arrives. */
+export const dataRepoPullSeconds = 60;
 /** Where the cluster's Syncthing answers inside the stack: Caddy's local site in front of its GUI. */
 export const clusterSyncthingUrl = process.env.CLUSTER_SYNCTHING_URL ?? "http://gateway:8443";
 
@@ -79,6 +83,10 @@ export function poolPath(arrayId: string): string {
 /** Set by docker-compose.ps1: a Windows host runs the host agent, and its absence is a problem. */
 export const hostAgentExpected = process.env.HOST_AGENT_EXPECTED === "yes";
 export const hostAgentHeartbeatFile = "/host-agent/heartbeat.json";
+/** Each node's resolved connections, which the nodes service and the cluster read at every start. */
+export const connectionsFile = `${statusDirectory}/connections.json`;
+/** @implNote The host agent's status folder is mounted read-only, so its copy of `connectionsFile` has a writable mount of its own. */
+export const hostAgentConnectionsFile = process.env.HOST_AGENT_CONNECTIONS_FILE ?? "/host-agent-connections/connections.json";
 export const hostAgentSyncthingHost = process.env.HOST_AGENT_SYNCTHING_HOST ?? "host.docker.internal";
 
 export interface AttentionThresholds {

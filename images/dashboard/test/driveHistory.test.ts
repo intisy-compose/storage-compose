@@ -51,7 +51,7 @@ function node(overrides: Partial<StorageNode>): StorageNode {
     folders: [],
     dashboardUrl: null,
     keeper: null,
-    restartConfirmRequired: false,
+    restartConfirmRequired: false, connections: "unknown",
     ...overrides,
   };
 }

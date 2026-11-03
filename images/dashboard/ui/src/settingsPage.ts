@@ -6,6 +6,7 @@ import { isNotConnected } from "./nodeStatus.js";
 import { defaultsSection } from "./defaultsSection.js";
 import { generalSettingsForm } from "./generalForm.js";
 import { ignoredSection } from "./ignoredSection.js";
+import { connectionsCard } from "./connectionsForm.js";
 import { connectionOptionsForm } from "./optionsForm.js";
 import { applyTheme } from "./preferences.js";
 import { restartSection } from "./restartSection.js";
@@ -76,7 +77,7 @@ function nodeBody(node: StorageNode, answer: NodeOptionsResponse | { error: stri
   if ("error" in answer) return [element("p", { className: "warning" }, answer.error)];
   return [
     restartSection(node),
-    connectionOptionsForm(node, answer.options, localNodes().length, answer.keeper),
+    connectionOptionsForm(node, answer.options),
     generalSettingsForm(node, answer.options, answer.keeper),
     otherOptionsList(answer.options),
     guiList(answer.gui),
@@ -137,9 +138,10 @@ export function renderSettingsPage(): HTMLElement {
       "header",
       { className: "page-header" },
       element("h1", {}, "Settings"),
-      element("p", { className: "page-summary" }, "This host, the Syncthing options of each of its nodes, and this browser's preferences."),
+      element("p", { className: "page-summary" }, "This host, how the cluster's nodes connect, the Syncthing options of each of this host's nodes, and this browser's preferences."),
     ),
     hostSection(),
+    connectionsCard(),
     ...(nodes.length ? nodes.map(nodeCard) : [element("p", { className: "empty-line settings-card" }, appState.data ? "This host runs no node." : "Loading nodes…")]),
     card("This browser", null, themeSetting(), notice),
   );

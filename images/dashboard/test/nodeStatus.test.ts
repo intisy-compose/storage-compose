@@ -11,7 +11,7 @@ function folder(errors: number): NodeFolder {
 function node(overrides: Partial<StorageNode>): StorageNode {
   return {
     id: "fb98", name: "pc", kind: "drive", threshold: 50, assigned: [], local: true, online: true, host: "finn", space: null,
-    sync: { state: "idle", completion: 100, lastSeen: null }, offersWaiting: 0, syncthing: null, instance: null, peers: [], folders: [], dashboardUrl: null, keeper: null, restartConfirmRequired: false, ...overrides,
+    sync: { state: "idle", completion: 100, lastSeen: null }, offersWaiting: 0, syncthing: null, instance: null, peers: [], folders: [], dashboardUrl: null, keeper: null, restartConfirmRequired: false, connections: "unknown", ...overrides,
   };
 }
 

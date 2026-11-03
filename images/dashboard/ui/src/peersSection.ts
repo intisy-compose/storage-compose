@@ -25,7 +25,7 @@ function connectionText(peer: Peer): string {
 
 function kindChip(peer: Peer): HTMLElement | null {
   if (!peer.connectionKind) return null;
-  return element("span", { className: "chip", title: connectionText(peer) }, connectionKindText(peer.connectionKind));
+  return element("span", { className: "chip", title: connectionText(peer) }, connectionKindText(peer.connectionKind, peer.bridgeHost));
 }
 
 function completionText(peer: Peer): string {

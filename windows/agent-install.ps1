@@ -231,9 +231,14 @@ function Get-NodeSyncthingTaskArguments([string]$SyncthingHome) {
     return "serve --home=`"$SyncthingHome`" --no-browser --no-restart --no-upgrade --log-file=`"$([System.IO.Path]::Combine($SyncthingHome, 'syncthing.log'))`" --log-max-size=$syncthingLogMaxBytes --log-max-old-files=2"
 }
 
+<#
+.NOTES
+Any action, not the first: the join's task runs its connections step before Syncthing.
+#>
 function Get-TaskSyncthingHome($Task) {
-    $action = @($Task.Actions | Where-Object { $_ -and $_.PSObject.Properties["Arguments"] })[0]
-    if ($action -and "$($action.Arguments)" -match '--home="([^"]+)"') { return $Matches[1] }
+    foreach ($action in @($Task.Actions | Where-Object { $_ -and $_.PSObject.Properties["Arguments"] })) {
+        if ("$($action.Arguments)" -match '--home="([^"]+)"') { return $Matches[1] }
+    }
     return $null
 }
 

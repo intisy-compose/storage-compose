@@ -3,9 +3,9 @@ import { type LocalInstance, type LocalNodeInfo, type ResolverSources, defaultRe
 import { type JoinInstance, JoinError } from "./join.js";
 import { clusterArrayId, tailnetHost } from "./settings.js";
 
-const clusterSyncPort = 22000;
+export const clusterSyncPort = 22000;
 
-async function registrySyncPort(registryDirectory: string, nodeId: string): Promise<number | null> {
+export async function registrySyncPort(registryDirectory: string, nodeId: string): Promise<number | null> {
   try {
     return (JSON.parse(await readFile(`${registryDirectory}/${nodeId}.syncthing.json`, "utf8")) as { syncPort?: number }).syncPort ?? null;
   } catch {

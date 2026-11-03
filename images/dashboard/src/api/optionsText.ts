@@ -1,12 +1,5 @@
 import type { ConnectionOptionKey, GeneralSettingsChange } from "./types.js";
 
-/** The query of an options edit that is applied to every node of this host. */
-export const applyToHostQuery = "applyTo=host";
-
-export const applyToHostLabel = "Apply to every node on this host";
-
-export const perNodeListenText = "listen addresses are each node's own, as each node listens on its own port from access/PORTS.md: untick apply to every node on this host to change them";
-
 export const connectionOptionLabels: Record<ConnectionOptionKey, string> = {
   listenAddresses: "Listen addresses",
   maxRecvKbps: "Receive limit",
@@ -23,22 +16,28 @@ interface PortRow {
   serves: string;
   first: number;
   last: number;
+  /** False for the bridge relay's row: a node never listens on it. */
+  nodeListens: boolean;
 }
 
 /**
- * The storage stack's Syncthing sync rows of `access/PORTS.md` in `intisy-compose/workflows`: the only ports a node may listen on.
+ * The storage stack's Syncthing sync rows of `access/PORTS.md` in `intisy-compose/workflows`.
  * @implNote A copy, as the dashboard image cannot read that repo; a change to those rows is made here too.
  */
 const syncPortRows: readonly PortRow[] = [
-  { serves: "Syncthing sync", first: 22000, last: 22000 },
-  { serves: "Syncthing sync of each further node on a host, reserved", first: 22001, last: 22099 },
+  { serves: "Syncthing sync", first: 22000, last: 22000, nodeListens: true },
+  { serves: "Syncthing sync of the host agent's native nodes", first: 22001, last: 22020, nodeListens: true },
+  { serves: "Syncthing sync of the nodes service's nodes", first: 22021, last: 22099, nodeListens: true },
+  { serves: "bridge relay", first: 22100, last: 22100, nodeListens: false },
 ];
+
+const nodeRows = syncPortRows.filter((row) => row.nodeListens);
 
 function rowRange(row: PortRow): string {
   return row.first === row.last ? String(row.first) : `${row.first}-${row.last}`;
 }
 
-const rowsText = syncPortRows.map((row) => `${row.serves} (${rowRange(row)})`).join(", ");
+const rowsText = nodeRows.map((row) => `${row.serves} (${rowRange(row)})`).join(", ");
 
 const portSchemes = new Set(["tcp", "tcp4", "tcp6", "quic", "quic4", "quic6"]);
 
@@ -80,13 +79,6 @@ function hostPortOf(address: string): HostPort | null {
   return parsed && portSchemes.has(parsed[1].toLowerCase()) ? splitHostPort(parsed[2]) : null;
 }
 
-/** The port of this host a listen address takes, null for one that takes none, such as a relay. */
-export function listenPort(address: string): number | null {
-  if (address === "default") return defaultListenPort;
-  const hostPort = isPortless(address) ? null : hostPortOf(address);
-  return hostPort && "port" in hostPort ? Number(hostPort.port) : null;
-}
-
 /**
  * Why Syncthing may not listen on this address, or null when it may.
  * @implNote `default` listens on 22000; a relay address listens on no port of this host.
@@ -98,7 +90,7 @@ export function listenAddressProblem(address: string): string | null {
   if ("problem" in hostPort && hostPort.problem === "malformed") return `${address} is not host:port: write an IPv6 address in brackets, as [::]:${defaultListenPort}`;
   if ("problem" in hostPort) return `${address} names no port: give one of the storage stack's rows in access/PORTS.md, ${rowsText}`;
   const number = Number(hostPort.port);
-  return syncPortRows.some((row) => number >= row.first && number <= row.last) ? null : `${address} listens on port ${number}, outside the storage stack's rows in access/PORTS.md: ${rowsText}`;
+  return nodeRows.some((row) => number >= row.first && number <= row.last) ? null : `${address} listens on port ${number}, outside the storage stack's rows in access/PORTS.md: ${rowsText}`;
 }
 
 /** Why a discovery server cannot be used, or null when it can. */

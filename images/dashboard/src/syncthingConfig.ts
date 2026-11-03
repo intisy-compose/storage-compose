@@ -1,5 +1,5 @@
 import { deviceSettingLabels, shareFoldersLabel } from "./api/deviceText.js";
-import { connectionOptionLabels, discoveryServerProblem, listenAddressProblem, perNodeListenText } from "./api/optionsText.js";
+import { connectionOptionLabels, discoveryServerProblem, listenAddressProblem } from "./api/optionsText.js";
 import { type ConnectionOptionKey, type DeviceCompression, type DeviceSettings, type DeviceSettingsChange, type DiskFreeUnit, type FolderSettingsChange, type FolderSharingChange, type FolderType, type InstanceGui, type InstanceOptions, type PullOrder, type VersioningType, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderTypeTexts, pullOrderTexts, sharePassword } from "./api/types.js";
 import { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, offeredVersioningTypes, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versionsPathLabel } from "./api/versioningText.js";
 
@@ -318,10 +318,9 @@ function optionProblem(key: string, value: unknown): string | null {
   return optionFieldChecks[field](value, connectionOptionLabels[field]);
 }
 
-/** Why a connection options change cannot be sent as it is, or null when it can; one for every node of the host never carries listen addresses. */
-export function optionsChangeProblem(change: unknown, applyToHost: boolean): string | null {
+/** Why a connection options change cannot be sent as it is, or null when it can. */
+export function optionsChangeProblem(change: unknown): string | null {
   if (!isPlainObject(change) || Object.keys(change).length === 0) return "nothing to change";
-  if (applyToHost && Object.hasOwn(change, "listenAddresses")) return perNodeListenText;
   for (const [key, value] of Object.entries(change)) {
     const problem = optionProblem(key, value);
     if (problem) return problem;

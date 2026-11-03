@@ -15,6 +15,7 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "passthrough.ps1")
 . (Join-Path $PSScriptRoot "nodes.ps1")
 . (Join-Path $PSScriptRoot "syncthing.ps1")
+. (Join-Path $PSScriptRoot "networks.ps1")
 
 $agentRoundSeconds = 5
 $nodeScanIntervalSeconds = 60
@@ -26,6 +27,7 @@ $runningContainerStates = @("running", "restarting")
 $agentConfig = $null
 $agentState = $null
 $agentStateChanged = $false
+$connectionsFile = $null
 $stackGoneSince = $null
 $requestFirstSeen = @{}
 $lastNodeScan = [datetime]::MinValue
@@ -54,6 +56,7 @@ function Initialize-Agent($Config) {
     $script:stateFile = Join-Path $Config.stackFolder $attachStateFileName
     $script:logFile = Join-Path $agentFolder $agentLogName
     $script:agentStateFile = Join-Path $agentFolder $agentStateName
+    $script:connectionsFile = Get-AgentConnectionsFile $Config.stackFolder
     $script:heartbeatFile = Join-Path (Get-AgentStatusFolder $Config.stackFolder) $agentHeartbeatName
     if (Test-Path -LiteralPath $Config.stackFolder) { New-Item -ItemType Directory -Force -Path (Get-AgentStatusFolder $Config.stackFolder) | Out-Null }
     $script:agentState = New-AgentState (Read-JsonFile $script:agentStateFile)
@@ -152,8 +155,10 @@ function Get-Heartbeat($Status, [bool]$IsActive, $PassState, [string]$State, [st
     $now = Get-Now
     $removesAt = $null
     if ($script:stackGoneSince) { $removesAt = $script:stackGoneSince.AddSeconds($script:stackGraceSeconds).ToString("o") }
+    $networks = @(Get-HeartbeatNetworks)
     $problems = @($script:foundNodes.problems)
     if ($BinaryProblem) { $problems += $BinaryProblem }
+    $problems += @(Get-LanProblems $networks @($script:syncthingInstances.Values))
     return [ordered]@{
         schema = 1
         heartbeat = $now.ToString("o")
@@ -168,10 +173,15 @@ function Get-Heartbeat($Status, [bool]$IsActive, $PassState, [string]$State, [st
             removesItselfAt = $removesAt
         }
         passThrough = Get-PassThroughSummary $PassState
+        networks = $networks
         nodes = @($script:syncthingInstances.Values | ForEach-Object { Get-PublishedInstance $_ })
         foundNodes = @($script:foundNodes.nodes | ForEach-Object { [ordered]@{ id = $_.id; name = $_.name; kind = $_.kind; root = $_.root } })
         problems = $problems
     }
+}
+
+function Get-HeartbeatNetworks {
+    try { return @(Get-HostNetworks) } catch { Write-WatcherLog "could not read the host's networks: $_"; return @() }
 }
 
 function Write-Heartbeat($Heartbeat) {
@@ -188,6 +198,7 @@ function Invoke-AgentRound($PassState, [bool]$VolumeChanged) {
     if ($PassState) { Invoke-WatcherRound $PassState $isRunning }
     Update-FoundNodes $VolumeChanged
     $binaryProblem = Update-NodeInstances $script:foundNodes.nodes $isRunning
+    Update-DockerBackendBlock $isRunning
     Save-AgentState
     Write-Heartbeat (Get-Heartbeat $status $isRunning $PassState "running" $binaryProblem)
 }

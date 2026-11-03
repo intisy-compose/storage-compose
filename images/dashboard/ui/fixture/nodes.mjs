@@ -38,6 +38,7 @@ const onePeerPerConnectionKind = [
   { ...connectedPeer("2b90", "p53", "tailscale", "100.64.0.12:22000"), completion: 97, needBytes: 4.2e8 },
   connectedPeer("d3e8", "phone", "internet", "203.0.113.40:22000"),
   connectedPeer("c204", "spisor-cluster", "relay", "relay://relay.example:22067", "relay-client"),
+  { ...connectedPeer("9f31", "second-pc", "bridge", "192.168.0.10:22100", "relay-client"), bridgeHost: "finn-pc" },
 ];
 
 function member(role, label, size, used, asset, overrides = {}) {
@@ -155,7 +156,8 @@ function withNodeDetail(response) {
 
 function withDetail(node) {
   const instance = node.instance ?? (node.local && node.syncthing ? ownInstance() : null);
-  return { ...node, instance, peers: node.peers ?? [], folders: node.folders.map(folderDetail) };
+  const connections = !node.local ? "unknown" : node.id === "e5d0" ? "not-yet" : "on-profile";
+  return { ...node, instance, connections, peers: node.peers ?? [], folders: node.folders.map(folderDetail) };
 }
 
 export function nodesFixture(startedAt) {

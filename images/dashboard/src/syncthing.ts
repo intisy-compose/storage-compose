@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { deviceDisplayName, listedAddresses } from "./api/deviceText.js";
-import { connectionKind } from "./connectionKind.js";
+import { bridgeHostOf, connectionKind } from "./connectionKind.js";
 import { needTotalOf } from "./folderLists.js";
 import { type KnownSecrets, knownNodeSecrets } from "./nodeSecrets.js";
 import { shownUnscopedText } from "./shownSyncthingError.js";
@@ -656,9 +656,12 @@ export async function instanceFolders(client: SyncthingClient): Promise<{ folder
  * @implNote Runs once every instance of this host is read, because "this device" depends on all
  * of their device IDs, not only the instance's own.
  */
-export function classifyConnections(views: InstanceView[], localDeviceIds: ReadonlySet<string>): void {
+export function classifyConnections(views: InstanceView[], localDeviceIds: ReadonlySet<string>, bridges: ReadonlyMap<string, string> = new Map()): void {
   for (const peer of views.flatMap((view) => view.peers)) {
-    peer.connectionKind = connectionKind({ deviceId: peer.deviceId, connected: peer.connected, type: peer.connectionType, address: peer.address, localDeviceIds });
+    const input = { deviceId: peer.deviceId, connected: peer.connected, type: peer.connectionType, address: peer.address, localDeviceIds, bridges };
+    peer.connectionKind = connectionKind(input);
+    const bridgeHost = peer.connectionKind === "bridge" ? bridgeHostOf(input) : null;
+    if (bridgeHost) peer.bridgeHost = bridgeHost;
   }
 }
 

@@ -6,12 +6,14 @@
 	}
 }
 
-# tailscale names each caller in a PROXY protocol header (TAILNET_PROXY_PROTOCOL), and the join API
-# is handed it in one of its own, the only way the dashboard learns which tailnet device joins.
+# tailscale names each caller in a PROXY protocol header (TAILNET_PROXY_PROTOCOL), and the join port
+# is handed it in one of its own, the only way the dashboard learns which tailnet device joins or
+# asks for its node's connections.
 {$TAILNET_HOST}:443 {
 	import tailnet
 	encode gzip
-	handle /api/join {
+	@caller path /api/join /api/connections/node/*
+	handle @caller {
 		reverse_proxy dashboard:8447 {
 			transport http {
 				proxy_protocol v2
