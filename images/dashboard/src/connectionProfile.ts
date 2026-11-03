@@ -169,10 +169,22 @@ export function nodeLimitsOf(profile: ConnectionProfile, nodeId: string): Bandwi
   return { ...profile.limits, ...profile.nodeLimits[nodeKey(nodeId)] };
 }
 
-/** A copy of `profile` in which `nodeId` runs with `limits`: the override keeps only what differs from the cluster default, and none is left when nothing does. */
+const limitKeys: readonly (keyof BandwidthLimits)[] = ["maxSendKbps", "maxRecvKbps", "limitLan"];
+
+/** What of `limits` differs from the cluster default, in the order `parseProfile` reads an override. */
+function overrideOf(profile: ConnectionProfile, limits: BandwidthLimits): Partial<BandwidthLimits> {
+  return Object.fromEntries(limitKeys.filter((key) => limits[key] !== profile.limits[key]).map((key) => [key, limits[key]]));
+}
+
+/**
+ * A copy of `profile` in which `nodeId` runs with `limits`: the override keeps only what differs from the cluster default, and none is left when nothing does.
+ * @implNote The node keeps its place among the overrides, so an unchanged override leaves a profile equal to the one it started from.
+ */
 export function withNodeLimits(profile: ConnectionProfile, nodeId: string, limits: BandwidthLimits): ConnectionProfile {
-  const override = Object.fromEntries((Object.keys(limits) as (keyof BandwidthLimits)[]).filter((key) => limits[key] !== profile.limits[key]).map((key) => [key, limits[key]]));
   const key = nodeKey(nodeId);
-  const nodeLimits = Object.fromEntries(Object.entries(profile.nodeLimits).filter(([id]) => nodeKey(id) !== key));
-  return { ...structuredClone(profile), nodeLimits: Object.keys(override).length ? { ...structuredClone(nodeLimits), [key]: override } : structuredClone(nodeLimits) };
+  const override = overrideOf(profile, limits);
+  const nodeLimits = Object.entries(structuredClone(profile.nodeLimits)).filter(([id]) => nodeKey(id) !== key);
+  const place = Object.keys(profile.nodeLimits).findIndex((id) => nodeKey(id) === key);
+  if (Object.keys(override).length) nodeLimits.splice(place < 0 ? nodeLimits.length : place, 0, [key, override]);
+  return { ...structuredClone(profile), nodeLimits: Object.fromEntries(nodeLimits) };
 }

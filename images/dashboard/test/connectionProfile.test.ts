@@ -105,6 +105,12 @@ describe("connection profile", () => {
     assert.equal(formatProfile(back).includes("limits.node"), false);
   });
 
+  it("an unchanged node override keeps its place among the others", () => {
+    const profile = parseProfile("[limits.node.aa01]\nmax_send_kbps = 100\n[limits.node.bb02]\nmax_send_kbps = 200\n");
+    const same = withNodeLimits(profile, "aa01", { maxSendKbps: 100, maxRecvKbps: 0, limitLan: false });
+    assert.equal(JSON.stringify(same.nodeLimits), JSON.stringify(profile.nodeLimits));
+  });
+
   it("a known section that is not a table names it", () => {
     for (const [text, path] of [
       ["methods = 1\n", "methods"],
