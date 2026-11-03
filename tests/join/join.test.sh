@@ -159,6 +159,11 @@ config_before="$(sha256sum < /tmp/lone-home/config.xml)"
 lone_status="$(/tmp/lone-step/storage-connections http://127.0.0.1:1 device-porttst /tmp/lone-home 22002 2> /tmp/lone-step.err; echo $?)"
 check "a step without its profile checks applies nothing, says so and still exits 0" \
     "0 1 $config_before" "$lone_status $(grep -c 'connection-profile.jq is missing beside the script; nothing applied' /tmp/lone-step.err) $(sha256sum < /tmp/lone-home/config.xml)"
+mkdir -p /tmp/lone-join/join && cp "$join" /join/storage-connections.sh /tmp/lone-join/join/
+lone_install="$(STORAGE_JOIN_STEP_DIR=/tmp/lone-join/lib bash -c "source /tmp/lone-join/join/storage-join.sh; install_step" 2>&1; echo "exit $?")"
+check_match "a checkout without the profile checks installs the step without them, says so and goes on" \
+    "connection-profile.jq is missing from this checkout.*installed /tmp/lone-join/lib/storage-connections.*exit 0" "$(tr '\n' ' ' <<< "$lone_install")"
+check "and makes up no profile checks" "true false" "$([[ -x /tmp/lone-join/lib/storage-connections ]] && echo true || echo false) $([[ -e /tmp/lone-join/lib/connection-profile.jq ]] && echo true || echo false)"
 start_dashboard
 mkdir -p /data5/.storage/syncthing && echo '{"listenAddresses": ["tcp://0.0.0.0:22000"]}' > /data5/.storage/syncthing/connections.json && chown -R finn:finn /data5
 bash -c "source $join; use_root /data5; generate_keys" > /dev/null

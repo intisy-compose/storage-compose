@@ -182,12 +182,21 @@ profile_checks_source() { printf '%s/../images/nodes/%s' "$(dirname "${BASH_SOUR
 
 is_installed() { [[ -f "$2" && "$(cksum < "$1")" == "$(cksum < "$2")" ]]; }
 
+has_profile_checks_source() { [[ -f "$(profile_checks_source)" ]]; }
+
+is_step_installed() {
+    is_installed "$(step_source)" "$step_dir/$STEP_NAME" || return 1
+    ! has_profile_checks_source || is_installed "$(profile_checks_source)" "$step_dir/$PROFILE_CHECKS_NAME"
+}
+
+# A checkout without the nodes image still joins: the step then logs at every start that it applies nothing.
 install_step() {
-    local step="$step_dir/$STEP_NAME" checks="$step_dir/$PROFILE_CHECKS_NAME"
-    is_installed "$(step_source)" "$step" && is_installed "$(profile_checks_source)" "$checks" && return 0
+    local step="$step_dir/$STEP_NAME"
+    has_profile_checks_source || log "$(profile_checks_source) is missing from this checkout; the start step is installed without it and applies no connection profile"
+    is_step_installed && return 0
     mkdir -p "$step_dir"
     install -m 755 "$(step_source)" "$step"
-    install -m 644 "$(profile_checks_source)" "$checks"
+    if has_profile_checks_source; then install -m 644 "$(profile_checks_source)" "$step_dir/$PROFILE_CHECKS_NAME"; fi
     changed "installed $step"
 }
 
