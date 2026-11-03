@@ -16,8 +16,10 @@ wait_seconds=${APPLY_WAIT_SECONDS:-300}
 
 log() { echo "$(date -u +%FT%TZ) apply-connections $node: $*" >&2; }
 
+profile_checks_folder=$(dirname "$0")
+
 wanted_options() {
-    jq -c -L "$(dirname "$0")" --arg id "$node" '
+    jq -c -L "$profile_checks_folder" --arg id "$node" '
         include "connection-profile";
         .[$id] | select(type == "object") | profile_settings | select(length > 0)' "$connections" 2> /dev/null
 }
@@ -41,6 +43,7 @@ restart_for_profile() {
     esac
 }
 
+[ -f "$profile_checks_folder/connection-profile.jq" ] || { log "connection-profile.jq is missing beside the script; nothing applied"; exit 1; }
 [ -f "$connections" ] || exit 0
 options=$(wanted_options) || { log "$connections cannot be read as a connections file; nothing applied"; exit 0; }
 [ -n "$options" ] || exit 0

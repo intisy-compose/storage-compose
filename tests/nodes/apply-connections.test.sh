@@ -153,6 +153,14 @@ check "the keepers carry no checks of their own" "0 0" \
 check "the profile checks use the host agent's scheme pattern" \
     "$(sed -n "s/^\$profileListenAddressPattern = '\(.*\)'\$/\1/p" "$repo/windows/syncthing.ps1")" \
     "$(sed -n 's/^def is_listen_address: .*test("\(.*\)");$/\1/p' "$checks" | sed 's/\\\\/\\/g')"
+check "the nodes image copies the profile checks beside the keeper" 1 \
+    "$(grep -c '^COPY .*apply-connections\.sh.*connection-profile\.jq /usr/local/bin/$' "$repo/images/nodes/Dockerfile")"
+check "the cluster's Syncthing mounts them beside its keeper" "/apply-connections.sh:ro /connection-profile.jq:ro" \
+    "$(sed -n '/^  syncthing:$/,/^  [a-z]/p' "$repo/docker-compose.yml" | sed -n 's#^ *- \./images/nodes/[a-z-]*\.[a-z]*:\(/[a-z-]*\.[a-z]*:ro\)$#\1#p' | paste -sd ' ' -)"
+mkdir -p "$scratch/lone"
+cp "$apply" "$scratch/lone/apply-connections.sh"
+check "a keeper without its profile checks applies nothing, says so and fails" "exit 1 1" \
+    "$(apply=$scratch/lone/apply-connections.sh run_apply "$profile" a1b2 | tr '\n' ' ')$(grep -c 'connection-profile.jq is missing beside the script; nothing applied' "$scratch/apply.out")"
 
 echo "nodes.sh"
 # shellcheck source=../../images/nodes/nodes.sh

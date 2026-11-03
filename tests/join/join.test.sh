@@ -153,6 +153,12 @@ check "with no copy and no dashboard syncthing starts unchanged" "$tailnet_only"
 check "its config untouched by the step" "$config_before" "$(sha256sum < /data/.storage/syncthing/config.xml)"
 check "and no copy is made up" false "$([[ -e /data/.storage/syncthing/connections.json ]] && echo true || echo false)"
 check "the step itself exits 0 without a dashboard" 0 "$(su-exec finn "$step" http://127.0.0.1:1 "$node_id" /data/.storage/syncthing > /dev/null 2>&1; echo $?)"
+mkdir -p /tmp/lone-step && cp "$step" /tmp/lone-step/storage-connections
+cp -a /tmp/port-home /tmp/lone-home
+config_before="$(sha256sum < /tmp/lone-home/config.xml)"
+lone_status="$(/tmp/lone-step/storage-connections http://127.0.0.1:1 device-porttst /tmp/lone-home 22002 2> /tmp/lone-step.err; echo $?)"
+check "a step without its profile checks applies nothing, says so and still exits 0" \
+    "0 1 $config_before" "$lone_status $(grep -c 'connection-profile.jq is missing beside the script; nothing applied' /tmp/lone-step.err) $(sha256sum < /tmp/lone-home/config.xml)"
 start_dashboard
 mkdir -p /data5/.storage/syncthing && echo '{"listenAddresses": ["tcp://0.0.0.0:22000"]}' > /data5/.storage/syncthing/connections.json && chown -R finn:finn /data5
 bash -c "source $join; use_root /data5; generate_keys" > /dev/null

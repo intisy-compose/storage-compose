@@ -20,6 +20,8 @@ config="$syncthing_home/config.xml"
 
 log() { echo "storage-connections $node: $*" >&2; }
 
+has_profile_checks() { [ -f "$step_folder/connection-profile.jq" ] || [ -f "$step_folder/../images/nodes/connection-profile.jq" ]; }
+
 fetch_entry() {
     fetched=$(mktemp "$syncthing_home/.connections.XXXXXX") || return 0
     if curl -fsS -m 10 -o "$fetched" "$dashboard/api/connections/node/$node" 2> /dev/null && jq -e 'type == "object"' "$fetched" > /dev/null 2>&1; then
@@ -91,5 +93,5 @@ apply_kept() {
 }
 
 fetch_entry
-apply_kept
+if has_profile_checks; then apply_kept; else log "connection-profile.jq is missing beside the script; nothing applied"; fi
 exit 0
