@@ -9,6 +9,7 @@ import {
   connectionOptionLabels,
   nodeLimitsOf,
   profileOwnedText,
+  untrustedNetworksText,
   fetchConnectionProfile,
   profileChangedText,
   saveConnectionProfile,
@@ -78,18 +79,19 @@ const stateWords: Record<ConnectionsState, string> = {
 
 /** The options the profile sets, as this node's Syncthing has them now; none is changed here. */
 function profileOwnedList(node: StorageNode, options: InstanceOptions): HTMLElement {
-  const row = (key: keyof typeof connectionOptionLabels, value: string): [string, HTMLElement] => [
+  const row = (key: keyof typeof connectionOptionLabels, value: string, why = profileOwnedText(key)): [string, HTMLElement] => [
     connectionOptionLabels[key],
-    element("span", {}, value, element("small", { className: "muted" }, ` read only: ${profileOwnedText(key)}`)),
+    element("span", {}, value, element("small", { className: "muted" }, ` read only: ${why}`)),
   ];
+  const untrustedWhy = node.untrustedNetworks ? untrustedNetworksText : undefined;
   return keyValueList([
     ["This node", element("span", { className: node.connections === "not-yet" ? "tone-text-warn" : "" }, stateWords[node.connections])],
     row("listenAddresses", listText(options.listenAddresses)),
-    row("localAnnounceEnabled", onOff(options.localAnnounceEnabled)),
+    row("localAnnounceEnabled", onOff(options.localAnnounceEnabled), untrustedWhy),
     row("globalAnnounceEnabled", onOff(options.globalAnnounceEnabled)),
     row("globalAnnounceServers", listText(options.globalAnnounceServers)),
     row("relaysEnabled", onOff(options.relaysEnabled)),
-    row("natEnabled", onOff(options.natEnabled)),
+    row("natEnabled", onOff(options.natEnabled), untrustedWhy),
   ]);
 }
 

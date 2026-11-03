@@ -1,8 +1,22 @@
 import type { Bridge, ConnectionProfile, HostNetwork, NodeAddresses, PeerTable } from "./api/types.js";
 
 /** @implNote A LAN Windows marks `Public` is firewalled to the tailnet range (spec section 5), so it carries no LAN method. */
+function isTrustedLan(network: HostNetwork): boolean {
+  return network.kind === "lan" && network.category !== "Public";
+}
+
+/**
+ * Whether a node's host is known to be on networks the person does not own only (spec section 9).
+ * @implNote A host whose networks are unknown (no `lan` or `public` entry, as a host without the agent reports) is not
+ * guessed at: it keeps the profile's values.
+ */
+export function hasNoTrustedNetwork(networks: HostNetwork[]): boolean {
+  const isKnown = networks.some((network) => network.kind === "lan" || network.kind === "public");
+  return isKnown && !networks.some(isTrustedLan);
+}
+
 function isUsable(profile: ConnectionProfile, network: HostNetwork): boolean {
-  if (network.kind === "lan") return profile.methods.lan && network.category !== "Public";
+  if (network.kind === "lan") return profile.methods.lan && isTrustedLan(network);
   if (network.kind === "tailnet") return profile.methods.tailnet;
   return profile.methods.nat;
 }

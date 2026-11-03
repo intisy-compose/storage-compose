@@ -11,6 +11,9 @@ export function isProfileOwned(key: string): boolean {
   return (profileOwnedKeys as readonly string[]).includes(key);
 }
 
+/** Why local discovery and NAT are off on a node whatever the profile says. */
+export const untrustedNetworksText = "off: no trusted network on this host (mark the network Private in Windows to trust it)";
+
 /** The read-only hint of a field the profile sets: the listen addresses are derived from it, the others set by it. */
 export function profileOwnedText(key: string): string {
   return key === "listenAddresses" ? "derived from the connection profile" : "set by the connection profile";

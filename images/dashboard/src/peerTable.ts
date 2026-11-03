@@ -2,7 +2,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Bridge, ConnectionOptions, ConnectionProfile, HostNetwork, NodeAddresses, PeerTable } from "./api/types.js";
 import { profileOptions } from "./connectionProfile.js";
-import { canReach } from "./reachability.js";
+import { canReach, hasNoTrustedNetwork } from "./reachability.js";
 
 /** What a node's keeper applies: its options, its listen addresses, and the addresses of every peer keyed by device ID. */
 export interface NodeConnections {
@@ -54,13 +54,22 @@ function directAddresses(profile: ConnectionProfile, own: HostNetwork[], peer: N
     });
 }
 
+/**
+ * @implNote On networks the person does not own the node neither broadcasts its device ID nor opens ports through the
+ * router; global discovery and relays reach out through the internet, so they stay as the profile says.
+ */
+function nodeOptions(profile: ConnectionProfile, node: NodeAddresses): Partial<ConnectionOptions> {
+  const options = profileOptions(profile, node.nodeId);
+  return hasNoTrustedNetwork(node.networks) ? { ...options, localAnnounceEnabled: false, natEnabled: false } : options;
+}
+
 export function resolveNode(profile: ConnectionProfile, table: PeerTable, nodeId: string): NodeConnections {
   const node = table.nodes.find((entry) => entry.nodeId === nodeId);
   if (!node) throw new Error(`node ${nodeId} is not in the peer table`);
   const relays = relayAddresses(profile, table, node.networks);
   const peers = table.nodes.filter((peer) => peer.nodeId !== nodeId && peer.deviceId && peer.deviceId !== node.deviceId);
   return {
-    options: profileOptions(profile, nodeId),
+    options: nodeOptions(profile, node),
     listenAddresses: [
       ...new Set([`tcp://0.0.0.0:${node.syncPort}`, `quic://0.0.0.0:${node.syncPort}`, ...relays, ...(profile.relays.public ? [publicRelayPool] : [])]),
     ],

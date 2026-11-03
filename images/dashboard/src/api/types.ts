@@ -313,6 +313,8 @@ export interface StorageNode {
   restartConfirmRequired: boolean;
   /** Whether the node's Syncthing has the connection profile's values, as this host's last round found it. */
   connections: ConnectionsState;
+  /** Whether the node's host is on networks the person does not own only, so its local discovery and NAT are off; absent when not known. */
+  untrustedNetworks?: boolean;
 }
 
 export type ConnectionsState = "on-profile" | "not-yet" | "unknown";

@@ -7,7 +7,7 @@ import { conflictIndexes } from "./conflicts.js";
 import { type UnreadSources, recordPresentDrives } from "./driveHistory.js";
 import { agentEntries, agentProblem, readHeartbeat } from "./hostAgent.js";
 import { registryWarnings, statusRegistryEntries, syncthingEndpoint } from "./instances.js";
-import { bridgesByAddress, connectionsStateOf } from "./connectionsDrift.js";
+import { bridgesByAddress, connectionsStateOf, isOnUntrustedNetworks } from "./connectionsDrift.js";
 import { type JoinRecords, joinedNodeId } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { type LocalNodeSource, localNodeRules } from "./nodeSource.js";
@@ -65,6 +65,7 @@ async function arrayNode(status: ArrayStatus, devices: BlockDevice[], sources: M
     dashboardUrl: null,
     ...localNodeRules("array", status.id, poolPath(status.id)),
     connections: connectionsStateOf(status.id),
+    untrustedNetworks: isOnUntrustedNetworks(status.id),
   };
 }
 
@@ -89,6 +90,7 @@ function registryNode(entry: NodeRegistryEntry, source: LocalNodeSource, view: I
     dashboardUrl: null,
     ...localNodeRules(source, entry.id, entry.root),
     connections: connectionsStateOf(entry.id),
+    untrustedNetworks: isOnUntrustedNetworks(entry.id),
   };
 }
 

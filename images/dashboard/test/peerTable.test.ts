@@ -122,6 +122,47 @@ describe("peer table", () => {
       assert.ok(ports.includes(node.syncPort));
     }
   });
+
+  it("a node on an untrusted network gets local discovery and NAT off", () => {
+    const cafe: NodeAddresses = {
+      nodeId: "dd04",
+      deviceId: "DEV-CAFE",
+      syncPort: 22004,
+      networks: [
+        { kind: "lan", address: "10.0.0.20", category: "Public" },
+        { kind: "tailnet", address: "100.64.0.4" },
+      ],
+    };
+    const options = resolveNode(defaultProfile(), table([cafe, both]), "dd04").options;
+    assert.equal(options.localAnnounceEnabled, false);
+    assert.equal(options.natEnabled, false);
+    assert.equal(options.globalAnnounceEnabled, true);
+    assert.equal(options.relaysEnabled, true);
+  });
+
+  it("a node with a trusted LAN keeps the profile's values", () => {
+    const home: NodeAddresses = {
+      nodeId: "ee05",
+      deviceId: "DEV-HOME",
+      syncPort: 22005,
+      networks: [
+        { kind: "lan", address: "10.0.0.20", category: "Public" },
+        { kind: "lan", address: "192.168.1.50", category: "Domain" },
+      ],
+    };
+    const options = resolveNode(defaultProfile(), table([home, lanOnly]), "ee05").options;
+    assert.equal(options.localAnnounceEnabled, true);
+    assert.equal(options.natEnabled, true);
+    assert.equal(resolveNode(defaultProfile(), table([home, lanOnly]), "aa01").options.localAnnounceEnabled, true);
+  });
+
+  it("unknown networks keep the profile's values", () => {
+    const linuxDocker: NodeAddresses = { nodeId: "ff06", deviceId: "DEV-LINUX", syncPort: 22006, networks: dockerNetworks([], "storage.example.ts.net") };
+    const options = resolveNode(defaultProfile(), table([linuxDocker, tailnetOnly]), "ff06").options;
+    assert.equal(options.localAnnounceEnabled, true);
+    assert.equal(options.natEnabled, true);
+    assert.equal(resolveNode(defaultProfile(), table([linuxDocker, tailnetOnly]), "bb02").options.natEnabled, true);
+  });
 });
 
 describe("this host's part of the peer table", () => {
