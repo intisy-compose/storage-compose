@@ -180,6 +180,18 @@ Describe "the heartbeat" {
         (Get-NodeSpace "") | Should BeNullOrEmpty
     }
 
+    It "logs a failure to read the host's networks once, and once more when they can be read again" {
+        Reset-World @("running")
+        $script:networksProblem = ""
+        $global:logged = @()
+        Mock Write-WatcherLog { $global:logged += $Message }
+        Mock Get-HostNetworks { throw "no WMI" }
+        foreach ($round in 1..3) { @(Get-HeartbeatNetworks).Count | Should Be 0 }
+        Mock Get-HostNetworks { return @([pscustomobject]@{ kind = "tailnet"; address = "100.75.76.90" }) }
+        foreach ($round in 1..2) { @(Get-HeartbeatNetworks).Count | Should Be 1 }
+        $global:logged | Should Be @("could not read the host's networks: no WMI", "the host's networks can be read again")
+    }
+
     It "says when the agent will remove itself" {
         Reset-World @("exited")
         Invoke-AgentRound $null $true

@@ -32,6 +32,7 @@ $stackGoneSince = $null
 $requestFirstSeen = @{}
 $lastNodeScan = [datetime]::MinValue
 $foundNodes = [pscustomobject]@{ nodes = @(); problems = @() }
+$networksProblem = ""
 
 function Get-Now { return Get-Date }
 
@@ -181,7 +182,20 @@ function Get-Heartbeat($Status, [bool]$IsActive, $PassState, [string]$State, [st
 }
 
 function Get-HeartbeatNetworks {
-    try { return @(Get-HostNetworks) } catch { Write-WatcherLog "could not read the host's networks: $_"; return @() }
+    try { $networks = @(Get-HostNetworks); $problem = $null } catch { $networks = @(); $problem = "$_" }
+    Write-NetworksProblemChange $problem
+    return $networks
+}
+
+<#
+.NOTES
+A round runs every few seconds, so a lasting failure is logged once, when it starts or changes, and
+once more when the networks can be read again.
+#>
+function Write-NetworksProblemChange([string]$Problem) {
+    if ($Problem -eq $script:networksProblem) { return }
+    if ($Problem) { Write-WatcherLog "could not read the host's networks: $Problem" } else { Write-WatcherLog "the host's networks can be read again" }
+    $script:networksProblem = $Problem
 }
 
 function Write-Heartbeat($Heartbeat) {
