@@ -4,7 +4,7 @@ import { profileProblem } from "../api/profileText.js";
 import type { ConnectionOptionKey, HostSettings, NodeOptionsResponse } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type ResolvedInstance, callSyncthing, forwardRead, requireLocal, resolveInstance, settingsKeeperOf } from "../instanceResolver.js";
-import type { AnyRoute } from "../routes.js";
+import type { AnyRoute } from "../routeTypes.js";
 import { hostName, ntfyTopicSet, ntfyUrl, peerDashboards, setupRepoDirectory, tailnetHost } from "../settings.js";
 import { type SetupLayout, readLayout } from "../setupRepo.js";
 import { instanceGui, instanceOptions, optionsChangeProblem, redactConfig } from "../syncthingConfig.js";

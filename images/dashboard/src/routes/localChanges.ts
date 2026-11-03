@@ -3,7 +3,7 @@ import { type LocalChangesDone, folderTypeTexts } from "../api/types.js";
 import { folderSettings } from "../folderIndex.js";
 import { RequestError, UnconfirmedWrite, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, arrayConfirmProblem, callSyncthing, requireLocal, resolveInstance } from "../instanceResolver.js";
-import type { AnyRoute, WriteNote } from "../routes.js";
+import type { AnyRoute, WriteNote } from "../routeTypes.js";
 import type { FolderStatus, SyncthingFolderSettings } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
 

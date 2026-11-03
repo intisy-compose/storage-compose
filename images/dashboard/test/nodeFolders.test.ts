@@ -6,7 +6,8 @@ import type { FolderPathCheck, FolderSettings, NewFolderDefaults, Versioning } f
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import type { NodeRoot } from "../src/pathGuard.js";
-import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
+import { type WriteNote } from "../src/routeTypes.js";
+import { type WriteEffects, requestHandler } from "../src/routes.js";
 import { type FolderEdit, addFolder, browseDirectories, checkFolderPath, editFolder, folderEditText, folderIdFromLabel, newFolderDefaults, nodeFolderRoutes } from "../src/routes/nodeFolders.js";
 import { folderSettings } from "../src/folderIndex.js";
 import { SyncthingClient, type SyncthingFolderSettings } from "../src/syncthing.js";

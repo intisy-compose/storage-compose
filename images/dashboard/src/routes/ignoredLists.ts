@@ -2,7 +2,7 @@ import { deviceDisplayName, shortDeviceId } from "../api/deviceText.js";
 import type { IgnoredDeviceEntry, IgnoredFolderEntry, IgnoredLists } from "../api/types.js";
 import { RequestError, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, writeConfirmed } from "../instanceResolver.js";
-import type { AnyRoute, WriteNote } from "../routes.js";
+import type { AnyRoute, WriteNote } from "../routeTypes.js";
 import { type SyncthingConfig, changeWholeConfig } from "../wholeConfig.js";
 import { decodedSegment } from "./devices.js";
 

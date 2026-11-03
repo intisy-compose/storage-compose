@@ -3,7 +3,7 @@ import { type ActivitySource, type DebugChange, type DebugFacilities, type Debug
 import { type ActivityQuery, activityLog } from "../eventFeed.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
-import type { AnyRoute, NothingWritten, Route, WriteNote } from "../routes.js";
+import type { AnyRoute, NothingWritten, Route, WriteNote } from "../routeTypes.js";
 import { shownUnscopedText } from "../shownSyncthingError.js";
 import { type KnownSecrets, allSecretsKnown, knownNodeSecrets, nodeSecrets as readNodeSecrets, shownNodeText } from "../nodeSecrets.js";
 import { filesHoldingSecrets, holdsSecret, UnreadableZip, zipEntries } from "../supportBundle.js";

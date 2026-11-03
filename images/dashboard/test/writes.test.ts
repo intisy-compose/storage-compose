@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { type NodeWriteRoute, type Route, type WriteNote, dashboardRoutes, hostWritePattern, isNodePattern, settleWrite } from "../src/routes.js";
+import { type NodeWriteRoute, type Route, type WriteNote, hostWritePattern, isNodePattern } from "../src/routeTypes.js";
+import { dashboardRoutes, settleWrite } from "../src/routes.js";
 
 function recorder() {
   const recorded: WriteNote[] = [];

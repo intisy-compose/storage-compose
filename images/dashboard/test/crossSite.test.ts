@@ -3,7 +3,8 @@ import { type Server, createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
 import { hostAllowlist } from "../src/http.js";
-import { type AnyRoute, type WriteNote, hostWritePattern, requestHandler } from "../src/routes.js";
+import { type AnyRoute, type WriteNote, hostWritePattern } from "../src/routeTypes.js";
+import { requestHandler } from "../src/routes.js";
 
 const pauseNote: WriteNote = { nodeId: "d7e5", nodeName: "peer", folderId: null, text: "peer: paused every device" };
 

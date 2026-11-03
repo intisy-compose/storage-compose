@@ -6,7 +6,7 @@ import { folderSettings } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, arrayConfirmProblem, callSyncthing, defaultReadBackDelaysMs, isArrayInstance, localNodeInfos, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import { type NodeRoot, folderPathProblem, isAbsolutePath, isInsideOtherNode, isInsideRoot, isStrictlyBelow, pathUnderRoot } from "../pathGuard.js";
-import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
+import type { AnyRoute, NothingWritten, WriteNote } from "../routeTypes.js";
 import type { SyncthingDeviceConfig, SyncthingFolderSettings } from "../syncthing.js";
 import { effectiveSharing, folderChangeProblem, isChangeInPlace, sharedDevices } from "../syncthingConfig.js";
 import { otherFoldersGroup, relativeToRoot } from "../treePaths.js";

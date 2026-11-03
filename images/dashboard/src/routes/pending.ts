@@ -4,7 +4,7 @@ import { offersOf } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, localNodeInfos, readDashboard, requireLocal, resolveInstance } from "../instanceResolver.js";
 import { type JoinRecords, type JoinedDevice, conflictingId, isDeviceName } from "../join.js";
-import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
+import type { AnyRoute, NothingWritten, WriteNote } from "../routeTypes.js";
 import { peerDashboards, setupRepoDirectory } from "../settings.js";
 import { type SetupLayout, type SetupRecordResult, readLayout, recordDevice, withoutUrlCredentials } from "../setupRepo.js";
 import { type PendingDevices, type SyncthingClient, SyncthingUnavailable } from "../syncthing.js";

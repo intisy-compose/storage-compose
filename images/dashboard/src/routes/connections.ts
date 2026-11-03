@@ -7,7 +7,7 @@ import { type JoinRecords, joinedNodeId } from "../join.js";
 import { collectPeerTable, localPeerTable } from "../peerSources.js";
 import type { NodeConnections } from "../peerTable.js";
 import { newlyStrandedPairs } from "../reachability.js";
-import { type AnyRoute, hostWritePattern } from "../routes.js";
+import { type AnyRoute, hostWritePattern } from "../routeTypes.js";
 import { setupRepoDirectory } from "../settings.js";
 import { ProfileChanged, ProfileConflict, pullDataRepo, readProfile, saveProfile } from "../setupRepo.js";
 import type { WhoIs } from "../tailnet.js";
@@ -44,7 +44,6 @@ export interface PeerTableReads {
   all: () => Promise<PeerTable>;
 }
 
-/** @implNote A function, not a constant: `routes.ts` and this module import each other, and a default built at load time is not there yet when `routes.ts` calls `connectionRoutes`. */
 function defaultPeerTableReads(): PeerTableReads {
   return { local: () => localPeerTable(), all: async () => connectionsRound.lastTable() ?? collectPeerTable() };
 }
