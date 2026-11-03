@@ -9,7 +9,7 @@ import type { NodeConnections } from "../peerTable.js";
 import { newlyStrandedPairs } from "../reachability.js";
 import { type AnyRoute, hostWritePattern } from "../routeTypes.js";
 import { setupRepoDirectory } from "../settings.js";
-import { ProfileChanged, ProfileConflict, pullDataRepo, pullStateOf, readProfile, saveProfile } from "../setupRepo.js";
+import { ProfileChanged, ProfileConflict, profileToSaveOver, pullDataRepo, pullStateOf, readProfile, saveProfile } from "../setupRepo.js";
 import type { WhoIs } from "../tailnet.js";
 
 /** @implNote A body that does not survive being written and read back is refused, so only a profile `parseProfile` accepts is ever committed. */
@@ -31,10 +31,10 @@ function validBase(body: Partial<ProfileSaveBody> | null): ConnectionProfile {
  * @implNote Only newly stranded pairs count: a pair no profile connects would otherwise make every later save, a node's limit
  * included, ask again. A table that cannot be read strands nothing, as the save must not wait on every dashboard answering.
  */
-async function refuseStranding(profile: ConnectionProfile, repository: string, peerTables: PeerTableReads): Promise<void> {
+async function refuseStranding(profile: ConnectionProfile, saved: ConnectionProfile, peerTables: PeerTableReads): Promise<void> {
   const table = await peerTables.all().catch(() => null);
   if (!table) return;
-  const pairs = newlyStrandedPairs((await readProfile(repository)).profile, profile, table);
+  const pairs = newlyStrandedPairs(saved, profile, table);
   const names = new Map(table.nodes.flatMap((node) => (node.name ? [[node.nodeId, node.name] as const] : [])));
   if (pairs.length) throw new RequestError(409, strandedText(pairs, (nodeId) => names.get(nodeId) ?? nodeId));
 }
@@ -48,14 +48,19 @@ function defaultPeerTableReads(): PeerTableReads {
   return { local: () => localPeerTable(), all: async () => connectionsRound.lastTable() ?? collectPeerTable() };
 }
 
-/** The profile on disk, or while it does not parse the one the rounds still apply (null when none ever was), with the reason. */
+/** What stands in for a `connections.toml` that does not parse: the profile the rounds still apply, the defaults when none ever was. */
+function standInFor(appliedProfile: () => ConnectionProfile | null): () => ConnectionProfile {
+  return () => appliedProfile() ?? defaultProfile();
+}
+
+/** The profile on disk, or while it does not parse its stand-in, with the reason. */
 async function profileForView(repository: string, appliedProfile: () => ConnectionProfile | null): Promise<ProfileRead> {
   try {
     return await readProfile(repository);
   } catch (error) {
     if (!(error instanceof ProfileError)) throw error;
-    const applied = appliedProfile();
-    return { profile: applied ?? defaultProfile(), ...pullStateOf(repository), profileProblem: profileFileProblemText(error.message, applied !== null) };
+    const isPreviousApplied = appliedProfile() !== null;
+    return { profile: standInFor(appliedProfile)(), ...pullStateOf(repository), profileProblem: profileFileProblemText(error.message, isPreviousApplied) };
   }
 }
 
@@ -85,13 +90,15 @@ export function connectionRoutes(repository = setupRepoDirectory, peerTables = d
         const body = (await readBody(request)) as ProfileSaveBody | null;
         const profile = validProfile(body);
         const base = validBase(body);
-        if (formatProfile((await readProfile(repository)).profile) !== formatProfile(base)) throw new ProfileChanged();
-        if (body?.confirmUnreachable !== true) await refuseStranding(profile, repository, peerTables);
-        await saveProfile(profile, "feat(connections): change the connection profile", repository, base).catch(async (error) => {
+        const standIn = standInFor(appliedProfile);
+        const saved = await profileToSaveOver(repository, standIn);
+        if (formatProfile(saved) !== formatProfile(base)) throw new ProfileChanged();
+        if (body?.confirmUnreachable !== true) await refuseStranding(profile, saved, peerTables);
+        await saveProfile(profile, "feat(connections): change the connection profile", repository, base, standIn).catch(async (error) => {
           if (error instanceof ProfileConflict) await pullDataRepo(repository);
           throw error;
         });
-        sendJson(response, 200, await readProfile(repository));
+        sendJson(response, 200, await profileForView(repository, appliedProfile));
       },
     },
   ];

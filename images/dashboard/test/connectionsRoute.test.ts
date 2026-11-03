@@ -170,4 +170,42 @@ describe("the connection profile in the data repo", () => {
     }
     assert.equal(JSON.parse((await ask("GET", "")).body).profileProblem, null);
   });
+
+  function pushHandEdit(text: string): void {
+    writeFileSync(join(ours, "connections.toml"), text);
+    git(ours, "add", "connections.toml");
+    git(ours, "commit", "-q", "-m", "hand edit");
+    git(ours, "push", "-q", "origin", "HEAD:main");
+  }
+
+  it("a save made from the view of a connections.toml that does not parse repairs the file", async () => {
+    await pullDataRepo(ours);
+    pushHandEdit("[limits]\nmax_send_kbps = -5\n");
+    const applied = () => limited(700);
+    const view = JSON.parse((await ask("GET", "", applied)).body);
+    assert.notEqual(view.profileProblem, null);
+    const answer = await ask("PUT", JSON.stringify({ ...limited(900), base: view.profile }), applied);
+    assert.equal(answer.status, 200, answer.body);
+    assert.equal(JSON.parse(answer.body).profileProblem, null);
+    assert.equal((await readProfile(ours)).profile.limits.maxSendKbps, 900);
+    assert.equal(git(remote, "show", "main:connections.toml"), formatProfile(limited(900)).trim());
+    assert.equal(JSON.parse((await ask("GET", "", applied)).body).profileProblem, null);
+  });
+
+  it("a save over a connections.toml that does not parse is still 409 when its base is not the profile shown", async () => {
+    await pullDataRepo(ours);
+    const broken = "[limits\nmax_send_kbps = 1\n";
+    pushHandEdit(broken);
+    const applied = () => limited(700);
+    const view = JSON.parse((await ask("GET", "", applied)).body);
+    assert.match(view.profileProblem, /^connections\.toml rejected: line 2: unclosed table header;/);
+    const headBefore = git(ours, "rev-parse", "HEAD");
+    const answer = await ask("PUT", JSON.stringify({ ...limited(900), base: limited(701) }), applied);
+    assert.equal(answer.status, 409);
+    assert.equal(JSON.parse(answer.body).error, "the profile changed since you read it; it has been reloaded");
+    assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
+    assert.equal(readFileSync(join(ours, "connections.toml"), "utf8"), broken);
+    const repaired = await ask("PUT", JSON.stringify({ ...limited(900), base: defaultProfile() }), () => null);
+    assert.equal(repaired.status, 200, "with nothing ever applied the defaults stand in");
+  });
 });

@@ -2,7 +2,7 @@ import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ConnectionProfile, PriorityBand, ProfileRead } from "./api/types.js";
 import { runCommand } from "./commands.js";
-import { defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
+import { ProfileError, defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
 import { heldCommitText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseInProgressText, rebaseRefusedText, unpushedText } from "./api/profileText.js";
 import { RequestError } from "./http.js";
 import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
@@ -264,6 +264,21 @@ async function readProfileText(repository: string): Promise<string | null> {
   }
 }
 
+/**
+ * The profile a save is made over: the one on disk, the defaults while the repo holds none, or `standIn` while the file does not parse.
+ * @implNote `standIn` is what the profile GET shows in a bad file's place, so a save made from that view repairs the file instead of failing on it.
+ */
+export async function profileToSaveOver(repository: string, standIn: () => ConnectionProfile): Promise<ConnectionProfile> {
+  const text = await readProfileText(repository);
+  if (text === null) return defaultProfile();
+  try {
+    return parseProfile(text);
+  } catch (error) {
+    if (error instanceof ProfileError) return standIn();
+    throw error;
+  }
+}
+
 /** The profile on disk, the defaults while the repo holds none, with how the last pull went. */
 export async function readProfile(repository = setupRepoDirectory): Promise<ProfileRead> {
   const text = repository ? await readProfileText(repository) : null;
@@ -416,22 +431,23 @@ async function shortCommitOf(repository: string, commit: string): Promise<string
 }
 
 /**
- * Commits and pushes `profile`; with `base`, only while the profile on disk is still `base`, checked under the repo's lock.
+ * Commits and pushes `profile`; with `base`, only while the profile on disk (`standIn` while it does not parse) is still `base`, checked under the repo's lock.
  * A failed commit or push leaves the file and the repo as they were, except a commit another landed on top of: that one stays, answered with ProfileStuck.
  */
-export async function saveProfile(profile: ConnectionProfile, message: string, repository = setupRepoDirectory, base?: ConnectionProfile): Promise<void> {
+export async function saveProfile(
+  profile: ConnectionProfile,
+  message: string,
+  repository = setupRepoDirectory,
+  base?: ConnectionProfile,
+  standIn: () => ConnectionProfile = defaultProfile,
+): Promise<void> {
   if (!repository) throw new RequestError(503, "this host has no setup repo to keep the connection profile in");
   return serializeGit(repository, async () => {
     const rebase = await rebaseInProgress(repository);
     if (rebase) throw new RequestError(503, rebaseInProgressText(rebase));
-    if (base && !(await isProfileOnDisk(repository, base))) throw new ProfileChanged();
+    if (base && formatProfile(await profileToSaveOver(repository, standIn)) !== formatProfile(base)) throw new ProfileChanged();
     return saveNow(profile, message, repository);
   });
-}
-
-async function isProfileOnDisk(repository: string, profile: ConnectionProfile): Promise<boolean> {
-  const text = await readProfileText(repository);
-  return formatProfile(text === null ? defaultProfile() : parseProfile(text)) === formatProfile(profile);
 }
 
 async function committedProfileText(repository: string): Promise<string | null> {

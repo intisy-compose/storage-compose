@@ -1,5 +1,5 @@
 import type { BandwidthLimits, ConnectionOptions, ConnectionProfile } from "./api/types.js";
-import { type TomlTable, type TomlValue, formatPairs, parseToml } from "./toml.js";
+import { TomlError, type TomlTable, type TomlValue, formatPairs, parseToml } from "./toml.js";
 
 export class ProfileError extends Error {}
 
@@ -86,9 +86,18 @@ function readAllNodeLimits(nodes: TomlTable): ConnectionProfile["nodeLimits"] {
   return nodeLimits;
 }
 
+function parseProfileToml(text: string): TomlTable {
+  try {
+    return parseToml(text);
+  } catch (error) {
+    throw error instanceof TomlError ? new ProfileError(error.message) : error;
+  }
+}
+
+/** @throws ProfileError for any file that is not a profile, a TOML syntax error included. */
 export function parseProfile(text: string): ConnectionProfile {
   const defaults = defaultProfile();
-  const root = parseToml(text);
+  const root = parseProfileToml(text);
   const methods = section(root, "methods", "methods");
   const relays = section(root, "relays", "relays");
   const limits = section(root, "limits", "limits");
