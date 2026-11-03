@@ -1,8 +1,9 @@
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { access, readFile, rm, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { ConnectionProfile, PriorityBand, ProfileRead } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
-import { heldCommitText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseRefusedText, unpushedText } from "./api/profileText.js";
+import { heldCommitText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseInProgressText, rebaseRefusedText, unpushedText } from "./api/profileText.js";
 import { RequestError } from "./http.js";
 import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
 import { type TomlTable, parseToml } from "./toml.js";
@@ -171,6 +172,8 @@ export function recordDevice(name: string, deviceId: string, root: string | null
 }
 
 async function recordDeviceNow(name: string, deviceId: string, root: string | null, repository: string): Promise<SetupRecordResult> {
+  const rebase = await rebaseInProgress(repository);
+  if (rebase) return { committed: false, pushed: false, message: rebaseInProgressText(rebase) };
   const path = `${repository}/${setupLayoutPath}`;
   const before = await readLayoutText(repository);
   if (before === null) return { committed: false, pushed: false, message: `the setup repo has no ${setupLayoutPath}; the admission is recorded on this host only` };
@@ -254,6 +257,8 @@ interface PullOutcome {
 }
 
 async function pullNow(repository: string): Promise<void> {
+  const rebase = await rebaseInProgress(repository);
+  if (rebase) return void pullStates.set(repository, { ...pullStateOf(repository), pullProblem: rebaseInProgressText(rebase) });
   const pull = await gitIn(repository, "pull", "--ff-only");
   const outcome = pull.ok ? { pulled: true, problem: null } : await rebaseOwnCommits(repository, lastLine(pull.output, "git pull failed"));
   if (outcome.pulled) pullStates.set(repository, { pulledAt: new Date().toISOString(), pullProblem: await pushOwnCommits(repository) });
@@ -291,7 +296,7 @@ async function rebaseOwnCommits(repository: string, pullFailure: string): Promis
 async function rebaseOnto(repository: string, commits: string[]): Promise<PullOutcome> {
   const rebase = await gitIn(repository, "rebase", "-q", "@{upstream}");
   if (rebase.ok) return { pulled: true, problem: null };
-  const conflicted = await isRebaseInProgress(repository);
+  const conflicted = (await rebaseInProgress(repository)) !== null;
   await gitIn(repository, "rebase", "--abort");
   return { pulled: false, problem: conflicted ? rebaseConflictText(commits) : rebaseRefusedText(commits, lastLine(rebase.output, "git rebase failed")) };
 }
@@ -311,8 +316,25 @@ async function pushOwnCommits(repository: string): Promise<string | null> {
   return unpushedText(commits, lastLine(push.output, "git push failed"));
 }
 
-async function isRebaseInProgress(repository: string): Promise<boolean> {
-  return (await gitIn(repository, "rev-parse", "-q", "--verify", "REBASE_HEAD")).ok;
+/**
+ * The directory of a rebase in progress in the data repo, as git names it, or null.
+ * @implNote Never aborted by the dashboard: a killed process and a person's own rebase leave the same state.
+ */
+async function rebaseInProgress(repository: string): Promise<string | null> {
+  for (const name of ["rebase-merge", "rebase-apply"]) {
+    const path = await gitIn(repository, "rev-parse", "--git-path", name);
+    if (path.ok && (await exists(resolve(repository, path.output)))) return path.output;
+  }
+  return null;
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function subjectOf(repository: string, commit: string): Promise<string> {
@@ -364,6 +386,8 @@ async function shortCommitOf(repository: string, commit: string): Promise<string
 export async function saveProfile(profile: ConnectionProfile, message: string, repository = setupRepoDirectory, base?: ConnectionProfile): Promise<void> {
   if (!repository) throw new RequestError(503, "this host has no setup repo to keep the connection profile in");
   return serializeGit(repository, async () => {
+    const rebase = await rebaseInProgress(repository);
+    if (rebase) throw new RequestError(503, rebaseInProgressText(rebase));
     if (base && !(await isProfileOnDisk(repository, base))) throw new ProfileChanged();
     return saveNow(profile, message, repository);
   });

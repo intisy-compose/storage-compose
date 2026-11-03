@@ -44,6 +44,11 @@ export function profileStuckText(commit: string): string {
   return `this host committed the save as ${commit} but could not push it, and another commit landed on top of it in the data repo, so it was not undone; push or drop ${commit} there by hand`;
 }
 
+/** The pull problem, save refusal and admission message while a rebase is in progress in the data repo, `path` being its directory. */
+export function rebaseInProgressText(path: string): string {
+  return `a rebase is in progress in the data repo (${path}), so the dashboard changes nothing there; finish it, or run git rebase --abort in the data repo by hand`;
+}
+
 /** The pull problem of an unpushed commit the dashboard may not rebase or push, `reason` saying why. */
 export function heldCommitText(commit: string, subject: string, reason: string): string {
   return `this clone holds the unpushed ${commit} (${subject}), which ${reason}, so the dashboard leaves it alone; rebase or push it in the data repo by hand`;

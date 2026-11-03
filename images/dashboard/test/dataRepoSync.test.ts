@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -176,6 +176,52 @@ describe("keeping the data repo in step with its remote", () => {
       await pullDataRepo(ours);
       assert.equal(git(remote, "rev-parse", "main"), remoteBefore);
       assert.match((await readProfile(ours)).pullProblem ?? "", new RegExp(`${shortCommit(ours, foreign)}.*not the dashboard's`));
+    });
+  });
+
+  describe("a rebase left in progress in the data repo", () => {
+    function leaveRebase(directory: string): string {
+      const path = join(ours, ".git", directory);
+      mkdirSync(path);
+      writeFileSync(join(path, "head-name"), "refs/heads/main\n");
+      return path;
+    }
+
+    for (const directory of ["rebase-merge", "rebase-apply"]) {
+      it(`stops a pull and names the ${directory} left behind, without aborting it`, async () => {
+        const path = leaveRebase(directory);
+        pushElsewhere("other.txt", "x", "elsewhere");
+        const head = git(ours, "rev-parse", "HEAD");
+        await pullDataRepo(ours);
+        const problem = (await readProfile(ours)).pullProblem ?? "";
+        assert.match(problem, new RegExp(directory));
+        assert.match(problem, /git rebase --abort/);
+        assert.equal(git(ours, "rev-parse", "HEAD"), head);
+        assert.equal(existsSync(path), true);
+      });
+    }
+
+    it("refuses a save with 503 and commits nothing", async () => {
+      leaveRebase("rebase-merge");
+      const head = git(ours, "rev-parse", "HEAD");
+      const error = await saveProfile(limited(500), "feat(connections): limit sending", ours).then(
+        () => assert.fail("the save was refused"),
+        (refusal: unknown) => refusal,
+      );
+      assert.equal((error as RequestError).status, 503);
+      assert.match((error as Error).message, /git rebase --abort/);
+      assert.equal(git(ours, "rev-parse", "HEAD"), head);
+      assert.equal(existsSync(join(ours, "connections.toml")), false);
+    });
+
+    it("records no admission and says why", async () => {
+      leaveRebase("rebase-merge");
+      const head = git(ours, "rev-parse", "HEAD");
+      const result = await recordDevice("box", "BOX-ID", null, ours);
+      assert.equal(result.committed, false);
+      assert.match(result.message, /git rebase --abort/);
+      assert.equal(git(ours, "rev-parse", "HEAD"), head);
+      assert.equal(git(ours, "status", "--porcelain"), "");
     });
   });
 
