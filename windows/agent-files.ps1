@@ -27,7 +27,7 @@ $syncthingArchiveHashes = @{
 $syncthingGuiPortBase = 8450
 $syncthingListenPortBase = 22001
 $syncthingPortCount = 20
-$tailnetAddressRange = "100.64.0.0/10"
+$tailnetAddressRanges = "100.64.0.0/10,fd7a:115c:a1e0::/48"
 
 function Get-AgentFolder([string]$StackFolder) { return Join-Path $StackFolder $agentFolderName }
 

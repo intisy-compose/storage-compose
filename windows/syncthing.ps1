@@ -297,7 +297,7 @@ function Test-ClosesLan($Connections) {
 }
 
 function Get-LanRemoteAddress($Connections) {
-    if (Test-ClosesLan $Connections) { return $tailnetAddressRange }
+    if (Test-ClosesLan $Connections) { return $tailnetAddressRanges }
     return "Any"
 }
 
@@ -307,13 +307,15 @@ Without the node's connections entry the node is tailnet-only and keeps the rule
 from the tailnet and a UDP block, so nothing opens on a host that never received the profile. With
 it, the sync port is open on Private and Domain networks to any address (the LAN, and what the
 router forwards after NAT traversal arrives there too), or to the tailnet only when the entry turns
-both off, and on Public networks to the tailnet only.
+both off, and on Public networks to the tailnet only. The tailnet is both its ranges, as for the
+Docker rules: a profile's `tcp://0.0.0.0` listener is dual-stack (Windows shows it on `::`), so a
+peer may come over the tailnet's IPv6 range too.
 #>
 function Get-NodeFirewallRules($Node, $Ports, $Connections) {
     $port = "$($Ports.listen)"
     if (-not $Connections) {
         return @(
-            (New-FirewallRuleSpec $Node "" "Allow" "TCP" $port $tailnetAddressRange "Any"),
+            (New-FirewallRuleSpec $Node "" "Allow" "TCP" $port $tailnetAddressRanges "Any"),
             (New-FirewallRuleSpec $Node "udp" "Block" "UDP" "Any" "Any" "Any")
         )
     }
@@ -321,8 +323,8 @@ function Get-NodeFirewallRules($Node, $Ports, $Connections) {
     $rules = @(
         (New-FirewallRuleSpec $Node "tcp private" "Allow" "TCP" $port $lanRemote $lanProfiles),
         (New-FirewallRuleSpec $Node "udp private" "Allow" "UDP" $port $lanRemote $lanProfiles),
-        (New-FirewallRuleSpec $Node "tcp public" "Allow" "TCP" $port $tailnetAddressRange "Public"),
-        (New-FirewallRuleSpec $Node "udp public" "Allow" "UDP" $port $tailnetAddressRange "Public")
+        (New-FirewallRuleSpec $Node "tcp public" "Allow" "TCP" $port $tailnetAddressRanges "Public"),
+        (New-FirewallRuleSpec $Node "udp public" "Allow" "UDP" $port $tailnetAddressRanges "Public")
     )
     if (Test-UsesLanMethod $Connections) { $rules += New-FirewallRuleSpec $Node "discovery private" "Allow" "UDP" "$localDiscoveryPort" "Any" $lanProfiles }
     return $rules
@@ -519,7 +521,6 @@ $dockerBackendRuleNames = @(
 $dockerBackendRulesShape = $null
 $dockerBackendLanRemote = $null
 $dockerBackendRulesProblem = ""
-$tailnetAddressRanges = "$tailnetAddressRange,fd7a:115c:a1e0::/48"
 
 <#
 .NOTES

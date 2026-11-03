@@ -131,7 +131,7 @@ Describe "a node's native Syncthing" {
     It "opens its listen port to the tailnet range only" {
         $rule = $global:firewallRules["storage-compose syncthing a001"]
         $rule.LocalPort | Should Be 32100
-        $rule.RemoteAddress | Should Be "100.64.0.0/10"
+        @($rule.RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
         $rule.Program | Should Be $SyncthingPath
     }
 
@@ -431,14 +431,14 @@ Describe "the firewall with local discovery and NAT off" {
     It "admits only the tailnet on Private and Domain, and Any again once either is on, changing the rules in place" {
         $node = New-TestNode "f001" "closed"
         Set-SyncthingFirewallRule $node $ports (New-ClosedLanEntry)
-        foreach ($protocol in @("tcp", "udp")) { (Get-TestRule "f001" "$protocol private").RemoteAddress | Should Be "100.64.0.0/10" }
+        foreach ($protocol in @("tcp", "udp")) { @((Get-TestRule "f001" "$protocol private").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48" }
         foreach ($entry in @((New-ProfileEntry $false), (New-ClosedLanEntry))) {
             $global:firewallEvents = @()
             Set-SyncthingFirewallRule $node $ports $entry
             Get-RuleEventKinds | Should Be @("set")
             @($global:firewallEvents).Count | Should Be 2
         }
-        (Get-TestRule "f001" "tcp private").RemoteAddress | Should Be "100.64.0.0/10"
+        @((Get-TestRule "f001" "tcp private").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
         $open = New-ProfileEntry $false
         $open.options | Add-Member -NotePropertyName natEnabled -NotePropertyValue $true
         Set-SyncthingFirewallRule $node $ports $open
@@ -454,7 +454,7 @@ Describe "the firewall with local discovery and NAT off" {
         (Get-TestRule "f002" "udp private").RemoteAddress | Should Be "Any"
         Write-ConnectionsFile @{ f002 = (New-ClosedLanEntry) }
         Update-InstanceFirewall $instance
-        (Get-TestRule "f002" "udp private").RemoteAddress | Should Be "100.64.0.0/10"
+        @((Get-TestRule "f002" "udp private").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
         $global:firewallEvents = @()
         Update-InstanceFirewall $instance
         $global:firewallEvents.Count | Should Be 0
@@ -494,7 +494,7 @@ Describe "the firewall with local discovery and NAT off" {
         $instance = New-SyncthingInstance $node
         Start-NodeSyncthing $instance "100.100.1.2"
         $instance.usesProfile | Should Be $true
-        foreach ($protocol in @("tcp", "udp")) { (Get-TestRule "f005" "$protocol private").RemoteAddress | Should Be "100.64.0.0/10" }
+        foreach ($protocol in @("tcp", "udp")) { @((Get-TestRule "f005" "$protocol private").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48" }
     }
 
     Context "while setting a rule fails" {
@@ -527,7 +527,7 @@ Describe "the firewall per network profile" {
             $rule.Action | Should Be "Allow"
             $rule.Protocol | Should Be $protocol.ToUpper()
             $rule.LocalPort | Should Be 32120
-            $rule.RemoteAddress | Should Be "100.64.0.0/10"
+            @($rule.RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
             $rule.Profile | Should Be "Public"
             $rule.Program | Should Be $SyncthingPath
             $rule.Group | Should Be "storage-compose agent"
@@ -566,7 +566,7 @@ Describe "the firewall per network profile" {
         $rule | Add-Member -NotePropertyName marker -NotePropertyValue "original"
         $global:firewallEvents = @()
         Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
-        (Get-TestRule "d004" "tcp public").RemoteAddress | Should Be "100.64.0.0/10"
+        @((Get-TestRule "d004" "tcp public").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
         (Get-TestRule "d004" "tcp public").marker | Should Be "original"
         $global:firewallEvents | Should Be @("set storage-compose syncthing d004 tcp public")
     }
@@ -587,12 +587,14 @@ Describe "the firewall per network profile" {
         $node = New-TestNode "d005" "kept"
         Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
         $public = Get-TestRule "d005" "tcp public"
-        $public.RemoteAddress = "100.64.0.0/255.192.0.0"
+        $public.RemoteAddress = @("fd7a:115c:a1e0::/48", "100.64.0.0/255.192.0.0")
         $public | Add-Member -NotePropertyName marker -NotePropertyValue "original"
         $private = Get-TestRule "d005" "tcp private"
         $private.Profile = "Domain, Private"
         $private | Add-Member -NotePropertyName marker -NotePropertyValue "original"
+        $global:firewallEvents = @()
         Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
+        @($global:firewallEvents).Count | Should Be 0
         (Get-TestRule "d005" "tcp public").marker | Should Be "original"
         (Get-TestRule "d005" "tcp private").marker | Should Be "original"
     }
@@ -603,7 +605,7 @@ Describe "the firewall per network profile" {
         $tcp.Action | Should Be "Allow"
         $tcp.Protocol | Should Be "TCP"
         $tcp.LocalPort | Should Be 32120
-        $tcp.RemoteAddress | Should Be "100.64.0.0/10"
+        @($tcp.RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
         $tcp.Profile | Should Be "Any"
         $udp = Get-TestRule "d006" "udp"
         $udp.Action | Should Be "Block"
@@ -673,7 +675,7 @@ Describe "the firewall per network profile" {
         Start-NodeSyncthing $instance "100.100.1.2"
         $instance.state | Should Be "running"
         $instance.usesLan | Should Be $false
-        (Get-TestRule "d013" "").RemoteAddress | Should Be "100.64.0.0/10"
+        @((Get-TestRule "d013" "").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
         Get-TestRule "d013" "udp" | Should Not BeNullOrEmpty
         $global:firewallRules.ContainsKey("storage-compose syncthing d013 tcp private") | Should Be $false
         $global:firewallRules.ContainsKey("storage-compose syncthing d013 discovery private") | Should Be $false

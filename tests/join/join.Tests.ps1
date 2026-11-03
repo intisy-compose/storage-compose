@@ -205,7 +205,7 @@ try {
             $node = Read-NodeFile $script:nodeRoot
             $rule = Get-NetFirewallRule -Name "storage-compose syncthing $($node.id)" -ErrorAction SilentlyContinue
             ($rule | Get-NetFirewallPortFilter).LocalPort | Should Be "$userSyncthingListenPort"
-            ($rule | Get-NetFirewallAddressFilter).RemoteAddress | Should Be "100.64.0.0/255.192.0.0"
+            @(($rule | Get-NetFirewallAddressFilter).RemoteAddress | Sort-Object) -join "," | Should Be "100.64.0.0/255.192.0.0,fd7a:115c:a1e0::/48"
             [bool](Get-NetFirewallRule -Name "storage-compose syncthing $($node.id) udp" -ErrorAction SilentlyContinue) | Should Be $true
         }
         It "listens on the tailnet only" {
