@@ -1105,6 +1105,9 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     fake.bundle = zipOf({ "a.txt": randomBytes(600).toString("hex"), "b.txt": randomBytes(600).toString("hex") });
     const overTotal = await fetch(`${await dashboardFor([node], 2000)}/api/nodes/d7e5/support-bundle`);
     assert.equal(overTotal.status, 501, "the files together unpack to more than the bound");
+    fake.bundle = zipOfBytes({ "a.pprof": gzipSync(randomBytes(600).toString("hex")), "b.pprof": gzipSync(randomBytes(600).toString("hex")) });
+    const profilesOverTotal = await fetch(`${await dashboardFor([node], 3000)}/api/nodes/d7e5/support-bundle`);
+    assert.equal(profilesOverTotal.status, 501, "gzipped profiles unpack within what the bound leaves, not each to the whole bound");
     fake.bundle = Buffer.from("not a zip archive at all, but long enough to be looked at");
     assert.equal((await fetch(`${dashboard}/api/nodes/d7e5/support-bundle`)).status, 501, "a bundle that cannot be read is not passed on unread");
     fake.bundle = zipOf({ "metrics.txt": randomBytes(4096).toString("hex") });

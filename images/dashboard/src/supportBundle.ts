@@ -135,11 +135,17 @@ function searchedForms(content: Buffer, maxBytes: number): Buffer[] | null {
   }
 }
 
-/** The names of the bundle's files that hold one of `secrets`, in any form it can be written in, or that cannot be searched whole. */
+/**
+ * The names of the bundle's files that hold one of `secrets`, in any form it can be written in, or that cannot be searched whole.
+ * @implNote The gzipped files unpack within what `maxBytes` leaves after the bundle's own files and the ones unpacked before, so many
+ * profiles together stay within the bound as the bundle's files do.
+ */
 export function filesHoldingSecrets(entries: readonly ZipEntry[], secrets: readonly string[], maxBytes: number): string[] {
+  let left = maxBytes - entries.reduce((total, entry) => total + entry.content.length, 0);
   return entries
     .filter((entry) => {
-      const forms = searchedForms(entry.content, maxBytes);
+      const forms = searchedForms(entry.content, Math.max(left, 0));
+      if (forms && forms.length > 1) left -= forms[1].length;
       return forms === null || forms.some((form) => secrets.some((secret) => holdsSecret(form, secret)));
     })
     .map((entry) => entry.name);
