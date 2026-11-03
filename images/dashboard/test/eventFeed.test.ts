@@ -878,6 +878,10 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     assert.deepEqual(since.messages.map((message) => message.when), ["2026-10-27T10:00:02Z", "2026-10-27T10:00:03Z"]);
     assert.ok(fake.received.includes("GET /rest/system/log?since=2026-10-27T10%3A00%3A01.5Z"), fake.received.join("\n"));
     assert.equal((await fetch(`${dashboard}/api/nodes/fb98/log?since=yesterday`)).status, 400);
+    for (const notRfc3339 of ["2026-10-27", "Tue, 27 Oct 2026 10:00:00 GMT", "2026-10-27 10:00:00Z", "2026-10-27T10:00:00"]) {
+      assert.equal((await fetch(`${dashboard}/api/nodes/fb98/log?since=${encodeURIComponent(notRfc3339)}`)).status, 400, `${notRfc3339} is not an RFC 3339 instant, which Syncthing parses`);
+    }
+    assert.equal((await fetch(`${dashboard}/api/nodes/fb98/log?since=${encodeURIComponent("2026-10-27T11:00:01.1234567+01:00")}`)).status, 200);
     assert.deepEqual([logLevelOf("WRN"), logLevelOf("ERROR"), logLevelOf(-4), logLevelOf(8), logLevelOf("odd")], ["warning", "error", "debug", "error", "info"]);
   });
 

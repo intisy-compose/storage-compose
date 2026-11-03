@@ -79,15 +79,17 @@ function nodeErrorOf(value: unknown, secrets: KnownSecrets = allSecretsKnown([])
   return { when: String(fields.when ?? ""), message: shownNodeText(String(fields.message ?? ""), secrets) };
 }
 
+const rfc3339Instant = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
 /**
- * The `since` asked for, checked to be an instant and passed on as written.
+ * The `since` asked for, checked to be an RFC 3339 instant and passed on as written.
  * @implNote Syncthing 2.1.6 writes times to a tenth of a microsecond and compares `since` at that precision, so one cut to milliseconds
- * would answer the newest line again on every poll.
+ * would answer the newest line again on every poll. It parses `since` as RFC 3339 only, so any other form `Date.parse` takes is refused here.
  */
 function sinceOf(url: URL): string | null {
   const since = url.searchParams.get("since");
   if (!since) return null;
-  if (!Number.isFinite(Date.parse(since))) throw new RequestError(400, "since is an instant, such as 2026-10-27T12:00:00Z");
+  if (!rfc3339Instant.test(since) || !Number.isFinite(Date.parse(since))) throw new RequestError(400, "since is an instant, such as 2026-10-27T12:00:00Z");
   return since;
 }
 
