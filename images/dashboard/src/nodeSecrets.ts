@@ -13,6 +13,14 @@ function secretsKey(nodeId: string, client: SyncthingClient): string {
   return `${nodeId}\u0000${client.endpoint.url}`;
 }
 
+/** Keeps one last read list per node: a node whose endpoint moved leaves none for the old one. */
+function rememberLastRead(nodeId: string, key: string, secrets: string[]): void {
+  for (const known of lastReadSecrets.keys()) {
+    if (known !== key && known.startsWith(`${nodeId}\u0000`)) lastReadSecrets.delete(known);
+  }
+  lastReadSecrets.set(key, secrets);
+}
+
 /**
  * `secrets` with the endpoint's API key as it is now.
  * @implNote The host agent can give a node a new API key while its URL stays, so a kept or last read list may hold only the old one.
@@ -32,7 +40,7 @@ export function nodeSecrets(nodeId: string, client: SyncthingClient): Promise<st
   if (kept && secretsClock.now() - kept.readAt < secretsKeptMs) return kept.secrets.then((secrets) => withCurrentApiKey(secrets, client));
   const secrets = client.request<unknown>("GET", "/config").then((config) => {
     const read = withCurrentApiKey(configSecrets(config), client);
-    lastReadSecrets.set(key, read);
+    rememberLastRead(nodeId, key, read);
     return read;
   });
   keptSecrets.set(key, { readAt: secretsClock.now(), secrets });
