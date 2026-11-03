@@ -157,6 +157,11 @@ describe("keeping the data repo in step with its remote", () => {
       assert.notEqual(git(ours, "rev-list", "--count", `origin/main..${commit}`), "0");
     }
 
+    it("refuses the trailer's words on a line that is not a trailer", async () => {
+      const commit = commitFiles({ "drive-sync.toml": admissionLayout }, "chore: hand edit\n\nCommitted-by: storage dashboard\n\nwritten by a person after all");
+      await assertLeftAlone(commit, /not the dashboard's/);
+    });
+
     it("refuses a trailer commit that touches a file the dashboard does not write", async () => {
       const commit = commitFiles({ "drive-sync.toml": admissionLayout, "notes.txt": "mine" }, "feat(devices): admit box to the storage network\n\nCommitted-by: storage dashboard");
       await assertLeftAlone(commit, /not the dashboard's/);

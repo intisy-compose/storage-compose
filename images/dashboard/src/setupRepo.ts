@@ -148,10 +148,16 @@ async function gitIn(repository: string, ...args: string[]): Promise<{ ok: boole
 }
 
 /** The trailer on every commit the dashboard makes, so a pull knows which unpushed commits it may rebase. */
-const dashboardTrailer = "Committed-by: storage dashboard";
+const dashboardTrailer = { key: "Committed-by", value: "storage dashboard" };
 
 function commitAsDashboard(repository: string, subject: string, ...paths: string[]): Promise<{ ok: boolean; output: string }> {
-  return gitIn(repository, "commit", "-m", subject, "-m", dashboardTrailer, ...(paths.length ? ["--", ...paths] : []));
+  return gitIn(repository, "commit", "-m", subject, "-m", `${dashboardTrailer.key}: ${dashboardTrailer.value}`, ...(paths.length ? ["--", ...paths] : []));
+}
+
+/** Whether `commit` carries the dashboard's trailer as git parses trailers, so the same words elsewhere in a message do not count. */
+async function hasDashboardTrailer(repository: string, commit: string): Promise<boolean> {
+  const values = await gitIn(repository, "log", "-1", `--format=%(trailers:key=${dashboardTrailer.key},valueonly)`, commit);
+  return values.ok && values.output.split("\n").some((value) => value.trim() === dashboardTrailer.value);
 }
 
 const gitQueues = new Map<string, Promise<unknown>>();
@@ -350,8 +356,7 @@ async function isDashboardCommit(repository: string, commit: string): Promise<bo
   const files = changed.ok ? changed.output.split("\n").filter(Boolean) : [];
   const dashboardFiles = [setupLayoutPath, connectionsProfilePath];
   if (!files.length || files.some((file) => !dashboardFiles.includes(file))) return false;
-  const lines = (await gitIn(repository, "log", "-1", "--format=%B", commit)).output.split("\n");
-  return lines.some((line) => line.trim() === dashboardTrailer) || unmarkedAdmissionSubject.test(lines[0]);
+  return (await hasDashboardTrailer(repository, commit)) || unmarkedAdmissionSubject.test(await subjectOf(repository, commit));
 }
 
 function isRejectedPush(output: string): boolean {
