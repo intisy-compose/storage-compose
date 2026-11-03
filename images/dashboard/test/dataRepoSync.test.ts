@@ -297,6 +297,33 @@ describe("keeping the data repo in step with its remote", () => {
     });
   });
 
+  describe("what a dashboard push sends", () => {
+    function strayBranch(): void {
+      git(ours, "config", "push.default", "matching");
+      git(ours, "checkout", "-q", "-b", "extra");
+      git(ours, "push", "-q", "origin", "extra");
+      commitFile(ours, "notes.txt", "unchecked", "docs: a commit nobody checked");
+      git(ours, "checkout", "-q", "main");
+    }
+
+    it("a save sends the upstream branch alone", async () => {
+      strayBranch();
+      const remoteExtra = git(remote, "rev-parse", "extra");
+      await saveProfile(limited(500), "feat(connections): limit sending", ours);
+      assert.equal(git(remote, "rev-parse", "main"), git(ours, "rev-parse", "HEAD"));
+      assert.equal(git(remote, "rev-parse", "extra"), remoteExtra);
+    });
+
+    it("an admission sends the upstream branch alone", async () => {
+      strayBranch();
+      const remoteExtra = git(remote, "rev-parse", "extra");
+      const result = await recordDevice("box", "BOX-ID", null, ours);
+      assert.equal(result.pushed, true);
+      assert.equal(git(remote, "rev-parse", "main"), git(ours, "rev-parse", "HEAD"));
+      assert.equal(git(remote, "rev-parse", "extra"), remoteExtra);
+    });
+  });
+
   describe("a save whose commit cannot be undone", () => {
     it("answers 503 naming the commit left unpushed, and keeps the file as committed", async () => {
       pushElsewhere("other.txt", "x", "elsewhere");

@@ -160,6 +160,19 @@ async function hasDashboardTrailer(repository: string, commit: string): Promise<
   return values.ok && values.output.split("\n").some((value) => value.trim() === dashboardTrailer.value);
 }
 
+/**
+ * Pushes HEAD to its branch's upstream and nothing else, read from `branch.<name>.remote` and `.merge` so a branch name with slashes stays whole.
+ * @implNote A bare `git push` follows `push.default`, which as `matching` would also send local branches the dashboard never checked.
+ */
+async function pushToUpstream(repository: string): Promise<{ ok: boolean; output: string }> {
+  const branch = await gitIn(repository, "symbolic-ref", "-q", "--short", "HEAD");
+  if (!branch.ok) return { ok: false, output: "HEAD is not on a branch, so there is no upstream to push to" };
+  const remote = await gitIn(repository, "config", `branch.${branch.output}.remote`);
+  const merge = await gitIn(repository, "config", `branch.${branch.output}.merge`);
+  if (!remote.ok || !merge.ok) return { ok: false, output: `${branch.output} has no upstream to push to` };
+  return gitIn(repository, "push", remote.output, `HEAD:${merge.output}`);
+}
+
 const gitQueues = new Map<string, Promise<unknown>>();
 
 /**
@@ -189,7 +202,7 @@ async function recordDeviceNow(name: string, deviceId: string, root: string | nu
   await gitIn(repository, "add", setupLayoutPath);
   const commit = await commitAsDashboard(repository, `feat(devices): admit ${name} to the storage network`);
   if (!commit.ok) return { committed: false, pushed: false, message: `written to ${setupLayoutPath} but not committed: ${commit.output.split("\n").pop()}` };
-  const push = await gitIn(repository, "push");
+  const push = await pushToUpstream(repository);
   if (!push.ok) return { committed: true, pushed: false, message: `committed, not pushed yet: ${push.output.split("\n").pop()}` };
   return { committed: true, pushed: true, message: `committed and pushed to the setup repo` };
 }
@@ -316,7 +329,7 @@ async function pushOwnCommits(repository: string): Promise<string | null> {
   if (!unpushed?.length) return null;
   const held = await heldCommitProblem(repository, unpushed);
   if (held) return held;
-  const push = await gitIn(repository, "push");
+  const push = await pushToUpstream(repository);
   if (push.ok) return null;
   const commits = await Promise.all(unpushed.map((commit) => shortCommitOf(repository, commit)));
   return unpushedText(commits, lastLine(push.output, "git push failed"));
@@ -429,7 +442,7 @@ async function saveNow(profile: ConnectionProfile, message: string, repository: 
     throw new RequestError(500, `the connection profile could not be committed: ${lastLine(commit.output, "git commit failed")}`);
   }
   const savedCommit = (await gitIn(repository, "rev-parse", "HEAD")).output;
-  const push = await gitIn(repository, "push");
+  const push = await pushToUpstream(repository);
   if (push.ok) return;
   if (!(await undoSave(repository, before, savedCommit))) throw new ProfileStuck(await shortCommitOf(repository, savedCommit));
   throw isRejectedPush(push.output) ? new ProfileConflict() : new ProfileUnreachable(lastLine(push.output, "git push failed"));
