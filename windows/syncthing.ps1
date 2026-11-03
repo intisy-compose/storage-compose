@@ -428,15 +428,33 @@ function Set-InstanceFirewall($Instance, $Connections) {
     Set-SyncthingFirewallRule $Instance.node $Instance.ports $Connections
     $Instance.firewallShape = Get-InstanceFirewallShape $Instance $Connections
     $Instance.usesLan = Test-UsesLanMethod $Connections
+    $Instance.hasProfileRules = [bool]$Connections
+}
+
+function Test-HasNoTrustedLan($Networks) {
+    $known = @($Networks | Where-Object { $_.kind -eq "lan" -or $_.kind -eq "public" })
+    $trusted = @($Networks | Where-Object { $_.kind -eq "lan" -and -not ($_.PSObject.Properties["category"] -and $_.category -eq "Public") })
+    return $known.Count -gt 0 -and $trusted.Count -eq 0
+}
+
+function Test-InstanceFlag($Instance, [string]$Name) {
+    return $Instance.state -eq "running" -and $Instance.PSObject.Properties[$Name] -and $Instance.$Name
 }
 
 <#
 .NOTES
 The keeper never changes a network's category: Windows gives a Public network no LAN rules, so it
-is reported instead, while some running node wants the LAN method.
+is reported instead, while some running node wants the LAN method. On a host with no trusted LAN
+the dashboard has already turned local discovery off for its nodes (spec section 9), so a node on
+the profile at all is reason enough to say why the LAN is unavailable.
 #>
+function Test-ReportsLanProblems($Networks, $Instances) {
+    if (@($Instances | Where-Object { Test-InstanceFlag $_ "usesLan" }).Count -gt 0) { return $true }
+    return (Test-HasNoTrustedLan $Networks) -and @($Instances | Where-Object { Test-InstanceFlag $_ "hasProfileRules" }).Count -gt 0
+}
+
 function Get-LanProblems($Networks, $Instances) {
-    if (@($Instances | Where-Object { $_.state -eq "running" -and $_.PSObject.Properties["usesLan"] -and $_.usesLan }).Count -eq 0) { return @() }
+    if (-not (Test-ReportsLanProblems $Networks $Instances)) { return @() }
     $problems = @()
     foreach ($network in @($Networks | Where-Object { $_.kind -eq "lan" -and $_.PSObject.Properties["category"] -and $_.category -eq "Public" })) {
         $label = $network.address
@@ -599,7 +617,7 @@ function Stop-SyncthingProcess($Instance) {
 function New-SyncthingInstance($Node) {
     return [pscustomobject]@{
         nodeId = $Node.id; node = $Node; ports = $null; apiKey = $null; deviceId = $null; listenAddress = $null; usesProfile = $false
-        firewallShape = $null; usesLan = $false
+        firewallShape = $null; usesLan = $false; hasProfileRules = $false
         processId = 0; state = "stopped"; startedAt = $null; attempts = @(); problem = $null
     }
 }
@@ -654,6 +672,7 @@ function Stop-NodeSyncthing($Instance, [string]$Reason) {
     Remove-NodeFirewallRules $Instance.node
     $Instance.firewallShape = $null
     $Instance.usesLan = $false
+    $Instance.hasProfileRules = $false
     $Instance.state = "stopped"
     $Instance.processId = 0
     Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): Syncthing stopped, $Reason"

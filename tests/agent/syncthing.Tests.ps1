@@ -718,6 +718,28 @@ Describe "the host's networks" {
         @(Get-LanProblems $networks @($withoutLan)).Count | Should Be 0
     }
 
+    It "reports a LAN marked Public on a host with no trusted LAN while a node is on the profile, local discovery off" {
+        $untrusted = @(
+            [pscustomobject]@{ kind = "lan"; address = "192.168.68.56"; category = "Public"; name = "Cafe" }
+            [pscustomobject]@{ kind = "tailnet"; address = "100.75.76.90" }
+        )
+        $onProfile = [pscustomobject]@{ state = "running"; usesLan = $false; hasProfileRules = $true }
+        $tailnetOnly = [pscustomobject]@{ state = "running"; usesLan = $false; hasProfileRules = $false }
+        @(Get-LanProblems $untrusted @($onProfile)) | Should Be @("LAN unavailable: Cafe (192.168.68.56) is marked Public")
+        @(Get-LanProblems $untrusted @($tailnetOnly)).Count | Should Be 0
+        $withTrusted = @($untrusted) + [pscustomobject]@{ kind = "lan"; address = "10.0.0.5"; category = "Private"; name = "Home" }
+        @(Get-LanProblems $withTrusted @($onProfile)).Count | Should Be 0
+    }
+
+    It "a node's rule set is what the heartbeat's LAN line reads" {
+        $instance = New-SyncthingInstance (New-TestNode "e001" "flags")
+        $instance.ports = [pscustomobject]@{ slot = 0; gui = 18480; listen = 32130 }
+        Set-InstanceFirewall $instance (New-ProfileEntry $false)
+        $instance.hasProfileRules | Should Be $true
+        Set-InstanceFirewall $instance $null
+        $instance.hasProfileRules | Should Be $false
+    }
+
     It "Get-HostNetworks reports a Public category as Public" {
         $global:ipAddresses = @(
             [pscustomobject]@{ InterfaceIndex = 1; IPAddress = "127.0.0.1" }
