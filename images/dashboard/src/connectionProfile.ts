@@ -13,9 +13,16 @@ export function defaultProfile(): ConnectionProfile {
   };
 }
 
-function section(root: TomlTable, name: string): TomlTable {
-  const value = root[name];
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+function section(parent: TomlTable, name: string, path: string): TomlTable {
+  const value = parent[name];
+  if (value === undefined) return {};
+  if (typeof value !== "object" || Array.isArray(value)) throw new ProfileError(`${path} must be a table`);
+  return value;
+}
+
+/** Node ids are lower case (`nodeFile.ts`), so a profile written by hand with `FB98` still means node `fb98`. */
+function nodeKey(nodeId: string): string {
+  return nodeId.toLowerCase();
 }
 
 function readBoolean(table: TomlTable, key: string, path: string, fallback: boolean): boolean {
@@ -68,29 +75,38 @@ function readNodeLimits(table: TomlTable, path: string): Partial<BandwidthLimits
   return limits;
 }
 
+function readAllNodeLimits(nodes: TomlTable): ConnectionProfile["nodeLimits"] {
+  const nodeLimits: ConnectionProfile["nodeLimits"] = {};
+  for (const written of Object.keys(nodes)) {
+    const path = `limits.node.${written}`;
+    const nodeId = nodeKey(written);
+    if (nodeLimits[nodeId]) throw new ProfileError(`${path} and another table both set node ${nodeId}`);
+    nodeLimits[nodeId] = readNodeLimits(section(nodes, written, path), path);
+  }
+  return nodeLimits;
+}
+
 export function parseProfile(text: string): ConnectionProfile {
   const defaults = defaultProfile();
   const root = parseToml(text);
-  const methods = section(root, "methods");
-  const relays = section(root, "relays");
-  const limits = section(root, "limits");
-  const nodes = section(limits, "node");
+  const methods = section(root, "methods", "methods");
+  const relays = section(root, "relays", "relays");
+  const limits = section(root, "limits", "limits");
+  const nodes = section(limits, "node", "limits.node");
   return {
     methods: {
       lan: readBoolean(methods, "lan", "methods", defaults.methods.lan),
       tailnet: readBoolean(methods, "tailnet", "methods", defaults.methods.tailnet),
       nat: readBoolean(methods, "nat", "methods", defaults.methods.nat),
     },
-    discovery: { global: readDiscovery(section(root, "discovery"), defaults.discovery.global) },
+    discovery: { global: readDiscovery(section(root, "discovery", "discovery"), defaults.discovery.global) },
     relays: {
       public: readBoolean(relays, "public", "relays", defaults.relays.public),
       bridges: readBoolean(relays, "bridges", "relays", defaults.relays.bridges),
       bridgePort: readInteger(relays, "bridge_port", "relays", defaults.relays.bridgePort, portRange),
     },
     limits: readLimits(limits, "limits", defaults.limits),
-    nodeLimits: Object.fromEntries(
-      Object.keys(nodes).map((nodeId) => [nodeId, readNodeLimits(section(nodes, nodeId), `limits.node.${nodeId}`)]),
-    ),
+    nodeLimits: readAllNodeLimits(nodes),
   };
 }
 
@@ -99,10 +115,13 @@ function tableName(path: string[]): string {
 }
 
 function limitPairs(limits: Partial<BandwidthLimits>): string[] {
-  return formatPairs(
-    { max_send_kbps: limits.maxSendKbps, max_recv_kbps: limits.maxRecvKbps, limit_lan: limits.limitLan } as TomlTable,
-    ["max_send_kbps", "max_recv_kbps", "limit_lan"],
-  );
+  const written: [string, TomlValue | undefined][] = [
+    ["max_send_kbps", limits.maxSendKbps],
+    ["max_recv_kbps", limits.maxRecvKbps],
+    ["limit_lan", limits.limitLan],
+  ];
+  const present = written.filter((pair): pair is [string, TomlValue] => pair[1] !== undefined);
+  return formatPairs(Object.fromEntries(present), ["max_send_kbps", "max_recv_kbps", "limit_lan"]);
 }
 
 export function formatProfile(profile: ConnectionProfile): string {
@@ -147,12 +166,13 @@ export function profileOptions(profile: ConnectionProfile, nodeId: string): Omit
 
 /** The limits a node runs with: the cluster default with the node's override over it. */
 export function nodeLimitsOf(profile: ConnectionProfile, nodeId: string): BandwidthLimits {
-  return { ...profile.limits, ...profile.nodeLimits[nodeId] };
+  return { ...profile.limits, ...profile.nodeLimits[nodeKey(nodeId)] };
 }
 
 /** A copy of `profile` in which `nodeId` runs with `limits`: the override keeps only what differs from the cluster default, and none is left when nothing does. */
 export function withNodeLimits(profile: ConnectionProfile, nodeId: string, limits: BandwidthLimits): ConnectionProfile {
   const override = Object.fromEntries((Object.keys(limits) as (keyof BandwidthLimits)[]).filter((key) => limits[key] !== profile.limits[key]).map((key) => [key, limits[key]]));
-  const nodeLimits = Object.fromEntries(Object.entries(profile.nodeLimits).filter(([id]) => id !== nodeId));
-  return { ...structuredClone(profile), nodeLimits: Object.keys(override).length ? { ...structuredClone(nodeLimits), [nodeId]: override } : structuredClone(nodeLimits) };
+  const key = nodeKey(nodeId);
+  const nodeLimits = Object.fromEntries(Object.entries(profile.nodeLimits).filter(([id]) => nodeKey(id) !== key));
+  return { ...structuredClone(profile), nodeLimits: Object.keys(override).length ? { ...structuredClone(nodeLimits), [key]: override } : structuredClone(nodeLimits) };
 }
