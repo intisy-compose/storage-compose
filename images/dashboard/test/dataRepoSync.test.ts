@@ -137,6 +137,48 @@ describe("keeping the data repo in step with its remote", () => {
     });
   });
 
+  describe("the dashboard's commits a pull leaves unpushed", () => {
+    function refusePushes(refuse: boolean): void {
+      const hook = join(ours, ".git", "hooks", "pre-push");
+      if (refuse) writeFileSync(hook, ["#!/bin/sh", "exit 1", ""].join("\n"), { mode: 0o755 });
+      else rmSync(hook, { force: true });
+    }
+
+    it("keeps naming them on every round until a push takes them", async () => {
+      pushElsewhere("other.txt", "x", "elsewhere");
+      await strandAdmission("box");
+      pushElsewhere("more.txt", "y", "elsewhere again");
+      refusePushes(true);
+      await pullDataRepo(ours);
+      const rebased = shortCommit(ours, "HEAD");
+      assert.match((await readProfile(ours)).pullProblem ?? "", new RegExp(`${rebased}.*not pushed yet`));
+      await pullDataRepo(ours);
+      assert.match((await readProfile(ours)).pullProblem ?? "", new RegExp(`${rebased}.*not pushed yet`));
+      refusePushes(false);
+      await pullDataRepo(ours);
+      assert.equal((await readProfile(ours)).pullProblem, null);
+      assert.equal(git(remote, "rev-parse", "main"), git(ours, "rev-parse", "HEAD"));
+    });
+
+    it("pushes an admission whose own push failed once the remote is reachable again", async () => {
+      refusePushes(true);
+      const admission = (await recordDevice("box", "BOX-ID", null, ours)).pushed;
+      assert.equal(admission, false);
+      refusePushes(false);
+      await pullDataRepo(ours);
+      assert.equal((await readProfile(ours)).pullProblem, null);
+      assert.match(git(remote, "log", "-1", "--format=%s", "main"), /admit box/);
+    });
+
+    it("names a commit that is not the dashboard's and pushes nothing", async () => {
+      const foreign = commitFile(ours, "notes.txt", "mine", "docs: a note made by hand");
+      const remoteBefore = git(remote, "rev-parse", "main");
+      await pullDataRepo(ours);
+      assert.equal(git(remote, "rev-parse", "main"), remoteBefore);
+      assert.match((await readProfile(ours)).pullProblem ?? "", new RegExp(`${shortCommit(ours, foreign)}.*not the dashboard's`));
+    });
+  });
+
   describe("a save whose commit cannot be undone", () => {
     it("answers 503 naming the commit left unpushed, and keeps the file as committed", async () => {
       pushElsewhere("other.txt", "x", "elsewhere");

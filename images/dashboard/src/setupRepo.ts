@@ -2,7 +2,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import type { ConnectionProfile, PriorityBand, ProfileRead } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
-import { foreignCommitText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseRefusedText, rebasedUnpushedText } from "./api/profileText.js";
+import { heldCommitText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseRefusedText, unpushedText } from "./api/profileText.js";
 import { RequestError } from "./http.js";
 import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
 import { type TomlTable, parseToml } from "./toml.js";
@@ -256,7 +256,7 @@ interface PullOutcome {
 async function pullNow(repository: string): Promise<void> {
   const pull = await gitIn(repository, "pull", "--ff-only");
   const outcome = pull.ok ? { pulled: true, problem: null } : await rebaseOwnCommits(repository, lastLine(pull.output, "git pull failed"));
-  if (outcome.pulled) pullStates.set(repository, { pulledAt: new Date().toISOString(), pullProblem: outcome.problem });
+  if (outcome.pulled) pullStates.set(repository, { pulledAt: new Date().toISOString(), pullProblem: await pushOwnCommits(repository) });
   else pullStates.set(repository, { ...pullStateOf(repository), pullProblem: outcome.problem });
 }
 
@@ -265,33 +265,50 @@ async function revisions(repository: string, ...range: string[]): Promise<string
   return listed.ok ? listed.output.split("\n").filter(Boolean) : null;
 }
 
+/** Why the unpushed `commits` may not be rebased or pushed by the dashboard, naming the first that is not its own, or null when all are. */
+async function heldCommitProblem(repository: string, commits: readonly string[]): Promise<string | null> {
+  const onNoRemote = new Set((await revisions(repository, "HEAD", "--not", "--remotes")) ?? []);
+  for (const commit of commits) {
+    const reason = !onNoRemote.has(commit) ? "is already on another branch of the remote" : !(await isDashboardCommit(repository, commit)) ? "is not the dashboard's" : null;
+    if (reason) return heldCommitText(await shortCommitOf(repository, commit), await subjectOf(repository, commit), reason);
+  }
+  return null;
+}
+
 /**
- * A pull that cannot fast-forward because the remote moved on past unpushed commits: the dashboard's own are rebased onto it and pushed.
+ * A pull that cannot fast-forward because the remote moved on past unpushed commits: the dashboard's own are rebased onto it.
  * @implNote Anything else is left for a person: a commit that is not the dashboard's, one already on a remote branch, a conflict, or a tree git will not rebase.
  */
 async function rebaseOwnCommits(repository: string, pullFailure: string): Promise<PullOutcome> {
   const unpushed = await revisions(repository, "@{upstream}..HEAD");
   const incoming = await revisions(repository, "HEAD..@{upstream}");
   if (!unpushed?.length || !incoming?.length) return { pulled: false, problem: pullFailure };
-  const onNoRemote = new Set((await revisions(repository, "HEAD", "--not", "--remotes")) ?? []);
-  for (const commit of unpushed) {
-    const reason = !onNoRemote.has(commit) ? "is already on another branch of the remote" : !(await isDashboardCommit(repository, commit)) ? "is not the dashboard's" : null;
-    if (reason) return { pulled: false, problem: foreignCommitText(await shortCommitOf(repository, commit), await subjectOf(repository, commit), reason) };
-  }
+  const held = await heldCommitProblem(repository, unpushed);
+  if (held) return { pulled: false, problem: held };
   return rebaseOnto(repository, await Promise.all(unpushed.map((commit) => shortCommitOf(repository, commit))));
 }
 
 async function rebaseOnto(repository: string, commits: string[]): Promise<PullOutcome> {
   const rebase = await gitIn(repository, "rebase", "-q", "@{upstream}");
-  if (!rebase.ok) {
-    const conflicted = await isRebaseInProgress(repository);
-    await gitIn(repository, "rebase", "--abort");
-    return { pulled: false, problem: conflicted ? rebaseConflictText(commits) : rebaseRefusedText(commits, lastLine(rebase.output, "git rebase failed")) };
-  }
+  if (rebase.ok) return { pulled: true, problem: null };
+  const conflicted = await isRebaseInProgress(repository);
+  await gitIn(repository, "rebase", "--abort");
+  return { pulled: false, problem: conflicted ? rebaseConflictText(commits) : rebaseRefusedText(commits, lastLine(rebase.output, "git rebase failed")) };
+}
+
+/**
+ * After every pull, pushes the dashboard's own commits the remote does not have yet, or names why they stay.
+ * @implNote Checked each round, not only after a rebase: a fast-forward pull of an unchanged remote succeeds and would otherwise clear the problem of a push that failed.
+ */
+async function pushOwnCommits(repository: string): Promise<string | null> {
+  const unpushed = await revisions(repository, "@{upstream}..HEAD");
+  if (!unpushed?.length) return null;
+  const held = await heldCommitProblem(repository, unpushed);
+  if (held) return held;
   const push = await gitIn(repository, "push");
-  if (push.ok) return { pulled: true, problem: null };
-  const rebased = await Promise.all(((await revisions(repository, "@{upstream}..HEAD")) ?? []).map((commit) => shortCommitOf(repository, commit)));
-  return { pulled: true, problem: rebasedUnpushedText(rebased, lastLine(push.output, "git push failed")) };
+  if (push.ok) return null;
+  const commits = await Promise.all(unpushed.map((commit) => shortCommitOf(repository, commit)));
+  return unpushedText(commits, lastLine(push.output, "git push failed"));
 }
 
 async function isRebaseInProgress(repository: string): Promise<boolean> {
