@@ -259,6 +259,17 @@ try {
             (Get-FileHash $stepConfig).Hash | Should Be $before
             Test-Path $kept | Should Be $false
         }
+        It "gives up on a dashboard that takes the connection and never answers, within the step's bound" {
+            $silent = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Loopback), 0
+            $silent.Start()
+            try {
+                $before = (Get-FileHash $stepConfig).Hash
+                $started = Get-Date
+                Invoke-Step "http://127.0.0.1:$($silent.LocalEndpoint.Port)" | Should Be 0
+                ((Get-Date) - $started).TotalSeconds | Should BeLessThan 25
+                (Get-FileHash $stepConfig).Hash | Should Be $before
+            } finally { $silent.Stop() }
+        }
         It "a listen list with one invalid address keeps the current addresses" {
             [System.IO.File]::WriteAllText($entry, '{"options": {"natEnabled": true}, "listenAddresses": ["tcp://0.0.0.0:22000", "udp://0.0.0.0:22000"], "deviceAddresses": {}}')
             Invoke-Step $Dashboard | Should Be 0

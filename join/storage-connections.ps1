@@ -33,9 +33,26 @@ function ConvertFrom-ConnectionsText([string]$Text) {
     return $entry
 }
 
+<#
+.NOTES
+Waits on the request as a task, so the bound covers the whole request: on .NET Framework the timeouts
+of Invoke-WebRequest and HttpClient leave out the name lookup, which can take 15 s and more.
+#>
+function Get-DashboardEntryText {
+    Add-Type -AssemblyName System.Net.Http
+    $client = New-Object System.Net.Http.HttpClient
+    try {
+        $request = $client.GetStringAsync("$($Dashboard.TrimEnd('/'))/api/connections/node/$NodeId")
+        if (-not $request.Wait([TimeSpan]::FromSeconds($fetchTimeoutSeconds))) { throw "no answer within $fetchTimeoutSeconds s" }
+        return $request.Result
+    } finally {
+        $client.Dispose()
+    }
+}
+
 function Save-DashboardEntry {
     try {
-        $text = (Invoke-WebRequest -Uri "$($Dashboard.TrimEnd('/'))/api/connections/node/$NodeId" -TimeoutSec $fetchTimeoutSeconds -UseBasicParsing).Content
+        $text = Get-DashboardEntryText
     } catch {
         Write-Host "storage-connections: the dashboard at $Dashboard gave no entry; using the kept copy, if any"
         return
