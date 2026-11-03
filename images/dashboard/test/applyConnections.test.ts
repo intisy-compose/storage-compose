@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { ConnectionProfile, NodeAddresses, PeerTable } from "../src/api/types.js";
@@ -9,6 +11,7 @@ import { ProfileError, defaultProfile } from "../src/connectionProfile.js";
 import { connectionsStateOf } from "../src/connectionsDrift.js";
 import type { LocalInstance } from "../src/instanceResolver.js";
 import { type JoinedDevice, type JoinRecords, joinedNodeId } from "../src/join.js";
+import { readRemoteTable } from "../src/peerSources.js";
 import { resolveNode } from "../src/peerTable.js";
 import { joinedNodeConnections } from "../src/routes/connections.js";
 import { type SyncthingClient, SyncthingUnavailable } from "../src/syncthing.js";
@@ -249,6 +252,33 @@ describe("the connection rounds", () => {
     let started = 0;
     let finish: (report: ApplyReport) => void = () => {};
     const stop = startConnectionRounds(0.01, () => {
+describe("another host's part of the table", () => {
+  it("is asked for that host's own nodes only, so a node removed there leaves this host's table", async () => {
+    const paths: string[] = [];
+    let answer: PeerTable = remoteTable;
+    const server = createServer((request, response) => {
+      paths.push(request.url ?? "");
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify(answer));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const dashboardUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const { round: connections } = round([], { dashboards: [dashboardUrl], remoteTable: readRemoteTable });
+      await connections.run();
+      assert.ok(connections.lastTable()?.nodes.some((node) => node.nodeId === remoteNode.nodeId));
+      answer = { ...remoteTable, nodes: [] };
+
+      await connections.run();
+
+      assert.deepEqual(paths, ["/api/connections/addresses?scope=local", "/api/connections/addresses?scope=local"]);
+      assert.deepEqual(connections.lastTable()?.nodes.map((node) => node.nodeId), ["a1b2", "storage"]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
       started++;
       return new Promise((resolve) => (finish = resolve));
     });
