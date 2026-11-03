@@ -559,6 +559,26 @@ Describe "the firewall per network profile" {
         $global:firewallRules.ContainsKey("storage-compose syncthing d010 tcp private") | Should Be $false
     }
 
+    It "a node that falls back to the tailnet address on an invalid listen list gets the tailnet-only rules, and keeps them" {
+        Mock Stop-NodeSyncthingProcesses { }
+        Mock Start-SyncthingProcess { return 4245 }
+        Mock Get-NodePorts { return $ports }
+        Mock Test-ProcessIsRunning { return $true }
+        $node = New-ConfiguredNode "d013" "fallback"
+        Write-ConnectionsFile @{ d013 = @{ options = @{ localAnnounceEnabled = $true; natEnabled = $true }; listenAddresses = @("udp://0.0.0.0:32120"); deviceAddresses = @{} } }
+        $instance = New-SyncthingInstance $node
+        Start-NodeSyncthing $instance "100.100.1.2"
+        $instance.state | Should Be "running"
+        $instance.usesLan | Should Be $false
+        (Get-TestRule "d013" "").RemoteAddress | Should Be "100.64.0.0/10"
+        Get-TestRule "d013" "udp" | Should Not BeNullOrEmpty
+        $global:firewallRules.ContainsKey("storage-compose syncthing d013 tcp private") | Should Be $false
+        $global:firewallRules.ContainsKey("storage-compose syncthing d013 discovery private") | Should Be $false
+        $global:firewallEvents = @()
+        Update-InstanceFirewall $instance
+        $global:firewallEvents.Count | Should Be 0
+    }
+
     It "a start with an unreadable connections file keeps the profile settings and rules" {
         Mock Stop-NodeSyncthingProcesses { }
         Mock Start-SyncthingProcess { return 4242 }

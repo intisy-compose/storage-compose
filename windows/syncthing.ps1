@@ -387,6 +387,23 @@ function Remove-NodeFirewallRules($Node) {
     foreach ($name in Get-AllNodeFirewallRuleNames $Node) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
 }
 
+function Read-ConfiguredListenAddresses($Node) {
+    try { $options = ([xml][System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node))).configuration.options } catch { return @() }
+    return @($options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
+}
+
+<#
+.NOTES
+The rule set follows the listen decision of Get-NodeListen, not the entry alone: a node whose entry
+has an invalid listen list and whose config holds no profile addresses listens on the tailnet
+address, so it keeps the tailnet-only rules (null), never the profile's LAN rules.
+#>
+function Get-FirewallConnections($Connections, [string[]]$Configured) {
+    if (-not $Connections) { return $null }
+    if ((Test-HasProfileListenAddresses $Connections) -or (Test-IsKeptProfileListen $Configured)) { return $Connections }
+    return $null
+}
+
 function Get-InstanceFirewallShape($Instance, $Connections) {
     return "$([bool]$Connections) $(Test-UsesLanMethod $Connections) $($Instance.ports.listen)"
 }
@@ -402,6 +419,7 @@ function Update-InstanceFirewall($Instance) {
     if ($Instance.state -ne "running" -or -not $Instance.ports) { return }
     $connections = Get-NodeConnections $Instance.node
     if (Test-IsUnreadableConnections $connections) { return }
+    $connections = Get-FirewallConnections $connections (Read-ConfiguredListenAddresses $Instance.node)
     if ((Get-InstanceFirewallShape $Instance $connections) -eq $Instance.firewallShape) { return }
     try { Set-InstanceFirewall $Instance $connections } catch { Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): firewall rules not updated: $_" }
 }
@@ -618,7 +636,7 @@ function Start-NodeSyncthing($Instance, [string]$ListenHost) {
         $Instance.deviceId = $identity.deviceId
         $Instance.listenAddress = @($identity.listen.addresses)[0]
         $Instance.usesProfile = -not $identity.listen.isTailnetOnly
-        Set-InstanceFirewall $Instance $connections
+        Set-InstanceFirewall $Instance (Get-FirewallConnections $connections $identity.listen.addresses)
         $Instance.processId = Start-SyncthingProcess $node
         $Instance.state = "running"
         $Instance.startedAt = (Get-Date).ToString("o")
