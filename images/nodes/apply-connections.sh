@@ -32,7 +32,8 @@ restart_required() {
 }
 
 # A restart request ends a Syncthing run with --no-restart, which nodes.sh starts again within a round;
-# the cluster's runs under its own monitor, which restarts it in place.
+# the cluster's runs under its own monitor, which restarts it in place. A restart another change left
+# pending is taken too, on purpose: it is due anyway.
 restart_for_profile() {
     case $(restart_required) in
         false) ;;
