@@ -2,7 +2,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import type { ConnectionProfile, PriorityBand, ProfileRead } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
-import { profileChangedText, profileConflictText, profileStuckText } from "./api/profileText.js";
+import { foreignCommitText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseRefusedText, rebasedUnpushedText } from "./api/profileText.js";
 import { RequestError } from "./http.js";
 import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
 import { type TomlTable, parseToml } from "./toml.js";
@@ -115,9 +115,9 @@ export function upsertDevice(text: string, name: string, deviceId: string, root:
   return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
-async function readLayoutText(): Promise<string | null> {
+async function readLayoutText(repository = setupRepoDirectory): Promise<string | null> {
   try {
-    return await readFile(`${setupRepoDirectory}/${setupLayoutPath}`, "utf8");
+    return await readFile(`${repository}/${setupLayoutPath}`, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -146,8 +146,11 @@ async function gitIn(repository: string, ...args: string[]): Promise<{ ok: boole
   return { ok: result.exitCode === 0, output: withoutUrlCredentials(`${result.stdout}${result.stderr}`.trim()) };
 }
 
-function git(...args: string[]): Promise<{ ok: boolean; output: string }> {
-  return gitIn(setupRepoDirectory, ...args);
+/** The trailer on every commit the dashboard makes, so a pull knows which unpushed commits it may rebase. */
+const dashboardTrailer = "Committed-by: storage dashboard";
+
+function commitAsDashboard(repository: string, subject: string, ...paths: string[]): Promise<{ ok: boolean; output: string }> {
+  return gitIn(repository, "commit", "-m", subject, "-m", dashboardTrailer, ...(paths.length ? ["--", ...paths] : []));
 }
 
 const gitQueues = new Map<string, Promise<unknown>>();
@@ -163,21 +166,21 @@ function serializeGit<Result>(repository: string, task: () => Promise<Result>): 
 }
 
 /** Writes the device into the layout, commits with the repo's own identity, and pushes. */
-export function recordDevice(name: string, deviceId: string, root: string | null): Promise<SetupRecordResult> {
-  return serializeGit(setupRepoDirectory, () => recordDeviceNow(name, deviceId, root));
+export function recordDevice(name: string, deviceId: string, root: string | null, repository = setupRepoDirectory): Promise<SetupRecordResult> {
+  return serializeGit(repository, () => recordDeviceNow(name, deviceId, root, repository));
 }
 
-async function recordDeviceNow(name: string, deviceId: string, root: string | null): Promise<SetupRecordResult> {
-  const path = `${setupRepoDirectory}/${setupLayoutPath}`;
-  const before = await readLayoutText();
+async function recordDeviceNow(name: string, deviceId: string, root: string | null, repository: string): Promise<SetupRecordResult> {
+  const path = `${repository}/${setupLayoutPath}`;
+  const before = await readLayoutText(repository);
   if (before === null) return { committed: false, pushed: false, message: `the setup repo has no ${setupLayoutPath}; the admission is recorded on this host only` };
   const after = upsertDevice(before, name, deviceId, root);
   if (after === before) return { committed: true, pushed: true, message: `${name} is already in the setup repo` };
   await writeFile(path, after);
-  await git("add", setupLayoutPath);
-  const commit = await git("commit", "-m", `feat(devices): admit ${name} to the storage network`);
+  await gitIn(repository, "add", setupLayoutPath);
+  const commit = await commitAsDashboard(repository, `feat(devices): admit ${name} to the storage network`);
   if (!commit.ok) return { committed: false, pushed: false, message: `written to ${setupLayoutPath} but not committed: ${commit.output.split("\n").pop()}` };
-  const push = await git("push");
+  const push = await gitIn(repository, "push");
   if (!push.ok) return { committed: true, pushed: false, message: `committed, not pushed yet: ${push.output.split("\n").pop()}` };
   return { committed: true, pushed: true, message: `committed and pushed to the setup repo` };
 }
@@ -240,15 +243,76 @@ function lastLine(output: string, fallback: string): string {
   return output.split("\n").pop() || fallback;
 }
 
-/** `git pull --ff-only`; a failure is kept as pullProblem and the profile on disk stays as it was. */
+/** `git pull --ff-only`, rebasing the dashboard's own unpushed commits when the remote moved on; a failure is kept as pullProblem and the profile on disk stays as it was. */
 export function pullDataRepo(repository = setupRepoDirectory): Promise<void> {
   return repository ? serializeGit(repository, () => pullNow(repository)) : Promise.resolve();
 }
 
+interface PullOutcome {
+  pulled: boolean;
+  problem: string | null;
+}
+
 async function pullNow(repository: string): Promise<void> {
   const pull = await gitIn(repository, "pull", "--ff-only");
-  if (pull.ok) pullStates.set(repository, { pulledAt: new Date().toISOString(), pullProblem: null });
-  else pullStates.set(repository, { ...pullStateOf(repository), pullProblem: lastLine(pull.output, "git pull failed") });
+  const outcome = pull.ok ? { pulled: true, problem: null } : await rebaseOwnCommits(repository, lastLine(pull.output, "git pull failed"));
+  if (outcome.pulled) pullStates.set(repository, { pulledAt: new Date().toISOString(), pullProblem: outcome.problem });
+  else pullStates.set(repository, { ...pullStateOf(repository), pullProblem: outcome.problem });
+}
+
+async function revisions(repository: string, ...range: string[]): Promise<string[] | null> {
+  const listed = await gitIn(repository, "rev-list", "--reverse", ...range);
+  return listed.ok ? listed.output.split("\n").filter(Boolean) : null;
+}
+
+/**
+ * A pull that cannot fast-forward because the remote moved on past unpushed commits: the dashboard's own are rebased onto it and pushed.
+ * @implNote Anything else is left for a person: a commit that is not the dashboard's, one already on a remote branch, a conflict, or a tree git will not rebase.
+ */
+async function rebaseOwnCommits(repository: string, pullFailure: string): Promise<PullOutcome> {
+  const unpushed = await revisions(repository, "@{upstream}..HEAD");
+  const incoming = await revisions(repository, "HEAD..@{upstream}");
+  if (!unpushed?.length || !incoming?.length) return { pulled: false, problem: pullFailure };
+  const onNoRemote = new Set((await revisions(repository, "HEAD", "--not", "--remotes")) ?? []);
+  for (const commit of unpushed) {
+    const reason = !onNoRemote.has(commit) ? "is already on another branch of the remote" : !(await isDashboardCommit(repository, commit)) ? "is not the dashboard's" : null;
+    if (reason) return { pulled: false, problem: foreignCommitText(await shortCommitOf(repository, commit), await subjectOf(repository, commit), reason) };
+  }
+  return rebaseOnto(repository, await Promise.all(unpushed.map((commit) => shortCommitOf(repository, commit))));
+}
+
+async function rebaseOnto(repository: string, commits: string[]): Promise<PullOutcome> {
+  const rebase = await gitIn(repository, "rebase", "-q", "@{upstream}");
+  if (!rebase.ok) {
+    const conflicted = await isRebaseInProgress(repository);
+    await gitIn(repository, "rebase", "--abort");
+    return { pulled: false, problem: conflicted ? rebaseConflictText(commits) : rebaseRefusedText(commits, lastLine(rebase.output, "git rebase failed")) };
+  }
+  const push = await gitIn(repository, "push");
+  if (push.ok) return { pulled: true, problem: null };
+  const rebased = await Promise.all(((await revisions(repository, "@{upstream}..HEAD")) ?? []).map((commit) => shortCommitOf(repository, commit)));
+  return { pulled: true, problem: rebasedUnpushedText(rebased, lastLine(push.output, "git push failed")) };
+}
+
+async function isRebaseInProgress(repository: string): Promise<boolean> {
+  return (await gitIn(repository, "rev-parse", "-q", "--verify", "REBASE_HEAD")).ok;
+}
+
+async function subjectOf(repository: string, commit: string): Promise<string> {
+  return (await gitIn(repository, "log", "-1", "--format=%s", commit)).output;
+}
+
+/** `feat(devices): admit <name> to the storage network`, as the dashboard committed an admission before it marked its commits. */
+const unmarkedAdmissionSubject = /^feat\(devices\): admit .+ to the storage network$/;
+
+/** Whether the dashboard made `commit`: it touches only the dashboard's files and carries its trailer, or an admission's subject. */
+async function isDashboardCommit(repository: string, commit: string): Promise<boolean> {
+  const changed = await gitIn(repository, "diff-tree", "--no-commit-id", "--name-only", "-r", commit);
+  const files = changed.ok ? changed.output.split("\n").filter(Boolean) : [];
+  const dashboardFiles = [setupLayoutPath, connectionsProfilePath];
+  if (!files.length || files.some((file) => !dashboardFiles.includes(file))) return false;
+  const lines = (await gitIn(repository, "log", "-1", "--format=%B", commit)).output.split("\n");
+  return lines.some((line) => line.trim() === dashboardTrailer) || unmarkedAdmissionSubject.test(lines[0]);
 }
 
 function isRejectedPush(output: string): boolean {
@@ -310,7 +374,7 @@ async function saveNow(profile: ConnectionProfile, message: string, repository: 
   if (committed !== null && after.trim() === committed) return restoreCommittedProfile(repository, before, committed);
   await writeFile(`${repository}/${connectionsProfilePath}`, after);
   await gitIn(repository, "add", connectionsProfilePath);
-  const commit = await gitIn(repository, "commit", "-m", message, "--", connectionsProfilePath);
+  const commit = await commitAsDashboard(repository, message, connectionsProfilePath);
   if (!commit.ok) {
     await undoSave(repository, before, null);
     throw new RequestError(500, `the connection profile could not be committed: ${lastLine(commit.output, "git commit failed")}`);

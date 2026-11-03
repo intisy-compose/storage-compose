@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { ConnectionProfile } from "../src/api/types.js";
 import { defaultProfile, formatProfile } from "../src/connectionProfile.js";
 import { RequestError } from "../src/http.js";
-import { ProfileStuck, readProfile, saveProfile } from "../src/setupRepo.js";
+import { ProfileStuck, pullDataRepo, readProfile, recordDevice, saveProfile } from "../src/setupRepo.js";
 
 function git(directory: string, ...args: string[]): string {
   return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -61,6 +61,81 @@ describe("keeping the data repo in step with its remote", () => {
     commitFile(theirs, file, text, message);
     git(theirs, "push", "-q");
   }
+
+  async function strandAdmission(name: string): Promise<string> {
+    const result = await recordDevice(name, `${name.toUpperCase()}-ID`, null, ours);
+    assert.equal(result.committed, true);
+    assert.equal(result.pushed, false);
+    return git(ours, "rev-parse", "HEAD");
+  }
+
+  describe("a pull that cannot fast-forward", () => {
+    it("rebases the dashboard's own unpushed admission onto the remote and pushes it", async () => {
+      pushElsewhere("other.txt", "x", "elsewhere");
+      await strandAdmission("box");
+      pushElsewhere("more.txt", "y", "elsewhere again");
+      await pullDataRepo(ours);
+      const read = await readProfile(ours);
+      assert.equal(read.pullProblem, null);
+      assert.notEqual(read.pulledAt, null);
+      assert.equal(git(ours, "rev-parse", "HEAD"), git(remote, "rev-parse", "main"));
+      assert.match(git(remote, "log", "-1", "--format=%s", "main"), /admit box/);
+      assert.match(readFileSync(join(ours, "more.txt"), "utf8"), /y/);
+      assert.equal(git(ours, "status", "--porcelain"), "");
+    });
+
+    it("rebases an admission committed before the dashboard marked its commits", async () => {
+      const legacy = commitFile(ours, "drive-sync.toml", '[devices.old]\nid = "OLD"\njoined = true\n\n# layout\n', "feat(devices): admit old to the storage network");
+      pushElsewhere("other.txt", "x", "elsewhere");
+      await pullDataRepo(ours);
+      assert.equal((await readProfile(ours)).pullProblem, null);
+      assert.equal(git(ours, "rev-parse", "HEAD"), git(remote, "rev-parse", "main"));
+      assert.notEqual(git(ours, "rev-parse", "HEAD"), legacy);
+      assert.match(git(remote, "log", "-1", "--format=%s", "main"), /admit old/);
+    });
+
+    it("leaves a commit that is not the dashboard's alone and names it", async () => {
+      const foreign = commitFile(ours, "notes.txt", "mine", "docs: a note made by hand");
+      pushElsewhere("other.txt", "x", "elsewhere");
+      await pullDataRepo(ours);
+      const read = await readProfile(ours);
+      assert.equal(git(ours, "rev-parse", "HEAD"), foreign);
+      assert.match(read.pullProblem ?? "", new RegExp(shortCommit(ours, foreign)));
+      assert.match(read.pullProblem ?? "", /not the dashboard's/);
+    });
+
+    it("leaves a dashboard commit beneath a foreign one alone", async () => {
+      pushElsewhere("other.txt", "x", "elsewhere");
+      const admission = await strandAdmission("box");
+      const foreign = commitFile(ours, "notes.txt", "mine", "docs: a note made by hand");
+      pushElsewhere("more.txt", "y", "elsewhere again");
+      await pullDataRepo(ours);
+      assert.equal(git(ours, "rev-parse", "HEAD"), foreign);
+      assert.equal(git(ours, "rev-parse", "HEAD~1"), admission);
+      assert.match((await readProfile(ours)).pullProblem ?? "", new RegExp(shortCommit(ours, foreign)));
+    });
+
+    it("aborts a rebase that conflicts and names the stuck commit", async () => {
+      pushElsewhere("other.txt", "x", "elsewhere");
+      const admission = await strandAdmission("box");
+      pushElsewhere("drive-sync.toml", '[devices.box]\nid = "THEIRS"\njoined = true\n\n# layout\n', "feat(devices): admit box elsewhere");
+      await pullDataRepo(ours);
+      const read = await readProfile(ours);
+      assert.equal(git(ours, "rev-parse", "HEAD"), admission);
+      assert.equal(git(ours, "status", "--porcelain"), "");
+      assert.match(read.pullProblem ?? "", new RegExp(shortCommit(ours, admission)));
+      assert.match(read.pullProblem ?? "", /conflicts/);
+    });
+
+    it("lets a save through once the pull has recovered", async () => {
+      pushElsewhere("other.txt", "x", "elsewhere");
+      await strandAdmission("box");
+      pushElsewhere("more.txt", "y", "elsewhere again");
+      await pullDataRepo(ours);
+      await saveProfile(limited(600), "feat(connections): limit sending", ours, defaultProfile());
+      assert.equal(git(remote, "show", "main:connections.toml"), formatProfile(limited(600)).trim());
+    });
+  });
 
   describe("a save whose commit cannot be undone", () => {
     it("answers 503 naming the commit left unpushed, and keeps the file as committed", async () => {

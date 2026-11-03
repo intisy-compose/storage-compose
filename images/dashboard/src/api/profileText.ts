@@ -44,6 +44,26 @@ export function profileStuckText(commit: string): string {
   return `this host committed the save as ${commit} but could not push it, and another commit landed on top of it in the data repo, so it was not undone; push or drop ${commit} there by hand`;
 }
 
+/** The pull problem of a remote that moved on while this clone holds a commit a pull may not rebase, `reason` saying why. */
+export function foreignCommitText(commit: string, subject: string, reason: string): string {
+  return `the remote moved on and this clone holds ${commit} (${subject}), which ${reason}; rebase or push it in the data repo by hand`;
+}
+
+/** The pull problem of the dashboard's own unpushed commits whose rebase onto the remote conflicted and was undone. */
+export function rebaseConflictText(commits: readonly string[]): string {
+  return `the dashboard's unpushed ${commits.join(", ")} conflicts with the remote's changes, so the rebase onto them was undone; rebase it in the data repo by hand`;
+}
+
+/** The pull problem of the dashboard's own unpushed commits that git would not rebase, `reason` being git's last line. */
+export function rebaseRefusedText(commits: readonly string[], reason: string): string {
+  return `the dashboard's unpushed ${commits.join(", ")} could not be rebased onto the remote: ${reason}`;
+}
+
+/** The pull problem of the dashboard's own commits rebased onto the remote whose push then failed. */
+export function rebasedUnpushedText(commits: readonly string[], reason: string): string {
+  return `pulled, but the dashboard's rebased ${commits.join(", ")} is not pushed yet: ${reason}`;
+}
+
 /** Whether a refused save was made from a profile that is no longer the one on disk, here or on another host. */
 export function isProfileChangedRefusal(message: string): boolean {
   return message === profileChangedText || message === profileConflictText;
