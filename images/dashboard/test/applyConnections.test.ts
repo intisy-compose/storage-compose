@@ -152,15 +152,16 @@ describe("applying the connection profile to this host's nodes", () => {
     for (const report of reports) assert.deepEqual(report.applied, ["storage"]);
     assert.deepEqual(JSON.parse(readFileSync(files[0], "utf8")).storage, resolveNode(limitedProfile(1000), wholeTable, "storage"));
     assert.deepEqual(errors.mock.calls.map((call) => call.arguments[0]), [
-      "connections: the profile cannot be read, the last one read stays applied until it is fixed: limits.max_send_kbps must be a whole number from 0",
+      "connections: connections.toml rejected: limits.max_send_kbps must be a whole number from 0; the previous profile is still applied",
     ]);
+    assert.deepEqual(connections.appliedProfile(), limitedProfile(1000));
     currentProfile = limitedProfile(1000);
     await connections.run();
     assert.equal(errors.mock.calls.at(-1)?.arguments[0], "connections: the profile can be read again");
   });
 
   it("a profile never read writes and sends nothing", async (context) => {
-    context.mock.method(console, "error", () => undefined);
+    const errors = context.mock.method(console, "error", () => undefined);
     const cluster = new FakeSyncthing({ listenAddresses: ["default"], urAccepted: -1 }, []);
     const { round: connections, files } = round([instanceOf("storage", cluster)], {
       profile: async () => {
@@ -173,6 +174,10 @@ describe("applying the connection profile to this host's nodes", () => {
     assert.deepEqual(report, { applied: [], notYet: [], failed: {} });
     assert.deepEqual(cluster.sent, []);
     assert.equal(existsSync(files[0]), false);
+    assert.equal(connections.appliedProfile(), null);
+    assert.deepEqual(errors.mock.calls.map((call) => call.arguments[0]), [
+      "connections: connections.toml cannot be read: relays.bridge_port must be a whole number from 1 to 65535; nothing applied",
+    ]);
   });
 
   it("a second round with nothing changed sends nothing", async () => {
@@ -247,11 +252,6 @@ describe("applying the connection profile to this host's nodes", () => {
   });
 });
 
-describe("the connection rounds", () => {
-  it("run at once, one at a time, and stop when told", async () => {
-    let started = 0;
-    let finish: (report: ApplyReport) => void = () => {};
-    const stop = startConnectionRounds(0.01, () => {
 describe("another host's part of the table", () => {
   it("is asked for that host's own nodes only, so a node removed there leaves this host's table", async () => {
     const paths: string[] = [];
@@ -279,6 +279,11 @@ describe("another host's part of the table", () => {
   });
 });
 
+describe("the connection rounds", () => {
+  it("run at once, one at a time, and stop when told", async () => {
+    let started = 0;
+    let finish: (report: ApplyReport) => void = () => {};
+    const stop = startConnectionRounds(0.01, () => {
       started++;
       return new Promise((resolve) => (finish = resolve));
     });

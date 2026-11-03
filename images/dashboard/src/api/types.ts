@@ -1314,11 +1314,16 @@ export interface ConnectionProfile {
   nodeLimits: Record<string, Partial<BandwidthLimits>>;
 }
 
-/** `GET /api/connections/profile`: the profile on disk, and when the data repo was last pulled and why that pull failed. */
+/**
+ * `GET /api/connections/profile`: the profile on disk, and when the data repo was last pulled and why that pull failed.
+ * While `connections.toml` does not parse, `profile` is the one still applied (the defaults when none ever was) and
+ * `profileProblem` says so.
+ */
 export interface ProfileRead {
   profile: ConnectionProfile;
   pulledAt: string | null;
   pullProblem: string | null;
+  profileProblem: string | null;
 }
 
 /**

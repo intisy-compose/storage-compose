@@ -33,6 +33,11 @@ export function profileAddressesProblem(label: string): string {
 /** The read-only hint of a cluster node's addresses in the device form. */
 export const profileAddressesHint = "Read only: set by the connection profile, which gives every node this cluster node's addresses each round.";
 
+/** Why the profile on disk is not the one applied: a `connections.toml` that does not parse, with or without a good one read before it. */
+export function profileFileProblemText(reason: string, isPreviousApplied: boolean): string {
+  return isPreviousApplied ? `connections.toml rejected: ${reason}; the previous profile is still applied` : `connections.toml cannot be read: ${reason}; nothing applied`;
+}
+
 /** The 409 of a profile save made from a profile that is no longer the one on disk. */
 export const profileChangedText = "the profile changed since you read it; it has been reloaded";
 

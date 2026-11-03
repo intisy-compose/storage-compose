@@ -179,6 +179,7 @@ function profileState(read: ProfileRead): HTMLElement {
   const behind = (appState.data?.nodes ?? []).filter((node) => node.connections === "not-yet").map((node) => node.name);
   return keyValueList([
     ["Kept in", "connections.toml in the data repo, pulled by every host's dashboard"],
+    ["Applied", read.profileProblem ? element("span", { className: "tone-text-bad" }, read.profileProblem) : "as saved"],
     ["Last pull", read.pullProblem ? element("span", { className: "tone-text-bad" }, `failed: ${read.pullProblem}`) : read.pulledAt ? formatAge(read.pulledAt) : "not pulled yet"],
     ["Not yet on it", behind.length ? behind.join(", ") : "none"],
   ]);

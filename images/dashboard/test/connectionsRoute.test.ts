@@ -51,9 +51,9 @@ describe("the connection profile in the data repo", () => {
 
   after(() => rmSync(root, { recursive: true, force: true }));
 
-  async function ask(method: string, body: string): Promise<{ status: number; body: string }> {
+  async function ask(method: string, body: string, appliedProfile: () => ConnectionProfile | null = () => null): Promise<{ status: number; body: string }> {
     const noPeers = { nodes: [], bridges: [], builtAt: "2026-11-02T10:00:00.000Z" };
-    const handler = requestHandler(connectionRoutes(ours, { local: async () => noPeers, all: async () => noPeers }), { invalidate: () => {}, record: () => {} }, hostAllowlist(["localhost"]));
+    const handler = requestHandler(connectionRoutes(ours, { local: async () => noPeers, all: async () => noPeers }, appliedProfile),{ invalidate: () => {}, record: () => {} }, hostAllowlist(["localhost"]));
     const server: Server = createServer((request, response) => void handler(request, response));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
     const port = (server.address() as AddressInfo).port;
@@ -152,5 +152,22 @@ describe("the connection profile in the data repo", () => {
     assert.equal(answer.status, 400);
     assert.match(JSON.parse(answer.body).error, /limits\.max_send_kbps/);
     assert.equal(git(ours, "rev-parse", "HEAD"), headBefore);
+  });
+
+  it("a connections.toml that does not parse is shown with the profile still applied, or with nothing applied", async () => {
+    const path = join(ours, "connections.toml");
+    const saved = readFileSync(path, "utf8");
+    writeFileSync(path, "[limits]\nmax_send_kbps = -5\n");
+    try {
+      const previous = JSON.parse((await ask("GET", "", () => limited(700))).body);
+      assert.equal(previous.profile.limits.maxSendKbps, 700);
+      assert.match(previous.profileProblem, /^connections\.toml rejected: limits\.max_send_kbps must be a whole number from 0.*; the previous profile is still applied$/);
+      const none = JSON.parse((await ask("GET", "", () => null)).body);
+      assert.deepEqual(none.profile, defaultProfile());
+      assert.match(none.profileProblem, /^connections\.toml cannot be read: limits\.max_send_kbps .*; nothing applied$/);
+    } finally {
+      writeFileSync(path, saved);
+    }
+    assert.equal(JSON.parse((await ask("GET", "")).body).profileProblem, null);
   });
 });

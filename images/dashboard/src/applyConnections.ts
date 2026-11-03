@@ -1,3 +1,4 @@
+import { profileFileProblemText } from "./api/profileText.js";
 import type { ConnectionProfile, NodeAddresses, PeerTable } from "./api/types.js";
 import { type ApplyReport, recordDrift, recordPeerTable } from "./connectionsDrift.js";
 import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances, writeConfirmed } from "./instanceResolver.js";
@@ -105,9 +106,14 @@ export class ConnectionsRound {
 
   private noteProfileProblem(problem: string | null): void {
     if (problem === this.profileProblem) return;
-    if (problem) console.error(`connections: the profile cannot be read, ${this.last ? "the last one read stays applied" : "nothing is applied"} until it is fixed: ${problem}`);
+    if (problem) console.error(`connections: ${profileFileProblemText(problem, this.last !== null)}`);
     else console.error("connections: the profile can be read again");
     this.profileProblem = problem;
+  }
+
+  /** The profile the last round applied, null before the first round that could read one. */
+  appliedProfile(): ConnectionProfile | null {
+    return this.last?.profile ?? null;
   }
 
   private async readRemoteTables(): Promise<PeerTable[]> {

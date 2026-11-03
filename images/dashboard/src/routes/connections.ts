@@ -1,7 +1,7 @@
-import { strandedText } from "../api/profileText.js";
-import type { ConnectionProfile, HostNetwork, NodeAddresses, PeerTable, ProfileSaveBody } from "../api/types.js";
+import { profileFileProblemText, strandedText } from "../api/profileText.js";
+import type { ConnectionProfile, HostNetwork, NodeAddresses, PeerTable, ProfileRead, ProfileSaveBody } from "../api/types.js";
 import { connectionsRound } from "../applyConnections.js";
-import { ProfileError, formatProfile, parseProfile } from "../connectionProfile.js";
+import { ProfileError, defaultProfile, formatProfile, parseProfile } from "../connectionProfile.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type JoinRecords, joinedNodeId } from "../join.js";
 import { collectPeerTable, localPeerTable } from "../peerSources.js";
@@ -9,7 +9,7 @@ import type { NodeConnections } from "../peerTable.js";
 import { newlyStrandedPairs } from "../reachability.js";
 import { type AnyRoute, hostWritePattern } from "../routeTypes.js";
 import { setupRepoDirectory } from "../settings.js";
-import { ProfileChanged, ProfileConflict, pullDataRepo, readProfile, saveProfile } from "../setupRepo.js";
+import { ProfileChanged, ProfileConflict, pullDataRepo, pullStateOf, readProfile, saveProfile } from "../setupRepo.js";
 import type { WhoIs } from "../tailnet.js";
 
 /** @implNote A body that does not survive being written and read back is refused, so only a profile `parseProfile` accepts is ever committed. */
@@ -48,7 +48,18 @@ function defaultPeerTableReads(): PeerTableReads {
   return { local: () => localPeerTable(), all: async () => connectionsRound.lastTable() ?? collectPeerTable() };
 }
 
-export function connectionRoutes(repository = setupRepoDirectory, peerTables = defaultPeerTableReads()): AnyRoute[] {
+/** The profile on disk, or while it does not parse the one the rounds still apply (null when none ever was), with the reason. */
+async function profileForView(repository: string, appliedProfile: () => ConnectionProfile | null): Promise<ProfileRead> {
+  try {
+    return await readProfile(repository);
+  } catch (error) {
+    if (!(error instanceof ProfileError)) throw error;
+    const applied = appliedProfile();
+    return { profile: applied ?? defaultProfile(), ...pullStateOf(repository), profileProblem: profileFileProblemText(error.message, applied !== null) };
+  }
+}
+
+export function connectionRoutes(repository = setupRepoDirectory, peerTables = defaultPeerTableReads(), appliedProfile = () => connectionsRound.appliedProfile()): AnyRoute[] {
   return [
     {
       method: "GET",
@@ -65,7 +76,7 @@ export function connectionRoutes(repository = setupRepoDirectory, peerTables = d
     {
       method: "GET",
       pattern: /^\/api\/connections\/profile$/,
-      handle: async ({ response }) => sendJson(response, 200, await readProfile(repository)),
+      handle: async ({ response }) => sendJson(response, 200, await profileForView(repository, appliedProfile)),
     },
     {
       method: "PUT",

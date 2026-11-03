@@ -10,7 +10,7 @@ import { followChangedLimits, limitsFormFor } from "../ui/src/optionsForm.js";
 function read(change: (profile: ConnectionProfile) => void = () => {}): ProfileRead {
   const profile = defaultProfile();
   change(profile);
-  return { profile, pulledAt: "2026-11-02T10:00:00.000Z", pullProblem: null };
+  return { profile, pulledAt: "2026-11-02T10:00:00.000Z", pullProblem: null, profileProblem: null };
 }
 
 describe("a profile form after another host saved first", () => {

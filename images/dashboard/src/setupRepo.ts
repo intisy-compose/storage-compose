@@ -251,7 +251,7 @@ interface PullState {
 
 const pullStates = new Map<string, PullState>();
 
-function pullStateOf(repository: string): PullState {
+export function pullStateOf(repository: string): PullState {
   return pullStates.get(repository) ?? { pulledAt: null, pullProblem: null };
 }
 
@@ -267,7 +267,7 @@ async function readProfileText(repository: string): Promise<string | null> {
 /** The profile on disk, the defaults while the repo holds none, with how the last pull went. */
 export async function readProfile(repository = setupRepoDirectory): Promise<ProfileRead> {
   const text = repository ? await readProfileText(repository) : null;
-  return { profile: text === null ? defaultProfile() : parseProfile(text), ...pullStateOf(repository) };
+  return { profile: text === null ? defaultProfile() : parseProfile(text), ...pullStateOf(repository), profileProblem: null };
 }
 
 function lastLine(output: string, fallback: string): string {
