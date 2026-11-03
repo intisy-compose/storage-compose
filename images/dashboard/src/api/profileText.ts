@@ -49,12 +49,12 @@ export function pairsText(pairs: readonly (readonly [string, string])[], nameOf:
   return pairs.map(([first, second]) => `${nameOf(first)} and ${nameOf(second)}`).join(", ");
 }
 
+const strandedEnding = "would share no connection method; confirm to save anyway";
+
 /** The 409 of a profile save that would leave pairs of nodes without a common connection method. */
 export function strandedText(pairs: readonly (readonly [string, string])[], nameOf?: (nodeId: string) => string): string {
   return `${pairsText(pairs, nameOf)} ${strandedEnding}`;
 }
-
-const strandedEnding = "would share no connection method; confirm to save anyway";
 
 /** Whether a refused save is the one `strandedText` words, whichever pairs it names. */
 export function isStrandedRefusal(message: string): boolean {

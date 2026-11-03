@@ -80,7 +80,7 @@ function readAllNodeLimits(nodes: TomlTable): ConnectionProfile["nodeLimits"] {
   for (const written of Object.keys(nodes)) {
     const path = `limits.node.${written}`;
     const nodeId = nodeKey(written);
-    if (nodeLimits[nodeId]) throw new ProfileError(`${path} and another table both set node ${nodeId}`);
+    if (Object.hasOwn(nodeLimits, nodeId)) throw new ProfileError(`${path} and another table both set node ${nodeId}`);
     nodeLimits[nodeId] = readNodeLimits(section(nodes, written, path), path);
   }
   return nodeLimits;
