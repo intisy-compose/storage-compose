@@ -5,9 +5,9 @@
 # in the home, and writes its options and listen addresses into config.xml before Syncthing starts,
 # each tcp and quic listen address on the device's own port (the dashboard assumes 22000 for every
 # joined device and leaves the real one to this step). A dashboard that does not answer within 10 s
-# leaves the kept copy in use; without a copy nothing changes. Validated by
-# the same connection-profile.jq as images/nodes/apply-connections.sh, which the join installs beside
-# this step. Always exits 0, so it never stops the start.
+# leaves the kept copy in use; without a copy nothing changes. Validated by the same
+# connection-profile.jq as images/nodes/apply-connections.sh, which the join installs beside this
+# step. Always exits 0, so it never stops the start.
 set -u
 
 dashboard=${1%/}

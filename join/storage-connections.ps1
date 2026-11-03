@@ -85,7 +85,7 @@ function Set-KeptConnections {
     $document.Load($configPath)
     $options = $document.DocumentElement.SelectSingleNode("options")
     $changed = $false
-    if (Test-HasProfileListenAddresses $entry) { $changed =(Set-ListenAddresses $options @($entry.listenAddresses)) -or $changed }
+    if (Test-HasProfileListenAddresses $entry) { $changed = (Set-ListenAddresses $options @($entry.listenAddresses)) -or $changed }
     $changed = (Set-ProfileAnnounceServers $options $entry) -or $changed
     $values = Get-ProfileOptionValues $entry
     foreach ($name in @($values.Keys)) { $changed = (Set-XmlChildText $options $name $values[$name]) -or $changed }
