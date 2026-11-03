@@ -17,7 +17,7 @@ $global:tailnetAddress = $null
 function Get-TailnetAddress { return $global:tailnetAddress }
 function Get-NetFirewallRule([string]$Name) { return $global:firewallRules[$Name] }
 function New-NetFirewallRule {
-    param([string]$Name, [string]$DisplayName, [string]$Group, [string]$Direction, [string]$Action, [string]$Protocol, $LocalPort, [string]$RemoteAddress, [string]$Program, $Profile)
+    param([string]$Name, [string]$DisplayName, [string]$Group, [string]$Direction, [string]$Action, [string]$Protocol, $LocalPort, $RemoteAddress, [string]$Program, $Profile)
     $global:firewallRules[$Name] = [pscustomobject]@{
         Name = $Name; Group = $Group; Action = $Action; Protocol = $Protocol; LocalPort = $LocalPort; RemoteAddress = $RemoteAddress; Program = $Program; Profile = "$Profile"
     }
@@ -34,6 +34,8 @@ $global:ipAddresses = @()
 $global:connectionProfiles = @()
 function Get-NetIPAddress { [CmdletBinding()] param([string]$AddressFamily) return $global:ipAddresses }
 function Get-NetConnectionProfile { [CmdletBinding()] param() return $global:connectionProfiles }
+$global:dockerBackendPath = "C:\Program Files\Docker\Docker\resources\com.docker.backend.exe"
+function Get-DockerBackendPath { return $global:dockerBackendPath }
 
 function Reset-Agent {
     Stop-AllNodeInstances "test reset"
@@ -494,6 +496,59 @@ Describe "the firewall per network profile" {
 
     Reset-Agent
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
+}
+
+Describe "the Docker backend on untrusted networks" {
+    Reset-Agent
+    $blockNames = @("storage-compose docker backend tcp public", "storage-compose docker backend udp public")
+    $outsideTailnet = @("0.0.0.0-100.63.255.255", "100.128.0.0-255.255.255.255", "::-fd7a:115c:a1df:ffff:ffff:ffff:ffff:ffff", "fd7a:115c:a1e1::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+
+    It "the docker backend is blocked on public networks except from the tailnet" {
+        Update-DockerBackendBlock $true
+        foreach ($protocol in @("TCP", "UDP")) {
+            $rule = $global:firewallRules["storage-compose docker backend $($protocol.ToLower()) public"]
+            $rule | Should Not BeNullOrEmpty
+            $rule.Action | Should Be "Block"
+            $rule.Protocol | Should Be $protocol
+            @($rule.LocalPort) -join "," | Should Be "22000,22021-22099,22100"
+            @($rule.RemoteAddress) -join "," | Should Be ($outsideTailnet -join ",")
+            $rule.Profile | Should Be "Public"
+            $rule.Program | Should Be $global:dockerBackendPath
+            $rule.Group | Should Be "storage-compose agent"
+        }
+    }
+
+    It "the block rule is not rewritten when unchanged" {
+        Update-DockerBackendBlock $true
+        foreach ($name in $blockNames) { $global:firewallRules[$name] | Add-Member -Force -NotePropertyName marker -NotePropertyValue "original" }
+        Update-DockerBackendBlock $true
+        $script:dockerBackendBlockShape = $null
+        foreach ($name in $blockNames) {
+            $rule = $global:firewallRules[$name]
+            $rule.LocalPort = @("22000", "22021-22099", "22100")
+            $rule.RemoteAddress = @($outsideTailnet[3], $outsideTailnet[1], $outsideTailnet[0], $outsideTailnet[2])
+            $rule.Program = $global:dockerBackendPath.ToLower()
+        }
+        Update-DockerBackendBlock $true
+        foreach ($name in $blockNames) { $global:firewallRules[$name].marker | Should Be "original" }
+        $global:firewallRules[$blockNames[0]].RemoteAddress = @("Any")
+        $script:dockerBackendBlockShape = $null
+        Update-DockerBackendBlock $true
+        $global:firewallRules[$blockNames[0]].PSObject.Properties["marker"] | Should BeNullOrEmpty
+        $global:firewallRules[$blockNames[1]].marker | Should Be "original"
+    }
+
+    It "the block rule is removed with the agent" {
+        Update-DockerBackendBlock $true
+        Remove-SyncthingFirewallRules
+        foreach ($name in $blockNames) { $global:firewallRules.ContainsKey($name) | Should Be $false }
+        Update-DockerBackendBlock $true
+        $global:firewallRules.ContainsKey($blockNames[0]) | Should Be $true
+        Update-DockerBackendBlock $false
+        foreach ($name in $blockNames) { $global:firewallRules.ContainsKey($name) | Should Be $false }
+    }
+
+    Reset-Agent
 }
 
 Describe "the host's networks" {

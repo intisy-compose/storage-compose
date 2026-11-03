@@ -254,7 +254,7 @@ function Get-FirewallRuleName($Node, [string]$Suffix) {
 function New-FirewallRuleSpec($Node, [string]$Suffix, [string]$Action, [string]$Protocol, [string]$LocalPort, [string]$RemoteAddress, [string]$Profiles) {
     return [pscustomobject]@{
         Name = Get-FirewallRuleName $Node $Suffix; Action = $Action; Protocol = $Protocol; LocalPort = $LocalPort
-        RemoteAddress = $RemoteAddress; Profile = $Profiles
+        RemoteAddress = $RemoteAddress; Profile = $Profiles; Program = $script:syncthingPath
     }
 }
 
@@ -312,16 +312,24 @@ function ConvertTo-ProfileKey([string]$Profiles) {
     return (@($Profiles -split '[,\s]+' | Where-Object { $_ } | Sort-Object) -join ",")
 }
 
+<#
+.NOTES
+A rule made with several ports or addresses is reported as a list, in Windows' own order.
+#>
+function ConvertTo-ListKey($Values) {
+    return (@(@($Values) | ForEach-Object { "$_" -split '[,\s]+' } | Where-Object { $_ } | ForEach-Object { (ConvertTo-PrefixNotation $_).ToLower() } | Sort-Object) -join ",")
+}
+
 function Test-FirewallRuleIsCurrent($Rule) {
     $existing = Get-NetFirewallRule -Name $Rule.Name -ErrorAction SilentlyContinue
     if (-not $existing) { return $false }
     $ports = $existing | Get-NetFirewallPortFilter
     $addresses = $existing | Get-NetFirewallAddressFilter
     $program = ($existing | Get-NetFirewallApplicationFilter).Program
-    $isCurrent = "$($ports.LocalPort)" -eq $Rule.LocalPort -and "$($ports.Protocol)" -eq $Rule.Protocol -and
-        (ConvertTo-PrefixNotation "$($addresses.RemoteAddress)") -eq $Rule.RemoteAddress -and
+    $isCurrent = (ConvertTo-ListKey $ports.LocalPort) -eq (ConvertTo-ListKey $Rule.LocalPort) -and "$($ports.Protocol)" -eq $Rule.Protocol -and
+        (ConvertTo-ListKey $addresses.RemoteAddress) -eq (ConvertTo-ListKey $Rule.RemoteAddress) -and
         (ConvertTo-ProfileKey "$($existing.Profile)") -eq (ConvertTo-ProfileKey $Rule.Profile) -and
-        "$($existing.Action)" -eq $Rule.Action -and $program -eq $script:syncthingPath
+        "$($existing.Action)" -eq $Rule.Action -and $program -eq $Rule.Program
     if ($isCurrent) { return $true }
     Remove-NetFirewallRule -Name $Rule.Name
     return $false
@@ -342,10 +350,14 @@ function Set-SyncthingFirewallRule($Node, $Ports, $Connections) {
     }
     foreach ($rule in $rules) {
         if (Test-FirewallRuleIsCurrent $rule) { continue }
-        New-NetFirewallRule -Name $rule.Name -DisplayName "$($rule.Name) ($($Node.name))" -Group $agentFirewallGroup -Direction Inbound `
-            -Action $rule.Action -Protocol $rule.Protocol -LocalPort $rule.LocalPort -RemoteAddress $rule.RemoteAddress `
-            -Program $script:syncthingPath -Profile $rule.Profile | Out-Null
+        New-AgentFirewallRule $rule "$($rule.Name) ($($Node.name))"
     }
+}
+
+function New-AgentFirewallRule($Rule, [string]$DisplayName) {
+    New-NetFirewallRule -Name $Rule.Name -DisplayName $DisplayName -Group $agentFirewallGroup -Direction Inbound `
+        -Action $Rule.Action -Protocol $Rule.Protocol -LocalPort @($Rule.LocalPort -split ',') -RemoteAddress @($Rule.RemoteAddress -split ',') `
+        -Program $Rule.Program -Profile $Rule.Profile | Out-Null
 }
 
 function Remove-NodeFirewallRules($Node) {
@@ -393,6 +405,66 @@ function Get-LanProblems($Networks, $Instances) {
     return $problems
 }
 
+$stackSyncPorts = "22000,22021-22099,22100"
+$outsideTailnetRanges = "0.0.0.0-100.63.255.255,100.128.0.0-255.255.255.255,::-fd7a:115c:a1df:ffff:ffff:ffff:ffff:ffff,fd7a:115c:a1e1::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+$dockerBackendBlockNames = @("storage-compose docker backend tcp public", "storage-compose docker backend udp public")
+$dockerBackendBlockShape = $null
+
+<#
+.NOTES
+The process Windows' own "Docker Desktop Backend" rules name; the installed copy when it cannot be
+read (an elevated process's path is hidden from a non-elevated caller).
+#>
+function Get-DockerBackendPath {
+    $process = Get-Process -Name "com.docker.backend" -ErrorAction SilentlyContinue | Where-Object { $_.Path } | Select-Object -First 1
+    if ($process) { return $process.Path }
+    $installed = Join-Path $env:ProgramFiles "Docker\Docker\resources\com.docker.backend.exe"
+    if (Test-Path -LiteralPath $installed) { return $installed }
+    return $null
+}
+
+function Get-DockerBackendBlockRules([string]$Program) {
+    return @("TCP", "UDP") | ForEach-Object {
+        [pscustomobject]@{
+            Name = "storage-compose docker backend $($_.ToLower()) public"; Action = "Block"; Protocol = $_; LocalPort = $stackSyncPorts
+            RemoteAddress = $outsideTailnetRanges; Profile = "Public"; Program = $Program
+        }
+    }
+}
+
+function Remove-DockerBackendBlock {
+    foreach ($name in $dockerBackendBlockNames) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
+    $script:dockerBackendBlockShape = $null
+}
+
+<#
+.NOTES
+Spec section 9: Docker Desktop's own rule admits every address to its published ports on a Public
+network, a network the person does not own, and a Block rule wins over it, so only the tailnet
+reaches the stack's sync and relay ports there. The ports exist only while the stack runs, which is
+when the rule is kept; it is rewritten only when the backend's path changes, and it belongs to the
+agent's group, so removing the agent's rules removes it too.
+#>
+function Update-DockerBackendBlock([bool]$IsActive) {
+    if (-not $IsActive) {
+        if ($script:dockerBackendBlockShape) { Remove-DockerBackendBlock }
+        return
+    }
+    $program = Get-DockerBackendPath
+    if (-not $program) {
+        if ($script:dockerBackendBlockShape -ne "missing") { Write-WatcherLog "Docker Desktop's backend was not found; the stack's sync ports are not blocked on Public networks" }
+        $script:dockerBackendBlockShape = "missing"
+        return
+    }
+    if ($script:dockerBackendBlockShape -eq $program) { return }
+    try {
+        foreach ($rule in Get-DockerBackendBlockRules $program) {
+            if (-not (Test-FirewallRuleIsCurrent $rule)) { New-AgentFirewallRule $rule $rule.Name }
+        }
+        $script:dockerBackendBlockShape = $program
+    } catch { Write-WatcherLog "the Docker backend's block rules were not set: $_" }
+}
+
 function Get-SyncthingBinFolder {
     if (-not $script:syncthingPath) { return $null }
     return Split-Path (Split-Path $script:syncthingPath)
@@ -400,6 +472,7 @@ function Get-SyncthingBinFolder {
 
 function Remove-SyncthingFirewallRules {
     Remove-NetFirewallRule -Group $agentFirewallGroup -ErrorAction SilentlyContinue
+    $script:dockerBackendBlockShape = $null
     Remove-ProgramFirewallRules (Get-SyncthingBinFolder)
 }
 
