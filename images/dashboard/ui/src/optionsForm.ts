@@ -11,11 +11,11 @@ import {
   profileOwnedText,
   untrustedNetworksText,
   fetchConnectionProfile,
+  isProfileChangedRefusal,
   profileChangedText,
   saveConnectionProfile,
   withNodeLimits,
 } from "./api.js";
-import { isProfileChangedRefusal } from "./connectionsForm.js";
 import { editFailureNotice, resultLine } from "./deviceForm.js";
 import { button, element, keyValueList } from "./dom.js";
 import { type FieldForm, numberControl, setting, toggleControl } from "./fieldKit.js";

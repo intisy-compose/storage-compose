@@ -7,7 +7,7 @@ import type { AddedDevice, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, 
 import { isClusterNodeDevice } from "../connectionsDrift.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, isArrayInstance, requireLocal, resolveInstance, settingsKeeperOf, writeConfirmed } from "../instanceResolver.js";
-import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
+import type { AnyRoute, NothingWritten, WriteNote } from "../routeTypes.js";
 import { SyncthingError } from "../syncthing.js";
 import { deviceChangeProblem, deviceSettings, isChangeInPlace, newDeviceProblem, redactConfig } from "../syncthingConfig.js";
 

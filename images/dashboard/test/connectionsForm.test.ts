@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { isProfileChangedRefusal, isStrandedRefusal, strandedText } from "../src/api/profileText.js";
 import type { ConnectionProfile, ProfileRead } from "../src/api/types.js";
 import { defaultProfile } from "../src/connectionProfile.js";
+import { ProfileChanged, ProfileConflict, ProfileStuck, ProfileUnreachable } from "../src/setupRepo.js";
 import { clusterFormFor, followChangedProfile } from "../ui/src/connectionsForm.js";
 import { followChangedLimits, limitsFormFor } from "../ui/src/optionsForm.js";
 
 function read(change: (profile: ConnectionProfile) => void = () => {}): ProfileRead {
   const profile = defaultProfile();
   change(profile);
-  return { profile, pulledAt: "2026-11-02T10:00:00.000Z", pullProblem: null };
+  return { profile, pulledAt: "2026-11-02T10:00:00.000Z", pullProblem: null, profileProblem: null };
 }
 
 describe("a profile form after another host saved first", () => {
@@ -33,5 +35,23 @@ describe("a profile form after another host saved first", () => {
     assert.equal(form.followed, theirs);
     assert.deepEqual(form.saved, { maxSendKbps: 200, maxRecvKbps: 0, limitLan: false });
     assert.deepEqual(form.draft, { maxSendKbps: 200, maxRecvKbps: 50, limitLan: false });
+  });
+});
+
+describe("the form recognises a refused save by the server's own texts", () => {
+  it("a profile changed on disk and a push another host beat are both a changed profile", () => {
+    assert.equal(isProfileChangedRefusal(new ProfileChanged().message), true);
+    assert.equal(isProfileChangedRefusal(new ProfileConflict().message), true);
+    assert.equal(isProfileChangedRefusal(new ProfileUnreachable("could not resolve host").message), false);
+  });
+
+  it("a save left unpushed beneath another commit is a failure to show, not a changed profile to reload", () => {
+    assert.equal(isProfileChangedRefusal(new ProfileStuck("abc1234").message), false);
+    assert.equal(isStrandedRefusal(new ProfileStuck("abc1234").message), false);
+  });
+
+  it("a save that would strand pairs is recognised whatever the pairs", () => {
+    assert.equal(isStrandedRefusal(strandedText([["aa01", "bb02"]])), true);
+    assert.equal(isStrandedRefusal(new ProfileConflict().message), false);
   });
 });

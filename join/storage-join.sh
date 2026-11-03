@@ -25,6 +25,7 @@ set -euo pipefail
 readonly HOME_LINKS="Documents:Documents Pictures:Pictures Music:Music Videos:Videos Downloads:Downloads Desktop:Desktop Templates:Templates Public:Public Documents/GitHub:code"
 readonly UNIT_NAME="storage-syncthing.service"
 readonly STEP_NAME="storage-connections"
+readonly PROFILE_CHECKS_NAME="connection-profile.jq"
 
 readonly ESSENTIAL_THRESHOLD=80 WORKING_THRESHOLD=50
 
@@ -177,11 +178,25 @@ joined_node_id() {
 
 step_source() { printf '%s/storage-connections.sh' "$(dirname "${BASH_SOURCE[0]}")"; }
 
+profile_checks_source() { printf '%s/../images/nodes/%s' "$(dirname "${BASH_SOURCE[0]}")" "$PROFILE_CHECKS_NAME"; }
+
+is_installed() { [[ -f "$2" && "$(cksum < "$1")" == "$(cksum < "$2")" ]]; }
+
+has_profile_checks_source() { [[ -f "$(profile_checks_source)" ]]; }
+
+is_step_installed() {
+    is_installed "$(step_source)" "$step_dir/$STEP_NAME" || return 1
+    ! has_profile_checks_source || is_installed "$(profile_checks_source)" "$step_dir/$PROFILE_CHECKS_NAME"
+}
+
+# A checkout without the nodes image still joins: the step then logs at every start that it applies nothing.
 install_step() {
     local step="$step_dir/$STEP_NAME"
-    [[ -f "$step" && "$(cksum < "$(step_source)")" == "$(cksum < "$step")" ]] && return 0
+    has_profile_checks_source || log "$(profile_checks_source) is missing from this checkout; the start step is installed without it and applies no connection profile"
+    is_step_installed && return 0
     mkdir -p "$step_dir"
     install -m 755 "$(step_source)" "$step"
+    if has_profile_checks_source; then install -m 644 "$(profile_checks_source)" "$step_dir/$PROFILE_CHECKS_NAME"; fi
     changed "installed $step"
 }
 

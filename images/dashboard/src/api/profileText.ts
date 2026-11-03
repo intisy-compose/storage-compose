@@ -33,15 +33,65 @@ export function profileAddressesProblem(label: string): string {
 /** The read-only hint of a cluster node's addresses in the device form. */
 export const profileAddressesHint = "Read only: set by the connection profile, which gives every node this cluster node's addresses each round.";
 
+/** Why the profile on disk is not the one applied: a `connections.toml` that does not parse, with or without a good one read before it. */
+export function profileFileProblemText(reason: string, isPreviousApplied: boolean): string {
+  return isPreviousApplied ? `connections.toml rejected: ${reason}; the previous profile is still applied` : `connections.toml cannot be read: ${reason}; nothing applied`;
+}
+
 /** The 409 of a profile save made from a profile that is no longer the one on disk. */
 export const profileChangedText = "the profile changed since you read it; it has been reloaded";
+
+/** The 409 of a profile save whose push the remote refused because another host pushed first. */
+export const profileConflictText = "another host saved the connection profile first; reload it and save again";
+
+/** The 503 of a save whose push failed after another commit landed on top of its commit, so the commit could not be undone. */
+export function profileStuckText(commit: string): string {
+  return `this host committed the save as ${commit} but could not push it, and another commit landed on top of it in the data repo, so it was not undone; push or drop ${commit} there by hand`;
+}
+
+/** The pull problem, save refusal and admission message while a rebase is in progress in the data repo, `path` being its directory. */
+export function rebaseInProgressText(path: string): string {
+  return `a rebase is in progress in the data repo (${path}), so the dashboard changes nothing there; finish it, or run git rebase --abort in the data repo by hand`;
+}
+
+/** The pull problem of an unpushed commit the dashboard may not rebase or push, `reason` saying why. */
+export function heldCommitText(commit: string, subject: string, reason: string): string {
+  return `this clone holds the unpushed ${commit} (${subject}), which ${reason}, so the dashboard leaves it alone; rebase or push it in the data repo by hand`;
+}
+
+/** The pull problem of the dashboard's own unpushed commits whose rebase onto the remote conflicted and was undone. */
+export function rebaseConflictText(commits: readonly string[]): string {
+  return `the dashboard's unpushed ${commits.join(", ")} conflicts with the remote's changes, so the rebase onto them was undone; rebase it in the data repo by hand`;
+}
+
+/** The pull problem of the dashboard's own unpushed commits that git would not rebase, `reason` being git's last line. */
+export function rebaseRefusedText(commits: readonly string[], reason: string): string {
+  return `the dashboard's unpushed ${commits.join(", ")} could not be rebased onto the remote: ${reason}`;
+}
+
+/** The pull problem of the dashboard's own commits whose push failed; every round tries again. */
+export function unpushedText(commits: readonly string[], reason: string): string {
+  return `pulled, but the dashboard's ${commits.join(", ")} is not pushed yet: ${reason}`;
+}
+
+/** Whether a refused save was made from a profile that is no longer the one on disk, here or on another host. */
+export function isProfileChangedRefusal(message: string): boolean {
+  return message === profileChangedText || message === profileConflictText;
+}
 
 /** `aa01 and bb02, bb02 and cc03`, each node by `nameOf`. */
 export function pairsText(pairs: readonly (readonly [string, string])[], nameOf: (nodeId: string) => string = (nodeId) => nodeId): string {
   return pairs.map(([first, second]) => `${nameOf(first)} and ${nameOf(second)}`).join(", ");
 }
 
+const strandedEnding = "would share no connection method; confirm to save anyway";
+
 /** The 409 of a profile save that would leave pairs of nodes without a common connection method. */
 export function strandedText(pairs: readonly (readonly [string, string])[], nameOf?: (nodeId: string) => string): string {
-  return `${pairsText(pairs, nameOf)} would share no connection method; confirm to save anyway`;
+  return `${pairsText(pairs, nameOf)} ${strandedEnding}`;
+}
+
+/** Whether a refused save is the one `strandedText` words, whichever pairs it names. */
+export function isStrandedRefusal(message: string): boolean {
+  return message.endsWith(` ${strandedEnding}`);
 }

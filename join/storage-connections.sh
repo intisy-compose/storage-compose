@@ -3,21 +3,24 @@
 # (ExecStartPre) of a joined Linux device's Syncthing unit, which storage-join.sh installs. Fetches the
 # node's entry from the dashboard's GET /api/connections/node/<node id>, keeps it as connections.json
 # in the home, and writes its options and listen addresses into config.xml before Syncthing starts,
-# each tcp:// and quic:// listen address on the device's own port (the dashboard assumes 22000 for
-# every joined device and leaves the real one to this step). A dashboard that
-# does not answer within 10 s leaves the kept copy in use; without a copy nothing changes. Validated as
-# images/nodes/apply-connections.sh does: an option of the wrong type is left out, a listen list with
-# any address of an unknown scheme is left out whole. Always exits 0, so it never stops the start.
+# each tcp and quic listen address on the device's own port (the dashboard assumes 22000 for every
+# joined device and leaves the real one to this step). A dashboard that does not answer within 10 s
+# leaves the kept copy in use; without a copy nothing changes. Validated by the same
+# connection-profile.jq as images/nodes/apply-connections.sh, which the join installs beside this
+# step. Always exits 0, so it never stops the start.
 set -u
 
 dashboard=${1%/}
 node=$2
 syncthing_home=$3
 listen_port=${4:-}
+step_folder=$(dirname "$0")
 kept="$syncthing_home/connections.json"
 config="$syncthing_home/config.xml"
 
 log() { echo "storage-connections $node: $*" >&2; }
+
+has_profile_checks() { [ -f "$step_folder/connection-profile.jq" ] || [ -f "$step_folder/../images/nodes/connection-profile.jq" ]; }
 
 fetch_entry() {
     fetched=$(mktemp "$syncthing_home/.connections.XXXXXX") || return 0
@@ -32,25 +35,18 @@ fetch_entry() {
 # One line per setting: "scalar<TAB>name<TAB>value", or "list<TAB>name" followed by its
 # "item<TAB>name<TAB>value" lines; values are XML-escaped.
 wanted_settings() {
-    jq -r --arg port "$listen_port" '
+    jq -r -L "$step_folder" -L "$step_folder/../images/nodes" --arg port "$listen_port" '
+        include "connection-profile";
         def escaped: tostring | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\t"; "&#9;") | gsub("\n"; "&#10;") | gsub("\r"; "&#13;");
-        def is_count: type == "number" and . >= 0 and . == floor;
-        def is_valid($key):
-            if $key == "maxSendKbps" or $key == "maxRecvKbps" then is_count
-            elif $key == "globalAnnounceServers" then type == "array" and all(.[]; type == "string")
-            elif $key == "limitBandwidthInLan" or $key == "natEnabled" or $key == "localAnnounceEnabled"
-                or $key == "globalAnnounceEnabled" or $key == "relaysEnabled" then type == "boolean"
-            else false end;
-        def is_listen_address: type == "string" and test("^(tcp|quic|relay|dynamic\\+https?)://");
-        def is_listen_list: type == "array" and length > 0 and all(.[]; is_listen_address);
         def list($name; $values): "list\t\($name)", ($values[] | "item\t\($name)\t\(escaped)");
-        def on_own_port: if type == "string" and ($port | test("^[0-9]+$")) and test("^(tcp|quic)://")
+        def on_own_port: if type == "string" and ($port | test("^[0-9]+$")) and test("^(tcp|quic)[46]?://")
             then sub(":[0-9]+(?<tail>([/?].*)?)$"; ":\($port)\(.tail)") else . end;
         select(type == "object")
         | if .listenAddresses | type == "array" then .listenAddresses |= map(on_own_port) else . end
-        | ((.options | if type == "object" then . else {} end) | with_entries(select(.key as $key | .value | is_valid($key)))) as $options
-        | ($options | to_entries[] | if .key == "globalAnnounceServers" then list("globalAnnounceServer"; .value) else "scalar\t\(.key)\t\(.value | escaped)" end),
-          (if .listenAddresses | is_listen_list then list("listenAddress"; .listenAddresses) else empty end)' "$kept"
+        | profile_settings | to_entries[]
+        | if .key == "listenAddresses" then list("listenAddress"; .value)
+          elif .key == "globalAnnounceServers" then list("globalAnnounceServer"; .value)
+          else "scalar\t\(.key)\t\(.value | escaped)" end' "$kept"
 }
 
 # Syncthing writes one element per line, so <options> is edited line by line: a listed name's
@@ -97,5 +93,5 @@ apply_kept() {
 }
 
 fetch_entry
-apply_kept
+if has_profile_checks; then apply_kept; else log "connection-profile.jq is missing beside the script; nothing applied"; fi
 exit 0

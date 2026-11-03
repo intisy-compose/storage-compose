@@ -1,8 +1,9 @@
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { access, readFile, rm, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { ConnectionProfile, PriorityBand, ProfileRead } from "./api/types.js";
 import { runCommand } from "./commands.js";
-import { defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
-import { profileChangedText } from "./api/profileText.js";
+import { ProfileError, defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
+import { heldCommitText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseInProgressText, rebaseRefusedText, unpushedText } from "./api/profileText.js";
 import { RequestError } from "./http.js";
 import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
 import { type TomlTable, parseToml } from "./toml.js";
@@ -115,9 +116,9 @@ export function upsertDevice(text: string, name: string, deviceId: string, root:
   return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
-async function readLayoutText(): Promise<string | null> {
+async function readLayoutText(repository = setupRepoDirectory): Promise<string | null> {
   try {
-    return await readFile(`${setupRepoDirectory}/${setupLayoutPath}`, "utf8");
+    return await readFile(`${repository}/${setupLayoutPath}`, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -146,8 +147,30 @@ async function gitIn(repository: string, ...args: string[]): Promise<{ ok: boole
   return { ok: result.exitCode === 0, output: withoutUrlCredentials(`${result.stdout}${result.stderr}`.trim()) };
 }
 
-function git(...args: string[]): Promise<{ ok: boolean; output: string }> {
-  return gitIn(setupRepoDirectory, ...args);
+/** The trailer on every commit the dashboard makes, so a pull knows which unpushed commits it may rebase. */
+const dashboardTrailer = { key: "Committed-by", value: "storage dashboard" };
+
+function commitAsDashboard(repository: string, subject: string, ...paths: string[]): Promise<{ ok: boolean; output: string }> {
+  return gitIn(repository, "commit", "-m", subject, "-m", `${dashboardTrailer.key}: ${dashboardTrailer.value}`, ...(paths.length ? ["--", ...paths] : []));
+}
+
+/** Whether `commit` carries the dashboard's trailer as git parses trailers, so the same words elsewhere in a message do not count. */
+async function hasDashboardTrailer(repository: string, commit: string): Promise<boolean> {
+  const values = await gitIn(repository, "log", "-1", `--format=%(trailers:key=${dashboardTrailer.key},valueonly)`, commit);
+  return values.ok && values.output.split("\n").some((value) => value.trim() === dashboardTrailer.value);
+}
+
+/**
+ * Pushes HEAD to its branch's upstream and nothing else, read from `branch.<name>.remote` and `.merge` so a branch name with slashes stays whole.
+ * @implNote A bare `git push` follows `push.default`, which as `matching` would also send local branches the dashboard never checked.
+ */
+async function pushToUpstream(repository: string): Promise<{ ok: boolean; output: string }> {
+  const branch = await gitIn(repository, "symbolic-ref", "-q", "--short", "HEAD");
+  if (!branch.ok) return { ok: false, output: "HEAD is not on a branch, so there is no upstream to push to" };
+  const remote = await gitIn(repository, "config", `branch.${branch.output}.remote`);
+  const merge = await gitIn(repository, "config", `branch.${branch.output}.merge`);
+  if (!remote.ok || !merge.ok) return { ok: false, output: `${branch.output} has no upstream to push to` };
+  return gitIn(repository, "push", remote.output, `HEAD:${merge.output}`);
 }
 
 const gitQueues = new Map<string, Promise<unknown>>();
@@ -163,21 +186,25 @@ function serializeGit<Result>(repository: string, task: () => Promise<Result>): 
 }
 
 /** Writes the device into the layout, commits with the repo's own identity, and pushes. */
-export function recordDevice(name: string, deviceId: string, root: string | null): Promise<SetupRecordResult> {
-  return serializeGit(setupRepoDirectory, () => recordDeviceNow(name, deviceId, root));
+export function recordDevice(name: string, deviceId: string, root: string | null, repository = setupRepoDirectory): Promise<SetupRecordResult> {
+  return serializeGit(repository, () => recordDeviceNow(name, deviceId, root, repository));
 }
 
-async function recordDeviceNow(name: string, deviceId: string, root: string | null): Promise<SetupRecordResult> {
-  const path = `${setupRepoDirectory}/${setupLayoutPath}`;
-  const before = await readLayoutText();
+async function recordDeviceNow(name: string, deviceId: string, root: string | null, repository: string): Promise<SetupRecordResult> {
+  const rebase = await rebaseInProgress(repository);
+  if (rebase) return { committed: false, pushed: false, message: rebaseInProgressText(rebase) };
+  const path = `${repository}/${setupLayoutPath}`;
+  const before = await readLayoutText(repository);
   if (before === null) return { committed: false, pushed: false, message: `the setup repo has no ${setupLayoutPath}; the admission is recorded on this host only` };
   const after = upsertDevice(before, name, deviceId, root);
   if (after === before) return { committed: true, pushed: true, message: `${name} is already in the setup repo` };
   await writeFile(path, after);
-  await git("add", setupLayoutPath);
-  const commit = await git("commit", "-m", `feat(devices): admit ${name} to the storage network`);
+  await gitIn(repository, "add", setupLayoutPath);
+  const commit = await commitAsDashboard(repository, `feat(devices): admit ${name} to the storage network`);
   if (!commit.ok) return { committed: false, pushed: false, message: `written to ${setupLayoutPath} but not committed: ${commit.output.split("\n").pop()}` };
-  const push = await git("push");
+  const held = await heldUnpushedProblem(repository);
+  if (held) return { committed: true, pushed: false, message: `committed, not pushed: ${held}` };
+  const push = await pushToUpstream(repository);
   if (!push.ok) return { committed: true, pushed: false, message: `committed, not pushed yet: ${push.output.split("\n").pop()}` };
   return { committed: true, pushed: true, message: `committed and pushed to the setup repo` };
 }
@@ -185,11 +212,10 @@ async function recordDeviceNow(name: string, deviceId: string, root: string | nu
 /** A save whose push the remote refused because another host pushed first; nothing of the save remains. */
 export class ProfileConflict extends RequestError {
   constructor() {
-    super(409, "another host saved the connection profile first; reload it and save again");
+    super(409, profileConflictText);
   }
 }
 
-/** A save that git could not make reach the remote; nothing of the save remains. */
 /** A save made from a profile that is no longer the one on disk: another host's change was pulled in meanwhile. */
 export class ProfileChanged extends RequestError {
   constructor() {
@@ -197,12 +223,26 @@ export class ProfileChanged extends RequestError {
   }
 }
 
+/** A save that git could not make reach the remote; nothing of the save remains. */
 export class ProfileUnreachable extends RequestError {
   constructor(reason: string) {
     super(503, `the data repo's remote could not be reached: ${reason}`);
   }
 }
 
+/** A save whose push failed after HEAD moved past its commit outside this process, so the commit stays unpushed. */
+export class ProfileStuck extends RequestError {
+  constructor(commit: string) {
+    super(503, profileStuckText(commit));
+  }
+}
+
+/** A save refused before its push because a commit that is not the dashboard's would go with it; the save is undone. */
+export class ProfileHeld extends RequestError {
+  constructor(problem: string) {
+    super(503, problem);
+  }
+}
 
 interface PullState {
   pulledAt: string | null;
@@ -211,7 +251,7 @@ interface PullState {
 
 const pullStates = new Map<string, PullState>();
 
-function pullStateOf(repository: string): PullState {
+export function pullStateOf(repository: string): PullState {
   return pullStates.get(repository) ?? { pulledAt: null, pullProblem: null };
 }
 
@@ -224,53 +264,190 @@ async function readProfileText(repository: string): Promise<string | null> {
   }
 }
 
+/**
+ * The profile a save is made over: the one on disk, the defaults while the repo holds none, or `standIn` while the file does not parse.
+ * @implNote `standIn` is what the profile GET shows in a bad file's place, so a save made from that view repairs the file instead of failing on it.
+ */
+export async function profileToSaveOver(repository: string, standIn: () => ConnectionProfile): Promise<ConnectionProfile> {
+  const text = await readProfileText(repository);
+  if (text === null) return defaultProfile();
+  try {
+    return parseProfile(text);
+  } catch (error) {
+    if (error instanceof ProfileError) return standIn();
+    throw error;
+  }
+}
+
 /** The profile on disk, the defaults while the repo holds none, with how the last pull went. */
 export async function readProfile(repository = setupRepoDirectory): Promise<ProfileRead> {
   const text = repository ? await readProfileText(repository) : null;
-  return { profile: text === null ? defaultProfile() : parseProfile(text), ...pullStateOf(repository) };
+  return { profile: text === null ? defaultProfile() : parseProfile(text), ...pullStateOf(repository), profileProblem: null };
 }
 
 function lastLine(output: string, fallback: string): string {
   return output.split("\n").pop() || fallback;
 }
 
-/** `git pull --ff-only`; a failure is kept as pullProblem and the profile on disk stays as it was. */
+/** `git pull --ff-only`, rebasing the dashboard's own unpushed commits when the remote moved on; a failure is kept as pullProblem and the profile on disk stays as it was. */
 export function pullDataRepo(repository = setupRepoDirectory): Promise<void> {
   return repository ? serializeGit(repository, () => pullNow(repository)) : Promise.resolve();
 }
 
+interface PullOutcome {
+  pulled: boolean;
+  problem: string | null;
+}
+
 async function pullNow(repository: string): Promise<void> {
+  const rebase = await rebaseInProgress(repository);
+  if (rebase) return void pullStates.set(repository, { ...pullStateOf(repository), pullProblem: rebaseInProgressText(rebase) });
   const pull = await gitIn(repository, "pull", "--ff-only");
-  if (pull.ok) pullStates.set(repository, { pulledAt: new Date().toISOString(), pullProblem: null });
-  else pullStates.set(repository, { ...pullStateOf(repository), pullProblem: lastLine(pull.output, "git pull failed") });
+  const outcome = pull.ok ? { pulled: true, problem: null } : await rebaseOwnCommits(repository, lastLine(pull.output, "git pull failed"));
+  if (outcome.pulled) pullStates.set(repository, { pulledAt: new Date().toISOString(), pullProblem: await pushOwnCommits(repository) });
+  else pullStates.set(repository, { ...pullStateOf(repository), pullProblem: outcome.problem });
+}
+
+async function revisions(repository: string, ...range: string[]): Promise<string[] | null> {
+  const listed = await gitIn(repository, "rev-list", "--reverse", ...range);
+  return listed.ok ? listed.output.split("\n").filter(Boolean) : null;
+}
+
+/** Why the unpushed `commits` may not be rebased or pushed by the dashboard, naming the first that is not its own, or null when all are. */
+async function heldCommitProblem(repository: string, commits: readonly string[]): Promise<string | null> {
+  const onNoRemote = new Set((await revisions(repository, "HEAD", "--not", "--remotes")) ?? []);
+  for (const commit of commits) {
+    const reason = !onNoRemote.has(commit) ? "is already on another branch of the remote" : !(await isDashboardCommit(repository, commit)) ? "is not the dashboard's" : null;
+    if (reason) return heldCommitText(await shortCommitOf(repository, commit), await subjectOf(repository, commit), reason);
+  }
+  return null;
+}
+
+/**
+ * A pull that cannot fast-forward because the remote moved on past unpushed commits: the dashboard's own are rebased onto it.
+ * @implNote Anything else is left for a person: a commit that is not the dashboard's, one already on a remote branch, a conflict, or a tree git will not rebase.
+ */
+async function rebaseOwnCommits(repository: string, pullFailure: string): Promise<PullOutcome> {
+  const unpushed = await revisions(repository, "@{upstream}..HEAD");
+  const incoming = await revisions(repository, "HEAD..@{upstream}");
+  if (!unpushed?.length || !incoming?.length) return { pulled: false, problem: pullFailure };
+  const held = await heldCommitProblem(repository, unpushed);
+  if (held) return { pulled: false, problem: held };
+  return rebaseOnto(repository, await Promise.all(unpushed.map((commit) => shortCommitOf(repository, commit))));
+}
+
+async function rebaseOnto(repository: string, commits: string[]): Promise<PullOutcome> {
+  const rebase = await gitIn(repository, "rebase", "-q", "@{upstream}");
+  if (rebase.ok) return { pulled: true, problem: null };
+  const conflicted = (await rebaseInProgress(repository)) !== null;
+  await gitIn(repository, "rebase", "--abort");
+  return { pulled: false, problem: conflicted ? rebaseConflictText(commits) : rebaseRefusedText(commits, lastLine(rebase.output, "git rebase failed")) };
+}
+
+/**
+ * After every pull, pushes the dashboard's own commits the remote does not have yet, or names why they stay.
+ * @implNote Checked each round, not only after a rebase: a fast-forward pull of an unchanged remote succeeds and would otherwise clear the problem of a push that failed.
+ */
+/** Why a push of HEAD would carry a commit the dashboard may not push, naming it, or null. */
+async function heldUnpushedProblem(repository: string): Promise<string | null> {
+  const unpushed = await revisions(repository, "@{upstream}..HEAD");
+  return unpushed?.length ? heldCommitProblem(repository, unpushed) : null;
+}
+
+async function pushOwnCommits(repository: string): Promise<string | null> {
+  const unpushed = await revisions(repository, "@{upstream}..HEAD");
+  if (!unpushed?.length) return null;
+  const held = await heldCommitProblem(repository, unpushed);
+  if (held) return held;
+  const push = await pushToUpstream(repository);
+  if (push.ok) return null;
+  const commits = await Promise.all(unpushed.map((commit) => shortCommitOf(repository, commit)));
+  return unpushedText(commits, lastLine(push.output, "git push failed"));
+}
+
+/**
+ * The directory of a rebase in progress in the data repo, as git names it, or null.
+ * @implNote Never aborted by the dashboard: a killed process and a person's own rebase leave the same state.
+ */
+async function rebaseInProgress(repository: string): Promise<string | null> {
+  for (const name of ["rebase-merge", "rebase-apply"]) {
+    const path = await gitIn(repository, "rev-parse", "--git-path", name);
+    if (path.ok && (await exists(resolve(repository, path.output)))) return path.output;
+  }
+  return null;
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function subjectOf(repository: string, commit: string): Promise<string> {
+  return (await gitIn(repository, "log", "-1", "--format=%s", commit)).output;
+}
+
+/** `feat(devices): admit <name> to the storage network`, as the dashboard committed an admission before it marked its commits; the name as `isDeviceName` takes it. */
+const unmarkedAdmissionSubject = /^feat\(devices\): admit [a-z0-9][a-z0-9-]* to the storage network$/;
+
+/**
+ * Whether the dashboard made `commit`: one with its trailer touching only the dashboard's files, or an unmarked admission touching the layout alone.
+ * @implNote A merge lists no files here, so it never counts.
+ */
+async function isDashboardCommit(repository: string, commit: string): Promise<boolean> {
+  const changed = await gitIn(repository, "diff-tree", "--no-commit-id", "--name-only", "-r", commit);
+  const files = changed.ok ? changed.output.split("\n").filter(Boolean) : [];
+  if (!files.length) return false;
+  if (await hasDashboardTrailer(repository, commit)) return files.every((file) => file === setupLayoutPath || file === connectionsProfilePath);
+  return files.length === 1 && files[0] === setupLayoutPath && unmarkedAdmissionSubject.test(await subjectOf(repository, commit));
 }
 
 function isRejectedPush(output: string): boolean {
   return /non-fast-forward|fetch first|\[rejected\]/i.test(output);
 }
 
-/** @implNote Only this file is touched: the data repo may hold other uncommitted work, so a commit is undone with a soft reset and the file restored by hand. */
-async function undoSave(repository: string, before: string | null, savedCommit: string | null): Promise<void> {
-  if (savedCommit !== null && (await gitIn(repository, "rev-parse", "HEAD")).output === savedCommit) await gitIn(repository, "reset", "--soft", "HEAD~1");
+/**
+ * Undoes the save, false when `savedCommit` is no longer HEAD: then the commit and its file stay as committed.
+ * @implNote Only this file is touched: the data repo may hold other uncommitted work, so a commit is undone with a soft reset and the file restored by hand.
+ */
+async function undoSave(repository: string, before: string | null, savedCommit: string | null): Promise<boolean> {
+  if (savedCommit !== null) {
+    if ((await gitIn(repository, "rev-parse", "HEAD")).output !== savedCommit) return false;
+    await gitIn(repository, "reset", "--soft", "HEAD~1");
+  }
   await gitIn(repository, "reset", "-q", "--", connectionsProfilePath);
   const path = `${repository}/${connectionsProfilePath}`;
   if (before === null) await rm(path, { force: true });
   else await writeFile(path, before);
+  return true;
 }
 
-/** Writes the profile, commits and pushes it; a failed commit or push leaves the file and the repo as they were. */
-/** Commits and pushes `profile`; with `base`, only while the profile on disk is still `base`, checked under the repo's lock. */
-export async function saveProfile(profile: ConnectionProfile, message: string, repository = setupRepoDirectory, base?: ConnectionProfile): Promise<void> {
+async function shortCommitOf(repository: string, commit: string): Promise<string> {
+  const short = await gitIn(repository, "rev-parse", "--short", commit);
+  return short.ok ? short.output : commit;
+}
+
+/**
+ * Commits and pushes `profile`; with `base`, only while the profile on disk (`standIn` while it does not parse) is still `base`, checked under the repo's lock.
+ * A failed commit or push leaves the file and the repo as they were, except a commit another landed on top of: that one stays, answered with ProfileStuck.
+ */
+export async function saveProfile(
+  profile: ConnectionProfile,
+  message: string,
+  repository = setupRepoDirectory,
+  base?: ConnectionProfile,
+  standIn: () => ConnectionProfile = defaultProfile,
+): Promise<void> {
   if (!repository) throw new RequestError(503, "this host has no setup repo to keep the connection profile in");
   return serializeGit(repository, async () => {
-    if (base && !(await isProfileOnDisk(repository, base))) throw new ProfileChanged();
+    const rebase = await rebaseInProgress(repository);
+    if (rebase) throw new RequestError(503, rebaseInProgressText(rebase));
+    if (base && formatProfile(await profileToSaveOver(repository, standIn)) !== formatProfile(base)) throw new ProfileChanged();
     return saveNow(profile, message, repository);
   });
-}
-
-async function isProfileOnDisk(repository: string, profile: ConnectionProfile): Promise<boolean> {
-  const text = await readProfileText(repository);
-  return formatProfile(text === null ? defaultProfile() : parseProfile(text)) === formatProfile(profile);
 }
 
 async function committedProfileText(repository: string): Promise<string | null> {
@@ -278,20 +455,33 @@ async function committedProfileText(repository: string): Promise<string | null> 
   return shown.ok ? shown.output : null;
 }
 
+/** A no-op save still leaves the file as committed, so a stale copy on disk never outlives a save that HEAD already holds. */
+async function restoreCommittedProfile(repository: string, before: string | null, committed: string): Promise<void> {
+  if (before?.trim() !== committed) await gitIn(repository, "checkout", "-q", "HEAD", "--", connectionsProfilePath);
+}
+
 async function saveNow(profile: ConnectionProfile, message: string, repository: string): Promise<void> {
   const before = await readProfileText(repository);
   const after = formatProfile(profile);
-  if (after.trim() === (await committedProfileText(repository))) return;
+  const committed = await committedProfileText(repository);
+  if (committed !== null && after.trim() === committed) return restoreCommittedProfile(repository, before, committed);
   await writeFile(`${repository}/${connectionsProfilePath}`, after);
   await gitIn(repository, "add", connectionsProfilePath);
-  const commit = await gitIn(repository, "commit", "-m", message, "--", connectionsProfilePath);
+  const commit = await commitAsDashboard(repository, message, connectionsProfilePath);
   if (!commit.ok) {
     await undoSave(repository, before, null);
     throw new RequestError(500, `the connection profile could not be committed: ${lastLine(commit.output, "git commit failed")}`);
   }
   const savedCommit = (await gitIn(repository, "rev-parse", "HEAD")).output;
-  const push = await gitIn(repository, "push");
+  const held = await heldUnpushedProblem(repository);
+  if (held) return refuseAfterUndo(repository, before, savedCommit, new ProfileHeld(held));
+  const push = await pushToUpstream(repository);
   if (push.ok) return;
-  await undoSave(repository, before, savedCommit);
-  throw isRejectedPush(push.output) ? new ProfileConflict() : new ProfileUnreachable(lastLine(push.output, "git push failed"));
+  return refuseAfterUndo(repository, before, savedCommit, isRejectedPush(push.output) ? new ProfileConflict() : new ProfileUnreachable(lastLine(push.output, "git push failed")));
+}
+
+/** Undoes the save and throws `refusal`, or ProfileStuck when another commit landed on top of the save's. */
+async function refuseAfterUndo(repository: string, before: string | null, savedCommit: string, refusal: RequestError): Promise<never> {
+  if (!(await undoSave(repository, before, savedCommit))) throw new ProfileStuck(await shortCommitOf(repository, savedCommit));
+  throw refusal;
 }

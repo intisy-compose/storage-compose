@@ -4,7 +4,7 @@ import { generalSettingLabels } from "../api/optionsText.js";
 import type { AdvancedConfig, AdvancedTarget } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, settingsKeeperOf, writeConfirmed } from "../instanceResolver.js";
-import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
+import type { AnyRoute, NothingWritten, WriteNote } from "../routeTypes.js";
 import { isChangeInPlace, redactConfig } from "../syncthingConfig.js";
 import { advancedChangeProblem, guiManagedText } from "./advancedGuards.js";
 import { decodedSegment } from "./devices.js";

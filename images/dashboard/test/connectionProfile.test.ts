@@ -42,14 +42,14 @@ describe("connection profile", () => {
 
   it("a node's limit override wins over the cluster default", () => {
     const profile = parseProfile(
-      "[limits]\nmax_send_kbps = 1000\nmax_recv_kbps = 2000\nlimit_lan = true\n\n[limits.node.AB12-CD34]\nmax_send_kbps = 500\n",
+      "[limits]\nmax_send_kbps = 1000\nmax_recv_kbps = 2000\nlimit_lan = true\n\n[limits.node.ab12]\nmax_send_kbps = 500\n",
     );
-    assert.deepEqual(profile.nodeLimits, { "AB12-CD34": { maxSendKbps: 500 } });
-    const override = profileOptions(profile, "AB12-CD34");
+    assert.deepEqual(profile.nodeLimits, { ab12: { maxSendKbps: 500 } });
+    const override = profileOptions(profile, "ab12");
     assert.equal(override.maxSendKbps, 500);
     assert.equal(override.maxRecvKbps, 2000);
     assert.equal(override.limitBandwidthInLan, true);
-    assert.equal(profileOptions(profile, "OTHER").maxSendKbps, 1000);
+    assert.equal(profileOptions(profile, "cd34").maxSendKbps, 1000);
   });
 
   it("an unknown key is ignored and a wrong type names the key", () => {
@@ -86,7 +86,7 @@ describe("connection profile", () => {
   it("formatProfile round-trips", () => {
     const profile = parseProfile(
       '[methods]\nnat = false\n[discovery]\nglobal = ["https://a.example/v2/"]\n[relays]\nbridge_port = 22200\n' +
-        "[limits]\nmax_recv_kbps = 800\n[limits.node.AB12-CD34]\nmax_send_kbps = 500\nlimit_lan = true\n",
+        "[limits]\nmax_recv_kbps = 800\n[limits.node.ab12]\nmax_send_kbps = 500\nlimit_lan = true\n",
     );
     assert.deepEqual(parseProfile(formatProfile(profile)), profile);
     assert.deepEqual(parseProfile(formatProfile(defaultProfile())), defaultProfile());
@@ -103,5 +103,39 @@ describe("connection profile", () => {
     const back = withNodeLimits(limited, "fb98", { maxSendKbps: 1000, maxRecvKbps: 0, limitLan: false });
     assert.deepEqual(back.nodeLimits, {}, "a node back on the default has no override left");
     assert.equal(formatProfile(back).includes("limits.node"), false);
+  });
+
+  it("an unchanged node override keeps its place among the others", () => {
+    const profile = parseProfile("[limits.node.aa01]\nmax_send_kbps = 100\n[limits.node.bb02]\nmax_send_kbps = 200\n");
+    const same = withNodeLimits(profile, "aa01", { maxSendKbps: 100, maxRecvKbps: 0, limitLan: false });
+    assert.equal(JSON.stringify(same.nodeLimits), JSON.stringify(profile.nodeLimits));
+  });
+
+  it("a known section that is not a table names it", () => {
+    for (const [text, path] of [
+      ["methods = 1\n", "methods"],
+      ["[[relays]]\npublic = false\n", "relays"],
+      ["[limits]\nnode = 3\n", "limits.node"],
+      ["[limits.node]\nfb98 = 5\n", "limits.node.fb98"],
+    ]) {
+      assert.throws(() => parseProfile(text), (error: unknown) => {
+        return error instanceof ProfileError && error.message === `${path} must be a table`;
+      }, text);
+    }
+  });
+
+  it("a node id is read and looked up in lower case", () => {
+    const profile = parseProfile("[limits.node.FB98]\nmax_send_kbps = 500\n");
+    assert.deepEqual(profile.nodeLimits, { fb98: { maxSendKbps: 500 } });
+    assert.equal(nodeLimitsOf(profile, "FB98").maxSendKbps, 500);
+    assert.equal(profileOptions(profile, "Fb98").maxSendKbps, 500);
+    const changed = withNodeLimits(profile, "FB98", { maxSendKbps: 300, maxRecvKbps: 0, limitLan: false });
+    assert.deepEqual(changed.nodeLimits, { fb98: { maxSendKbps: 300 } });
+  });
+
+  it("two node ids that differ only in case are refused", () => {
+    assert.throws(() => parseProfile("[limits.node.FB98]\nmax_send_kbps = 1\n[limits.node.fb98]\nmax_recv_kbps = 2\n"), (error: unknown) => {
+      return error instanceof ProfileError && error.message.includes("node fb98");
+    });
   });
 });

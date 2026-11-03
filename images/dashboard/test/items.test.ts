@@ -6,7 +6,8 @@ import { discardedCount, overrideLossText, revertLossText } from "../src/api/loc
 import type { DiscardCounts, FailedItem, ItemsPage, LocalChangedPage, LocalChangesDone, NeedItem, RemoteNeedPage } from "../src/api/types.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
-import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
+import { type WriteNote } from "../src/routeTypes.js";
+import { type WriteEffects, requestHandler } from "../src/routes.js";
 import { forwardBudgetsMs, itemRoutes } from "../src/routes/items.js";
 import { localChangesRoutes } from "../src/routes/localChanges.js";
 import { reshownForwardedError, shownSyncthingError } from "../src/shownSyncthingError.js";

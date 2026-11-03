@@ -11,6 +11,7 @@ $syncthingGuiPortBase = 18450
 $syncthingListenPortBase = 32100
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "agent-syncthing-$([guid]::NewGuid())"
 $global:firewallRules = @{}
+$global:firewallEvents = @()
 $global:programRuleSweeps = @()
 $global:tailnetAddress = $null
 
@@ -21,8 +22,17 @@ function New-NetFirewallRule {
     $global:firewallRules[$Name] = [pscustomobject]@{
         Name = $Name; Group = $Group; Action = $Action; Protocol = $Protocol; LocalPort = $LocalPort; RemoteAddress = $RemoteAddress; Program = $Program; Profile = "$Profile"
     }
+    $global:firewallEvents += "new $Name"
+}
+function Set-NetFirewallRule {
+    param([string]$Name, [string]$Action, [string]$Protocol, $LocalPort, $RemoteAddress, [string]$Program, $Profile)
+    $rule = $global:firewallRules[$Name]
+    if (-not $rule) { throw "no rule $Name to set" }
+    $rule.Action = $Action; $rule.Protocol = $Protocol; $rule.LocalPort = $LocalPort; $rule.RemoteAddress = $RemoteAddress; $rule.Program = $Program; $rule.Profile = "$Profile"
+    $global:firewallEvents += "set $Name"
 }
 function Remove-NetFirewallRule([string]$Name, [string]$Group) {
+    if ($Name -and $global:firewallRules.ContainsKey($Name)) { $global:firewallEvents += "remove $Name" }
     if ($Name) { $global:firewallRules.Remove($Name) }
     if ($Group) { foreach ($key in @($global:firewallRules.Keys)) { if ($global:firewallRules[$key].Group -eq $Group) { $global:firewallRules.Remove($key) } } }
 }
@@ -45,8 +55,12 @@ function Reset-Agent {
     $script:logFile = Join-Path $scratch "agent.log"
     $script:connectionsFile = Join-Path $scratch "host-agent\connections\connections.json"
     $global:firewallRules = @{}
+    $global:firewallEvents = @()
     $global:programRuleSweeps = @()
     $global:tailnetAddress = $null
+    $script:dockerBackendRulesShape = $null
+    $script:dockerBackendLanRemote = $null
+    $script:dockerBackendRulesProblem = ""
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
     New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 }
@@ -117,7 +131,7 @@ Describe "a node's native Syncthing" {
     It "opens its listen port to the tailnet range only" {
         $rule = $global:firewallRules["storage-compose syncthing a001"]
         $rule.LocalPort | Should Be 32100
-        $rule.RemoteAddress | Should Be "100.64.0.0/10"
+        @($rule.RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
         $rule.Program | Should Be $SyncthingPath
     }
 
@@ -273,17 +287,82 @@ Describe "the connection profile in a node's config" {
         $options.maxRecvKbps | Should Be "0"
     }
 
-    It "treats a null entry and a non-string listen address as no entry, so the node stays tailnet-only" {
+    It "treats a null entry as no entry, so the node stays tailnet-only" {
         $node = New-ConfiguredNode "c006" "malformed"
         [System.IO.Directory]::CreateDirectory((Split-Path $script:connectionsFile)) | Out-Null
         [System.IO.File]::WriteAllText($script:connectionsFile, '{ "c006": null }')
         Get-NodeConnections $node | Should BeNullOrEmpty
-        Write-ConnectionsFile @{ c006 = @{ options = @{}; listenAddresses = @(32110, "tcp://0.0.0.0:32110"); deviceAddresses = @{} } }
-        Get-NodeConnections $node | Should BeNullOrEmpty
-        Write-ConnectionsFile @{ c006 = @{ options = @{}; listenAddresses = @("ftp://0.0.0.0:32110"); deviceAddresses = @{} } }
-        Get-NodeConnections $node | Should BeNullOrEmpty
         Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
         (Get-ConfiguredListenAddresses $node) -join " " | Should Be "tcp://100.100.1.2:32110"
+    }
+
+    It "ignores a listen list with any invalid address whole, keeping the profile addresses the config has, and still applies the valid options" {
+        $node = New-ConfiguredNode "c008" "kept-listen"
+        Write-ConnectionsFile @{ c008 = $profiled }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        foreach ($invalid in @(@(32110, "tcp://0.0.0.0:32110"), @("ftp://0.0.0.0:32110"), @("TCP://0.0.0.0:32110"), "tcp://0.0.0.0:32110", @())) {
+            Write-ConnectionsFile @{ c008 = @{ options = @{ relaysEnabled = $false; natEnabled = $false; maxSendKbps = 75 }; listenAddresses = $invalid; deviceAddresses = @{} } }
+            Get-NodeConnections $node | Should Not BeNullOrEmpty
+            $identity = Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node)
+            (Get-ConfiguredListenAddresses $node) -join " " | Should Be ($listenAddresses -join " ")
+            $identity.listen.isTailnetOnly | Should Be $false
+            $options = Read-ConfigOptions $node
+            $options.relaysEnabled | Should Be "false"
+            $options.natEnabled | Should Be "false"
+            $options.maxSendKbps | Should Be "75"
+            Write-ConnectionsFile @{ c008 = $profiled }
+            Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        }
+    }
+
+    It "takes the address families Syncthing knows" {
+        $node = New-ConfiguredNode "c012" "families"
+        $families = @("tcp4://0.0.0.0:32110", "tcp6://[::]:32110", "quic4://0.0.0.0:32110", "quic6://[::]:32110")
+        Write-ConnectionsFile @{ c012 = @{ options = @{}; listenAddresses = $families; deviceAddresses = @{} } }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        (Get-ConfiguredListenAddresses $node) -join " " | Should Be ($families -join " ")
+    }
+
+    It "listens on the tailnet address when such a list meets a config without profile addresses, the valid options applied" {
+        $node = New-ConfiguredNode "c009" "fresh-invalid"
+        Write-ConnectionsFile @{ c009 = @{ options = @{ natEnabled = $true }; listenAddresses = @("udp://0.0.0.0:32110"); deviceAddresses = @{} } }
+        $identity = Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node)
+        (Get-ConfiguredListenAddresses $node) -join " " | Should Be "tcp://100.100.1.2:32110"
+        $identity.listen.isTailnetOnly | Should Be $true
+        (Read-ConfigOptions $node).natEnabled | Should Be "true"
+        $identity = Set-SyncthingConfig $node $ports "100.100.1.3" (Get-NodeConnections $node)
+        (Get-ConfiguredListenAddresses $node) -join " " | Should Be "tcp://100.100.1.3:32110"
+    }
+
+    It "a node started on such an entry without profile addresses still moves with the tailnet address" {
+        Mock Stop-NodeSyncthingProcesses { }
+        Mock Start-SyncthingProcess { return 4243 }
+        Mock Get-NodePorts { return $ports }
+        $node = New-ConfiguredNode "c010" "start-invalid"
+        Write-ConnectionsFile @{ c010 = @{ options = @{ natEnabled = $true }; listenAddresses = @("udp://0.0.0.0:32110"); deviceAddresses = @{} } }
+        $instance = New-SyncthingInstance $node
+        Start-NodeSyncthing $instance "100.100.1.2"
+        $instance.state | Should Be "running"
+        $instance.listenAddress | Should Be "tcp://100.100.1.2:32110"
+        $instance.usesProfile | Should Be $false
+        Test-NeedsRestartForAddress $instance "100.100.1.3" | Should Be $true
+    }
+
+    It "a taken-over Syncthing counts as on the profile by the listen addresses its config has" {
+        $node = New-ConfiguredNode "c011" "orphan"
+        Mock Find-SyncthingProcess { return [pscustomobject]@{ ProcessId = 4244 } }
+        Mock Get-NodePorts { return $ports }
+        Mock Get-SyncthingDeviceId { return "ORPHAN" }
+        Write-ConnectionsFile @{ c011 = @{ options = @{ natEnabled = $true }; listenAddresses = @("udp://0.0.0.0:32110"); deviceAddresses = @{} } }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        $instance = New-SyncthingInstance $node
+        Resume-OrphanedSyncthing $instance | Should Be $true
+        $instance.usesProfile | Should Be $false
+        Write-ConnectionsFile @{ c011 = $profiled }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        $instance = New-SyncthingInstance $node
+        Resume-OrphanedSyncthing $instance | Should Be $true
+        $instance.usesProfile | Should Be $true
     }
 
     It "writes only well-typed profile options" {
@@ -337,6 +416,106 @@ function New-ProfileEntry([bool]$LocalAnnounce) {
     }
 }
 
+function New-ClosedLanEntry {
+    $entry = New-ProfileEntry $false
+    $entry.options | Add-Member -NotePropertyName natEnabled -NotePropertyValue $false
+    return $entry
+}
+
+function Get-RuleEventKinds { return @($global:firewallEvents | ForEach-Object { ($_ -split ' ')[0] } | Sort-Object -Unique) }
+
+Describe "the firewall with local discovery and NAT off" {
+    Reset-Agent
+    $ports = [pscustomobject]@{ slot = 0; gui = 18475; listen = 32125 }
+
+    It "admits only the tailnet on Private and Domain, and Any again once either is on, changing the rules in place" {
+        $node = New-TestNode "f001" "closed"
+        Set-SyncthingFirewallRule $node $ports (New-ClosedLanEntry)
+        foreach ($protocol in @("tcp", "udp")) { @((Get-TestRule "f001" "$protocol private").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48" }
+        foreach ($entry in @((New-ProfileEntry $false), (New-ClosedLanEntry))) {
+            $global:firewallEvents = @()
+            Set-SyncthingFirewallRule $node $ports $entry
+            Get-RuleEventKinds | Should Be @("set")
+            @($global:firewallEvents).Count | Should Be 2
+        }
+        @((Get-TestRule "f001" "tcp private").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
+        $open = New-ProfileEntry $false
+        $open.options | Add-Member -NotePropertyName natEnabled -NotePropertyValue $true
+        Set-SyncthingFirewallRule $node $ports $open
+        (Get-TestRule "f001" "tcp private").RemoteAddress | Should Be "Any"
+    }
+
+    It "a running node follows the switch on the next round" {
+        $instance = New-SyncthingInstance (New-ConfiguredNode "f002" "switches")
+        $instance.state = "running"
+        $instance.ports = $ports
+        Write-ConnectionsFile @{ f002 = (New-ProfileEntry $true) }
+        Update-InstanceFirewall $instance
+        (Get-TestRule "f002" "udp private").RemoteAddress | Should Be "Any"
+        Write-ConnectionsFile @{ f002 = (New-ClosedLanEntry) }
+        Update-InstanceFirewall $instance
+        @((Get-TestRule "f002" "udp private").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
+        $global:firewallEvents = @()
+        Update-InstanceFirewall $instance
+        $global:firewallEvents.Count | Should Be 0
+    }
+
+    It "a config that cannot be read keeps a kept-listen node's rules" {
+        $node = New-ConfiguredNode "f003" "kept-listen-unreadable"
+        $instance = New-SyncthingInstance $node
+        $instance.state = "running"
+        $instance.ports = $ports
+        Write-ConnectionsFile @{ f003 = (New-ProfileEntry $true) }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        Write-ConnectionsFile @{ f003 = @{ options = @{ localAnnounceEnabled = $true }; listenAddresses = @("udp://0.0.0.0:32125"); deviceAddresses = @{} } }
+        Update-InstanceFirewall $instance
+        Get-TestRule "f003" "tcp private" | Should Not BeNullOrEmpty
+        [System.IO.File]::WriteAllText((Get-SyncthingConfigPath $node), "<configuration")
+        $global:firewallEvents = @()
+        Update-InstanceFirewall $instance
+        $global:firewallEvents.Count | Should Be 0
+        Get-TestRule "f003" "tcp private" | Should Not BeNullOrEmpty
+    }
+
+    It "a start with an unreadable connections file reads NAT from the config too, so a closed LAN stays closed" {
+        Mock Stop-NodeSyncthingProcesses { }
+        Mock Start-SyncthingProcess { return 4242 }
+        Mock Get-NodePorts { return $ports }
+        $node = New-ConfiguredNode "f005" "closed-unreadable"
+        $natOn = New-ProfileEntry $false
+        $natOn.options | Add-Member -NotePropertyName natEnabled -NotePropertyValue $true
+        Write-ConnectionsFile @{ f005 = $natOn }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        Test-ClosesLan (Get-ConfiguredConnections $node) | Should Be $false
+        Write-ConnectionsFile @{ f005 = (New-ClosedLanEntry) }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        [System.IO.File]::WriteAllText($script:connectionsFile, "")
+        Test-ClosesLan (Get-ConfiguredConnections $node) | Should Be $true
+        $instance = New-SyncthingInstance $node
+        Start-NodeSyncthing $instance "100.100.1.2"
+        $instance.usesProfile | Should Be $true
+        foreach ($protocol in @("tcp", "udp")) { @((Get-TestRule "f005" "$protocol private").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48" }
+    }
+
+    Context "while setting a rule fails" {
+        It "a failure to set a node's rules is logged once while it lasts" {
+            $instance = New-SyncthingInstance (New-ConfiguredNode "f004" "failing")
+            $instance.state = "running"
+            $instance.ports = $ports
+            Write-ConnectionsFile @{ f004 = (New-ProfileEntry $true) }
+            $global:logged = @()
+            Mock Write-WatcherLog { $global:logged += $Message }
+            Mock Set-SyncthingFirewallRule { throw "access denied" }
+            foreach ($round in 1..3) { Update-InstanceFirewall $instance }
+            @($global:logged).Count | Should Be 1
+            $global:logged[0] | Should Be "node failing (f004): firewall rules not updated: access denied"
+        }
+    }
+
+    Reset-Agent
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
+}
+
 Describe "the firewall per network profile" {
     Reset-Agent
     $ports = [pscustomobject]@{ slot = 0; gui = 18470; listen = 32120 }
@@ -348,7 +527,7 @@ Describe "the firewall per network profile" {
             $rule.Action | Should Be "Allow"
             $rule.Protocol | Should Be $protocol.ToUpper()
             $rule.LocalPort | Should Be 32120
-            $rule.RemoteAddress | Should Be "100.64.0.0/10"
+            @($rule.RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
             $rule.Profile | Should Be "Public"
             $rule.Program | Should Be $SyncthingPath
             $rule.Group | Should Be "storage-compose agent"
@@ -379,24 +558,43 @@ Describe "the firewall per network profile" {
         Get-TestRule "d003" "tcp private" | Should Not BeNullOrEmpty
     }
 
-    It "a rule whose RemoteAddress changed is replaced" {
+    It "a rule whose RemoteAddress changed is changed in place, never removed first" {
         $node = New-TestNode "d004" "replaced"
         Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
-        (Get-TestRule "d004" "tcp public").RemoteAddress = "Any"
+        $rule = Get-TestRule "d004" "tcp public"
+        $rule.RemoteAddress = "Any"
+        $rule | Add-Member -NotePropertyName marker -NotePropertyValue "original"
+        $global:firewallEvents = @()
         Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
-        (Get-TestRule "d004" "tcp public").RemoteAddress | Should Be "100.64.0.0/10"
+        @((Get-TestRule "d004" "tcp public").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
+        (Get-TestRule "d004" "tcp public").marker | Should Be "original"
+        $global:firewallEvents | Should Be @("set storage-compose syncthing d004 tcp public")
+    }
+
+    It "switching between the tailnet-only and the profile set makes the new rules before it removes the old" {
+        $node = New-TestNode "d012" "switched"
+        Set-SyncthingFirewallRule $node $ports $null
+        foreach ($connections in @((New-ProfileEntry $true), $null)) {
+            $global:firewallEvents = @()
+            Set-SyncthingFirewallRule $node $ports $connections
+            $lastNew = [array]::LastIndexOf([string[]]$global:firewallEvents, @($global:firewallEvents | Where-Object { $_ -like "new *" })[-1])
+            $firstRemove = [array]::IndexOf([string[]]$global:firewallEvents, @($global:firewallEvents | Where-Object { $_ -like "remove *" })[0])
+            ($lastNew -lt $firstRemove) | Should Be $true
+        }
     }
 
     It "keeps a rule Windows reports with a subnet mask and its profiles in its own order" {
         $node = New-TestNode "d005" "kept"
         Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
         $public = Get-TestRule "d005" "tcp public"
-        $public.RemoteAddress = "100.64.0.0/255.192.0.0"
+        $public.RemoteAddress = @("fd7a:115c:a1e0::/48", "100.64.0.0/255.192.0.0")
         $public | Add-Member -NotePropertyName marker -NotePropertyValue "original"
         $private = Get-TestRule "d005" "tcp private"
         $private.Profile = "Domain, Private"
         $private | Add-Member -NotePropertyName marker -NotePropertyValue "original"
+        $global:firewallEvents = @()
         Set-SyncthingFirewallRule $node $ports (New-ProfileEntry $false)
+        @($global:firewallEvents).Count | Should Be 0
         (Get-TestRule "d005" "tcp public").marker | Should Be "original"
         (Get-TestRule "d005" "tcp private").marker | Should Be "original"
     }
@@ -407,7 +605,7 @@ Describe "the firewall per network profile" {
         $tcp.Action | Should Be "Allow"
         $tcp.Protocol | Should Be "TCP"
         $tcp.LocalPort | Should Be 32120
-        $tcp.RemoteAddress | Should Be "100.64.0.0/10"
+        @($tcp.RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
         $tcp.Profile | Should Be "Any"
         $udp = Get-TestRule "d006" "udp"
         $udp.Action | Should Be "Block"
@@ -466,6 +664,40 @@ Describe "the firewall per network profile" {
         $global:firewallRules.ContainsKey("storage-compose syncthing d010 tcp private") | Should Be $false
     }
 
+    It "a node that falls back to the tailnet address on an invalid listen list gets the tailnet-only rules, and keeps them" {
+        Mock Stop-NodeSyncthingProcesses { }
+        Mock Start-SyncthingProcess { return 4245 }
+        Mock Get-NodePorts { return $ports }
+        Mock Test-ProcessIsRunning { return $true }
+        $node = New-ConfiguredNode "d013" "fallback"
+        Write-ConnectionsFile @{ d013 = @{ options = @{ localAnnounceEnabled = $true; natEnabled = $true }; listenAddresses = @("udp://0.0.0.0:32120"); deviceAddresses = @{} } }
+        $instance = New-SyncthingInstance $node
+        Start-NodeSyncthing $instance "100.100.1.2"
+        $instance.state | Should Be "running"
+        $instance.usesLan | Should Be $false
+        @((Get-TestRule "d013" "").RemoteAddress) -join "," | Should Be "100.64.0.0/10,fd7a:115c:a1e0::/48"
+        Get-TestRule "d013" "udp" | Should Not BeNullOrEmpty
+        $global:firewallRules.ContainsKey("storage-compose syncthing d013 tcp private") | Should Be $false
+        $global:firewallRules.ContainsKey("storage-compose syncthing d013 discovery private") | Should Be $false
+        $global:firewallEvents = @()
+        Update-InstanceFirewall $instance
+        $global:firewallEvents.Count | Should Be 0
+    }
+
+    It "a taken-over Syncthing whose config cannot be read counts as on the profile by its entry" {
+        $node = New-TestNode "d014" "unreadable-config"
+        Mock Find-SyncthingProcess { return [pscustomobject]@{ ProcessId = 4246 } }
+        Mock Get-NodePorts { return $ports }
+        Mock Get-SyncthingDeviceId { return "ORPHAN" }
+        New-Item -ItemType Directory -Force -Path (Get-SyncthingHome $node) | Out-Null
+        [System.IO.File]::WriteAllText((Get-SyncthingConfigPath $node), "<configuration")
+        Write-ConnectionsFile @{ d014 = (New-ProfileEntry $false) }
+        $instance = New-SyncthingInstance $node
+        Resume-OrphanedSyncthing $instance | Should Be $true
+        $instance.usesProfile | Should Be $true
+        Test-NeedsRestartForAddress $instance "100.100.1.3" | Should Be $false
+    }
+
     It "a start with an unreadable connections file keeps the profile settings and rules" {
         Mock Stop-NodeSyncthingProcesses { }
         Mock Start-SyncthingProcess { return 4242 }
@@ -498,13 +730,80 @@ Describe "the firewall per network profile" {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
 }
 
-Describe "the Docker backend on untrusted networks" {
+Describe "the Docker backend's published ports" {
     Reset-Agent
     $blockNames = @("storage-compose docker backend tcp public", "storage-compose docker backend udp public")
+    $allowNames = @("storage-compose docker backend tcp private", "storage-compose docker backend udp private")
+
+    It "the docker backend is open to any address on Private and Domain networks while a node keeps the LAN or NAT on" {
+        Write-ConnectionsFile @{ storage = (New-ClosedLanEntry); a1b2 = (New-ProfileEntry $true) }
+        Update-DockerBackendRules $true
+        foreach ($protocol in @("TCP", "UDP")) {
+            $rule = $global:firewallRules["storage-compose docker backend $($protocol.ToLower()) private"]
+            $rule | Should Not BeNullOrEmpty
+            $rule.Action | Should Be "Allow"
+            $rule.Protocol | Should Be $protocol
+            @($rule.LocalPort) -join "," | Should Be "22000,22021-22099,22100"
+            @($rule.RemoteAddress) -join "," | Should Be "Any"
+            $rule.Profile | Should Be "Private,Domain"
+            $rule.Program | Should Be $global:dockerBackendPath
+            $rule.Group | Should Be "storage-compose agent"
+        }
+    }
+
+    It "the Private rules go with the stack and with the agent" {
+        Update-DockerBackendRules $true
+        Update-DockerBackendRules $false
+        foreach ($name in $allowNames) { $global:firewallRules.ContainsKey($name) | Should Be $false }
+        Update-DockerBackendRules $true
+        Remove-SyncthingFirewallRules
+        foreach ($name in $allowNames) { $global:firewallRules.ContainsKey($name) | Should Be $false }
+    }
+
+    It "admits only the tailnet on Private and Domain with LAN and NAT off on every entry, or no entry, and switches in place" {
+        $tailnetOnly = "100.64.0.0/10,fd7a:115c:a1e0::/48"
+        Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $script:connectionsFile
+        Update-DockerBackendRules $true
+        foreach ($name in $allowNames) { @($global:firewallRules[$name].RemoteAddress) -join "," | Should Be $tailnetOnly }
+        foreach ($step in @(@{ entries = @{ storage = (New-ClosedLanEntry); a1b2 = (New-ProfileEntry $true) }; remote = "Any" }, @{ entries = @{ storage = (New-ClosedLanEntry); a1b2 = (New-ClosedLanEntry) }; remote = $tailnetOnly })) {
+            Write-ConnectionsFile $step.entries
+            $global:firewallEvents = @()
+            Update-DockerBackendRules $true
+            Get-RuleEventKinds | Should Be @("set")
+            @($global:firewallEvents).Count | Should Be 2
+            foreach ($name in $allowNames) { @($global:firewallRules[$name].RemoteAddress) -join "," | Should Be $step.remote }
+        }
+        $global:firewallEvents = @()
+        Update-DockerBackendRules $true
+        $global:firewallEvents.Count | Should Be 0
+    }
+
+    It "keeps the Docker backend's rules while the connections file cannot be read" {
+        Write-ConnectionsFile @{ a1b2 = (New-ProfileEntry $true) }
+        Update-DockerBackendRules $true
+        [System.IO.File]::WriteAllText($script:connectionsFile, '{ "a1b2": ')
+        $global:firewallEvents = @()
+        Update-DockerBackendRules $true
+        $global:firewallEvents.Count | Should Be 0
+        @($global:firewallRules[$allowNames[0]].RemoteAddress) -join "," | Should Be "Any"
+    }
+
+    Context "while setting a rule fails" {
+        It "a failure to set the Docker backend's rules is logged once while it lasts" {
+            $script:dockerBackendRulesShape = $null
+            $global:logged = @()
+            Mock Write-WatcherLog { $global:logged += $Message }
+            Mock Set-AgentFirewallRule { throw "access denied" }
+            foreach ($round in 1..3) { Update-DockerBackendRules $true }
+            $global:logged | Should Be @("the Docker backend's rules were not set: access denied")
+            Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $script:connectionsFile
+            $script:dockerBackendRulesProblem = ""
+        }
+    }
     $outsideTailnet = @("0.0.0.0-100.63.255.255", "100.128.0.0-255.255.255.255", "::-fd7a:115c:a1df:ffff:ffff:ffff:ffff:ffff", "fd7a:115c:a1e1::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
 
     It "the docker backend is blocked on public networks except from the tailnet" {
-        Update-DockerBackendBlock $true
+        Update-DockerBackendRules $true
         foreach ($protocol in @("TCP", "UDP")) {
             $rule = $global:firewallRules["storage-compose docker backend $($protocol.ToLower()) public"]
             $rule | Should Not BeNullOrEmpty
@@ -519,32 +818,34 @@ Describe "the Docker backend on untrusted networks" {
     }
 
     It "the block rule is not rewritten when unchanged" {
-        Update-DockerBackendBlock $true
+        Update-DockerBackendRules $true
         foreach ($name in $blockNames) { $global:firewallRules[$name] | Add-Member -Force -NotePropertyName marker -NotePropertyValue "original" }
-        Update-DockerBackendBlock $true
-        $script:dockerBackendBlockShape = $null
+        Update-DockerBackendRules $true
+        $script:dockerBackendRulesShape = $null
         foreach ($name in $blockNames) {
             $rule = $global:firewallRules[$name]
             $rule.LocalPort = @("22000", "22021-22099", "22100")
             $rule.RemoteAddress = @($outsideTailnet[3], $outsideTailnet[1], $outsideTailnet[0], $outsideTailnet[2])
             $rule.Program = $global:dockerBackendPath.ToLower()
         }
-        Update-DockerBackendBlock $true
+        Update-DockerBackendRules $true
         foreach ($name in $blockNames) { $global:firewallRules[$name].marker | Should Be "original" }
         $global:firewallRules[$blockNames[0]].RemoteAddress = @("Any")
-        $script:dockerBackendBlockShape = $null
-        Update-DockerBackendBlock $true
-        $global:firewallRules[$blockNames[0]].PSObject.Properties["marker"] | Should BeNullOrEmpty
+        $script:dockerBackendRulesShape = $null
+        $global:firewallEvents = @()
+        Update-DockerBackendRules $true
+        @($global:firewallRules[$blockNames[0]].RemoteAddress) -join "," | Should Be ($outsideTailnet -join ",")
+        $global:firewallEvents | Should Be @("set $($blockNames[0])")
         $global:firewallRules[$blockNames[1]].marker | Should Be "original"
     }
 
     It "the block rule is removed with the agent" {
-        Update-DockerBackendBlock $true
+        Update-DockerBackendRules $true
         Remove-SyncthingFirewallRules
         foreach ($name in $blockNames) { $global:firewallRules.ContainsKey($name) | Should Be $false }
-        Update-DockerBackendBlock $true
+        Update-DockerBackendRules $true
         $global:firewallRules.ContainsKey($blockNames[0]) | Should Be $true
-        Update-DockerBackendBlock $false
+        Update-DockerBackendRules $false
         foreach ($name in $blockNames) { $global:firewallRules.ContainsKey($name) | Should Be $false }
     }
 
@@ -562,6 +863,28 @@ Describe "the host's networks" {
         $withoutLan = [pscustomobject]@{ state = "running"; usesLan = $false }
         @(Get-LanProblems $networks @($withLan)) | Should Be @("LAN unavailable: Network 3 (192.168.68.56) is marked Public")
         @(Get-LanProblems $networks @($withoutLan)).Count | Should Be 0
+    }
+
+    It "reports a LAN marked Public on a host with no trusted LAN while a node is on the profile, local discovery off" {
+        $untrusted = @(
+            [pscustomobject]@{ kind = "lan"; address = "192.168.68.56"; category = "Public"; name = "Cafe" }
+            [pscustomobject]@{ kind = "tailnet"; address = "100.75.76.90" }
+        )
+        $onProfile = [pscustomobject]@{ state = "running"; usesLan = $false; hasProfileRules = $true }
+        $tailnetOnly = [pscustomobject]@{ state = "running"; usesLan = $false; hasProfileRules = $false }
+        @(Get-LanProblems $untrusted @($onProfile)) | Should Be @("LAN unavailable: Cafe (192.168.68.56) is marked Public")
+        @(Get-LanProblems $untrusted @($tailnetOnly)).Count | Should Be 0
+        $withTrusted = @($untrusted) + [pscustomobject]@{ kind = "lan"; address = "10.0.0.5"; category = "Private"; name = "Home" }
+        @(Get-LanProblems $withTrusted @($onProfile)).Count | Should Be 0
+    }
+
+    It "a node's rule set is what the heartbeat's LAN line reads" {
+        $instance = New-SyncthingInstance (New-TestNode "e001" "flags")
+        $instance.ports = [pscustomobject]@{ slot = 0; gui = 18480; listen = 32130 }
+        Set-InstanceFirewall $instance (New-ProfileEntry $false)
+        $instance.hasProfileRules | Should Be $true
+        Set-InstanceFirewall $instance $null
+        $instance.hasProfileRules | Should Be $false
     }
 
     It "Get-HostNetworks reports a Public category as Public" {

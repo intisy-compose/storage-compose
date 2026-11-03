@@ -4,9 +4,10 @@
 # every array but the cluster, whose Syncthing is the stack's own service. An instance starts when
 # its node is present and stops when it goes. Each gets a sync port 22000+n (n from 21 to 99, kept
 # per node in /status/nodes/ports; 1 to 20 are the host agent's native nodes) and a GUI on 8390+n
-# inside the gateway's namespace, recorded for the dashboard in /status/nodes/<id>.syncthing.json. An array's instance runs with its own guard,
-# which pauses the folders the mounter names, so the C-24 freeze holds per array. Each instance takes
-# its connection profile from /status/connections.json once its API answers (apply-connections.sh).
+# inside the gateway's namespace, recorded for the dashboard in /status/nodes/<id>.syncthing.json.
+# An array's instance runs with its own guard, which pauses the folders the mounter names, so the
+# C-24 freeze holds per array. Each instance takes its connection profile from
+# /status/connections.json once its API answers (apply-connections.sh).
 set -u
 
 root=${STORAGE_ROOT:-/mnt/storage}

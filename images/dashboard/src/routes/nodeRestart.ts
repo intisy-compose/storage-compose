@@ -2,7 +2,7 @@ import type { NodeRestartState, RestartAnswer, RestartBody } from "../api/types.
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, requireLocal } from "../instanceResolver.js";
 import { isRestartConfirmRequired } from "../nodeSource.js";
-import type { AnyRoute, WriteNote } from "../routes.js";
+import type { AnyRoute, WriteNote } from "../routeTypes.js";
 
 /** Whether the node's Syncthing needs a restart before a saved change takes effect. */
 export async function requiresRestart(instance: LocalInstance): Promise<boolean> {

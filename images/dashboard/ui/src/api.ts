@@ -153,7 +153,15 @@ import { changesActivityType } from "../../src/api/types.js";
 export { connectionOptionKeys, connectionOptionsOf, deviceDefaultKeys, folderDefaultKeys } from "../../src/api/types.js";
 export { type SettingsKeeper, generalSettingKeys, isKeeperManaged, keeperManagedText } from "../../src/api/keeperText.js";
 export { connectionOptionLabels, discoveryServerProblem, generalSettingLabels, listenAddressProblem } from "../../src/api/optionsText.js";
-export { pairsText, profileAddressesHint, profileChangedText, profileOwnedText, untrustedNetworksText } from "../../src/api/profileText.js";
+export {
+  isProfileChangedRefusal,
+  isStrandedRefusal,
+  pairsText,
+  profileAddressesHint,
+  profileChangedText,
+  profileOwnedText,
+  untrustedNetworksText,
+} from "../../src/api/profileText.js";
 export { nodeLimitsOf, withNodeLimits } from "../../src/connectionProfile.js";
 export { newlyStrandedPairs } from "../../src/reachability.js";
 export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";

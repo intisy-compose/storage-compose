@@ -47,8 +47,11 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-echo "$method $url key=$key $body" >> "$CURL_LOG"
-case $url in */rest/system/ping) [ -n "${CURL_PING_FAILS:-}" ] && exit 7; echo '{"ping":"pong"}' ;; esac
+echo "$method $url key=$key${body:+ $body}" >> "$CURL_LOG"
+case $url in
+    */rest/system/ping) [ -n "${CURL_PING_FAILS:-}" ] && exit 7; echo '{"ping":"pong"}' ;;
+    */rest/config/restart-required) [ -n "${CURL_CHECK_FAILS:-}" ] && exit 22; echo "{\"requiresRestart\": ${CURL_RESTART_REQUIRED:-false}}" ;;
+esac
 EOF
 chmod +x "$scratch/stubs/curl"
 
@@ -96,6 +99,14 @@ cat > "$profile" << 'EOF'
   "c9d0": {
     "options": { "natEnabled": true },
     "listenAddresses": ["tcp://0.0.0.0:22025", "dynamic+http://relays.example/endpoint"]
+  },
+  "b1c2": {
+    "options": { "natEnabled": false },
+    "listenAddresses": ["tcp4://0.0.0.0:22026", "tcp6://[::]:22026", "quic4://0.0.0.0:22026", "quic6://[::]:22026"]
+  },
+  "d3e4": {
+    "options": { "relaysEnabled": true },
+    "listenAddresses": ["TCP://0.0.0.0:22027"]
   }
 }
 EOF
@@ -105,18 +116,51 @@ check "apply-connections without a file changes nothing" "exit 0" "$(run_apply "
 check "a node without an entry changes nothing" "exit 0" "$(run_apply "$profile" ffff)"
 check "it sends the node's options and listen addresses" \
     'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"localAnnounceEnabled":true,"natEnabled":false,"globalAnnounceEnabled":false,"globalAnnounceServers":[],"relaysEnabled":true,"maxSendKbps":0,"maxRecvKbps":500,"limitBandwidthInLan":false,"listenAddresses":["tcp://0.0.0.0:22021","quic://0.0.0.0:22021","relay://100.64.0.1:22100/?id=RELAY","dynamic+https://relays.syncthing.net/endpoint"]}
+GET http://127.0.0.1:8411/rest/config/restart-required key=secret-key
 exit 0' "$(run_apply "$profile" a1b2)"
 check "an invalid entry changes nothing" "exit 0" "$(run_apply "$profile" c3d4)"
 check "an entry of nothing but invalid values changes nothing" "exit 0" "$(run_apply "$profile" e5f6)"
 check "a list with one invalid address leaves the listen addresses unchanged while a valid option is still sent" \
     'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"relaysEnabled":false}
+GET http://127.0.0.1:8411/rest/config/restart-required key=secret-key
 exit 0' "$(run_apply "$profile" a7b8)"
 check "a listen list takes the host agent's schemes, dynamic+http included" \
     'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"natEnabled":true,"listenAddresses":["tcp://0.0.0.0:22025","dynamic+http://relays.example/endpoint"]}
+GET http://127.0.0.1:8411/rest/config/restart-required key=secret-key
 exit 0' "$(run_apply "$profile" c9d0)"
+check "a listen list takes the address families Syncthing knows"     'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"natEnabled":false,"listenAddresses":["tcp4://0.0.0.0:22026","tcp6://[::]:22026","quic4://0.0.0.0:22026","quic6://[::]:22026"]}
+GET http://127.0.0.1:8411/rest/config/restart-required key=secret-key
+exit 0' "$(run_apply "$profile" b1c2)"
+check "a scheme in upper case is unknown, as in the host agent"     'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"relaysEnabled":true}
+GET http://127.0.0.1:8411/rest/config/restart-required key=secret-key
+exit 0' "$(run_apply "$profile" d3e4)"
+check "a profile Syncthing needs a restart for restarts it"     'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"natEnabled":true,"listenAddresses":["tcp://0.0.0.0:22025","dynamic+http://relays.example/endpoint"]}
+GET http://127.0.0.1:8411/rest/config/restart-required key=secret-key
+POST http://127.0.0.1:8411/rest/system/restart key=secret-key
+exit 0' "$(CURL_RESTART_REQUIRED=true run_apply "$profile" c9d0)"
+check "and says so" 1 "$(grep -c 'restarted Syncthing for the connection profile' "$scratch/apply.out")"
+check "an unanswered restart check restarts nothing and says so"     'PATCH http://127.0.0.1:8411/rest/config/options key=secret-key {"natEnabled":true,"listenAddresses":["tcp://0.0.0.0:22025","dynamic+http://relays.example/endpoint"]}
+GET http://127.0.0.1:8411/rest/config/restart-required key=secret-key
+exit 0 1' "$(CURL_CHECK_FAILS=1 run_apply "$profile" c9d0) $(grep -c 'could not ask whether' "$scratch/apply.out")"
 echo '{"a1b2": ' > "$scratch/broken.json"
 check "an unreadable file changes nothing" "exit 0" "$(run_apply "$scratch/broken.json" a1b2)"
 check "a Syncthing that never answers is sent nothing" "exit 1" "$(CURL_PING_FAILS=1 run_apply "$profile" a1b2)"
+
+echo "one listen rule"
+checks=$repo/images/nodes/connection-profile.jq
+check "the keepers carry no checks of their own" "0 0" \
+    "$(grep -c 'def is_listen_address' "$apply") $(grep -c 'def is_listen_address' "$repo/join/storage-connections.sh")"
+check "the profile checks use the host agent's scheme pattern" \
+    "$(sed -n "s/^\$profileListenAddressPattern = '\(.*\)'\$/\1/p" "$repo/windows/syncthing.ps1")" \
+    "$(sed -n 's/^def is_listen_address: .*test("\(.*\)");$/\1/p' "$checks" | sed 's/\\\\/\\/g')"
+check "the nodes image copies the profile checks beside the keeper" 1 \
+    "$(grep -c '^COPY .*apply-connections\.sh.*connection-profile\.jq /usr/local/bin/$' "$repo/images/nodes/Dockerfile")"
+check "the cluster's Syncthing mounts them beside its keeper" "/apply-connections.sh:ro /connection-profile.jq:ro" \
+    "$(sed -n '/^  syncthing:$/,/^  [a-z]/p' "$repo/docker-compose.yml" | sed -n 's#^ *- \./images/nodes/[a-z-]*\.[a-z]*:\(/[a-z-]*\.[a-z]*:ro\)$#\1#p' | paste -sd ' ' -)"
+mkdir -p "$scratch/lone"
+cp "$apply" "$scratch/lone/apply-connections.sh"
+check "a keeper without its profile checks applies nothing, says so and fails" "exit 1 1" \
+    "$(apply=$scratch/lone/apply-connections.sh run_apply "$profile" a1b2 | tr '\n' ' ')$(grep -c 'connection-profile.jq is missing beside the script; nothing applied' "$scratch/apply.out")"
 
 echo "nodes.sh"
 # shellcheck source=../../images/nodes/nodes.sh

@@ -25,7 +25,7 @@ export function peerTableFixture() {
 }
 
 export function profileFixture() {
-  return { profile, pulledAt, pullProblem: null };
+  return { profile, pulledAt, pullProblem: null, profileProblem: null };
 }
 
 /** @implNote Stands in for the server's check: with every relay and the tailnet off, the LAN-only and tailnet-only nodes share nothing. */

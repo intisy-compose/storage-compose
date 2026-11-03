@@ -79,14 +79,20 @@ function Set-XmlChildList($Parent, [string]$Name, [string[]]$Values) {
 
 function Set-ListenAddresses($Options, [string[]]$Addresses) { return Set-XmlChildList $Options "listenAddress" $Addresses }
 
-$profileListenAddressPattern = '^(tcp|quic|relay|dynamic\+https?)://'
+$profileListenAddressPattern = '^((tcp|quic)[46]?|relay|dynamic\+https?)://'
 
-function Test-IsProfileListenAddress($Address) { return $Address -is [string] -and $Address -match $profileListenAddressPattern }
+function Test-IsProfileListenAddress($Address) { return $Address -is [string] -and $Address -cmatch $profileListenAddressPattern }
 
-function Test-IsConnectionsEntry($Entry) {
-    if ($Entry -isnot [System.Management.Automation.PSCustomObject] -or -not $Entry.PSObject.Properties["listenAddresses"]) { return $false }
-    $addresses = @($Entry.listenAddresses)
-    return $addresses.Count -gt 0 -and @($addresses | Where-Object { -not (Test-IsProfileListenAddress $_) }).Count -eq 0
+function Test-IsProfileListenList($Addresses) {
+    $list = @($Addresses)
+    return $list.Count -gt 0 -and @($list | Where-Object { -not (Test-IsProfileListenAddress $_) }).Count -eq 0
+}
+
+function Test-IsConnectionsEntry($Entry) { return $Entry -is [System.Management.Automation.PSCustomObject] }
+
+function Test-HasProfileListenAddresses($Entry) {
+    return (Test-IsConnectionsEntry $Entry) -and $Entry.PSObject.Properties["listenAddresses"] -and $Entry.listenAddresses -is [array] -and
+        (Test-IsProfileListenList $Entry.listenAddresses)
 }
 
 $unreadableConnections = [pscustomobject]@{ unreadable = $true }
@@ -103,8 +109,8 @@ function Read-ConnectionsFile([string]$Path) {
 .NOTES
 The node's entry of the connections file the dashboard writes through a read-write bind (the agent
 never writes it). Null without the file, without an entry for the node, or with an entry that is not
-an object whose listen addresses are all Syncthing address strings: a malformed value written into
-config.xml can keep Syncthing from loading it, so such a node stays tailnet-only instead. A file that
+an object, so such a node stays tailnet-only. An entry's values are checked where they are written,
+because a malformed value written into config.xml can keep Syncthing from loading it. A file that
 exists but cannot be read or parsed (caught mid-write, say) is $unreadableConnections, never null, so
 the callers keep the node's current rules and settings instead of swapping it to tailnet-only.
 #>
@@ -124,14 +130,16 @@ function Test-IsTailnetOnlyListen($Addresses) {
 
 <#
 .NOTES
-The entry a node's config.xml already runs with: its listen addresses and whether local announce is
-on, which is all the start and the firewall read from an entry. Null for a tailnet-only config.
+The entry a node's config.xml already runs with: its listen addresses and whether local announce and
+NAT traversal are on, which is all the start and the firewall read from an entry. Null for a
+tailnet-only config.
 #>
 function Get-ConfiguredConnections($Node) {
     try { $options = ([xml][System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node))).configuration.options } catch { return $null }
     $addresses = @($options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
-    $entry = [pscustomobject]@{ options = [pscustomobject]@{ localAnnounceEnabled = "$($options.localAnnounceEnabled)" -eq "true" }; listenAddresses = $addresses }
-    if ((Test-IsTailnetOnlyListen $addresses) -or -not (Test-IsConnectionsEntry $entry)) { return $null }
+    $switches = [pscustomobject]@{ localAnnounceEnabled = "$($options.localAnnounceEnabled)" -eq "true"; natEnabled = "$($options.natEnabled)" -eq "true" }
+    $entry = [pscustomobject]@{ options = $switches; listenAddresses = $addresses }
+    if ((Test-IsTailnetOnlyListen $addresses) -or -not (Test-HasProfileListenAddresses $entry)) { return $null }
     return $entry
 }
 
@@ -141,9 +149,18 @@ function Get-StartConnections($Node) {
     return $connections
 }
 
-function Get-NodeListenAddresses($Connections, [string]$ListenHost, $Ports) {
-    if ($Connections) { return @($Connections.listenAddresses) }
-    return @("tcp://$ListenHost`:$($Ports.listen)")
+function Test-IsKeptProfileListen($Addresses) { return (Test-IsProfileListenList $Addresses) -and -not (Test-IsTailnetOnlyListen $Addresses) }
+
+<#
+.NOTES
+The one rule of every keeper: a listen list with any invalid address is ignored whole while the
+entry's valid options still apply, so the node keeps the profile addresses its config already has,
+or the tailnet address when it has none (a fresh config's `default` would take the cluster's 22000).
+#>
+function Get-NodeListen($Connections, [string[]]$Configured, [string]$ListenHost, $Ports) {
+    if (Test-HasProfileListenAddresses $Connections) { return [pscustomobject]@{ addresses = @($Connections.listenAddresses); isTailnetOnly = $false } }
+    if ($Connections -and (Test-IsKeptProfileListen $Configured)) { return [pscustomobject]@{ addresses = @($Configured); isTailnetOnly = $false } }
+    return [pscustomobject]@{ addresses = @("tcp://$ListenHost`:$($Ports.listen)"); isTailnetOnly = $true }
 }
 
 $profileSwitchNames = @("globalAnnounceEnabled", "localAnnounceEnabled", "relaysEnabled", "natEnabled", "limitBandwidthInLan")
@@ -210,7 +227,9 @@ function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost, $Connections) {
     if (-not $gui.SelectSingleNode("apikey").InnerText) { $changed = (Set-XmlChildText $gui "apikey" (New-ApiKey)) -or $changed }
     $changed = (Set-XmlChildText $gui "insecureSkipHostcheck" "true") -or $changed
     $options = $configuration.SelectSingleNode("options")
-    $changed = (Set-ListenAddresses $options @(Get-NodeListenAddresses $Connections $ListenHost $Ports)) -or $changed
+    $configured = @($options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
+    $listen = Get-NodeListen $Connections $configured $ListenHost $Ports
+    $changed = (Set-ListenAddresses $options $listen.addresses) -or $changed
     $settings = $(if ($Connections) { Get-ProfileOptionValues $Connections } else { $tailnetOnlyOptions })
     if ($Connections) { $changed = (Set-ProfileAnnounceServers $options $Connections) -or $changed }
     foreach ($values in @($settings, $keptOptions)) {
@@ -219,7 +238,7 @@ function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost, $Connections) {
     $self = Get-SelfDeviceElement $configuration $Node
     if ($self -and $self.GetAttribute("name") -ne $Node.name) { $self.SetAttribute("name", $Node.name); $changed = $true }
     if ($changed) { Save-XmlDocument $document $path }
-    return [pscustomobject]@{ apiKey = $gui.SelectSingleNode("apikey").InnerText; deviceId = $(if ($self) { $self.GetAttribute("id") } else { $null }) }
+    return [pscustomobject]@{ apiKey = $gui.SelectSingleNode("apikey").InnerText; deviceId = $(if ($self) { $self.GetAttribute("id") } else { $null }); listen = $listen }
 }
 
 function Get-SelfDeviceElement($Configuration, $Node) {
@@ -263,26 +282,49 @@ function Test-UsesLanMethod($Connections) {
         $Connections.options.PSObject.Properties["localAnnounceEnabled"] -and $Connections.options.localAnnounceEnabled -eq $true)
 }
 
+function Test-IsOptionOff($Connections, [string]$Name) {
+    return [bool]($Connections -and $Connections.PSObject.Properties["options"] -and $Connections.options -and
+        $Connections.options.PSObject.Properties[$Name] -and $Connections.options.$Name -is [bool] -and -not $Connections.options.$Name)
+}
+
+<#
+.NOTES
+Ruled 2026-11-03: with local discovery and NAT traversal both off nobody is told this node's LAN or
+public address, so nothing but the tailnet needs to reach it on a trusted network either.
+#>
+function Test-ClosesLan($Connections) {
+    return (Test-IsOptionOff $Connections "localAnnounceEnabled") -and (Test-IsOptionOff $Connections "natEnabled")
+}
+
+function Get-LanRemoteAddress($Connections) {
+    if (Test-ClosesLan $Connections) { return $tailnetAddressRanges }
+    return "Any"
+}
+
 <#
 .NOTES
 Without the node's connections entry the node is tailnet-only and keeps the rules it always had: TCP
 from the tailnet and a UDP block, so nothing opens on a host that never received the profile. With
 it, the sync port is open on Private and Domain networks to any address (the LAN, and what the
-router forwards after NAT traversal arrives there too) and on Public networks to the tailnet only.
+router forwards after NAT traversal arrives there too), or to the tailnet only when the entry turns
+both off, and on Public networks to the tailnet only. The tailnet is both its ranges, as for the
+Docker rules: a profile's `tcp://0.0.0.0` listener is dual-stack (Windows shows it on `::`), so a
+peer may come over the tailnet's IPv6 range too.
 #>
 function Get-NodeFirewallRules($Node, $Ports, $Connections) {
     $port = "$($Ports.listen)"
     if (-not $Connections) {
         return @(
-            (New-FirewallRuleSpec $Node "" "Allow" "TCP" $port $tailnetAddressRange "Any"),
+            (New-FirewallRuleSpec $Node "" "Allow" "TCP" $port $tailnetAddressRanges "Any"),
             (New-FirewallRuleSpec $Node "udp" "Block" "UDP" "Any" "Any" "Any")
         )
     }
+    $lanRemote = Get-LanRemoteAddress $Connections
     $rules = @(
-        (New-FirewallRuleSpec $Node "tcp private" "Allow" "TCP" $port "Any" $lanProfiles),
-        (New-FirewallRuleSpec $Node "udp private" "Allow" "UDP" $port "Any" $lanProfiles),
-        (New-FirewallRuleSpec $Node "tcp public" "Allow" "TCP" $port $tailnetAddressRange "Public"),
-        (New-FirewallRuleSpec $Node "udp public" "Allow" "UDP" $port $tailnetAddressRange "Public")
+        (New-FirewallRuleSpec $Node "tcp private" "Allow" "TCP" $port $lanRemote $lanProfiles),
+        (New-FirewallRuleSpec $Node "udp private" "Allow" "UDP" $port $lanRemote $lanProfiles),
+        (New-FirewallRuleSpec $Node "tcp public" "Allow" "TCP" $port $tailnetAddressRanges "Public"),
+        (New-FirewallRuleSpec $Node "udp public" "Allow" "UDP" $port $tailnetAddressRanges "Public")
     )
     if (Test-UsesLanMethod $Connections) { $rules += New-FirewallRuleSpec $Node "discovery private" "Allow" "UDP" "$localDiscoveryPort" "Any" $lanProfiles }
     return $rules
@@ -320,19 +362,29 @@ function ConvertTo-ListKey($Values) {
     return (@(@($Values) | ForEach-Object { "$_" -split '[,\s]+' } | Where-Object { $_ } | ForEach-Object { (ConvertTo-PrefixNotation $_).ToLower() } | Sort-Object) -join ",")
 }
 
-function Test-FirewallRuleIsCurrent($Rule) {
-    $existing = Get-NetFirewallRule -Name $Rule.Name -ErrorAction SilentlyContinue
-    if (-not $existing) { return $false }
-    $ports = $existing | Get-NetFirewallPortFilter
-    $addresses = $existing | Get-NetFirewallAddressFilter
-    $program = ($existing | Get-NetFirewallApplicationFilter).Program
-    $isCurrent = (ConvertTo-ListKey $ports.LocalPort) -eq (ConvertTo-ListKey $Rule.LocalPort) -and "$($ports.Protocol)" -eq $Rule.Protocol -and
+function Test-FirewallRuleMatches($Existing, $Rule) {
+    $ports = $Existing | Get-NetFirewallPortFilter
+    $addresses = $Existing | Get-NetFirewallAddressFilter
+    $program = ($Existing | Get-NetFirewallApplicationFilter).Program
+    return (ConvertTo-ListKey $ports.LocalPort) -eq (ConvertTo-ListKey $Rule.LocalPort) -and "$($ports.Protocol)" -eq $Rule.Protocol -and
         (ConvertTo-ListKey $addresses.RemoteAddress) -eq (ConvertTo-ListKey $Rule.RemoteAddress) -and
-        (ConvertTo-ProfileKey "$($existing.Profile)") -eq (ConvertTo-ProfileKey $Rule.Profile) -and
-        "$($existing.Action)" -eq $Rule.Action -and $program -eq $Rule.Program
-    if ($isCurrent) { return $true }
-    Remove-NetFirewallRule -Name $Rule.Name
-    return $false
+        (ConvertTo-ProfileKey "$($Existing.Profile)") -eq (ConvertTo-ProfileKey $Rule.Profile) -and
+        "$($Existing.Action)" -eq $Rule.Action -and $program -eq $Rule.Program
+}
+
+<#
+.NOTES
+A rule that differs is changed in place rather than removed and made again, so its port is never
+left without a rule in between. A rule's name is bound to its role (protocol, network profile,
+Allow or Block), so an in-place change only moves a role's ports or addresses, never widens it
+into another role.
+#>
+function Set-AgentFirewallRule($Rule, [string]$DisplayName) {
+    $existing = Get-NetFirewallRule -Name $Rule.Name -ErrorAction SilentlyContinue
+    if (-not $existing) { New-AgentFirewallRule $Rule $DisplayName; return }
+    if (Test-FirewallRuleMatches $existing $Rule) { return }
+    Set-NetFirewallRule -Name $Rule.Name -Action $Rule.Action -Protocol $Rule.Protocol -LocalPort @($Rule.LocalPort -split ',') `
+        -RemoteAddress @($Rule.RemoteAddress -split ',') -Program $Rule.Program -Profile $Rule.Profile
 }
 
 <#
@@ -340,17 +392,15 @@ function Test-FirewallRuleIsCurrent($Rule) {
 Every rule exists before Syncthing first listens. Windows asks "allow access?" for a program no rule
 names, and its answer is a rule open to every address that outlives the stack; with rules naming this
 program on every profile, it never asks. Rules of the other set (tailnet-only or profile), including
-the names an agent before the profile made, are removed by name, so switching sets leaves none behind.
+the names an agent before the profile made, are removed by name once the wanted set is in place, so
+switching sets leaves none behind and no moment without a rule.
 #>
 function Set-SyncthingFirewallRule($Node, $Ports, $Connections) {
     $rules = @(Get-NodeFirewallRules $Node $Ports $Connections)
+    foreach ($rule in $rules) { Set-AgentFirewallRule $rule "$($rule.Name) ($($Node.name))" }
     $wanted = @($rules | ForEach-Object { $_.Name })
     foreach ($name in Get-AllNodeFirewallRuleNames $Node) {
         if ($wanted -notcontains $name) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
-    }
-    foreach ($rule in $rules) {
-        if (Test-FirewallRuleIsCurrent $rule) { continue }
-        New-AgentFirewallRule $rule "$($rule.Name) ($($Node.name))"
     }
 }
 
@@ -364,8 +414,40 @@ function Remove-NodeFirewallRules($Node) {
     foreach ($name in Get-AllNodeFirewallRuleNames $Node) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
 }
 
+<#
+.NOTES
+An empty list without a config, null when the config exists but cannot be read (Syncthing caught
+saving it, say), so the caller can keep the rules it has instead of taking it for no addresses.
+#>
+function Read-ConfiguredListenAddresses($Node) {
+    $path = Get-SyncthingConfigPath $Node
+    if (-not [System.IO.File]::Exists($path)) { return , @() }
+    try { $options = ([xml][System.IO.File]::ReadAllText($path)).configuration.options } catch { return $null }
+    return , @($options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
+}
+
+<#
+.NOTES
+The rule set follows the listen decision of Get-NodeListen, not the entry alone: a node whose entry
+has an invalid listen list and whose config holds no profile addresses listens on the tailnet
+address, so it keeps the tailnet-only rules (null), never the profile's LAN rules.
+#>
+function Get-FirewallConnections($Connections, [string[]]$Configured) {
+    if (-not $Connections) { return $null }
+    if ((Test-HasProfileListenAddresses $Connections) -or (Test-IsKeptProfileListen $Configured)) { return $Connections }
+    return $null
+}
+
 function Get-InstanceFirewallShape($Instance, $Connections) {
-    return "$([bool]$Connections) $(Test-UsesLanMethod $Connections) $($Instance.ports.listen)"
+    return "$([bool]$Connections) $(Test-UsesLanMethod $Connections) $(Test-ClosesLan $Connections) $($Instance.ports.listen)"
+}
+
+function Test-NeedsConfiguredListen($Connections) { return $Connections -and -not (Test-HasProfileListenAddresses $Connections) }
+
+function Write-InstanceFirewallProblem($Instance, [string]$Problem) {
+    if ($Problem -eq "$($Instance.firewallProblem)") { return }
+    if ($Problem) { Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): firewall rules not updated: $Problem" }
+    $Instance.firewallProblem = $Problem
 }
 
 <#
@@ -373,29 +455,54 @@ function Get-InstanceFirewallShape($Instance, $Connections) {
 The profile reaches a running Syncthing through the dashboard's REST calls without a restart, so the
 rules follow the connections entry every round; they are only rewritten when its shape changes, and
 an instance taken over from an earlier agent has no shape yet, which sets them (and removes the
-names an older agent left) on its first round.
+names an older agent left) on its first round. A connections file or config that cannot be read
+this round keeps the rules as they are. A failure is logged when it starts or changes.
 #>
 function Update-InstanceFirewall($Instance) {
     if ($Instance.state -ne "running" -or -not $Instance.ports) { return }
     $connections = Get-NodeConnections $Instance.node
     if (Test-IsUnreadableConnections $connections) { return }
+    $configured = Read-ConfiguredListenAddresses $Instance.node
+    if ($null -eq $configured -and (Test-NeedsConfiguredListen $connections)) { return }
+    $connections = Get-FirewallConnections $connections $configured
     if ((Get-InstanceFirewallShape $Instance $connections) -eq $Instance.firewallShape) { return }
-    try { Set-InstanceFirewall $Instance $connections } catch { Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): firewall rules not updated: $_" }
+    try {
+        Set-InstanceFirewall $Instance $connections
+        Write-InstanceFirewallProblem $Instance ""
+    } catch { Write-InstanceFirewallProblem $Instance "$_" }
 }
 
 function Set-InstanceFirewall($Instance, $Connections) {
     Set-SyncthingFirewallRule $Instance.node $Instance.ports $Connections
     $Instance.firewallShape = Get-InstanceFirewallShape $Instance $Connections
     $Instance.usesLan = Test-UsesLanMethod $Connections
+    $Instance.hasProfileRules = [bool]$Connections
+}
+
+function Test-HasNoTrustedLan($Networks) {
+    $known = @($Networks | Where-Object { $_.kind -eq "lan" -or $_.kind -eq "public" })
+    $trusted = @($Networks | Where-Object { $_.kind -eq "lan" -and -not ($_.PSObject.Properties["category"] -and $_.category -eq "Public") })
+    return $known.Count -gt 0 -and $trusted.Count -eq 0
+}
+
+function Test-InstanceFlag($Instance, [string]$Name) {
+    return $Instance.state -eq "running" -and $Instance.PSObject.Properties[$Name] -and $Instance.$Name
 }
 
 <#
 .NOTES
 The keeper never changes a network's category: Windows gives a Public network no LAN rules, so it
-is reported instead, while some running node wants the LAN method.
+is reported instead, while some running node wants the LAN method. On a host with no trusted LAN
+the dashboard has already turned local discovery off for its nodes (spec section 9), so a node on
+the profile at all is reason enough to say why the LAN is unavailable.
 #>
+function Test-ReportsLanProblems($Networks, $Instances) {
+    if (@($Instances | Where-Object { Test-InstanceFlag $_ "usesLan" }).Count -gt 0) { return $true }
+    return (Test-HasNoTrustedLan $Networks) -and @($Instances | Where-Object { Test-InstanceFlag $_ "hasProfileRules" }).Count -gt 0
+}
+
 function Get-LanProblems($Networks, $Instances) {
-    if (@($Instances | Where-Object { $_.state -eq "running" -and $_.PSObject.Properties["usesLan"] -and $_.usesLan }).Count -eq 0) { return @() }
+    if (-not (Test-ReportsLanProblems $Networks $Instances)) { return @() }
     $problems = @()
     foreach ($network in @($Networks | Where-Object { $_.kind -eq "lan" -and $_.PSObject.Properties["category"] -and $_.category -eq "Public" })) {
         $label = $network.address
@@ -407,8 +514,13 @@ function Get-LanProblems($Networks, $Instances) {
 
 $stackSyncPorts = "22000,22021-22099,22100"
 $outsideTailnetRanges = "0.0.0.0-100.63.255.255,100.128.0.0-255.255.255.255,::-fd7a:115c:a1df:ffff:ffff:ffff:ffff:ffff,fd7a:115c:a1e1::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
-$dockerBackendBlockNames = @("storage-compose docker backend tcp public", "storage-compose docker backend udp public")
-$dockerBackendBlockShape = $null
+$dockerBackendRuleNames = @(
+    "storage-compose docker backend tcp public", "storage-compose docker backend udp public",
+    "storage-compose docker backend tcp private", "storage-compose docker backend udp private"
+)
+$dockerBackendRulesShape = $null
+$dockerBackendLanRemote = $null
+$dockerBackendRulesProblem = ""
 
 <#
 .NOTES
@@ -423,46 +535,85 @@ function Get-DockerBackendPath {
     return $null
 }
 
-function Get-DockerBackendBlockRules([string]$Program) {
-    return @("TCP", "UDP") | ForEach-Object {
-        [pscustomobject]@{
-            Name = "storage-compose docker backend $($_.ToLower()) public"; Action = "Block"; Protocol = $_; LocalPort = $stackSyncPorts
-            RemoteAddress = $outsideTailnetRanges; Profile = "Public"; Program = $Program
-        }
+function New-DockerBackendRule([string]$Protocol, [string]$Network, [string]$Action, [string]$RemoteAddress, [string]$Profiles, [string]$Program) {
+    return [pscustomobject]@{
+        Name = "storage-compose docker backend $($Protocol.ToLower()) $Network"; Action = $Action; Protocol = $Protocol; LocalPort = $stackSyncPorts
+        RemoteAddress = $RemoteAddress; Profile = $Profiles; Program = $Program
     }
-}
-
-function Remove-DockerBackendBlock {
-    foreach ($name in $dockerBackendBlockNames) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
-    $script:dockerBackendBlockShape = $null
 }
 
 <#
 .NOTES
-Spec section 9: Docker Desktop's own rule admits every address to its published ports on a Public
-network, a network the person does not own, and a Block rule wins over it, so only the tailnet
-reaches the stack's sync and relay ports there. The ports exist only while the stack runs, which is
-when the rule is kept; it is rewritten only when the backend's path changes, and it belongs to the
-agent's group, so removing the agent's rules removes it too.
+Spec sections 4, 5 and 9. On a Public network, one the person does not own, Docker Desktop's own
+rule admits every address to its published ports, and a Block rule wins over it, so only the
+tailnet reaches the stack's sync and relay ports there. On a Private or Domain network Windows has
+no rule for the backend (the one it adds when it asks "allow access?" names the Public profile
+only), so without the Allow the LAN would never reach a Docker node or the bridge relay.
 #>
-function Update-DockerBackendBlock([bool]$IsActive) {
+function Get-DockerBackendRules([string]$Program, [string]$LanRemoteAddress) {
+    return @("TCP", "UDP") | ForEach-Object {
+        New-DockerBackendRule $_ "public" "Block" $outsideTailnetRanges "Public" $Program
+        New-DockerBackendRule $_ "private" "Allow" $LanRemoteAddress $lanProfiles $Program
+    }
+}
+
+<#
+.NOTES
+The Docker ports serve every node of the host that runs in Docker, and the bridge, and the
+connections file holds an entry for each of this host's nodes, so the host-wide rule reads them
+all: the LAN stays open while any entry keeps local discovery or NAT on, and is closed to all but
+the tailnet (both address families, as the Public block exempts both) when every entry turns both
+off or there is none. Null when the file cannot be read, so the rules stay as they are.
+#>
+function Get-DockerBackendLanRemoteAddress {
+    if (-not $script:connectionsFile -or -not (Test-Path -LiteralPath $script:connectionsFile)) { return $tailnetAddressRanges }
+    $byNode = Read-ConnectionsFile $script:connectionsFile
+    if (Test-IsUnreadableConnections $byNode) { return $null }
+    $entries = @($byNode.PSObject.Properties | ForEach-Object { $_.Value } | Where-Object { Test-IsConnectionsEntry $_ })
+    if (@($entries | Where-Object { -not (Test-ClosesLan $_) }).Count -gt 0) { return "Any" }
+    return $tailnetAddressRanges
+}
+
+function Remove-DockerBackendRules {
+    foreach ($name in $dockerBackendRuleNames) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
+    $script:dockerBackendRulesShape = $null
+}
+
+function Write-DockerBackendRulesProblem([string]$Problem) {
+    if ($Problem -eq $script:dockerBackendRulesProblem) { return }
+    if ($Problem) { Write-WatcherLog "the Docker backend's rules were not set: $Problem" }
+    $script:dockerBackendRulesProblem = $Problem
+}
+
+<#
+.NOTES
+The ports exist only while the stack runs, which is when the rules are kept; they are rewritten
+only when the backend's path or the LAN's remote address changes, and they belong to the agent's
+group, so removing the agent's rules removes them too. While the connections file cannot be read
+the last address stands, the tailnet's before any was read. A failure is logged when it starts or
+changes.
+#>
+function Update-DockerBackendRules([bool]$IsActive) {
     if (-not $IsActive) {
-        if ($script:dockerBackendBlockShape) { Remove-DockerBackendBlock }
+        if ($script:dockerBackendRulesShape) { Remove-DockerBackendRules }
         return
     }
     $program = Get-DockerBackendPath
     if (-not $program) {
-        if ($script:dockerBackendBlockShape -ne "missing") { Write-WatcherLog "Docker Desktop's backend was not found; the stack's sync ports are not blocked on Public networks" }
-        $script:dockerBackendBlockShape = "missing"
+        if ($script:dockerBackendRulesShape -ne "missing") { Write-WatcherLog "Docker Desktop's backend was not found; the stack's sync ports are neither blocked on Public networks nor opened on Private ones" }
+        $script:dockerBackendRulesShape = "missing"
         return
     }
-    if ($script:dockerBackendBlockShape -eq $program) { return }
+    $lanRemote = Get-DockerBackendLanRemoteAddress
+    if (-not $lanRemote) { $lanRemote = $(if ($script:dockerBackendLanRemote) { $script:dockerBackendLanRemote } else { $tailnetAddressRanges }) }
+    $shape = "$program $lanRemote"
+    if ($script:dockerBackendRulesShape -eq $shape) { return }
     try {
-        foreach ($rule in Get-DockerBackendBlockRules $program) {
-            if (-not (Test-FirewallRuleIsCurrent $rule)) { New-AgentFirewallRule $rule $rule.Name }
-        }
-        $script:dockerBackendBlockShape = $program
-    } catch { Write-WatcherLog "the Docker backend's block rules were not set: $_" }
+        foreach ($rule in Get-DockerBackendRules $program $lanRemote) { Set-AgentFirewallRule $rule $rule.Name }
+        $script:dockerBackendRulesShape = $shape
+        $script:dockerBackendLanRemote = $lanRemote
+        Write-DockerBackendRulesProblem ""
+    } catch { Write-DockerBackendRulesProblem "$_" }
 }
 
 function Get-SyncthingBinFolder {
@@ -472,7 +623,7 @@ function Get-SyncthingBinFolder {
 
 function Remove-SyncthingFirewallRules {
     Remove-NetFirewallRule -Group $agentFirewallGroup -ErrorAction SilentlyContinue
-    $script:dockerBackendBlockShape = $null
+    $script:dockerBackendRulesShape = $null
     Remove-ProgramFirewallRules (Get-SyncthingBinFolder)
 }
 
@@ -546,7 +697,7 @@ function Stop-SyncthingProcess($Instance) {
 function New-SyncthingInstance($Node) {
     return [pscustomobject]@{
         nodeId = $Node.id; node = $Node; ports = $null; apiKey = $null; deviceId = $null; listenAddress = $null; usesProfile = $false
-        firewallShape = $null; usesLan = $false
+        firewallShape = $null; usesLan = $false; hasProfileRules = $false; firewallProblem = ""
         processId = 0; state = "stopped"; startedAt = $null; attempts = @(); problem = $null
     }
 }
@@ -581,9 +732,9 @@ function Start-NodeSyncthing($Instance, [string]$ListenHost) {
         $identity = Set-SyncthingConfig $node $Instance.ports $ListenHost $connections
         $Instance.apiKey = $identity.apiKey
         $Instance.deviceId = $identity.deviceId
-        $Instance.listenAddress = @(Get-NodeListenAddresses $connections $ListenHost $Instance.ports)[0]
-        $Instance.usesProfile = [bool]$connections
-        Set-InstanceFirewall $Instance $connections
+        $Instance.listenAddress = @($identity.listen.addresses)[0]
+        $Instance.usesProfile = -not $identity.listen.isTailnetOnly
+        Set-InstanceFirewall $Instance (Get-FirewallConnections $connections $identity.listen.addresses)
         $Instance.processId = Start-SyncthingProcess $node
         $Instance.state = "running"
         $Instance.startedAt = (Get-Date).ToString("o")
@@ -601,6 +752,7 @@ function Stop-NodeSyncthing($Instance, [string]$Reason) {
     Remove-NodeFirewallRules $Instance.node
     $Instance.firewallShape = $null
     $Instance.usesLan = $false
+    $Instance.hasProfileRules = $false
     $Instance.state = "stopped"
     $Instance.processId = 0
     Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): Syncthing stopped, $Reason"
@@ -621,9 +773,12 @@ function Resume-OrphanedSyncthing($Instance) {
     try {
         $document = [xml][System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Instance.node))
         $Instance.apiKey = $document.configuration.gui.apikey
-        $Instance.listenAddress = $document.configuration.options.listenAddress | Select-Object -First 1
-    } catch { }
-    $Instance.usesProfile = [bool](Get-StartConnections $Instance.node)
+        $addresses = @($document.configuration.options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
+        $Instance.listenAddress = $addresses | Select-Object -First 1
+        $Instance.usesProfile = $addresses.Count -gt 0 -and -not (Test-IsTailnetOnlyListen $addresses)
+    } catch {
+        $Instance.usesProfile = Test-HasProfileListenAddresses (Get-NodeConnections $Instance.node)
+    }
     $Instance.deviceId = Get-SyncthingDeviceId $Instance.node
     Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): took over the running Syncthing, pid $($Instance.processId)"
     return $true

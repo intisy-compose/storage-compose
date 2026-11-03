@@ -6,7 +6,8 @@ import type { AdvancedConfig, NodeRestartState, RestartAnswer } from "../src/api
 import { recordPeerTable } from "../src/connectionsDrift.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
-import { type WriteEffects, type WriteNote, requestHandler } from "../src/routes.js";
+import { type WriteNote } from "../src/routeTypes.js";
+import { type WriteEffects, requestHandler } from "../src/routes.js";
 import { type AdvancedConfigSources, advancedConfigRoutes } from "../src/routes/advancedConfig.js";
 import { SyncthingClient } from "../src/syncthing.js";
 

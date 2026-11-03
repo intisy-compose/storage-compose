@@ -1,3 +1,4 @@
+import { profileFileProblemText } from "./api/profileText.js";
 import type { ConnectionProfile, NodeAddresses, PeerTable } from "./api/types.js";
 import { type ApplyReport, recordDrift, recordPeerTable } from "./connectionsDrift.js";
 import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances, writeConfirmed } from "./instanceResolver.js";
@@ -54,12 +55,14 @@ function pendingOptions(current: SyncthingObject, wanted: SyncthingObject): Sync
 export class ConnectionsRound {
   private readonly remoteTables = new Map<string, PeerTable>();
   private last: LastRound | null = null;
+  private profileProblem: string | null = null;
 
   constructor(private readonly dependencies: ApplyDependencies) {}
 
   async run(): Promise<ApplyReport> {
     await this.dependencies.pull().catch(() => undefined);
-    const profile = await this.dependencies.profile();
+    const profile = await this.readProfile();
+    if (!profile) return { applied: [], notYet: [], failed: {} };
     const local = await this.dependencies.localTable();
     const table = buildPeerTable(local.nodes, local.bridges, await this.readRemoteTables(), local.builtAt);
     const byNode = Object.fromEntries(local.nodes.map((node) => [node.nodeId, resolveNode(profile, table, node.nodeId)]));
@@ -83,6 +86,34 @@ export class ConnectionsRound {
     if (!this.last) return null;
     const table = { ...this.last.table, nodes: [...this.last.table.nodes.filter((entry) => entry.nodeId !== node.nodeId), node] };
     return resolveNode(this.last.profile, table, node.nodeId);
+  }
+
+  /**
+   * The profile, or the last one read while `connections.toml` cannot be (a hand edit with a value out of range, say); null
+   * when none was ever read, so the round writes and sends nothing and every node keeps the settings and rules it has.
+   * @implNote Rounds run every few seconds, so a lasting problem is logged once, when it starts or changes.
+   */
+  private async readProfile(): Promise<ConnectionProfile | null> {
+    try {
+      const profile = await this.dependencies.profile();
+      this.noteProfileProblem(null);
+      return profile;
+    } catch (error) {
+      this.noteProfileProblem(reasonOf(error));
+      return this.last?.profile ?? null;
+    }
+  }
+
+  private noteProfileProblem(problem: string | null): void {
+    if (problem === this.profileProblem) return;
+    if (problem) console.error(`connections: ${profileFileProblemText(problem, this.last !== null)}`);
+    else console.error("connections: the profile can be read again");
+    this.profileProblem = problem;
+  }
+
+  /** The profile the last round applied, null before the first round that could read one. */
+  appliedProfile(): ConnectionProfile | null {
+    return this.last?.profile ?? null;
   }
 
   private async readRemoteTables(): Promise<PeerTable[]> {

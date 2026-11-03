@@ -5,7 +5,7 @@ import { folderSettings, offersOf } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, arrayConfirmProblem, callSyncthing, defaultReadBackDelaysMs, isArrayInstance, requireLocal } from "../instanceResolver.js";
 import { type NodeRoot, pathUnderRoot } from "../pathGuard.js";
-import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
+import type { AnyRoute, NothingWritten, WriteNote } from "../routeTypes.js";
 import type { SyncthingFolderSettings } from "../syncthing.js";
 import { folderChangeProblem } from "../syncthingConfig.js";
 import { type SyncthingConfig, changeWholeConfig } from "../wholeConfig.js";

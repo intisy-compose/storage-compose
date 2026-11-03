@@ -3,7 +3,7 @@ import { folderSettings } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import { folderSubpathProblem } from "../pathGuard.js";
-import type { AnyRoute, NothingWritten, WriteNote } from "../routes.js";
+import type { AnyRoute, NothingWritten, WriteNote } from "../routeTypes.js";
 import type { SyncthingFolderSettings } from "../syncthing.js";
 import type { NodeOs } from "../treePaths.js";
 import { decodedSegment } from "./devices.js";

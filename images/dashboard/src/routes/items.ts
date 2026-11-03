@@ -4,7 +4,7 @@ import { type ConflictIndexes, conflictFile, conflictIndexes } from "../conflict
 import { errorTotalOf, needTotalOf } from "../folderLists.js";
 import { RequestError, sendJson } from "../http.js";
 import { type LocalInstance, type RemoteInstance, type ResolvedInstance, callSyncthing, forwardRead, forwardedListTimeoutMs, resolveInstance } from "../instanceResolver.js";
-import type { Route } from "../routes.js";
+import type { Route } from "../routeTypes.js";
 import { KeyedSharedReads } from "../sharedRead.js";
 import { reshownForwardedError, shownSyncthingError } from "../shownSyncthingError.js";
 import { type Completion, type IndexItem, type SyncthingClient, type SyncthingDeviceConfig, type SyncthingFolderConfig, listTimeoutMs } from "../syncthing.js";

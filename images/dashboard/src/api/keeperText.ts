@@ -33,7 +33,7 @@ export function keeperManagedText(keeper: SettingsKeeper): string {
 }
 
 /**
- * Why a change naming these fields cannot be made on the node, or null: `Relays, NAT traversal: set by the host agent at each start, so not changed here`.
+ * Why a change naming these fields cannot be made on the node, or null: `Device name, Crash reports: set by the host agent at each start, so not changed here`.
  * `keyOf` gives a field's key in the keeper table, `nameOf` its words.
  */
 export function keeperProblem(

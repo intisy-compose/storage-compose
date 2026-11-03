@@ -4,8 +4,8 @@
 # instances and the cluster alike (POSIX sh: the cluster's image has busybox only). Only the options
 # and listen addresses; each device's addresses stay the dashboard's, which adds no device. A missing
 # file or entry changes nothing; an option of the wrong type is left out, and a listen list with any
-# address of an unknown scheme is left out whole while the valid options are still applied. The host
-# agent (windows/syncthing.ps1) is stricter: it ignores the whole entry on such a listen list.
+# address of an unknown scheme is left out whole while the valid options are still applied, the rule
+# every keeper follows (windows/syncthing.ps1 and the joins' storage-connections steps too).
 set -u
 
 node=$1
@@ -16,25 +16,35 @@ wait_seconds=${APPLY_WAIT_SECONDS:-300}
 
 log() { echo "$(date -u +%FT%TZ) apply-connections $node: $*" >&2; }
 
+profile_checks_folder=$(dirname "$0")
+
 wanted_options() {
-    jq -c --arg id "$node" '
-        def is_count: type == "number" and . >= 0 and . == floor;
-        def is_valid($key):
-            if $key == "maxSendKbps" or $key == "maxRecvKbps" then is_count
-            elif $key == "globalAnnounceServers" then type == "array" and all(.[]; type == "string")
-            elif $key == "limitBandwidthInLan" or $key == "natEnabled" or $key == "localAnnounceEnabled"
-                or $key == "globalAnnounceEnabled" or $key == "relaysEnabled" then type == "boolean"
-            else false end;
-        def is_listen_address: type == "string" and test("^(tcp|quic|relay|dynamic\\+https?)://");
-        def is_listen_list: type == "array" and length > 0 and all(.[]; is_listen_address);
-        .[$id] | select(type == "object")
-        | ((.options | if type == "object" then . else {} end) | with_entries(select(.key as $key | .value | is_valid($key)))) as $options
-        | $options + (if .listenAddresses | is_listen_list then {listenAddresses: .listenAddresses} else {} end)
-        | select(length > 0)' "$connections" 2> /dev/null
+    jq -c -L "$profile_checks_folder" --arg id "$node" '
+        include "connection-profile";
+        .[$id] | select(type == "object") | profile_settings | select(length > 0)' "$connections" 2> /dev/null
 }
 
 api_answers() { curl -fsS -m 5 -H "X-API-Key: $key" "$api/rest/system/ping" > /dev/null 2>&1; }
 
+# Prints true or false, and nothing when Syncthing gives no answer.
+restart_required() {
+    curl -fsS -m 5 -H "X-API-Key: $key" "$api/rest/config/restart-required" 2> /dev/null | jq -r '.requiresRestart | booleans' 2> /dev/null
+}
+
+# A restart request ends a Syncthing run with --no-restart, which nodes.sh starts again within a round;
+# the cluster's runs under its own monitor, which restarts it in place. A restart another change left
+# pending is taken too, on purpose: it is due anyway.
+restart_for_profile() {
+    case $(restart_required) in
+        false) ;;
+        true)
+            if curl -fsS -m 10 -X POST -H "X-API-Key: $key" "$api/rest/system/restart" > /dev/null; then log "restarted Syncthing for the connection profile"
+            else log "Syncthing needs a restart for the connection profile and refused one; it takes effect at the next start"; fi ;;
+        *) log "could not ask whether Syncthing needs a restart for the connection profile; it takes effect at the next start at the latest" ;;
+    esac
+}
+
+[ -f "$profile_checks_folder/connection-profile.jq" ] || { log "connection-profile.jq is missing beside the script; nothing applied"; exit 1; }
 [ -f "$connections" ] || exit 0
 options=$(wanted_options) || { log "$connections cannot be read as a connections file; nothing applied"; exit 0; }
 [ -n "$options" ] || exit 0
@@ -48,6 +58,7 @@ done
 
 if curl -fsS -m 30 -X PATCH -H "X-API-Key: $key" -H "Content-Type: application/json" --data "$options" "$api/rest/config/options" > /dev/null; then
     log "applied the connection profile"
+    restart_for_profile
 else
     log "Syncthing refused the connection profile"
     exit 1
