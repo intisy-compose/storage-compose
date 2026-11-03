@@ -1,7 +1,7 @@
 import type { ServerResponse } from "node:http";
 import { type ActivitySource, type DebugChange, type DebugFacilities, type DebugFacility, type LogLevel, type LogMessage, type NodeError, type NodeErrors, type NodeLog, activitySources, changeActivityTypes, changesActivityType } from "../api/types.js";
 import { type ActivityQuery, activityLog } from "../eventFeed.js";
-import { RequestError, readBody, sendJson } from "../http.js";
+import { RequestError, readBody, refuseCrossSiteRead, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, Route, WriteNote } from "../routeTypes.js";
 import { shownUnscopedText } from "../shownSyncthingError.js";
@@ -363,7 +363,8 @@ export function nodeLogRoutes(routeSources: NodeLogSources = liveSources): AnyRo
     {
       method: "GET",
       pattern: /^\/api\/nodes\/([^/]+)\/support-bundle$/,
-      handle: async ({ response, url, params: [nodeId] }) => {
+      handle: async ({ request, response, url, params: [nodeId] }) => {
+        refuseCrossSiteRead(request);
         const bundle = await supportBundle(await node(nodeId, url), routeSources.maxBundleBytes);
         sendZip(response, bundle.fileName, bundle.zip);
       },

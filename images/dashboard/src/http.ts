@@ -103,6 +103,15 @@ export function crossSiteRefusal(request: IncomingMessage): RequestError | null 
   return null;
 }
 
+/**
+ * Refuses a read another site's page asked for, for a read that costs the node work or carries what must stay on this host.
+ * @implNote `Sec-Fetch-Site: none` is an address typed or a bookmark opened, which no other site can send.
+ */
+export function refuseCrossSiteRead(request: IncomingMessage): void {
+  if (header(request, "sec-fetch-site") === "none" && header(request, "origin") === undefined) return;
+  if (isCrossSite(request)) throw new RequestError(403, "this read from another site is refused");
+}
+
 export function refuseCrossSiteWrite(request: IncomingMessage): void {
   const refusal = crossSiteRefusal(request);
   if (refusal) throw refusal;

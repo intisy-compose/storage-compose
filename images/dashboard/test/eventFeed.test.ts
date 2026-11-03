@@ -1049,6 +1049,20 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     assert.equal(fake.supportReads, 1);
   });
 
+  it("a support bundle asked for from another site is refused before the node is asked for one", async () => {
+    const { fake, node } = await localNode("d7e5", "dashboard-test-peer");
+    fake.bundle = zipOf({ "metrics.txt": "x 1\n" });
+    const dashboard = await dashboardFor([node]);
+    for (const headers of <Record<string, string>[]>[{ "Sec-Fetch-Site": "cross-site" }, { "Sec-Fetch-Site": "same-site" }, { Origin: "https://elsewhere.example" }]) {
+      const refused = await fetch(`${dashboard}/api/nodes/d7e5/support-bundle`, { headers });
+      assert.equal(refused.status, 403, JSON.stringify(headers));
+    }
+    assert.equal(fake.supportReads, 0);
+    for (const headers of <Record<string, string>[]>[{ "Sec-Fetch-Site": "same-origin" }, { "Sec-Fetch-Site": "none" }, {}]) {
+      assert.equal((await fetch(`${dashboard}/api/nodes/d7e5/support-bundle`, { headers })).status, 200, `${JSON.stringify(headers)}: the page's own link, a typed address, a script`);
+    }
+  });
+
   it("the support bundle carries no api key", async () => {
     const { fake, node } = await localNode("d7e5", "dashboard-test-peer");
     fake.bundle = zipOf({
