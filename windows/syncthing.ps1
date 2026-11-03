@@ -83,10 +83,16 @@ $profileListenAddressPattern = '^(tcp|quic|relay|dynamic\+https?)://'
 
 function Test-IsProfileListenAddress($Address) { return $Address -is [string] -and $Address -match $profileListenAddressPattern }
 
-function Test-IsConnectionsEntry($Entry) {
-    if ($Entry -isnot [System.Management.Automation.PSCustomObject] -or -not $Entry.PSObject.Properties["listenAddresses"]) { return $false }
-    $addresses = @($Entry.listenAddresses)
-    return $addresses.Count -gt 0 -and @($addresses | Where-Object { -not (Test-IsProfileListenAddress $_) }).Count -eq 0
+function Test-IsProfileListenList($Addresses) {
+    $list = @($Addresses)
+    return $list.Count -gt 0 -and @($list | Where-Object { -not (Test-IsProfileListenAddress $_) }).Count -eq 0
+}
+
+function Test-IsConnectionsEntry($Entry) { return $Entry -is [System.Management.Automation.PSCustomObject] }
+
+function Test-HasProfileListenAddresses($Entry) {
+    return (Test-IsConnectionsEntry $Entry) -and $Entry.PSObject.Properties["listenAddresses"] -and $Entry.listenAddresses -is [array] -and
+        (Test-IsProfileListenList $Entry.listenAddresses)
 }
 
 $unreadableConnections = [pscustomobject]@{ unreadable = $true }
@@ -103,8 +109,8 @@ function Read-ConnectionsFile([string]$Path) {
 .NOTES
 The node's entry of the connections file the dashboard writes through a read-write bind (the agent
 never writes it). Null without the file, without an entry for the node, or with an entry that is not
-an object whose listen addresses are all Syncthing address strings: a malformed value written into
-config.xml can keep Syncthing from loading it, so such a node stays tailnet-only instead. A file that
+an object, so such a node stays tailnet-only. An entry's values are checked where they are written,
+because a malformed value written into config.xml can keep Syncthing from loading it. A file that
 exists but cannot be read or parsed (caught mid-write, say) is $unreadableConnections, never null, so
 the callers keep the node's current rules and settings instead of swapping it to tailnet-only.
 #>
@@ -131,7 +137,7 @@ function Get-ConfiguredConnections($Node) {
     try { $options = ([xml][System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node))).configuration.options } catch { return $null }
     $addresses = @($options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
     $entry = [pscustomobject]@{ options = [pscustomobject]@{ localAnnounceEnabled = "$($options.localAnnounceEnabled)" -eq "true" }; listenAddresses = $addresses }
-    if ((Test-IsTailnetOnlyListen $addresses) -or -not (Test-IsConnectionsEntry $entry)) { return $null }
+    if ((Test-IsTailnetOnlyListen $addresses) -or -not (Test-HasProfileListenAddresses $entry)) { return $null }
     return $entry
 }
 
@@ -141,9 +147,18 @@ function Get-StartConnections($Node) {
     return $connections
 }
 
-function Get-NodeListenAddresses($Connections, [string]$ListenHost, $Ports) {
-    if ($Connections) { return @($Connections.listenAddresses) }
-    return @("tcp://$ListenHost`:$($Ports.listen)")
+function Test-IsKeptProfileListen($Addresses) { return (Test-IsProfileListenList $Addresses) -and -not (Test-IsTailnetOnlyListen $Addresses) }
+
+<#
+.NOTES
+The one rule of every keeper: a listen list with any invalid address is ignored whole while the
+entry's valid options still apply, so the node keeps the profile addresses its config already has,
+or the tailnet address when it has none (a fresh config's `default` would take the cluster's 22000).
+#>
+function Get-NodeListen($Connections, [string[]]$Configured, [string]$ListenHost, $Ports) {
+    if (Test-HasProfileListenAddresses $Connections) { return [pscustomobject]@{ addresses = @($Connections.listenAddresses); isTailnetOnly = $false } }
+    if ($Connections -and (Test-IsKeptProfileListen $Configured)) { return [pscustomobject]@{ addresses = @($Configured); isTailnetOnly = $false } }
+    return [pscustomobject]@{ addresses = @("tcp://$ListenHost`:$($Ports.listen)"); isTailnetOnly = $true }
 }
 
 $profileSwitchNames = @("globalAnnounceEnabled", "localAnnounceEnabled", "relaysEnabled", "natEnabled", "limitBandwidthInLan")
@@ -210,7 +225,9 @@ function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost, $Connections) {
     if (-not $gui.SelectSingleNode("apikey").InnerText) { $changed = (Set-XmlChildText $gui "apikey" (New-ApiKey)) -or $changed }
     $changed = (Set-XmlChildText $gui "insecureSkipHostcheck" "true") -or $changed
     $options = $configuration.SelectSingleNode("options")
-    $changed = (Set-ListenAddresses $options @(Get-NodeListenAddresses $Connections $ListenHost $Ports)) -or $changed
+    $configured = @($options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
+    $listen = Get-NodeListen $Connections $configured $ListenHost $Ports
+    $changed = (Set-ListenAddresses $options $listen.addresses) -or $changed
     $settings = $(if ($Connections) { Get-ProfileOptionValues $Connections } else { $tailnetOnlyOptions })
     if ($Connections) { $changed = (Set-ProfileAnnounceServers $options $Connections) -or $changed }
     foreach ($values in @($settings, $keptOptions)) {
@@ -219,7 +236,7 @@ function Set-SyncthingConfig($Node, $Ports, [string]$ListenHost, $Connections) {
     $self = Get-SelfDeviceElement $configuration $Node
     if ($self -and $self.GetAttribute("name") -ne $Node.name) { $self.SetAttribute("name", $Node.name); $changed = $true }
     if ($changed) { Save-XmlDocument $document $path }
-    return [pscustomobject]@{ apiKey = $gui.SelectSingleNode("apikey").InnerText; deviceId = $(if ($self) { $self.GetAttribute("id") } else { $null }) }
+    return [pscustomobject]@{ apiKey = $gui.SelectSingleNode("apikey").InnerText; deviceId = $(if ($self) { $self.GetAttribute("id") } else { $null }); listen = $listen }
 }
 
 function Get-SelfDeviceElement($Configuration, $Node) {
@@ -581,8 +598,8 @@ function Start-NodeSyncthing($Instance, [string]$ListenHost) {
         $identity = Set-SyncthingConfig $node $Instance.ports $ListenHost $connections
         $Instance.apiKey = $identity.apiKey
         $Instance.deviceId = $identity.deviceId
-        $Instance.listenAddress = @(Get-NodeListenAddresses $connections $ListenHost $Instance.ports)[0]
-        $Instance.usesProfile = [bool]$connections
+        $Instance.listenAddress = @($identity.listen.addresses)[0]
+        $Instance.usesProfile = -not $identity.listen.isTailnetOnly
         Set-InstanceFirewall $Instance $connections
         $Instance.processId = Start-SyncthingProcess $node
         $Instance.state = "running"
@@ -621,9 +638,10 @@ function Resume-OrphanedSyncthing($Instance) {
     try {
         $document = [xml][System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Instance.node))
         $Instance.apiKey = $document.configuration.gui.apikey
-        $Instance.listenAddress = $document.configuration.options.listenAddress | Select-Object -First 1
+        $addresses = @($document.configuration.options.SelectNodes("listenAddress") | ForEach-Object { $_.InnerText })
+        $Instance.listenAddress = $addresses | Select-Object -First 1
+        $Instance.usesProfile = $addresses.Count -gt 0 -and -not (Test-IsTailnetOnlyListen $addresses)
     } catch { }
-    $Instance.usesProfile = [bool](Get-StartConnections $Instance.node)
     $Instance.deviceId = Get-SyncthingDeviceId $Instance.node
     Write-WatcherLog "node $($Instance.node.name) ($($Instance.nodeId)): took over the running Syncthing, pid $($Instance.processId)"
     return $true

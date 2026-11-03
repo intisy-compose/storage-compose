@@ -10,9 +10,8 @@ address on the device's own -ListenPort.
 .DESCRIPTION
 A dashboard that does not answer within 10 s leaves the kept copy in use; without a copy nothing
 changes. An option of the wrong type is left out, and a listen list with any address of an unknown
-scheme is left out whole while the valid options are still applied; the host agent
-(windows\syncthing.ps1) instead ignores the whole entry on such a listen list. Always exits 0, so it
-never keeps Syncthing from starting.
+scheme is left out whole while the valid options are still applied, the rule every keeper follows.
+Always exits 0, so it never keeps Syncthing from starting.
 #>
 param(
     [string]$Dashboard,
@@ -69,7 +68,7 @@ function Set-KeptConnections {
     $document.Load($configPath)
     $options = $document.DocumentElement.SelectSingleNode("options")
     $changed = $false
-    if (Test-IsConnectionsEntry $entry) { $changed = (Set-ListenAddresses $options @($entry.listenAddresses)) -or $changed }
+    if (Test-HasProfileListenAddresses $entry) { $changed =(Set-ListenAddresses $options @($entry.listenAddresses)) -or $changed }
     $changed = (Set-ProfileAnnounceServers $options $entry) -or $changed
     $values = Get-ProfileOptionValues $entry
     foreach ($name in @($values.Keys)) { $changed = (Set-XmlChildText $options $name $values[$name]) -or $changed }

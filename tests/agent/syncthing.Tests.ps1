@@ -273,17 +273,74 @@ Describe "the connection profile in a node's config" {
         $options.maxRecvKbps | Should Be "0"
     }
 
-    It "treats a null entry and a non-string listen address as no entry, so the node stays tailnet-only" {
+    It "treats a null entry as no entry, so the node stays tailnet-only" {
         $node = New-ConfiguredNode "c006" "malformed"
         [System.IO.Directory]::CreateDirectory((Split-Path $script:connectionsFile)) | Out-Null
         [System.IO.File]::WriteAllText($script:connectionsFile, '{ "c006": null }')
         Get-NodeConnections $node | Should BeNullOrEmpty
-        Write-ConnectionsFile @{ c006 = @{ options = @{}; listenAddresses = @(32110, "tcp://0.0.0.0:32110"); deviceAddresses = @{} } }
-        Get-NodeConnections $node | Should BeNullOrEmpty
-        Write-ConnectionsFile @{ c006 = @{ options = @{}; listenAddresses = @("ftp://0.0.0.0:32110"); deviceAddresses = @{} } }
-        Get-NodeConnections $node | Should BeNullOrEmpty
         Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
         (Get-ConfiguredListenAddresses $node) -join " " | Should Be "tcp://100.100.1.2:32110"
+    }
+
+    It "ignores a listen list with any invalid address whole, keeping the profile addresses the config has, and still applies the valid options" {
+        $node = New-ConfiguredNode "c008" "kept-listen"
+        Write-ConnectionsFile @{ c008 = $profiled }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        foreach ($invalid in @(@(32110, "tcp://0.0.0.0:32110"), @("ftp://0.0.0.0:32110"), "tcp://0.0.0.0:32110", @())) {
+            Write-ConnectionsFile @{ c008 = @{ options = @{ relaysEnabled = $false; natEnabled = $false; maxSendKbps = 75 }; listenAddresses = $invalid; deviceAddresses = @{} } }
+            Get-NodeConnections $node | Should Not BeNullOrEmpty
+            $identity = Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node)
+            (Get-ConfiguredListenAddresses $node) -join " " | Should Be ($listenAddresses -join " ")
+            $identity.listen.isTailnetOnly | Should Be $false
+            $options = Read-ConfigOptions $node
+            $options.relaysEnabled | Should Be "false"
+            $options.natEnabled | Should Be "false"
+            $options.maxSendKbps | Should Be "75"
+            Write-ConnectionsFile @{ c008 = $profiled }
+            Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        }
+    }
+
+    It "listens on the tailnet address when such a list meets a config without profile addresses, the valid options applied" {
+        $node = New-ConfiguredNode "c009" "fresh-invalid"
+        Write-ConnectionsFile @{ c009 = @{ options = @{ natEnabled = $true }; listenAddresses = @("udp://0.0.0.0:32110"); deviceAddresses = @{} } }
+        $identity = Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node)
+        (Get-ConfiguredListenAddresses $node) -join " " | Should Be "tcp://100.100.1.2:32110"
+        $identity.listen.isTailnetOnly | Should Be $true
+        (Read-ConfigOptions $node).natEnabled | Should Be "true"
+        $identity = Set-SyncthingConfig $node $ports "100.100.1.3" (Get-NodeConnections $node)
+        (Get-ConfiguredListenAddresses $node) -join " " | Should Be "tcp://100.100.1.3:32110"
+    }
+
+    It "a node started on such an entry without profile addresses still moves with the tailnet address" {
+        Mock Stop-NodeSyncthingProcesses { }
+        Mock Start-SyncthingProcess { return 4243 }
+        Mock Get-NodePorts { return $ports }
+        $node = New-ConfiguredNode "c010" "start-invalid"
+        Write-ConnectionsFile @{ c010 = @{ options = @{ natEnabled = $true }; listenAddresses = @("udp://0.0.0.0:32110"); deviceAddresses = @{} } }
+        $instance = New-SyncthingInstance $node
+        Start-NodeSyncthing $instance "100.100.1.2"
+        $instance.state | Should Be "running"
+        $instance.listenAddress | Should Be "tcp://100.100.1.2:32110"
+        $instance.usesProfile | Should Be $false
+        Test-NeedsRestartForAddress $instance "100.100.1.3" | Should Be $true
+    }
+
+    It "a taken-over Syncthing counts as on the profile by the listen addresses its config has" {
+        $node = New-ConfiguredNode "c011" "orphan"
+        Mock Find-SyncthingProcess { return [pscustomobject]@{ ProcessId = 4244 } }
+        Mock Get-NodePorts { return $ports }
+        Mock Get-SyncthingDeviceId { return "ORPHAN" }
+        Write-ConnectionsFile @{ c011 = @{ options = @{ natEnabled = $true }; listenAddresses = @("udp://0.0.0.0:32110"); deviceAddresses = @{} } }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        $instance = New-SyncthingInstance $node
+        Resume-OrphanedSyncthing $instance | Should Be $true
+        $instance.usesProfile | Should Be $false
+        Write-ConnectionsFile @{ c011 = $profiled }
+        Set-SyncthingConfig $node $ports "100.100.1.2" (Get-NodeConnections $node) | Out-Null
+        $instance = New-SyncthingInstance $node
+        Resume-OrphanedSyncthing $instance | Should Be $true
+        $instance.usesProfile | Should Be $true
     }
 
     It "writes only well-typed profile options" {
