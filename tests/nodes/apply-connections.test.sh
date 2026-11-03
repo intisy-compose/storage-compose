@@ -118,6 +118,14 @@ echo '{"a1b2": ' > "$scratch/broken.json"
 check "an unreadable file changes nothing" "exit 0" "$(run_apply "$scratch/broken.json" a1b2)"
 check "a Syncthing that never answers is sent nothing" "exit 1" "$(CURL_PING_FAILS=1 run_apply "$profile" a1b2)"
 
+echo "one listen rule"
+checks=$repo/images/nodes/connection-profile.jq
+check "the keepers carry no checks of their own" "0 0" \
+    "$(grep -c 'def is_listen_address' "$apply") $(grep -c 'def is_listen_address' "$repo/join/storage-connections.sh")"
+check "the profile checks use the host agent's scheme pattern" \
+    "$(sed -n "s/^\$profileListenAddressPattern = '\(.*\)'\$/\1/p" "$repo/windows/syncthing.ps1")" \
+    "$(sed -n 's/^def is_listen_address: .*test("\(.*\)");$/\1/p' "$checks" | sed 's/\\\\/\\/g')"
+
 echo "nodes.sh"
 # shellcheck source=../../images/nodes/nodes.sh
 source "$repo/images/nodes/nodes.sh"

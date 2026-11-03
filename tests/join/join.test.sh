@@ -99,6 +99,7 @@ step=/usr/local/lib/storage-join/storage-connections
 node_id="device-$(printf '%s' "${device_id:0:7}" | tr '[:upper:]' '[:lower:]')"
 check "the unit runs the connections step before syncthing" "-$step http://127.0.0.1:$dashboard_port $node_id /data/.storage/syncthing 22000" "$(sed -n 's/^ExecStartPre=//p' /etc/systemd/system/storage-syncthing.service)"
 check "the step is the join's own, installed beside the unit" "$(sha256sum < /join/storage-connections.sh)" "$(sha256sum < "$step")"
+check "with the nodes image's profile checks beside it, one source for both" "$(sha256sum < /images/nodes/connection-profile.jq)" "$(sha256sum < "${step%/*}/connection-profile.jq")"
 
 echo "The second run changes nothing:"
 node_before="$(sha256sum /data/.storage/node.toml)"

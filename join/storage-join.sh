@@ -25,6 +25,7 @@ set -euo pipefail
 readonly HOME_LINKS="Documents:Documents Pictures:Pictures Music:Music Videos:Videos Downloads:Downloads Desktop:Desktop Templates:Templates Public:Public Documents/GitHub:code"
 readonly UNIT_NAME="storage-syncthing.service"
 readonly STEP_NAME="storage-connections"
+readonly PROFILE_CHECKS_NAME="connection-profile.jq"
 
 readonly ESSENTIAL_THRESHOLD=80 WORKING_THRESHOLD=50
 
@@ -177,11 +178,16 @@ joined_node_id() {
 
 step_source() { printf '%s/storage-connections.sh' "$(dirname "${BASH_SOURCE[0]}")"; }
 
+profile_checks_source() { printf '%s/../images/nodes/%s' "$(dirname "${BASH_SOURCE[0]}")" "$PROFILE_CHECKS_NAME"; }
+
+is_installed() { [[ -f "$2" && "$(cksum < "$1")" == "$(cksum < "$2")" ]]; }
+
 install_step() {
-    local step="$step_dir/$STEP_NAME"
-    [[ -f "$step" && "$(cksum < "$(step_source)")" == "$(cksum < "$step")" ]] && return 0
+    local step="$step_dir/$STEP_NAME" checks="$step_dir/$PROFILE_CHECKS_NAME"
+    is_installed "$(step_source)" "$step" && is_installed "$(profile_checks_source)" "$checks" && return 0
     mkdir -p "$step_dir"
     install -m 755 "$(step_source)" "$step"
+    install -m 644 "$(profile_checks_source)" "$checks"
     changed "installed $step"
 }
 

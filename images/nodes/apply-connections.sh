@@ -17,20 +17,9 @@ wait_seconds=${APPLY_WAIT_SECONDS:-300}
 log() { echo "$(date -u +%FT%TZ) apply-connections $node: $*" >&2; }
 
 wanted_options() {
-    jq -c --arg id "$node" '
-        def is_count: type == "number" and . >= 0 and . == floor;
-        def is_valid($key):
-            if $key == "maxSendKbps" or $key == "maxRecvKbps" then is_count
-            elif $key == "globalAnnounceServers" then type == "array" and all(.[]; type == "string")
-            elif $key == "limitBandwidthInLan" or $key == "natEnabled" or $key == "localAnnounceEnabled"
-                or $key == "globalAnnounceEnabled" or $key == "relaysEnabled" then type == "boolean"
-            else false end;
-        def is_listen_address: type == "string" and test("^(tcp|quic|relay|dynamic\\+https?)://");
-        def is_listen_list: type == "array" and length > 0 and all(.[]; is_listen_address);
-        .[$id] | select(type == "object")
-        | ((.options | if type == "object" then . else {} end) | with_entries(select(.key as $key | .value | is_valid($key)))) as $options
-        | $options + (if .listenAddresses | is_listen_list then {listenAddresses: .listenAddresses} else {} end)
-        | select(length > 0)' "$connections" 2> /dev/null
+    jq -c -L "$(dirname "$0")" --arg id "$node" '
+        include "connection-profile";
+        .[$id] | select(type == "object") | profile_settings | select(length > 0)' "$connections" 2> /dev/null
 }
 
 api_answers() { curl -fsS -m 5 -H "X-API-Key: $key" "$api/rest/system/ping" > /dev/null 2>&1; }
