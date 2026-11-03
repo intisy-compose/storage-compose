@@ -35,6 +35,30 @@ function Invoke-NativeCommand([string]$FilePath, [string[]]$Arguments, [string]$
     }
 }
 function Get-TailnetAddress { return "127.0.0.1" }
+
+<#
+.NOTES
+The join's rules are real ones in an admin shell, named after the node id, and a tailnet-only set
+removes the profile names of the same id; a random id could draw a live node's and take its rules.
+Node ids are 4 hex digits with no reserved range, so the tests count up from 0000 and skip every id
+a storage-compose rule on this host already names.
+#>
+function Get-LiveRuleNodeIds {
+    $ids = @()
+    foreach ($rule in @(Get-NetFirewallRule -ErrorAction SilentlyContinue)) {
+        if ("$($rule.Name)" -match '^storage-compose syncthing ([0-9a-f]{4})( |$)') { $ids += $Matches[1] }
+    }
+    return $ids
+}
+$global:liveRuleNodeIds = Get-LiveRuleNodeIds
+$global:nextTestNodeId = 0
+function New-NodeId {
+    while ($true) {
+        $id = $global:nextTestNodeId.ToString("x4")
+        $global:nextTestNodeId++
+        if ($global:liveRuleNodeIds -notcontains $id) { return $id }
+    }
+}
 $global:layoutPath = Join-Path $scratch "drive-sync.toml"
 function Get-LayoutPath { return $global:layoutPath }
 $global:agentPresent = $false
@@ -163,6 +187,7 @@ try {
             $node.name | Should Be "pc-test"
             $node.threshold | Should Be 50
             $node.id | Should Match '^[0-9a-f]{4}$'
+            $global:liveRuleNodeIds -contains $node.id | Should Be $false
         }
         It "runs Syncthing at logon from a task, with its home on the node" {
             $task = $global:tasks["storage-compose syncthing pc-test"]
@@ -722,6 +747,17 @@ try {
             Invoke-JoinCapturingFailure | Should Be "ok"
             $script:joinChanges | Should Be 0
             @(Get-IndexPaths $volume).Count | Should Be 4
+        }
+    }
+
+    Describe "the test node ids" {
+        It "skip every id a live rule names" {
+            $live = $global:liveRuleNodeIds
+            $next = $global:nextTestNodeId
+            try {
+                $global:liveRuleNodeIds = @($next.ToString("x4"), ($next + 1).ToString("x4"))
+                New-NodeId | Should Be ($next + 2).ToString("x4")
+            } finally { $global:liveRuleNodeIds = $live }
         }
     }
 } finally {
