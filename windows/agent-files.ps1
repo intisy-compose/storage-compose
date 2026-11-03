@@ -15,6 +15,7 @@ $agentFolderName = "host-agent"
 $agentStatusFolderName = "status"
 $agentConnectionsFolderName = "connections"
 $agentConnectionsName = "connections.json"
+$agentJoinedConnectionsName = "joined.json"
 $agentHeartbeatName = "heartbeat.json"
 $agentStateName = "state.json"
 $agentLogName = "agent.log"
@@ -34,6 +35,24 @@ function Get-AgentFolder([string]$StackFolder) { return Join-Path $StackFolder $
 function Get-AgentStatusFolder([string]$StackFolder) { return Join-Path (Get-AgentFolder $StackFolder) $agentStatusFolderName }
 
 function Get-AgentConnectionsFile([string]$StackFolder) { return Join-Path (Join-Path (Get-AgentFolder $StackFolder) $agentConnectionsFolderName) $agentConnectionsName }
+
+<#
+.NOTES
+Joined mode's kept entries, in the shape of the dashboard's connections.json but a file of their own:
+a checkout that later runs the stack has the dashboard write connections.json, which the agent never
+writes.
+#>
+function Get-AgentJoinedConnectionsFile([string]$StackFolder) { return Join-Path (Join-Path (Get-AgentFolder $StackFolder) $agentConnectionsFolderName) $agentJoinedConnectionsName }
+
+function Get-AgentMode($Config) {
+    if ($Config -and $Config.PSObject.Properties["projectName"] -and $Config.projectName) { return "stack" }
+    return "joined"
+}
+
+function Get-ConfiguredJoinedNodes($Config) {
+    if (-not ($Config -and $Config.PSObject.Properties["joinedNodes"] -and $Config.joinedNodes)) { return @() }
+    return @($Config.joinedNodes | Where-Object { $_ -and $_.PSObject.Properties["root"] -and $_.root })
+}
 
 function Get-SyncthingArchitecture {
     if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { return "arm64" }

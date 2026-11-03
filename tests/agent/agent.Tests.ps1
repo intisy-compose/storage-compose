@@ -27,6 +27,16 @@ The installed agent holds Global\storage-compose-agent while it runs on this hos
 would end every Start-Agent here at once.
 #>
 function Enter-AgentInstance { return $true }
+function Get-HostNetworks { return @() }
+function Get-DashboardEntryText([string]$Dashboard, [string]$NodeId) {
+    $global:fetches += "$Dashboard $NodeId"
+    if ($null -eq $global:entryText) { throw "no answer within 10 s" }
+    return $global:entryText
+}
+function Get-SyncthingDeviceId($Node) { return "PBMD2SH-RS3UNJU-L77BP7K-X7VFKHE-73FF74D-RRCUVRY-XNUNII3-WWU53Q6" }
+function Stop-NodeSyncthing($Instance, [string]$Reason) { $global:actions += "restart $($Instance.nodeId)"; $Instance.state = "stopped" }
+$agentServiceName = "storage-compose-agent-test-never-installed"
+$agentFirewallGroup = "storage-compose test group"
 function Wait-ForNextRound($StopHandle, [bool]$HasVolumeEvents) {
     $global:now = $global:now.AddSeconds(5)
     $global:waits++
@@ -54,6 +64,7 @@ function Reset-World([object[]]$States) {
     $script:requestFirstSeen = @{}
     $script:lastNodeScan = [datetime]::MinValue
     $script:stackGraceSeconds = 600
+    $script:syncthingInstances = @{}
     $config = [pscustomobject]@{
         stackFolder = $stackFolder; projectName = "storage-compose"; userSid = "S-1-5-21-1"; passThrough = "wsl"
         syncthingPath = "C:\none\syncthing.exe"; syncthingSha256 = "00"
@@ -62,6 +73,35 @@ function Reset-World([object[]]$States) {
     Write-JsonFile $script:testConfigFile $config
     Initialize-Agent $config
 }
+
+function Write-TestNodeFile([string]$Root, [string]$Id) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $Root ".storage") | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $Root ".storage\node.toml"), "[node]`nid = `"$Id`"`nname = `"laptop-$Id`"`nkind = `"drive`"`nthreshold = 50`nassigned = []`n")
+}
+
+function Get-JoinedRoot([string]$Id) { return Join-Path $scratch "joined-$Id" }
+
+function Reset-JoinedWorld([string[]]$Ids) {
+    Reset-World @("running")
+    $entries = @(foreach ($id in $Ids) {
+        Write-TestNodeFile (Get-JoinedRoot $id) $id
+        [pscustomobject][ordered]@{ root = (Get-JoinedRoot $id); dashboard = "https://storage.tail-test.ts.net" }
+    })
+    $config = [pscustomobject]@{
+        stackFolder = $stackFolder; projectName = ""; userSid = "S-1-5-21-1"; passThrough = "none"
+        syncthingPath = "C:\none\syncthing.exe"; syncthingSha256 = "00"; joinedNodes = $entries
+    }
+    Write-JsonFile $script:testConfigFile $config
+    Initialize-Agent (Read-AgentConfig $script:testConfigFile)
+    $script:hasJoinedNodes = $true
+    $script:lastJoinedFetch = [datetime]::MinValue
+    $script:joinedDeviceIds = @{}
+    $script:joinedFetchProblems = @{}
+    $global:entryText = $null
+    $global:fetches = @()
+}
+
+function Read-JoinedEntries { return Read-JsonFile (Join-Path $stackFolder "host-agent\connections\joined.json") }
 
 function Send-Request([bool]$Active) {
     Write-JsonFile (Join-Path $stackFolder "attach-request.json") ([pscustomobject]@{ id = [guid]::NewGuid().ToString(); active = $Active; attach = @(); release = @() })
@@ -248,6 +288,149 @@ Describe "removing itself" {
         $script:agentExitCode | Should Be 0
         $global:actions | Should Be @("stop syncthings")
         (Read-Heartbeat).state | Should Be "stopped"
+    }
+}
+
+Describe "choosing the mode" {
+    It "is stack mode whenever the config names the stack project" {
+        Get-AgentMode ([pscustomobject]@{ projectName = "storage-compose"; joinedNodes = @([pscustomobject]@{ root = "F:\" }) }) | Should Be "stack"
+    }
+
+    It "is joined mode for a config without one" {
+        Get-AgentMode ([pscustomobject]@{ projectName = "" }) | Should Be "joined"
+    }
+}
+
+Describe "joined mode" {
+    It "runs its joined nodes without asking Docker, passing drives through or keeping the Docker rules" {
+        Reset-JoinedWorld @("a001")
+        Invoke-AgentRound (New-WatcherState $null) $true
+        $global:dockerCalls | Should Be 0
+        @($global:passRounds).Count | Should Be 0
+        @($global:backendBlockRounds).Count | Should Be 0
+        (Get-LastNodeRound).active | Should Be $true
+        @((Get-LastNodeRound).nodes | ForEach-Object { $_.id }) | Should Be @("a001")
+        $heartbeat = Read-Heartbeat
+        $heartbeat.mode | Should Be "joined"
+        $heartbeat.stack.active | Should Be $true
+        $heartbeat.passThrough.mode | Should Be "none"
+    }
+
+    It "runs only the nodes its joins named, never scanning the volumes" {
+        Reset-JoinedWorld @("a001")
+        Invoke-AgentRound $null $true
+        $global:scans | Should Be 0
+        @((Get-LastNodeRound).nodes | ForEach-Object { $_.id }) -contains "b7c2" | Should Be $false
+    }
+
+    It "stops a node whose file is gone and keeps running the others" {
+        Reset-JoinedWorld @("a001", "a002")
+        Invoke-AgentRound $null $true
+        Remove-Item -Force (Join-Path (Get-JoinedRoot "a001") ".storage\node.toml")
+        Invoke-AgentRound $null $false
+        @((Get-LastNodeRound).nodes | ForEach-Object { $_.id }) | Should Be @("a002")
+        Test-AgentShouldRemoveItself | Should Be $false
+    }
+
+    It "keeps a node file it cannot read as a joined node" {
+        Reset-JoinedWorld @("a001")
+        [System.IO.File]::WriteAllText((Join-Path (Get-JoinedRoot "a001") ".storage\node.toml"), "[node]`nid = ")
+        Invoke-AgentRound $null $true
+        @((Get-LastNodeRound).nodes).Count | Should Be 0
+        Test-AgentShouldRemoveItself | Should Be $false
+        @((Read-Heartbeat).problems).Count | Should Be 1
+    }
+
+    It "removes itself at once, with no grace period, once no joined node file is left" {
+        Reset-JoinedWorld @("a001")
+        Remove-Item -Force (Join-Path (Get-JoinedRoot "a001") ".storage\node.toml")
+        $ConfigFile = $script:testConfigFile
+        $script:agentExitCode = 0
+        Start-Agent | Out-Null
+        $script:agentExitCode | Should Be 3
+        $global:actions | Should Be @("stop syncthings", "remove firewall rules", "remove service")
+        $global:now | Should Be $start
+        $global:dockerCalls | Should Be 0
+        (Read-Heartbeat).state | Should Be "removed"
+    }
+
+    It "never removes itself while a joined node file exists" {
+        Reset-JoinedWorld @("a001")
+        $global:stopAfterWaits = 150
+        $ConfigFile = $script:testConfigFile
+        $script:agentExitCode = 0
+        Start-Agent | Out-Null
+        $script:agentExitCode | Should Be 0
+        $global:actions | Should Be @("stop syncthings")
+        (Read-Heartbeat).state | Should Be "stopped"
+    }
+}
+
+Describe "joined mode's connections entries" {
+    $profileEntry = '{"options": {"natEnabled": true, "localAnnounceEnabled": true}, "listenAddresses": ["tcp://0.0.0.0:22000", "quic://0.0.0.0:22000"]}'
+
+    It "fetches each node's entry from its dashboard under the joined id and keeps it on the node's own port" {
+        Reset-JoinedWorld @("a001")
+        $global:entryText = $profileEntry
+        Invoke-AgentRound $null $true
+        $global:fetches | Should Be @("https://storage.tail-test.ts.net device-pbmd2sh")
+        ((Read-JoinedEntries).a001.listenAddresses -join ",") | Should Be "tcp://0.0.0.0:22001,quic://0.0.0.0:22001"
+        (Get-NodeConnections ([pscustomobject]@{ id = "a001" })).options.natEnabled | Should Be $true
+    }
+
+    It "leaves the stack's connections.json alone" {
+        Reset-JoinedWorld @("a001")
+        $global:entryText = $profileEntry
+        Invoke-AgentRound $null $true
+        Test-Path (Join-Path $stackFolder "host-agent\connections\connections.json") | Should Be $false
+    }
+
+    It "asks once a minute" {
+        Reset-JoinedWorld @("a001")
+        $global:entryText = $profileEntry
+        Invoke-AgentRound $null $true
+        $global:now = $start.AddSeconds(55)
+        Invoke-AgentRound $null $false
+        @($global:fetches).Count | Should Be 1
+        $global:now = $start.AddSeconds(60)
+        Invoke-AgentRound $null $false
+        @($global:fetches).Count | Should Be 2
+    }
+
+    It "keeps the last copy while the dashboard does not answer, and logs that once" {
+        Reset-JoinedWorld @("a001")
+        $global:entryText = $profileEntry
+        Invoke-AgentRound $null $true
+        $global:entryText = $null
+        $global:logged = @()
+        Mock Write-WatcherLog { $global:logged += $Message }
+        foreach ($minute in 1..3) {
+            $global:now = $start.AddMinutes($minute)
+            Invoke-AgentRound $null $false
+        }
+        ((Read-JoinedEntries).a001.listenAddresses -join ",") | Should Be "tcp://0.0.0.0:22001,quic://0.0.0.0:22001"
+        @($global:logged | Where-Object { $_ -like "*no entry from*" }).Count | Should Be 1
+    }
+
+    It "restarts a running node's Syncthing when its entry changed, and only then" {
+        Reset-JoinedWorld @("a001")
+        $instance = New-SyncthingInstance (Read-NodeFile (Get-JoinedRoot "a001"))
+        $instance.state = "running"
+        $instance.attempts = @((Get-Date), (Get-Date))
+        $script:syncthingInstances = @{ a001 = $instance }
+        $global:entryText = $profileEntry
+        Invoke-AgentRound $null $true
+        $global:actions | Should Be @("restart a001")
+        @($instance.attempts).Count | Should Be 0
+        $instance.state = "running"
+        $global:now = $start.AddMinutes(1)
+        Invoke-AgentRound $null $false
+        $global:actions | Should Be @("restart a001")
+        $global:entryText = '{"options": {"natEnabled": false, "localAnnounceEnabled": false}, "listenAddresses": ["tcp://0.0.0.0:22000"]}'
+        $global:now = $start.AddMinutes(2)
+        Invoke-AgentRound $null $false
+        $global:actions | Should Be @("restart a001", "restart a001")
+        $script:syncthingInstances = @{}
     }
 }
 
