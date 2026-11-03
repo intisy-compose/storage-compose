@@ -137,6 +137,63 @@ describe("keeping the data repo in step with its remote", () => {
     });
   });
 
+  describe("what a pull counts as the dashboard's own commit", () => {
+    const admissionLayout = '[devices.box]\nid = "BOX"\njoined = true\n\n# layout\n';
+
+    function commitFiles(files: Record<string, string>, message: string): string {
+      for (const [file, text] of Object.entries(files)) writeFileSync(join(ours, file), text);
+      git(ours, "add", ...Object.keys(files));
+      git(ours, "commit", "-q", "-m", message);
+      return git(ours, "rev-parse", "HEAD");
+    }
+
+    async function assertLeftAlone(commit: string, reason: RegExp): Promise<void> {
+      pushElsewhere("other.txt", "x", "elsewhere");
+      await pullDataRepo(ours);
+      assert.equal(git(ours, "rev-parse", "HEAD"), commit);
+      const problem = (await readProfile(ours)).pullProblem ?? "";
+      assert.match(problem, new RegExp(shortCommit(ours, commit)));
+      assert.match(problem, reason);
+      assert.notEqual(git(ours, "rev-list", "--count", `origin/main..${commit}`), "0");
+    }
+
+    it("refuses a trailer commit that touches a file the dashboard does not write", async () => {
+      const commit = commitFiles({ "drive-sync.toml": admissionLayout, "notes.txt": "mine" }, "feat(devices): admit box to the storage network\n\nCommitted-by: storage dashboard");
+      await assertLeftAlone(commit, /not the dashboard's/);
+    });
+
+    it("refuses a merge commit in the range", async () => {
+      git(ours, "checkout", "-q", "-b", "side");
+      commitFiles({ "drive-sync.toml": admissionLayout }, "feat(devices): admit box to the storage network");
+      git(ours, "checkout", "-q", "main");
+      git(ours, "merge", "-q", "--no-ff", "side", "-m", "feat(devices): admit side to the storage network\n\nCommitted-by: storage dashboard");
+      await assertLeftAlone(git(ours, "rev-parse", "HEAD"), /not the dashboard's/);
+    });
+
+    it("does not rebase a commit already on another branch of the remote", async () => {
+      const commit = commitFiles({ "drive-sync.toml": admissionLayout }, "feat(devices): admit box to the storage network\n\nCommitted-by: storage dashboard");
+      git(ours, "push", "-q", "origin", "HEAD:refs/heads/elsewhere");
+      await assertLeftAlone(commit, /another branch of the remote/);
+    });
+
+    for (const [situation, leave] of [
+      ["no upstream", () => git(ours, "checkout", "-q", "-b", "local-only")],
+      ["a detached HEAD", () => git(ours, "checkout", "-q", "--detach")],
+    ] as const) {
+      it(`leaves everything untouched on ${situation} and reports it`, async () => {
+        leave();
+        const commit = commitFiles({ "drive-sync.toml": admissionLayout }, "feat(devices): admit box to the storage network\n\nCommitted-by: storage dashboard");
+        pushElsewhere("other.txt", "x", "elsewhere");
+        const remoteBefore = git(remote, "rev-parse", "main");
+        await pullDataRepo(ours);
+        assert.equal(git(ours, "rev-parse", "HEAD"), commit);
+        assert.equal(git(remote, "rev-parse", "main"), remoteBefore);
+        assert.equal(git(ours, "status", "--porcelain"), "");
+        assert.notEqual((await readProfile(ours)).pullProblem, null);
+      });
+    }
+  });
+
   describe("the dashboard's commits a pull leaves unpushed", () => {
     function refusePushes(refuse: boolean): void {
       const hook = join(ours, ".git", "hooks", "pre-push");
