@@ -198,7 +198,7 @@ function Invoke-AgentRound($PassState, [bool]$VolumeChanged) {
     if ($PassState) { Invoke-WatcherRound $PassState $isRunning }
     Update-FoundNodes $VolumeChanged
     $binaryProblem = Update-NodeInstances $script:foundNodes.nodes $isRunning
-    Update-DockerBackendBlock $isRunning
+    Update-DockerBackendRules $isRunning
     Save-AgentState
     Write-Heartbeat (Get-Heartbeat $status $isRunning $PassState "running" $binaryProblem)
 }

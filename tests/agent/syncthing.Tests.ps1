@@ -591,13 +591,38 @@ Describe "the firewall per network profile" {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
 }
 
-Describe "the Docker backend on untrusted networks" {
+Describe "the Docker backend's published ports" {
     Reset-Agent
     $blockNames = @("storage-compose docker backend tcp public", "storage-compose docker backend udp public")
+    $allowNames = @("storage-compose docker backend tcp private", "storage-compose docker backend udp private")
+
+    It "the docker backend is open to any address on Private and Domain networks" {
+        Update-DockerBackendRules $true
+        foreach ($protocol in @("TCP", "UDP")) {
+            $rule = $global:firewallRules["storage-compose docker backend $($protocol.ToLower()) private"]
+            $rule | Should Not BeNullOrEmpty
+            $rule.Action | Should Be "Allow"
+            $rule.Protocol | Should Be $protocol
+            @($rule.LocalPort) -join "," | Should Be "22000,22021-22099,22100"
+            @($rule.RemoteAddress) -join "," | Should Be "Any"
+            $rule.Profile | Should Be "Private,Domain"
+            $rule.Program | Should Be $global:dockerBackendPath
+            $rule.Group | Should Be "storage-compose agent"
+        }
+    }
+
+    It "the Private rules go with the stack and with the agent" {
+        Update-DockerBackendRules $true
+        Update-DockerBackendRules $false
+        foreach ($name in $allowNames) { $global:firewallRules.ContainsKey($name) | Should Be $false }
+        Update-DockerBackendRules $true
+        Remove-SyncthingFirewallRules
+        foreach ($name in $allowNames) { $global:firewallRules.ContainsKey($name) | Should Be $false }
+    }
     $outsideTailnet = @("0.0.0.0-100.63.255.255", "100.128.0.0-255.255.255.255", "::-fd7a:115c:a1df:ffff:ffff:ffff:ffff:ffff", "fd7a:115c:a1e1::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
 
     It "the docker backend is blocked on public networks except from the tailnet" {
-        Update-DockerBackendBlock $true
+        Update-DockerBackendRules $true
         foreach ($protocol in @("TCP", "UDP")) {
             $rule = $global:firewallRules["storage-compose docker backend $($protocol.ToLower()) public"]
             $rule | Should Not BeNullOrEmpty
@@ -612,34 +637,34 @@ Describe "the Docker backend on untrusted networks" {
     }
 
     It "the block rule is not rewritten when unchanged" {
-        Update-DockerBackendBlock $true
+        Update-DockerBackendRules $true
         foreach ($name in $blockNames) { $global:firewallRules[$name] | Add-Member -Force -NotePropertyName marker -NotePropertyValue "original" }
-        Update-DockerBackendBlock $true
-        $script:dockerBackendBlockShape = $null
+        Update-DockerBackendRules $true
+        $script:dockerBackendRulesShape = $null
         foreach ($name in $blockNames) {
             $rule = $global:firewallRules[$name]
             $rule.LocalPort = @("22000", "22021-22099", "22100")
             $rule.RemoteAddress = @($outsideTailnet[3], $outsideTailnet[1], $outsideTailnet[0], $outsideTailnet[2])
             $rule.Program = $global:dockerBackendPath.ToLower()
         }
-        Update-DockerBackendBlock $true
+        Update-DockerBackendRules $true
         foreach ($name in $blockNames) { $global:firewallRules[$name].marker | Should Be "original" }
         $global:firewallRules[$blockNames[0]].RemoteAddress = @("Any")
-        $script:dockerBackendBlockShape = $null
+        $script:dockerBackendRulesShape = $null
         $global:firewallEvents = @()
-        Update-DockerBackendBlock $true
+        Update-DockerBackendRules $true
         @($global:firewallRules[$blockNames[0]].RemoteAddress) -join "," | Should Be ($outsideTailnet -join ",")
         $global:firewallEvents | Should Be @("set $($blockNames[0])")
         $global:firewallRules[$blockNames[1]].marker | Should Be "original"
     }
 
     It "the block rule is removed with the agent" {
-        Update-DockerBackendBlock $true
+        Update-DockerBackendRules $true
         Remove-SyncthingFirewallRules
         foreach ($name in $blockNames) { $global:firewallRules.ContainsKey($name) | Should Be $false }
-        Update-DockerBackendBlock $true
+        Update-DockerBackendRules $true
         $global:firewallRules.ContainsKey($blockNames[0]) | Should Be $true
-        Update-DockerBackendBlock $false
+        Update-DockerBackendRules $false
         foreach ($name in $blockNames) { $global:firewallRules.ContainsKey($name) | Should Be $false }
     }
 

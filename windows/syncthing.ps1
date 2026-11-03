@@ -430,8 +430,11 @@ function Get-LanProblems($Networks, $Instances) {
 
 $stackSyncPorts = "22000,22021-22099,22100"
 $outsideTailnetRanges = "0.0.0.0-100.63.255.255,100.128.0.0-255.255.255.255,::-fd7a:115c:a1df:ffff:ffff:ffff:ffff:ffff,fd7a:115c:a1e1::-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
-$dockerBackendBlockNames = @("storage-compose docker backend tcp public", "storage-compose docker backend udp public")
-$dockerBackendBlockShape = $null
+$dockerBackendRuleNames = @(
+    "storage-compose docker backend tcp public", "storage-compose docker backend udp public",
+    "storage-compose docker backend tcp private", "storage-compose docker backend udp private"
+)
+$dockerBackendRulesShape = $null
 
 <#
 .NOTES
@@ -446,44 +449,55 @@ function Get-DockerBackendPath {
     return $null
 }
 
-function Get-DockerBackendBlockRules([string]$Program) {
-    return @("TCP", "UDP") | ForEach-Object {
-        [pscustomobject]@{
-            Name = "storage-compose docker backend $($_.ToLower()) public"; Action = "Block"; Protocol = $_; LocalPort = $stackSyncPorts
-            RemoteAddress = $outsideTailnetRanges; Profile = "Public"; Program = $Program
-        }
+function New-DockerBackendRule([string]$Protocol, [string]$Network, [string]$Action, [string]$RemoteAddress, [string]$Profiles, [string]$Program) {
+    return [pscustomobject]@{
+        Name = "storage-compose docker backend $($Protocol.ToLower()) $Network"; Action = $Action; Protocol = $Protocol; LocalPort = $stackSyncPorts
+        RemoteAddress = $RemoteAddress; Profile = $Profiles; Program = $Program
     }
-}
-
-function Remove-DockerBackendBlock {
-    foreach ($name in $dockerBackendBlockNames) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
-    $script:dockerBackendBlockShape = $null
 }
 
 <#
 .NOTES
-Spec section 9: Docker Desktop's own rule admits every address to its published ports on a Public
-network, a network the person does not own, and a Block rule wins over it, so only the tailnet
-reaches the stack's sync and relay ports there. The ports exist only while the stack runs, which is
-when the rule is kept; it is rewritten only when the backend's path changes, and it belongs to the
-agent's group, so removing the agent's rules removes it too.
+Spec sections 4, 5 and 9. On a Public network, one the person does not own, Docker Desktop's own
+rule admits every address to its published ports, and a Block rule wins over it, so only the
+tailnet reaches the stack's sync and relay ports there. On a Private or Domain network Windows has
+no rule for the backend (the one it adds when it asks "allow access?" names the Public profile
+only), so without the Allow the LAN would never reach a Docker node or the bridge relay.
 #>
-function Update-DockerBackendBlock([bool]$IsActive) {
+function Get-DockerBackendRules([string]$Program) {
+    return @("TCP", "UDP") | ForEach-Object {
+        New-DockerBackendRule $_ "public" "Block" $outsideTailnetRanges "Public" $Program
+        New-DockerBackendRule $_ "private" "Allow" "Any" $lanProfiles $Program
+    }
+}
+
+function Remove-DockerBackendRules {
+    foreach ($name in $dockerBackendRuleNames) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
+    $script:dockerBackendRulesShape = $null
+}
+
+<#
+.NOTES
+The ports exist only while the stack runs, which is when the rules are kept; they are rewritten
+only when the backend's path changes, and they belong to the agent's group, so removing the agent's
+rules removes them too.
+#>
+function Update-DockerBackendRules([bool]$IsActive) {
     if (-not $IsActive) {
-        if ($script:dockerBackendBlockShape) { Remove-DockerBackendBlock }
+        if ($script:dockerBackendRulesShape) { Remove-DockerBackendRules }
         return
     }
     $program = Get-DockerBackendPath
     if (-not $program) {
-        if ($script:dockerBackendBlockShape -ne "missing") { Write-WatcherLog "Docker Desktop's backend was not found; the stack's sync ports are not blocked on Public networks" }
-        $script:dockerBackendBlockShape = "missing"
+        if ($script:dockerBackendRulesShape -ne "missing") { Write-WatcherLog "Docker Desktop's backend was not found; the stack's sync ports are neither blocked on Public networks nor opened on Private ones" }
+        $script:dockerBackendRulesShape = "missing"
         return
     }
-    if ($script:dockerBackendBlockShape -eq $program) { return }
+    if ($script:dockerBackendRulesShape -eq $program) { return }
     try {
-        foreach ($rule in Get-DockerBackendBlockRules $program) { Set-AgentFirewallRule $rule $rule.Name }
-        $script:dockerBackendBlockShape = $program
-    } catch { Write-WatcherLog "the Docker backend's block rules were not set: $_" }
+        foreach ($rule in Get-DockerBackendRules $program) { Set-AgentFirewallRule $rule $rule.Name }
+        $script:dockerBackendRulesShape = $program
+    } catch { Write-WatcherLog "the Docker backend's rules were not set: $_" }
 }
 
 function Get-SyncthingBinFolder {
@@ -493,7 +507,7 @@ function Get-SyncthingBinFolder {
 
 function Remove-SyncthingFirewallRules {
     Remove-NetFirewallRule -Group $agentFirewallGroup -ErrorAction SilentlyContinue
-    $script:dockerBackendBlockShape = $null
+    $script:dockerBackendRulesShape = $null
     Remove-ProgramFirewallRules (Get-SyncthingBinFolder)
 }
 

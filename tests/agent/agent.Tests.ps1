@@ -16,7 +16,7 @@ function Update-NodeInstances([object[]]$Nodes, [bool]$IsActive) { $global:nodeR
 function Invoke-WatcherRound($State, [bool]$StackIsRunning = $true) { $global:passRounds += $StackIsRunning }
 function Stop-AllNodeInstances([string]$Reason) { $global:actions += "stop syncthings" }
 function Remove-SyncthingFirewallRules { $global:actions += "remove firewall rules" }
-function Update-DockerBackendBlock([bool]$IsActive) { $global:backendBlockRounds += $IsActive }
+function Update-DockerBackendRules([bool]$IsActive) { $global:backendBlockRounds += $IsActive }
 function Remove-AllDisks($State) { $global:actions += "release disks" }
 function Remove-AgentService { $global:actions += "remove service" }
 function Register-VolumeEvents { return $false }
