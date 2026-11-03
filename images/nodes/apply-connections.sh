@@ -24,6 +24,23 @@ wanted_options() {
 
 api_answers() { curl -fsS -m 5 -H "X-API-Key: $key" "$api/rest/system/ping" > /dev/null 2>&1; }
 
+# Prints true or false, and nothing when Syncthing gives no answer.
+restart_required() {
+    curl -fsS -m 5 -H "X-API-Key: $key" "$api/rest/config/restart-required" 2> /dev/null | jq -r '.requiresRestart | booleans' 2> /dev/null
+}
+
+# A restart request ends a Syncthing run with --no-restart, which nodes.sh starts again within a round;
+# the cluster's runs under its own monitor, which restarts it in place.
+restart_for_profile() {
+    case $(restart_required) in
+        false) ;;
+        true)
+            if curl -fsS -m 10 -X POST -H "X-API-Key: $key" "$api/rest/system/restart" > /dev/null; then log "restarted Syncthing for the connection profile"
+            else log "Syncthing needs a restart for the connection profile and refused one; it takes effect at the next start"; fi ;;
+        *) log "could not ask whether Syncthing needs a restart for the connection profile; it takes effect at the next start at the latest" ;;
+    esac
+}
+
 [ -f "$connections" ] || exit 0
 options=$(wanted_options) || { log "$connections cannot be read as a connections file; nothing applied"; exit 0; }
 [ -n "$options" ] || exit 0
@@ -37,6 +54,7 @@ done
 
 if curl -fsS -m 30 -X PATCH -H "X-API-Key: $key" -H "Content-Type: application/json" --data "$options" "$api/rest/config/options" > /dev/null; then
     log "applied the connection profile"
+    restart_for_profile
 else
     log "Syncthing refused the connection profile"
     exit 1
