@@ -87,15 +87,17 @@ function goJsonForm(secret: string): string {
     .replace(/[<>&]/g, (character) => `\\u00${character.charCodeAt(0).toString(16)}`);
 }
 
-const xmlEntities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
+const namedXmlEntities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
+/** Go's `encoding/xml` writes the quotes by number, not by name. */
+const goXmlEntities: Record<string, string> = { ...namedXmlEntities, '"': "&#34;", "'": "&#39;" };
 
-function xmlForm(secret: string): string {
-  return secret.replace(/[&<>"']/g, (character) => xmlEntities[character]);
+function xmlForm(secret: string, entities: Record<string, string>): string {
+  return secret.replace(/[&<>"']/g, (character) => entities[character]);
 }
 
-/** Every way a secret can read in a file: as written, as Go writes it into JSON, as XML escapes it. */
+/** Every way a secret can read in a file: as written, as Go writes it into JSON, as XML escapes it by name and as Go's XML writer does. */
 export function secretForms(secret: string): string[] {
-  return [...new Set([secret, goJsonForm(secret), xmlForm(secret)])];
+  return [...new Set([secret, goJsonForm(secret), xmlForm(secret, namedXmlEntities), xmlForm(secret, goXmlEntities)])];
 }
 
 export function holdsSecret(content: Buffer, secret: string): boolean {

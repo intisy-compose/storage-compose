@@ -16,7 +16,7 @@ import { type WriteNote } from "../src/routeTypes.js";
 import { type WriteEffects, errorAnswer, requestHandler } from "../src/routes.js";
 import { shownUnscopedText } from "../src/shownSyncthingError.js";
 import { logLevelOf, nodeLogRoutes } from "../src/routes/activity.js";
-import { zipEntries } from "../src/supportBundle.js";
+import { holdsSecret, withoutSecrets, zipEntries } from "../src/supportBundle.js";
 import { keptLogLines } from "../src/api/logLines.js";
 import { ActivityLog, EventFeeds, type FeedInstance, ParityWatcher, failedItemsPerFolder } from "../src/eventFeed.js";
 import { ConflictIndexes } from "../src/conflicts.js";
@@ -1111,6 +1111,14 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     const tooLarge = await fetch(`${await dashboardFor([node], 1024)}/api/nodes/d7e5/support-bundle`);
     assert.equal(tooLarge.status, 501);
     assert.match(((await tooLarge.json()) as { error: string }).error, /larger than/);
+  });
+});
+
+describe("a secret's written forms", () => {
+  it("are found as Go's XML writer escapes quotes, by number", () => {
+    const secret = `pass"word'`;
+    assert.ok(holdsSecret(Buffer.from("<password>pass&#34;word&#39;</password>"), secret));
+    assert.equal(withoutSecrets("<password>pass&#34;word&#39;</password>", [secret]), "<password>[redacted]</password>");
   });
 });
 
