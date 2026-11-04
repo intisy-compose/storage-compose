@@ -12,7 +12,7 @@ function Get-StackContainerStates { $global:dockerCalls++; return $global:contai
 function Get-Now { return $global:now }
 function Get-VolumeRoots { return @("F:\") }
 function Find-Nodes([string[]]$VolumeRoots) { $global:scans++; return [pscustomobject]@{ nodes = @($global:nodes); problems = @() } }
-function Update-NodeInstances([object[]]$Nodes, [bool]$IsActive) { $global:nodeRounds += , @{ active = $IsActive; nodes = @($Nodes) }; return $null }
+function Update-NodeInstances([object[]]$Nodes, [bool]$IsActive) { $global:nodeRounds += , @{ active = $IsActive; nodes = @($Nodes) }; $global:sequence += "nodes"; return $global:binaryProblemToReport }
 function Invoke-WatcherRound($State, [bool]$StackIsRunning = $true) { $global:passRounds += $StackIsRunning }
 function Stop-AllNodeInstances([string]$Reason) { $global:actions += "stop syncthings" }
 function Remove-SyncthingFirewallRules { $global:actions += "remove firewall rules" }
@@ -28,8 +28,11 @@ would end every Start-Agent here at once.
 #>
 function Enter-AgentInstance { return $true }
 function Get-HostNetworks { return @() }
-function Get-DashboardEntryText([string]$Dashboard, [string]$NodeId) {
+function Get-DashboardEntryText([string]$Dashboard, [string]$NodeId, [double]$TimeoutSeconds) {
     $global:fetches += "$Dashboard $NodeId"
+    $global:fetchTimeouts += $TimeoutSeconds
+    $global:sequence += "fetch"
+    if ($global:fetchDelayMilliseconds) { Start-Sleep -Milliseconds $global:fetchDelayMilliseconds }
     if ($null -eq $global:entryText) { throw "no answer within 10 s" }
     return $global:entryText
 }
@@ -65,6 +68,14 @@ function Reset-World([object[]]$States) {
     $script:lastNodeScan = [datetime]::MinValue
     $script:stackGraceSeconds = 600
     $script:syncthingInstances = @{}
+    $script:lastJoinedNodes = @{}
+    $script:joinedNodeProblems = @{}
+    $script:binaryProblem = ""
+    $script:joinedFetchBudgetSeconds = 10
+    $global:binaryProblemToReport = $null
+    $global:sequence = @()
+    $global:fetchTimeouts = @()
+    $global:fetchDelayMilliseconds = 0
     $config = [pscustomobject]@{
         stackFolder = $stackFolder; projectName = "storage-compose"; userSid = "S-1-5-21-1"; passThrough = "wsl"
         syncthingPath = "C:\none\syncthing.exe"; syncthingSha256 = "00"
@@ -81,18 +92,29 @@ function Write-TestNodeFile([string]$Root, [string]$Id) {
 
 function Get-JoinedRoot([string]$Id) { return Join-Path $scratch "joined-$Id" }
 
-function Reset-JoinedWorld([string[]]$Ids) {
-    Reset-World @("running")
-    $entries = @(foreach ($id in $Ids) {
-        Write-TestNodeFile (Get-JoinedRoot $id) $id
-        [pscustomobject][ordered]@{ root = (Get-JoinedRoot $id); dashboard = "https://storage.tail-test.ts.net" }
-    })
+function New-JoinedEntry([string]$Root) { return [pscustomobject][ordered]@{ root = $Root; dashboard = "https://storage.tail-test.ts.net" } }
+
+function Get-AbsentVolumeRoot {
+    $letter = [char[]](68..90) | Where-Object { -not [System.IO.Directory]::Exists("$($_):\") } | Select-Object -Last 1
+    return "$($letter):\"
+}
+
+function Write-JoinedConfig([object[]]$Entries) {
     $config = [pscustomobject]@{
         stackFolder = $stackFolder; projectName = ""; userSid = "S-1-5-21-1"; passThrough = "none"
-        syncthingPath = "C:\none\syncthing.exe"; syncthingSha256 = "00"; joinedNodes = $entries
+        syncthingPath = "C:\none\syncthing.exe"; syncthingSha256 = "00"; joinedNodes = @($Entries)
     }
     Write-JsonFile $script:testConfigFile $config
     Initialize-Agent (Read-AgentConfig $script:testConfigFile)
+}
+
+function Reset-JoinedWorld([string[]]$Ids, [string[]]$ExtraRoots = @()) {
+    Reset-World @("running")
+    $entries = @(foreach ($id in $Ids) {
+        Write-TestNodeFile (Get-JoinedRoot $id) $id
+        New-JoinedEntry (Get-JoinedRoot $id)
+    }) + @($ExtraRoots | ForEach-Object { New-JoinedEntry $_ })
+    Write-JoinedConfig $entries
     $script:hasJoinedNodes = $true
     $script:lastJoinedFetch = [datetime]::MinValue
     $script:joinedDeviceIds = @{}
@@ -431,6 +453,151 @@ Describe "joined mode's connections entries" {
         Invoke-AgentRound $null $false
         $global:actions | Should Be @("restart a001", "restart a001")
         $script:syncthingInstances = @{}
+    }
+}
+
+Describe "joined nodes whose file cannot be read" {
+    It "keeps a node whose volume is away at the first round, runs nothing for it and stays" {
+        Reset-JoinedWorld @() @(Get-AbsentVolumeRoot)
+        $global:stopAfterWaits = 3
+        $ConfigFile = $script:testConfigFile
+        $script:agentExitCode = 0
+        Start-Agent | Out-Null
+        $script:agentExitCode | Should Be 0
+        @((Get-LastNodeRound).nodes).Count | Should Be 0
+        $global:actions | Should Be @("stop syncthings")
+        ((Read-Heartbeat).problems -join " ") | Should Match "cannot be seen"
+    }
+
+    It "keeps a locked node file's Syncthing running as last read" {
+        Reset-JoinedWorld @("a001")
+        Invoke-AgentRound $null $true
+        $lock = [System.IO.File]::Open((Join-Path (Get-JoinedRoot "a001") ".storage\node.toml"), "Open", "ReadWrite", "None")
+        try { Invoke-AgentRound $null $false } finally { $lock.Dispose() }
+        @((Get-LastNodeRound).nodes | ForEach-Object { $_.id }) | Should Be @("a001")
+        Test-AgentShouldRemoveItself | Should Be $false
+    }
+
+    It "keeps a node file that no longer parses running as last read, and logs that once" {
+        Reset-JoinedWorld @("a001")
+        Invoke-AgentRound $null $true
+        [System.IO.File]::WriteAllText((Join-Path (Get-JoinedRoot "a001") ".storage\node.toml"), "[node]`nid = ")
+        $global:logged = @()
+        Mock Write-WatcherLog { $global:logged += $Message }
+        foreach ($round in 1..3) { Invoke-AgentRound $null $false }
+        @((Get-LastNodeRound).nodes | ForEach-Object { $_.id }) | Should Be @("a001")
+        @($global:logged | Where-Object { $_ -like "*kept running as last read*" }).Count | Should Be 1
+    }
+
+    It "drops a node whose file was deleted, while its volume and folder are there" {
+        Reset-JoinedWorld @("a001", "a002")
+        Invoke-AgentRound $null $true
+        Remove-Item -Force (Join-Path (Get-JoinedRoot "a002") ".storage\node.toml")
+        Invoke-AgentRound $null $false
+        @((Get-LastNodeRound).nodes | ForEach-Object { $_.id }) | Should Be @("a001")
+    }
+}
+
+Describe "joined mode's rounds" {
+    It "starts the nodes on the kept entries before it asks the dashboard" {
+        Reset-JoinedWorld @("a001")
+        $global:entryText = '{"options": {}}'
+        Invoke-AgentRound $null $true
+        $global:sequence | Should Be @("nodes", "fetch")
+    }
+
+    It "spends at most the round's budget on fetching, whatever the number of nodes" {
+        Reset-JoinedWorld @("a001", "a002", "a003")
+        $script:joinedFetchBudgetSeconds = 1
+        $global:fetchDelayMilliseconds = 600
+        $global:entryText = '{"options": {}}'
+        Invoke-AgentRound $null $true
+        @($global:fetches).Count | Should Be 2
+        @($global:fetchTimeouts | Where-Object { $_ -gt 1 }).Count | Should Be 0
+    }
+
+    It "logs a missing Syncthing once and keeps it in the heartbeat" {
+        Reset-JoinedWorld @("a001")
+        $global:binaryProblemToReport = "Syncthing is missing at C:\gone\syncthing.exe; run up or the join again"
+        $global:logged = @()
+        Mock Write-WatcherLog { $global:logged += $Message }
+        foreach ($round in 1..3) { Invoke-AgentRound $null $false }
+        @($global:logged | Where-Object { $_ -like "*Syncthing is missing*" }).Count | Should Be 1
+        ((Read-Heartbeat).problems -join " ") | Should Match "Syncthing is missing"
+    }
+
+    It "never restarts a node for an entry fetched again unchanged" {
+        Reset-JoinedWorld @("a001")
+        $instance = New-SyncthingInstance (Read-NodeFile (Get-JoinedRoot "a001"))
+        $instance.state = "running"
+        $global:entryText = '{"options": {"natEnabled": true, "maxSendKbps": 100, "globalAnnounceServers": ["default"]}, "listenAddresses": ["tcp://0.0.0.0:22000"], "deviceAddresses": {}}'
+        Invoke-AgentRound $null $true
+        $script:syncthingInstances = @{ a001 = $instance }
+        foreach ($minute in 1..2) {
+            $global:now = $start.AddMinutes($minute)
+            Invoke-AgentRound $null $false
+        }
+        @($global:fetches).Count | Should Be 3
+        @($global:actions | Where-Object { $_ -like "restart*" }).Count | Should Be 0
+        $script:syncthingInstances = @{}
+    }
+
+    It "drops the kept entries of nodes that left" {
+        Reset-JoinedWorld @("a001", "a002")
+        $global:entryText = '{"options": {}}'
+        Invoke-AgentRound $null $true
+        @((Read-JoinedEntries).PSObject.Properties | ForEach-Object { $_.Name }) | Should Be @("a001", "a002")
+        Remove-Item -Force (Join-Path (Get-JoinedRoot "a002") ".storage\node.toml")
+        Invoke-AgentRound $null $false
+        @((Read-JoinedEntries).PSObject.Properties | ForEach-Object { $_.Name }) | Should Be @("a001")
+    }
+
+    It "keeps every kept entry while a node's volume is away" {
+        Reset-JoinedWorld @("a001", "a002")
+        $global:entryText = '{"options": {}}'
+        Invoke-AgentRound $null $true
+        Write-JoinedConfig @((New-JoinedEntry (Get-JoinedRoot "a001")), (New-JoinedEntry (Get-AbsentVolumeRoot)))
+        Invoke-AgentRound $null $false
+        @((Read-JoinedEntries).PSObject.Properties | ForEach-Object { $_.Name }) | Should Be @("a001", "a002")
+    }
+}
+
+Describe "stack mode's end with joined nodes left" {
+    function Reset-StackWithJoined([object[]]$Entries) {
+        Reset-World @("exited")
+        $config = [pscustomobject]@{
+            stackFolder = $stackFolder; projectName = "storage-compose"; userSid = "S-1-5-21-1"; passThrough = "wsl"
+            syncthingPath = "C:\none\syncthing.exe"; syncthingSha256 = "00"; graceSeconds = 30; joinedNodes = @($Entries)
+        }
+        Write-JsonFile $script:testConfigFile $config
+        Initialize-Agent $config
+        New-Item -ItemType Directory -Force -Path (Join-Path (Get-JoinedRoot "gone") ".storage") | Out-Null
+    }
+
+    It "drops what the stack added and goes on in joined mode, without unregistering" {
+        Reset-StackWithJoined @((New-JoinedEntry (Get-JoinedRoot "a001")), (New-JoinedEntry (Get-JoinedRoot "gone")))
+        Write-TestNodeFile (Get-JoinedRoot "a001") "a001"
+        $global:stopAfterWaits = 9
+        $ConfigFile = $script:testConfigFile
+        $script:agentExitCode = 0
+        Start-Agent | Out-Null
+        $script:agentExitCode | Should Be 0
+        $global:actions | Should Be @("stop syncthings", "release disks", "stop syncthings")
+        $saved = Read-JsonFile $script:testConfigFile
+        Get-AgentMode $saved | Should Be "joined"
+        $saved.passThrough | Should Be "none"
+        @($saved.joinedNodes | ForEach-Object { $_.root }) | Should Be @((Get-JoinedRoot "a001"))
+        @((Get-LastNodeRound).nodes | ForEach-Object { $_.id }) | Should Be @("a001")
+        (Read-Heartbeat).mode | Should Be "joined"
+    }
+
+    It "removes itself as before when no carried joined node file is left" {
+        Reset-StackWithJoined @((New-JoinedEntry (Get-JoinedRoot "gone")))
+        $ConfigFile = $script:testConfigFile
+        $script:agentExitCode = 0
+        Start-Agent | Out-Null
+        $script:agentExitCode | Should Be 3
+        $global:actions | Should Be @("stop syncthings", "remove firewall rules", "release disks", "remove service")
     }
 }
 

@@ -24,6 +24,7 @@ Set-StrictMode -Version Latest
 $agentRoundSeconds = 5
 $nodeScanIntervalSeconds = 60
 $joinedFetchIntervalSeconds = 60
+$joinedFetchBudgetSeconds = 10
 $stackGraceSeconds = 600
 $requestStartWindowSeconds = 600
 $volumeEventName = "storage-compose-volume-change"
@@ -44,6 +45,9 @@ $hasJoinedNodes = $true
 $lastJoinedFetch = [datetime]::MinValue
 $joinedDeviceIds = @{}
 $joinedFetchProblems = @{}
+$lastJoinedNodes = @{}
+$joinedNodeProblems = @{}
+$binaryProblem = ""
 
 function Get-Now { return Get-Date }
 
@@ -163,20 +167,68 @@ function Set-FoundNodes($Found) {
 <#
 .NOTES
 Joined mode reads the node file at each root its joins named instead of scanning volumes: it runs
-those nodes and no other. A file that exists but cannot be read still counts as a joined node, so a
-file caught mid-write never removes the agent.
+those nodes and no other. Only a deleted file (Get-NodeFileState "gone") drops a node. A root whose
+volume or folder cannot be seen still counts as joined and runs nothing until it returns; a file
+that is there but cannot be opened or read keeps the node as it was last read, so a file caught
+mid-write never stops its Syncthing. allKnown says whether every joined node's id is known this
+round, which pruning the kept entries needs.
 #>
 function Read-JoinedNodes {
-    $found = [pscustomobject]@{ nodes = @(); problems = @(); files = 0 }
+    $found = [pscustomobject]@{ nodes = @(); problems = @(); files = 0; allKnown = $true }
     foreach ($entry in $script:joinedNodeEntries) {
-        $nodeFile = Get-NodeFilePath $entry.root
-        if (-not [System.IO.File]::Exists($nodeFile)) { continue }
+        $state = Get-NodeFileState $entry.root
+        if ($state -eq "gone") {
+            $script:lastJoinedNodes.Remove($entry.root)
+            Write-JoinedNodeProblem $entry.root ""
+            continue
+        }
         $found.files++
-        try { $node = Read-NodeFile $entry.root } catch { $found.problems += New-NodeProblem $nodeFile "$_"; continue }
-        $node | Add-Member -NotePropertyName dashboard -NotePropertyValue "$($entry.dashboard)"
-        $found.nodes += $node
+        $node = $null
+        if ($state -eq "unreachable") { Write-JoinedNodeProblem $entry.root "its volume or folder cannot be seen; nothing runs for it until it returns" }
+        else { $node = Read-JoinedNode $entry $state }
+        if ($node) { $found.nodes += $node } else { $found.allKnown = $false }
+        $problem = $script:joinedNodeProblems[$entry.root]
+        if ($problem) { $found.problems += New-NodeProblem (Get-NodeFilePath $entry.root) $problem }
     }
     return $found
+}
+
+function Read-JoinedNode($Entry, [string]$State) {
+    try {
+        if ($State -ne "present") { throw "it is there but cannot be opened" }
+        $node = Read-NodeFile $Entry.root
+        $node | Add-Member -NotePropertyName dashboard -NotePropertyValue "$($Entry.dashboard)"
+        $script:lastJoinedNodes[$Entry.root] = $node
+        Write-JoinedNodeProblem $Entry.root ""
+        return $node
+    } catch {
+        $last = $script:lastJoinedNodes[$Entry.root]
+        Write-JoinedNodeProblem $Entry.root $(if ($last) { "kept running as last read: $_" } else { "$_" })
+        return $last
+    }
+}
+
+function Write-JoinedNodeProblem([string]$Root, [string]$Problem) {
+    $previous = "$($script:joinedNodeProblems[$Root])"
+    if ($Problem -eq $previous) { return }
+    if ($Problem) { Write-WatcherLog "joined node at $Root`: $Problem" } else { Write-WatcherLog "joined node at $Root can be read again" }
+    $script:joinedNodeProblems[$Root] = $Problem
+}
+
+<#
+.NOTES
+Only while every joined node's id is known: a node whose volume is away keeps its kept entry for
+when it returns.
+#>
+function Remove-LeftJoinedEntries($Found) {
+    if (-not $Found.allKnown -or -not (Test-StackFolderExists)) { return }
+    $kept = Read-KeptJoinedConnections
+    $ids = @($Found.nodes | ForEach-Object { $_.id })
+    $left = @($kept.PSObject.Properties | Where-Object { $ids -notcontains $_.Name } | ForEach-Object { $_.Name })
+    if ($left.Count -eq 0) { return }
+    foreach ($id in $left) { $kept.PSObject.Properties.Remove($id) }
+    Write-JsonFile $script:connectionsFile $kept
+    Write-WatcherLog "dropped the kept entries of nodes that left: $($left -join ', ')"
 }
 
 function Test-JoinedFetchIsDue { return ((Get-Now) - $script:lastJoinedFetch).TotalSeconds -ge $joinedFetchIntervalSeconds }
@@ -203,10 +255,10 @@ function Write-JoinedFetchProblem($Node, [string]$Problem) {
     $script:joinedFetchProblems[$Node.id] = $Problem
 }
 
-function Get-JoinedNodeEntry($Node) {
+function Get-JoinedNodeEntry($Node, [double]$TimeoutSeconds) {
     $deviceId = Get-JoinedDeviceId $Node
     if (-not $deviceId) { Write-JoinedFetchProblem $Node "its Syncthing has no device ID yet"; return $null }
-    try { $text = Get-DashboardEntryText $Node.dashboard (Get-JoinedConnectionsNodeId $deviceId) } catch { Write-JoinedFetchProblem $Node "$_"; return $null }
+    try { $text = Get-DashboardEntryText $Node.dashboard (Get-JoinedConnectionsNodeId $deviceId) $TimeoutSeconds } catch { Write-JoinedFetchProblem $Node "$_"; return $null }
     $entry = ConvertFrom-ConnectionsText $text
     if (-not $entry) { Write-JoinedFetchProblem $Node "the answer is not an entry"; return $null }
     Write-JoinedFetchProblem $Node ""
@@ -220,6 +272,12 @@ function Read-KeptJoinedConnections {
     return $kept
 }
 
+<#
+.NOTES
+The contract the restart rests on: a kept entry (read back from joined.json) and the same entry
+fetched again (parsed from the dashboard's answer, then moved to the node's port) give the same key,
+so an entry that did not change never restarts a Syncthing.
+#>
 function ConvertTo-EntryKey($Entry) { return ConvertTo-Json -InputObject $Entry -Depth 10 -Compress }
 
 <#
@@ -239,15 +297,20 @@ function Restart-ForChangedEntry($Node) {
 <#
 .NOTES
 The entries are kept in joined.json in the shape of the dashboard's connections.json, keyed by node
-id, so the start and the firewall read them with the same code as in stack mode.
+id, so the start and the firewall read them with the same code as in stack mode. One round spends
+at most $joinedFetchBudgetSeconds on fetching, however many nodes there are; a node not asked in
+time is asked at the next fetch.
 #>
 function Update-JoinedConnections([object[]]$Nodes) {
     if (@($Nodes).Count -eq 0 -or -not (Test-JoinedFetchIsDue)) { return }
     $script:lastJoinedFetch = Get-Now
     $kept = Read-KeptJoinedConnections
     $changed = @()
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
     foreach ($node in $Nodes) {
-        $entry = Get-JoinedNodeEntry $node
+        $left = $joinedFetchBudgetSeconds - $clock.Elapsed.TotalSeconds
+        if ($left -le 0) { Write-JoinedFetchProblem $node "not asked: this round's $joinedFetchBudgetSeconds s for entries ran out"; continue }
+        $entry = Get-JoinedNodeEntry $node $left
         if (-not $entry) { continue }
         if ($kept.PSObject.Properties[$node.id] -and (ConvertTo-EntryKey $kept.($node.id)) -eq (ConvertTo-EntryKey $entry)) { continue }
         $kept | Add-Member -Force -NotePropertyName $node.id -NotePropertyValue $entry
@@ -321,6 +384,18 @@ function Write-NetworksProblemChange([string]$Problem) {
     $script:networksProblem = $Problem
 }
 
+<#
+.NOTES
+A missing or changed binary lasts until someone acts: in joined mode it is the checkout that
+installed the agent being moved or deleted. It is in every heartbeat and logged once, when it starts
+or changes.
+#>
+function Write-BinaryProblemChange([string]$Problem) {
+    if ($Problem -eq $script:binaryProblem) { return }
+    if ($Problem) { Write-WatcherLog "no node's Syncthing runs: $Problem" } else { Write-WatcherLog "Syncthing's binary is in place again" }
+    $script:binaryProblem = $Problem
+}
+
 function Write-Heartbeat($Heartbeat) {
     if (-not (Test-StackFolderExists)) { return }
     try { Write-JsonFile $script:heartbeatFile $Heartbeat } catch { Write-WatcherLog "could not write the heartbeat: $_" }
@@ -340,8 +415,10 @@ function Invoke-JoinedRound {
     $found = Read-JoinedNodes
     Set-FoundNodes $found
     $script:hasJoinedNodes = $found.files -gt 0
-    Update-JoinedConnections $found.nodes
+    Remove-LeftJoinedEntries $found
     $binaryProblem = Update-NodeInstances $found.nodes $true
+    Write-BinaryProblemChange $binaryProblem
+    Update-JoinedConnections $found.nodes
     Save-AgentState
     Write-Heartbeat (Get-Heartbeat (New-JoinedStatus) $script:hasJoinedNodes $null "running" $binaryProblem)
 }
@@ -355,6 +432,7 @@ function Invoke-StackRound($PassState, [bool]$VolumeChanged) {
     if ($PassState) { Invoke-WatcherRound $PassState $isRunning }
     Update-FoundNodes $VolumeChanged
     $binaryProblem = Update-NodeInstances $script:foundNodes.nodes $isRunning
+    Write-BinaryProblemChange $binaryProblem
     Update-DockerBackendRules $isRunning
     Save-AgentState
     Write-Heartbeat (Get-Heartbeat $status $isRunning $PassState "running" $binaryProblem)
@@ -374,6 +452,41 @@ function Remove-AgentTraces($PassState) {
     if ($PassState) { Remove-AllDisks $PassState }
     Write-Heartbeat (Get-Heartbeat (Get-RoundStatus) $false $PassState "removed" $null)
     Remove-AgentService
+}
+
+function Get-StayingJoinedNodes { return @($script:joinedNodeEntries | Where-Object { (Get-NodeFileState $_.root) -ne "gone" }) }
+
+function ConvertTo-JoinedConfig($Config, [object[]]$JoinedNodes) {
+    $joined = ConvertTo-Json -InputObject $Config -Depth 10 | ConvertFrom-Json
+    $joined.projectName = ""
+    $joined.passThrough = "none"
+    $joined | Add-Member -Force -NotePropertyName graceSeconds -NotePropertyValue 0
+    $joined | Add-Member -Force -NotePropertyName joinedNodes -NotePropertyValue @($JoinedNodes | ForEach-Object { [pscustomobject][ordered]@{ root = "$($_.root)"; dashboard = "$($_.dashboard)" } })
+    return $joined
+}
+
+<#
+.NOTES
+The stack-mode removal while a carried joined node is still there ends where `down`'s hand-back
+does: what the stack added goes (its Syncthings, every rule of the agent's group with the Docker
+backend's, the passed-through drives), the config on disk becomes joined mode's, and the agent goes
+on in joined mode without unregistering.
+#>
+function Switch-ToJoinedMode($PassState) {
+    if ($script:agentMode -ne "stack") { return $false }
+    $staying = @(Get-StayingJoinedNodes)
+    if ($staying.Count -eq 0) { return $false }
+    Write-WatcherLog "the stack has been gone for $($script:stackGraceSeconds) s; switching to joined mode for $(@($staying | ForEach-Object { $_.root }) -join ', ')"
+    Stop-AllNodeInstances "the stack is gone; the agent switches to joined mode"
+    if ($PassState) { Remove-AllDisks $PassState }
+    $joined = ConvertTo-JoinedConfig $script:agentConfig $staying
+    Write-JsonFile $ConfigFile $joined
+    Initialize-Agent $joined
+    $script:stackGoneSince = $null
+    $script:hasJoinedNodes = $true
+    $script:lastJoinedFetch = [datetime]::MinValue
+    $script:userRelay = $null
+    return $true
 }
 
 function Get-RemovalReason {
@@ -403,8 +516,7 @@ function Get-AgentStartedMessage {
 
 function Remove-AgentService {
     Invoke-NativeCommand "sc.exe" @("delete", $agentServiceName) | Out-Null
-    $command = "ping -n 20 127.0.0.1 >nul & rmdir /s /q `"$agentInstallFolder`""
-    Start-Process -FilePath "cmd.exe" -ArgumentList "/c $command" -WorkingDirectory $env:SystemRoot -WindowStyle Hidden
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/c $(Get-AgentFolderRemovalCommand)" -WorkingDirectory $env:SystemRoot -WindowStyle Hidden
 }
 
 function Enter-AgentInstance {
@@ -454,7 +566,10 @@ function Start-Agent {
     $volumeChanged = $true
     while ($true) {
         try { Invoke-AgentRound $passState $volumeChanged } catch { Write-WatcherLog "round failed: $_" }
-        if (Test-AgentShouldRemoveItself) { Remove-AgentTraces $passState; $script:agentExitCode = $agentRemovedItselfExitCode; return }
+        if (Test-AgentShouldRemoveItself) {
+            if (Switch-ToJoinedMode $passState) { $passState = $null; $volumeChanged = $true; continue }
+            Remove-AgentTraces $passState; $script:agentExitCode = $agentRemovedItselfExitCode; return
+        }
         $wait = Wait-ForNextRound $stopHandle $hasVolumeEvents
         if ($wait.stopRequested) { break }
         $volumeChanged = $wait.volumeChanged

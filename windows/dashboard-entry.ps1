@@ -17,12 +17,12 @@ function ConvertFrom-ConnectionsText([string]$Text) {
 Waits on the request as a task, so the bound covers the whole request: on .NET Framework the timeouts
 of Invoke-WebRequest and HttpClient leave out the name lookup, which can take 15 s and more.
 #>
-function Get-DashboardEntryText([string]$Dashboard, [string]$NodeId) {
+function Get-DashboardEntryText([string]$Dashboard, [string]$NodeId, [double]$TimeoutSeconds = $dashboardEntryTimeoutSeconds) {
     Add-Type -AssemblyName System.Net.Http
     $client = New-Object System.Net.Http.HttpClient
     try {
         $request = $client.GetStringAsync("$($Dashboard.TrimEnd('/'))/api/connections/node/$NodeId")
-        if (-not $request.Wait([TimeSpan]::FromSeconds($dashboardEntryTimeoutSeconds))) { throw "no answer within $dashboardEntryTimeoutSeconds s" }
+        if (-not $request.Wait([TimeSpan]::FromSeconds($TimeoutSeconds))) { throw "no answer within $([math]::Round($TimeoutSeconds, 1)) s" }
         return $request.Result
     } finally {
         $client.Dispose()

@@ -44,6 +44,16 @@ writes.
 #>
 function Get-AgentJoinedConnectionsFile([string]$StackFolder) { return Join-Path (Join-Path (Get-AgentFolder $StackFolder) $agentConnectionsFolderName) $agentJoinedConnectionsName }
 
+<#
+.NOTES
+The agent's self-removal runs this detached, since a running executable cannot delete its folder.
+The folder goes only if no service of the name is registered when the delay ends, so a reinstall
+made in the meantime keeps its files; the installer also waits for such a command before it copies.
+#>
+function Get-AgentFolderRemovalCommand {
+    return "ping -n 20 127.0.0.1 >nul & sc.exe query $agentServiceName >nul 2>&1 || rmdir /s /q `"$agentInstallFolder`""
+}
+
 function Get-AgentMode($Config) {
     if ($Config -and $Config.PSObject.Properties["projectName"] -and $Config.projectName) { return "stack" }
     return "joined"

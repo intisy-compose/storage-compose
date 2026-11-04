@@ -142,3 +142,31 @@ Describe "finding nodes" {
         "$($found.problems)" | Should Match "only the first one runs"
     }
 }
+
+Describe "whether a node file is still there" {
+    BeforeEach { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch }
+    AfterEach { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch }
+
+    It "is present while the file can be opened" {
+        $root = New-Volume "present"
+        Set-Content -Path (Join-Path $root ".storage\node.toml") -Value "[node]"
+        Get-NodeFileState $root | Should Be "present"
+    }
+
+    It "is gone only when the volume and the .storage folder are there and the file is not" {
+        Get-NodeFileState (New-Volume "gone") | Should Be "gone"
+    }
+
+    It "is unreachable, never gone, while the .storage folder or the volume cannot be seen" {
+        Get-NodeFileState (Join-Path $scratch "no-folder") | Should Be "unreachable"
+        $letter = [char[]](68..90) | Where-Object { -not [System.IO.Directory]::Exists("$($_):\") } | Select-Object -Last 1
+        Get-NodeFileState "$($letter):\" | Should Be "unreachable"
+    }
+
+    It "is unreadable, never gone, while another process holds the file" {
+        $root = New-Volume "locked"
+        Set-Content -Path (Join-Path $root ".storage\node.toml") -Value "[node]"
+        $lock = [System.IO.File]::Open((Join-Path $root ".storage\node.toml"), "Open", "ReadWrite", "None")
+        try { Get-NodeFileState $root | Should Be "unreadable" } finally { $lock.Dispose() }
+    }
+}

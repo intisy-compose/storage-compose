@@ -84,6 +84,39 @@ function Read-TomlFile([string]$Path) {
 
 function Get-NodeFilePath([string]$Folder) { return [System.IO.Path]::Combine($Folder, ".storage\node.toml") }
 
+<#
+.NOTES
+"gone" only when the root's volume and the file's .storage folder can be seen and opening the file
+says it is not there. A volume not mounted yet, unplugged or locked, or a folder that cannot be seen,
+is "unreachable"; a file that is there but cannot be opened is "unreadable". Neither is a node that
+left: joined mode has no grace period, so only a deleted file may remove a node.
+#>
+function Get-NodeFileState([string]$Root) {
+    try {
+        $nodeFile = Get-NodeFilePath $Root
+        if (-not [System.IO.Directory]::Exists([System.IO.Path]::GetPathRoot($nodeFile))) { return "unreachable" }
+        if (-not [System.IO.Directory]::Exists([System.IO.Path]::GetDirectoryName($nodeFile))) { return "unreachable" }
+        $stream = [System.IO.File]::Open($nodeFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $stream.Dispose()
+        return "present"
+    } catch {
+        return Get-NodeFileFailureState $_.Exception
+    }
+}
+
+<#
+.NOTES
+Typed catch clauses are not reliable for an exception a .NET call raised through PowerShell's wrapper:
+a sharing violation (an IOException) was caught as DirectoryNotFoundException in one session and not
+in another, so the wrapped exception's own type decides.
+#>
+function Get-NodeFileFailureState([Exception]$Failure) {
+    if ($Failure -is [System.Management.Automation.MethodInvocationException] -and $Failure.InnerException) { $Failure = $Failure.InnerException }
+    if ($Failure -is [System.IO.FileNotFoundException]) { return "gone" }
+    if ($Failure -is [System.IO.DirectoryNotFoundException]) { return "unreachable" }
+    return "unreadable"
+}
+
 function Get-NodeIndexPath([string]$VolumeRoot) { return [System.IO.Path]::Combine($VolumeRoot, ".storage\nodes.toml") }
 
 function Read-NodeFile([string]$Folder) {
