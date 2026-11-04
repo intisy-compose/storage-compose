@@ -129,6 +129,8 @@ export interface FeedOptions {
    * @implNote A folder being scanned reports a thousand changes in milliseconds (pc's `documents`, 2026-10-27), so without it the poll would spin.
    */
   changesPauseMs: number;
+  /** How long the start time read before a change poll may take; past it, or failed, the poll goes on from the cursor it has. */
+  startTimeTimeoutMs: number;
 }
 
 /** Hears every event a feed reads, besides Activity, and each time events may have been lost; `conflicts.ts` keeps its index current from it. */
@@ -143,7 +145,7 @@ export interface FeedListener {
 
 const quietListener: FeedListener = { event: () => {}, mayHaveMissed: () => {} };
 
-export const defaultFeedOptions: FeedOptions = { waitSeconds: 50, requestTimeoutMs: 60_000, retryMs: 5_000, bufferSize: 1000, changesPerPoll: 1000, changesPauseMs: 2_000 };
+export const defaultFeedOptions: FeedOptions = { waitSeconds: 50, requestTimeoutMs: 60_000, retryMs: 5_000, bufferSize: 1000, changesPerPoll: 1000, changesPauseMs: 2_000, startTimeTimeoutMs: 3_000 };
 
 /**
  * The events read from `/rest/events`.
@@ -508,11 +510,16 @@ class InstanceFeed {
     }
   }
 
-  /** @implNote The disk subscription numbers its events from 1 again after a restart, as `/rest/events` does. */
+  /**
+   * @implNote The disk subscription numbers its events from 1 again after a restart, as `/rest/events` does. A start time that cannot be
+   * read in `startTimeTimeoutMs` leaves the cursor as it is: a slow or failing status read must not hold back or skip the poll.
+   */
   private async followChangesRestart(): Promise<void> {
-    const startTime = await this.instance.client.startTime();
-    if (this.position.changesStartTime !== null && this.position.changesStartTime !== startTime) this.position.changesSince = 0;
-    this.position.changesStartTime = startTime;
+    const startTime = await this.instance.client.startTime(this.options.startTimeTimeoutMs).catch(() => null);
+    if (startTime !== null) {
+      if (this.position.changesStartTime !== null && this.position.changesStartTime !== startTime) this.position.changesSince = 0;
+      this.position.changesStartTime = startTime;
+    }
     if (!this.namesRead) await this.readNames();
   }
 

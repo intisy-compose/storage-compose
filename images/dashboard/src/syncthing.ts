@@ -347,8 +347,8 @@ export class SyncthingClient {
   }
 
   /** When the instance last started; a new value means its event IDs started again from 1. */
-  startTime(): Promise<string> {
-    return this.request<{ startTime?: string }>("GET", "/system/status").then((status) => status.startTime ?? "");
+  startTime(timeoutMs = this.timeoutMs): Promise<string> {
+    return this.request<{ startTime?: string }>("GET", "/system/status", undefined, timeoutMs).then((status) => status.startTime ?? "");
   }
 
   /**

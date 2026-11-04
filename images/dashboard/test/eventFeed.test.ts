@@ -25,7 +25,7 @@ import { until } from "./until.js";
 
 const pcDevice = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 const arrayDevice = "ARRAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
-const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20, bufferSize: 3, changesPerPoll: 4, changesPauseMs: 0 };
+const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20, bufferSize: 3, changesPerPoll: 4, changesPauseMs: 0, startTimeTimeoutMs: 100 };
 
 /**
  * A Syncthing that answers `/rest/events` and `/rest/events/disk` like the real one: only events after `since`, the newest `limit` of them,
@@ -42,6 +42,9 @@ class FakeSyncthing {
   /** What `/rest/config` answers, or a 500 while `configFails`. */
   config: unknown = null;
   configFails = false;
+  /** `/rest/system/status` answers 500 while set, or only after `statusDelayMs`. */
+  statusFails = false;
+  statusDelayMs = 0;
   readonly server: Server;
 
   constructor() {
@@ -51,7 +54,13 @@ class FakeSyncthing {
         response.writeHead(200, { "Content-Type": "application/json" });
         response.end(JSON.stringify(body));
       };
-      if (url.pathname === "/rest/system/status") return reply({ myID: pcDevice, startTime: this.startTime });
+      if (url.pathname === "/rest/system/status") {
+        if (this.statusFails) {
+          response.writeHead(500);
+          return response.end("status unreadable");
+        }
+        return void setTimeout(() => reply({ myID: pcDevice, startTime: this.startTime }), this.statusDelayMs);
+      }
       if (url.pathname === "/rest/config/devices") return reply([{ deviceID: arrayDevice, name: "private-array", addresses: [] }]);
       if (url.pathname === "/rest/config/folders") return reply([{ id: "documents", label: "Documents", path: "/x", type: "sendreceive", paused: false, devices: [] }]);
       if (url.pathname === "/rest/config") {
@@ -518,6 +527,29 @@ describe("file changes", () => {
     fake.emitDisk(...["new0", "new1", "new2"].map((path) => diskChange("LocalChangeDetected", path, pcShort)));
     await until(() => changes(log).some((entry) => entry.change?.path === "new2"), "the new run's changes");
     assert.deepEqual(changes(log).map((entry) => entry.change?.path).filter((path) => path?.startsWith("new")), ["new2", "new1", "new0"]);
+  });
+
+  it("a start time that cannot be read holds no change poll back, and the cursor stays", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "first.txt", pcShort));
+    await until(() => changes(log).length === 1, "the change before the status fails");
+    fake.statusFails = true;
+    fake.emitDisk(diskChange("LocalChangeDetected", "second.txt", pcShort));
+    await until(() => changes(log).length === 2, "the change polled while the status fails");
+    assert.ok(fake.diskQueries.every((query, index) => index === 0 || query.since >= fake.diskQueries[index - 1].since), "the cursor never went back");
+  });
+
+  it("a slow start time read is cut short and the change poll goes on", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    fake.statusDelayMs = 5_000;
+    const log = new ActivityLog(100);
+    const started = Date.now();
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "slow.txt", pcShort));
+    await until(() => changes(log).length === 1, "the change despite the slow status");
+    assert.ok(Date.now() - started < 2_000, `${Date.now() - started} ms`);
   });
 
   it("a folder removed from the node's configuration takes its change buffer with it", async () => {
