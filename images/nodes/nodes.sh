@@ -4,7 +4,8 @@
 # every array but the cluster, whose Syncthing is the stack's own service. An instance starts when
 # its node is present and stops when it goes. Each gets a sync port 22000+n (n from 21 to 99, kept
 # per node in /status/nodes/ports; 1 to 20 are the host agent's native nodes) and a GUI on 8390+n
-# inside the gateway's namespace, recorded for the dashboard in /status/nodes/<id>.syncthing.json.
+# on the gateway namespace's Docker address (never 127.0.0.1, where tailscale hands it tailnet
+# connections), recorded for the dashboard in /status/nodes/<id>.syncthing.json.
 # An array's instance runs with its own guard, which pauses the folders the mounter names, so the
 # C-24 freeze holds per array. Each instance takes its connection profile from
 # /status/connections.json once its API answers (apply-connections.sh).
@@ -88,14 +89,14 @@ start_guard() {   # <id> <home> <gui address>
 start_instance() {   # <id> <home> <kind>
     local id=$1 home=$2 index gui
     index=$(port_index "$id") || return 1
-    gui="0.0.0.0:$(( 8390 + index ))"
+    gui="$gui_host:$(( 8390 + index ))"
     prepare_home "$id" "$home" "$(( 22000 + index ))" || { log "could not prepare $home"; return 1; }
     STGUIADDRESS=$gui setpriv --reuid="$service_user" --regid="$service_user" --clear-groups \
         syncthing serve --home "$home" --no-browser --no-port-probing --no-restart > >(sed -u "s/^/[$id] /") 2>&1 &
     instance_pid[$id]=$!
     record_endpoint "$id" "$home" "$index"
-    CONNECTIONS_FILE=$connections_file sh /usr/local/bin/apply-connections.sh "$id" "http://127.0.0.1:$(( 8390 + index ))" "$(api_key_of "$home")" &
-    [ "$3" = array ] && start_guard "$id" "$home" "127.0.0.1:$(( 8390 + index ))"
+    CONNECTIONS_FILE=$connections_file sh /usr/local/bin/apply-connections.sh "$id" "http://$gui" "$(api_key_of "$home")" &
+    [ "$3" = array ] && start_guard "$id" "$home" "$gui"
     log "started Syncthing for $id ($home), sync port $(( 22000 + index ))"
 }
 
@@ -133,6 +134,7 @@ shut_down() {
 
 main() {
     trap shut_down TERM INT
+    gui_host=$(sh /namespace-address.sh --single) || exit 1
     mkdir -p "$registry"
     while true; do
         keep_instances

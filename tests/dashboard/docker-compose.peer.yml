@@ -10,11 +10,11 @@ services:
     restart: on-failure
     entrypoint: ["/bin/sh", "/registry-entry.sh"]
     environment:
-      STGUIADDRESS: 0.0.0.0:8389
       STHOMEDIR: /var/syncthing/config
       STNOUPGRADE: "1"
       STNODEFAULTFOLDER: "1"
     volumes:
       - ./tests/dashboard/registry-entry.sh:/registry-entry.sh:ro
+      - ./gateway/namespace-address.sh:/namespace-address.sh:ro
       - storage-status:/status
       - /var/syncthing

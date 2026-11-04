@@ -7,6 +7,8 @@ node_root=/var/syncthing/data
 # The gateway namespace already holds the cluster's Syncthing on 22000 and 8385.
 sync_port=22199
 gui_port=8389
+STGUIADDRESS="$(sh /namespace-address.sh --single):$gui_port"
+export STGUIADDRESS
 registry=/status/nodes
 home=${STHOMEDIR:-/var/syncthing/config}
 service_user=${PUID:-1000}:${PGID:-1000}
