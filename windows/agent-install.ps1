@@ -321,12 +321,12 @@ function Get-AgentNodeHomes([string]$StackFolder) {
 
 <#
 .NOTES
-The join registers such a task on a device without the agent. Once the agent runs the node, the task
-would start a second Syncthing on the same home at the next logon, so it goes; only a task of the
-join's name prefix whose home is a node the agent found is touched.
+The join registered such a task on a device without the agent before joined mode. Once the agent runs
+the node, the task would start a second Syncthing on the same home at the next logon, so it goes;
+only a task of the join's name prefix whose home is one of these is touched.
 #>
-function Remove-AgentNodeSyncthingTasks([string]$StackFolder) {
-    $homes = @(Get-AgentNodeHomes $StackFolder)
+function Remove-NodeSyncthingTasks([string[]]$Homes) {
+    $homes = @($Homes | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') })
     if ($homes.Count -eq 0) { return @() }
     $removed = @()
     foreach ($task in @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_ -and $_.TaskName -like "$nodeSyncthingTaskPrefix *" })) {
@@ -337,3 +337,5 @@ function Remove-AgentNodeSyncthingTasks([string]$StackFolder) {
     }
     return $removed
 }
+
+function Remove-AgentNodeSyncthingTasks([string]$StackFolder) { return Remove-NodeSyncthingTasks @(Get-AgentNodeHomes $StackFolder) }

@@ -1,8 +1,9 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-The start step of a node's Syncthing on a device joined without the host agent: the join's logon task
-runs it before Syncthing. Fetches the node's entry from the dashboard's GET
+The start step of a node's Syncthing in the logon task the join registered before the host agent's
+joined mode, kept for those tasks until the device's join is run again and hands the node to the
+agent. Fetches the node's entry from the dashboard's GET
 /api/connections/node/<NodeId>, keeps it as connections.json in the Syncthing home, and writes its
 options and listen addresses into config.xml before Syncthing starts, each tcp and quic listen
 address on the device's own -ListenPort.

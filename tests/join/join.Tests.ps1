@@ -1,9 +1,12 @@
 # Pester 3.4: the Windows join script against the fake dashboard (tests/join/fake-dashboard.py), which
-# admits the device into a real Syncthing peer, with the device's own real Syncthing. Tailscale and the
-# scheduled task are faked (the task starts the process directly); the node is a subst drive over a
-# temporary folder, so neither F:\ nor the tailnet is touched. Syncthing runs from a copy in the
+# admits the device into a real Syncthing peer, with the device's own real Syncthing. Tailscale, the
+# scheduled tasks and the host agent's install are faked (the install starts the node's Syncthing on
+# the test ports and publishes it in a heartbeat, as the agent would); the node is a subst drive over
+# a temporary folder, so neither F:\ nor the tailnet is touched. Syncthing runs from a copy in the
 # scratch folder, so the firewall guard, the process sweep and the rule sweep never reach the stack's
-# own binary, which the host agent may be running for a real node. Needs python on the PATH.
+# own binary, which the host agent may be running for a real node. The service name, its folder and
+# the agent's firewall group are renamed, so nothing here can reach the live agent. Needs python on
+# the PATH.
 
 param([string]$Python = "python")
 
@@ -61,9 +64,35 @@ function New-NodeId {
 }
 $global:layoutPath = Join-Path $scratch "drive-sync.toml"
 function Get-LayoutPath { return $global:layoutPath }
-$global:agentPresent = $false
+$agentServiceName = "storage-compose-agent-test-never-installed"
+$agentInstallFolder = Join-Path $scratch "Program Files\storage-compose-agent"
+$agentFirewallGroup = "storage-compose test group"
+$global:agentMode = "none"
+$global:elevated = $true
+$global:agentInstalls = @()
 $global:heartbeats = New-Object System.Collections.Queue
-function Test-HostAgentIsPresent { return $global:agentPresent }
+function Get-InstalledAgentMode { return $global:agentMode }
+function Test-IsElevated { return $global:elevated }
+function Set-Heartbeats([object[]]$Sequence) {
+    $global:heartbeats = New-Object System.Collections.Queue
+    foreach ($heartbeat in $Sequence) { $global:heartbeats.Enqueue($heartbeat) }
+}
+function Publish-AgentNode($Node, $Ports, [string]$ApiKey) {
+    Set-Heartbeats @([pscustomobject]@{ state = "running"; nodes = @([pscustomobject]@{ id = $Node.id; syncthing = [pscustomobject]@{ state = "running"; guiPort = $Ports.gui; apiKey = $ApiKey } }); foundNodes = @() })
+}
+function Install-JoinedAgent([string]$Folder, [string]$Root, [string]$Dashboard) {
+    $global:agentInstalls += "$Folder|$Root|$Dashboard"
+    $node = Read-NodeFile $Root
+    $ports = [pscustomobject]@{ gui = $userSyncthingGuiPort; listen = $userSyncthingListenPort }
+    New-Item -ItemType Directory -Force -Path (Get-SyncthingHome $node) | Out-Null
+    if (-not (Test-Path -LiteralPath (Get-SyncthingConfigPath $node))) { New-SyncthingConfig $node }
+    $identity = Set-SyncthingConfig $node $ports "127.0.0.1" $null
+    $outcome = "current"
+    if (-not (Find-SyncthingProcess $node)) { Start-SyncthingProcess $node | Out-Null; $outcome = "installed" }
+    Publish-AgentNode $node $ports $identity.apiKey
+    $global:agentMode = "joined"
+    return $outcome
+}
 function Get-AgentHeartbeat([string]$StackFolder) { if ($global:heartbeats.Count -gt 1) { return $global:heartbeats.Dequeue() }; if ($global:heartbeats.Count -eq 1) { return $global:heartbeats.Peek() }; return $null }
 function Test-AgentHeartbeatIsFresh([string]$StackFolder, [int]$Seconds = 30) { return [bool](Get-AgentHeartbeat $StackFolder) }
 function Get-ScheduledTask { [CmdletBinding()] param([string]$TaskName);  if ($TaskName) { return $global:tasks[$TaskName] }; return @($global:tasks.Values) }
@@ -189,24 +218,13 @@ try {
             $node.id | Should Match '^[0-9a-f]{4}$'
             $global:liveRuleNodeIds -contains $node.id | Should Be $false
         }
-        It "runs Syncthing at logon from a task, with its home on the node" {
-            $task = $global:tasks["storage-compose syncthing pc-test"]
-            @($task.Actions)[-1].Execute | Should Be $script:syncthingPath
-            @($task.Actions)[-1].Arguments | Should Match ([regex]::Escape("--home=`"$($script:nodeRoot).storage\syncthing`""))
+        It "installs the host agent in joined mode for the node, from this checkout, with the dashboard" {
+            $global:agentInstalls | Should Be @("$repository|$($script:nodeRoot)|$Dashboard")
         }
-        It "the logon task runs the connections step before syncthing" {
-            $nodeId = "device-$((Invoke-Device "/rest/system/status").myID.Substring(0, 7).ToLower())"
-            $actions = @($global:tasks["storage-compose syncthing pc-test"].Actions)
-            $actions.Count | Should Be 2
-            $actions[0].Execute | Should Be (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe")
-            $actions[0].Arguments | Should Be "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $repository "join\storage-connections.ps1")`" -Dashboard `"$Dashboard`" -NodeId $nodeId -SyncthingHome `"$($script:nodeRoot).storage\syncthing`" -ListenPort $userSyncthingListenPort"
-        }
-        It "opens its sync port to the tailnet only, before Windows can ask" {
+        It "registers no logon task and sets no firewall rule of its own" {
             $node = Read-NodeFile $script:nodeRoot
-            $rule = Get-NetFirewallRule -Name "storage-compose syncthing $($node.id)" -ErrorAction SilentlyContinue
-            ($rule | Get-NetFirewallPortFilter).LocalPort | Should Be "$userSyncthingListenPort"
-            @(($rule | Get-NetFirewallAddressFilter).RemoteAddress | Sort-Object) -join "," | Should Be "100.64.0.0/255.192.0.0,fd7a:115c:a1e0::/48"
-            [bool](Get-NetFirewallRule -Name "storage-compose syncthing $($node.id) udp" -ErrorAction SilentlyContinue) | Should Be $true
+            @($global:tasks.Keys).Count | Should Be 0
+            Test-HasNodeFirewallRules $node | Should Be $false
         }
         It "listens on the tailnet only" {
             $options = Invoke-Device "/rest/config/options"
@@ -372,20 +390,17 @@ try {
             nodes = @([pscustomobject]@{ id = $node.id; syncthing = [pscustomobject]@{ state = "running"; guiPort = 8450; apiKey = "agent-key" } })
             foundNodes = @([pscustomobject]@{ id = $node.id; name = $node.name; kind = "drive"; root = $script:nodeRoot })
         }
-        function Set-Heartbeats([object[]]$Sequence) {
-            $global:heartbeats = New-Object System.Collections.Queue
-            foreach ($heartbeat in $Sequence) { $global:heartbeats.Enqueue($heartbeat) }
-        }
         function Add-Task([string]$TaskName, [string]$SyncthingHome) {
             $global:tasks[$TaskName] = [pscustomobject]@{ TaskName = $TaskName; TaskPath = "\"; Actions = @([pscustomobject]@{ Execute = $script:syncthingPath; Arguments = (Get-NodeSyncthingTaskArguments $SyncthingHome) }) }
         }
+        $modeBefore = $global:agentMode
 
         It "waits for the agent to start a node it has not found yet, and registers no task" {
-            $global:agentPresent = $true
+            $global:agentMode = "stack"
             $global:tasks.Remove("storage-compose syncthing pc-test")
             Set-Heartbeats @($notYet, $notYet, $running)
             $registrationsBefore = $global:registrations
-            try { $instance = Get-NodeSyncthing $node } finally { $global:agentPresent = $false }
+            try { $instance = Get-NodeSyncthing $node } finally { $global:agentMode = $modeBefore }
             $instance.owner | Should Be "agent"
             $instance.ports.gui | Should Be 8450
             $instance.apiKey | Should Be "agent-key"
@@ -393,12 +408,12 @@ try {
             $global:tasks.ContainsKey("storage-compose syncthing pc-test") | Should Be $false
         }
         It "removes the node's own logon task once the agent runs it, and no other task" {
-            $global:agentPresent = $true
+            $global:agentMode = "stack"
             Add-Task "storage-compose syncthing pc-test" $nodeHome
             Add-Task "storage-compose syncthing elsewhere" "Q:\.storage\syncthing"
             $global:tasks["Syncthing"] = [pscustomobject]@{ TaskName = "Syncthing"; TaskPath = "\"; Actions = @([pscustomobject]@{ Execute = "C:\other\syncthing.exe"; Arguments = "serve --home=`"$nodeHome`"" }) }
             Set-Heartbeats @($running)
-            try { Get-NodeSyncthing $node | Out-Null } finally { $global:agentPresent = $false }
+            try { Get-NodeSyncthing $node | Out-Null } finally { $global:agentMode = $modeBefore }
             $global:tasks.ContainsKey("storage-compose syncthing pc-test") | Should Be $false
             $global:tasks.ContainsKey("storage-compose syncthing elsewhere") | Should Be $true
             $global:tasks.ContainsKey("Syncthing") | Should Be $true
@@ -411,9 +426,11 @@ try {
             @(Remove-AgentNodeSyncthingTasks $repository) | Should Be @("storage-compose syncthing pc-test")
             @(Remove-AgentNodeSyncthingTasks $repository).Count | Should Be 0
         }
-        It "the leave path removes the step: the join's own task goes once the agent runs the node" {
-            Register-UserSyncthingTask $node
-            @($global:tasks["storage-compose syncthing pc-test"].Actions).Count | Should Be 2
+        It "removes a task that runs the connections step first, by any action's home" {
+            $global:tasks["storage-compose syncthing pc-test"] = [pscustomobject]@{ TaskName = "storage-compose syncthing pc-test"; TaskPath = "\"; Actions = @(
+                [pscustomobject]@{ Execute = "powershell.exe"; Arguments = "-File `"$(Join-Path $repository "join\storage-connections.ps1")`" -SyncthingHome `"$nodeHome`"" },
+                [pscustomobject]@{ Execute = $script:syncthingPath; Arguments = (Get-NodeSyncthingTaskArguments $nodeHome) }
+            ) }
             Set-Heartbeats @($running)
             @(Remove-AgentNodeSyncthingTasks $repository) | Should Be @("storage-compose syncthing pc-test")
             $global:tasks.ContainsKey("storage-compose syncthing pc-test") | Should Be $false
@@ -425,14 +442,84 @@ try {
             $global:tasks.Remove("storage-compose syncthing pc-test")
         }
         It "fails, and starts nothing, when the agent never runs the node" {
-            $global:agentPresent = $true
+            $global:agentMode = "stack"
             $agentNodeWaitSeconds = 1
             Set-Heartbeats @($notYet)
             $registrationsBefore = $global:registrations
-            try { { Get-NodeSyncthing $node } | Should Throw "has not started" } finally { $global:agentPresent = $false }
+            try { { Get-NodeSyncthing $node } | Should Throw "has not started" } finally { $global:agentMode = $modeBefore }
             $global:registrations | Should Be $registrationsBefore
         }
         $global:heartbeats = New-Object System.Collections.Queue
+    }
+
+    Describe "handing a device joined before joined mode to the agent" {
+        $migrateRoot = Join-Path $scratch "migrate-root"
+        New-Item -ItemType Directory -Force -Path (Join-Path $migrateRoot ".storage\syncthing") | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $migrateRoot ".storage\node.toml"), "[node]`nid = `"$(New-NodeId)`"`nname = `"migrate-pc`"`nkind = `"folder`"`nthreshold = 50`nassigned = []`n")
+        $node = Read-NodeFile $migrateRoot
+        $migratePorts = [pscustomobject]@{ gui = 18498; listen = 32198 }
+        $taskName = "storage-compose syncthing migrate-pc"
+        function Start-OldSyncthing {
+            Start-SyncthingProcess $node | Out-Null
+            $key = Get-ApiKey (Get-SyncthingHome $node)
+            $deadline = (Get-Date).AddSeconds(60)
+            while ((Get-Date) -lt $deadline) {
+                try { Invoke-RestMethod -Uri "http://127.0.0.1:$($migratePorts.gui)/rest/system/status" -Headers @{ "X-API-Key" = $key } -UseBasicParsing | Out-Null; return } catch { Start-Sleep -Milliseconds 500 }
+            }
+            throw "the old Syncthing did not answer"
+        }
+        New-SyncthingConfig $node
+        Set-SyncthingConfig $node $migratePorts "127.0.0.1" $null | Out-Null
+        $global:tasks[$taskName] = [pscustomobject]@{ TaskName = $taskName; TaskPath = "\"; Actions = @(
+            [pscustomobject]@{ Execute = "powershell.exe"; Arguments = "-File `"$(Join-Path $repository "join\storage-connections.ps1")`"" },
+            [pscustomobject]@{ Execute = $script:syncthingPath; Arguments = (Get-NodeSyncthingTaskArguments (Get-SyncthingHome $node)) }
+        ) }
+        Set-SyncthingFirewallRule $node $migratePorts
+        Start-OldSyncthing
+        $modeBefore = $global:agentMode
+        $global:agentMode = "none"
+        $script:joinChanges = 0
+        Move-NodeSyncthingToAgent $node
+
+        It "removes the logon task" { $global:tasks.ContainsKey($taskName) | Should Be $false }
+        It "stops the Syncthing the task started" { @(Get-NodeSyncthingProcesses $node).Count | Should Be 0 }
+        It "removes the rules the join set" { Test-HasNodeFirewallRules $node | Should Be $false }
+        It "says what it changed" { $script:joinChanges | Should Be 3 }
+        It "leaves the agent's own Syncthing and rules alone once the agent runs the node" {
+            Set-SyncthingFirewallRule $node $migratePorts
+            Start-OldSyncthing
+            $global:agentMode = "joined"
+            try {
+                Move-NodeSyncthingToAgent $node
+                @(Get-NodeSyncthingProcesses $node).Count -gt 0 | Should Be $true
+                Test-HasNodeFirewallRules $node | Should Be $true
+            } finally {
+                Stop-NodeSyncthingProcesses $node
+                Remove-NodeFirewallRules $node
+            }
+        }
+        $global:agentMode = $modeBefore
+    }
+
+    Describe "an admin shell" {
+        $modeBefore = $global:agentMode
+
+        It "is asked for before any change where storage-compose does not run" {
+            $fresh = Join-Path $scratch "admin-root"
+            New-Item -ItemType Directory -Force -Path $fresh | Out-Null
+            $Root = $fresh
+            $global:agentMode = "none"
+            $global:elevated = $false
+            $installsBefore = @($global:agentInstalls).Count
+            try { Invoke-JoinCapturingFailure | Should Match "needs an admin shell; nothing was changed" } finally { $global:elevated = $true; $global:agentMode = $modeBefore }
+            Test-Path (Join-Path $fresh ".storage") | Should Be $false
+            @($global:agentInstalls).Count | Should Be $installsBefore
+        }
+        It "is not needed where the stack's agent runs the node" {
+            $global:agentMode = "stack"
+            $global:elevated = $false
+            try { { Assert-JoinCanInstallAgent } | Should Not Throw } finally { $global:elevated = $true; $global:agentMode = $modeBefore }
+        }
     }
 
     Describe "the device's name" {
