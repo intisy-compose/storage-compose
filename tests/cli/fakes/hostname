@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stands in for hostname: answers a mixed-case name, as a host may have.
+echo Storage-Box

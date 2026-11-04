@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Stands in for docker: appends each call to $FAKE_DOCKER_DIR/calls as "docker ...", with a compose
+# call's --project-directory and --env-file left out, and exits 0.
+set -uo pipefail
+state=${FAKE_DOCKER_DIR:?names the state folder of the fake}
+arguments=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --project-directory | --env-file) shift 2 ;;
+        *) arguments+=("$1"); shift ;;
+    esac
+done
+printf 'docker %s\n' "${arguments[*]}" >>"$state/calls"
+exit 0
