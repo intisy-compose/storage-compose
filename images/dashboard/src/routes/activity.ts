@@ -1,7 +1,7 @@
 import type { ServerResponse } from "node:http";
 import { type ActivitySource, type DebugChange, type DebugFacilities, type DebugFacility, type LogLevel, type LogMessage, type NodeError, type NodeErrors, type NodeLog, activitySources, changeActivityTypes, changesActivityType } from "../api/types.js";
 import { type ActivityQuery, activityLog } from "../eventFeed.js";
-import { RequestError, readBody, sendJson } from "../http.js";
+import { RequestError, readBody, refuseCrossSiteRead, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, defaultReadBackDelaysMs, forwardRead, requireLocal, resolveInstance, writeConfirmed } from "../instanceResolver.js";
 import type { AnyRoute, NothingWritten, Route, WriteNote } from "../routeTypes.js";
 import { shownUnscopedText } from "../shownSyncthingError.js";
@@ -79,21 +79,23 @@ function nodeErrorOf(value: unknown, secrets: KnownSecrets = allSecretsKnown([])
   return { when: String(fields.when ?? ""), message: shownNodeText(String(fields.message ?? ""), secrets) };
 }
 
+const rfc3339Instant = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
 /**
- * The `since` asked for, checked to be an instant and passed on as written.
+ * The `since` asked for, checked to be an RFC 3339 instant and passed on as written.
  * @implNote Syncthing 2.1.6 writes times to a tenth of a microsecond and compares `since` at that precision, so one cut to milliseconds
- * would answer the newest line again on every poll.
+ * would answer the newest line again on every poll. It parses `since` as RFC 3339 only, so any other form `Date.parse` takes is refused here.
  */
 function sinceOf(url: URL): string | null {
   const since = url.searchParams.get("since");
   if (!since) return null;
-  if (!Number.isFinite(Date.parse(since))) throw new RequestError(400, "since is an instant, such as 2026-10-27T12:00:00Z");
+  if (!rfc3339Instant.test(since) || !Number.isFinite(Date.parse(since))) throw new RequestError(400, "since is an instant, such as 2026-10-27T12:00:00Z");
   return since;
 }
 
 /** The node's secrets (`nodeSecrets.ts`); a node that does not answer is a 503, so nothing is shown unchecked. */
 function nodeSecrets(local: LocalInstance): Promise<string[]> {
-  return callSyncthing(local, (client) => readNodeSecrets(local.nodeId, client));
+  return callSyncthing(local, (client) => readNodeSecrets(client));
 }
 
 function nodePath(nodeId: string, rest: string): string {
@@ -152,7 +154,7 @@ export async function clearNodeErrors(instance: ResolvedInstance, readBackDelays
     },
     readBackDelaysMs,
   );
-  const [after, secrets] = await Promise.all([localErrors(local).catch(() => [] as SystemError[]), knownNodeSecrets(local.nodeId, local.client)]);
+  const [after, secrets] = await Promise.all([localErrors(local).catch(() => [] as SystemError[]), knownNodeSecrets(local.client)]);
   return { answer: { errors: after.map((error) => nodeErrorOf(error, secrets)) }, note: { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: `${local.name}: cleared ${plural(before.length, "Syncthing error")}` } };
 }
 
@@ -361,7 +363,8 @@ export function nodeLogRoutes(routeSources: NodeLogSources = liveSources): AnyRo
     {
       method: "GET",
       pattern: /^\/api\/nodes\/([^/]+)\/support-bundle$/,
-      handle: async ({ response, url, params: [nodeId] }) => {
+      handle: async ({ request, response, url, params: [nodeId] }) => {
+        refuseCrossSiteRead(request);
         const bundle = await supportBundle(await node(nodeId, url), routeSources.maxBundleBytes);
         sendZip(response, bundle.fileName, bundle.zip);
       },

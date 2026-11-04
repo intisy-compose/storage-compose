@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { type IncomingMessage, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import type { AdvancedConfig, NodeRestartState, RestartAnswer } from "../src/api/types.js";
+import { generalSettingKeys } from "../src/api/keeperText.js";
+import { type AdvancedConfig, type NodeRestartState, type RestartAnswer, folderSettingLabels } from "../src/api/types.js";
 import { recordPeerTable } from "../src/connectionsDrift.js";
 import { RequestError } from "../src/http.js";
 import type { LocalInstance, RemoteInstance, ResolvedInstance } from "../src/instanceResolver.js";
 import { type WriteNote } from "../src/routeTypes.js";
 import { type WriteEffects, requestHandler } from "../src/routes.js";
 import { type AdvancedConfigSources, advancedConfigRoutes } from "../src/routes/advancedConfig.js";
+import { folderFormKeys, usageReportKeys } from "../src/routes/advancedGuards.js";
 import { SyncthingClient } from "../src/syncthing.js";
 
 const apiKey = "secret-api-key";
@@ -42,6 +44,7 @@ function nodeConfig(listenAddress: string): Config {
       featureFlags: [],
       auditEnabled: false,
       auditFile: "",
+      unackedNotificationIDs: null,
     },
     gui: { enabled: true, address: "0.0.0.0:8389", user: "", password: "", authMode: "static", useTLS: false, apiKey, theme: "default" },
     folders: [
@@ -271,6 +274,7 @@ describe("the advanced config editor and restarts", () => {
       ["options", { minHomeDiskFree: { value: 200, unit: "%" } }, /cannot be more than 100 %/],
       ["options", { madeUpOption: 1 }, "madeUpOption is not a setting of these options"],
       ["options", { keepTemporariesH: "24" }, "keepTemporariesH must be a number, as Syncthing has it"],
+      ["options", { unackedNotificationIDs: "authenticationUserAndPassword" }, "unackedNotificationIDs must be a list or an object, as Syncthing has it null"],
       ["folders/dashboard-test-a", { id: "renamed" }, "the folder ID cannot be changed"],
       ["folders/dashboard-test-a", { path: "/etc" }, "path is changed in the folder's own form, which checks it"],
       ["folders/dashboard-test-a", { devices: [] }, "devices is changed in the folder's own form, which checks it"],
@@ -370,5 +374,12 @@ describe("the advanced config editor and restarts", () => {
     const dead = await send("POST", "/api/nodes/dead/restart", {});
     assert.equal(dead.status, 503);
     assert.match(await error(dead), /gone-node's Syncthing is not answering/);
+  });
+});
+
+describe("the keys the advanced editor leaves to a form", () => {
+  it("are the forms' own fields, so a form's change cannot leave the editor behind", () => {
+    for (const key of folderFormKeys) assert.ok(Object.hasOwn(folderSettingLabels, key), `${key} is a field of the folder form`);
+    assert.ok(usageReportKeys.has(generalSettingKeys.usageReporting), "General's usage reporting answer is refused in the editor under the key General stores it as");
   });
 });

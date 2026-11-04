@@ -5,7 +5,7 @@ import type { ConnectionProfile, ProfileRead } from "../src/api/types.js";
 import { defaultProfile } from "../src/connectionProfile.js";
 import { ProfileChanged, ProfileConflict, ProfileStuck, ProfileUnreachable } from "../src/setupRepo.js";
 import { clusterFormFor, followChangedProfile } from "../ui/src/connectionsForm.js";
-import { followChangedLimits, limitsFormFor } from "../ui/src/optionsForm.js";
+import { connectionsStateLine, followChangedLimits, limitsFormFor } from "../ui/src/optionsForm.js";
 
 function read(change: (profile: ConnectionProfile) => void = () => {}): ProfileRead {
   const profile = defaultProfile();
@@ -53,5 +53,13 @@ describe("the form recognises a refused save by the server's own texts", () => {
   it("a save that would strand pairs is recognised whatever the pairs", () => {
     assert.equal(isStrandedRefusal(strandedText([["aa01", "bb02"]])), true);
     assert.equal(isStrandedRefusal(new ProfileConflict().message), false);
+  });
+});
+
+describe("a node card's connection profile line", () => {
+  it("says a node waiting for its restart is on the profile once its Syncthing restarts, in warn tone", () => {
+    assert.deepEqual(connectionsStateLine("restart-needed"), { text: "on the profile once its Syncthing restarts", tone: "warn" });
+    assert.deepEqual(connectionsStateLine("not-yet"), { text: "not yet on the profile", tone: "warn" });
+    assert.deepEqual(connectionsStateLine("on-profile"), { text: "on the profile", tone: null });
   });
 });

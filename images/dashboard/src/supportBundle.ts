@@ -80,29 +80,47 @@ export function configSecrets(config: unknown): string[] {
   return Object.entries(config).flatMap(([key, value]) => (secretKey.test(key) && typeof value === "string" && value ? [value] : configSecrets(value)));
 }
 
-/** A secret as it reads in a JSON file that Go wrote, which escapes `<`, `>` and `&` besides what JSON must. */
+/** A secret as it reads in a JSON file that Go wrote, which escapes `<`, `>`, `&` and the line and paragraph separators besides what JSON must. */
 function goJsonForm(secret: string): string {
   return JSON.stringify(secret)
     .slice(1, -1)
-    .replace(/[<>&]/g, (character) => `\\u00${character.charCodeAt(0).toString(16)}`);
+    .replace(/[<>&\u2028\u2029]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
-const xmlEntities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
+const namedXmlEntities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
+/** Go's `encoding/xml` writes the quotes by number, not by name, and escapes tab, line feed and carriage return in text. */
+const goXmlEntities: Record<string, string> = { ...namedXmlEntities, '"': "&#34;", "'": "&#39;", "\t": "&#x9;", "\n": "&#xA;", "\r": "&#xD;" };
+const hexXmlEntities: Record<string, string> = { ...namedXmlEntities, '"': "&#x22;", "'": "&#x27;" };
+const paddedXmlEntities: Record<string, string> = { ...namedXmlEntities, '"': "&#034;", "'": "&#039;" };
 
-function xmlForm(secret: string): string {
-  return secret.replace(/[&<>"']/g, (character) => xmlEntities[character]);
+function xmlForm(secret: string, entities: Record<string, string>): string {
+  return secret.replace(/[&<>"'\t\n\r]/g, (character) => entities[character] ?? character);
 }
 
-/** Every way a secret can read in a file: as written, as Go writes it into JSON, as XML escapes it. */
+/** As Go's `url.QueryEscape` writes a value: `!'()*` escaped as well, and a space as a plus. */
+function goQueryForm(secret: string): string {
+  return encodeURIComponent(secret)
+    .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/%20/g, "+");
+}
+
+/**
+ * Every way a secret can read in a file: as written, percent-encoded as in a URL and as Go's query escaping writes it, as Go writes it
+ * into JSON, and as XML escapes it by name, by Go's numbers, by hex numbers and by zero-padded numbers.
+ */
 export function secretForms(secret: string): string[] {
-  return [...new Set([secret, goJsonForm(secret), xmlForm(secret)])];
+  const xmlForms = [namedXmlEntities, goXmlEntities, hexXmlEntities, paddedXmlEntities].map((entities) => xmlForm(secret, entities));
+  return [...new Set([secret, encodeURIComponent(secret), goQueryForm(secret), goJsonForm(secret), ...xmlForms])];
 }
 
 export function holdsSecret(content: Buffer, secret: string): boolean {
   return secretForms(secret).some((form) => content.includes(form));
 }
 
-/** Each secret, in every form it can be written in, replaced by `[redacted]`; the longest forms go first, so no part of one is left. */
+/**
+ * Each secret, in every form it can be written in, replaced by `[redacted]`; the longest forms go first, so no part of one is left.
+ * @implNote A short secret is replaced even where it garbles ordinary text, by the human partner's choice (2026-11-04).
+ */
 export function withoutSecrets(text: string, secrets: readonly string[]): string {
   const forms = secrets.flatMap(secretForms).sort((left, right) => right.length - left.length);
   return forms.reduce((current, form) => current.split(form).join("[redacted]"), text);
@@ -133,11 +151,17 @@ function searchedForms(content: Buffer, maxBytes: number): Buffer[] | null {
   }
 }
 
-/** The names of the bundle's files that hold one of `secrets`, in any form it can be written in, or that cannot be searched whole. */
+/**
+ * The names of the bundle's files that hold one of `secrets`, in any form it can be written in, or that cannot be searched whole.
+ * @implNote The gzipped files unpack within what `maxBytes` leaves after the bundle's own files and the ones unpacked before, so many
+ * profiles together stay within the bound as the bundle's files do.
+ */
 export function filesHoldingSecrets(entries: readonly ZipEntry[], secrets: readonly string[], maxBytes: number): string[] {
+  let left = maxBytes - entries.reduce((total, entry) => total + entry.content.length, 0);
   return entries
     .filter((entry) => {
-      const forms = searchedForms(entry.content, maxBytes);
+      const forms = searchedForms(entry.content, Math.max(left, 0));
+      if (forms && forms.length > 1) left -= forms[1].length;
       return forms === null || forms.some((form) => secrets.some((secret) => holdsSecret(form, secret)));
     })
     .map((entry) => entry.name);

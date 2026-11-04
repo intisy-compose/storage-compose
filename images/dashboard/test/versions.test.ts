@@ -12,6 +12,7 @@ import { versionRoutes } from "../src/routes/versions.js";
 import { SyncthingClient } from "../src/syncthing.js";
 
 const apiKey = "versions-test-key";
+const guiPasswordHash = "$2a$10$versionstesthashversionstesthashversionstesthash";
 const ownId = "D7E5AAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA";
 
 function reply(response: ServerResponse, body: unknown, status = 200): void {
@@ -58,6 +59,7 @@ describe("file versions: browse and restore", () => {
     const url = new URL(request.url ?? "/", "http://fake");
     asked.push(`${request.method} ${url.pathname}${url.search}`);
     const folderId = url.searchParams.get("folder");
+    if (url.pathname === "/rest/config") return reply(response, { gui: { apiKey, password: guiPasswordHash }, folders });
     if (url.pathname === "/rest/config/folders") return reply(response, folders);
     if (url.pathname.startsWith("/rest/config/folders/")) {
       const folder = folders.find((candidate) => candidate.id === decodeURIComponent(url.pathname.split("/").at(-1) ?? ""));
@@ -79,7 +81,7 @@ describe("file versions: browse and restore", () => {
       request.on("end", () => {
         restoreBodies.push(JSON.parse(text));
         if (loseRestoreAnswer) return void request.socket.destroy();
-        reply(response, { "gone.txt": "version not found", "leaky.txt": "cannot restore: #include ../../config/config.xml" });
+        reply(response, { "gone.txt": "version not found", "leaky.txt": "cannot restore: #include ../../config/config.xml", "keyed.txt": `refused for ${apiKey} and ${guiPasswordHash}` });
       });
       return;
     }
@@ -227,8 +229,8 @@ describe("file versions: browse and restore", () => {
     assert.deepEqual(writes(), ["POST /rest/folder/versions?folder=test-a"]);
     assert.deepEqual(restoreBodies, [files]);
     assert.deepEqual(answer.body.restored, ["hello.txt"]);
-    assert.deepEqual(answer.body.errors, { "gone.txt": "version not found", "leaky.txt": "error hidden: it mentions an include" }, "a per file error is shown through the redaction");
-    assert.match(answer.body.text, /^dashboard-test-peer: restored 1 file of folder Test A from its versions: hello\.txt \(version of 2026-10-25T10:00:00\+02:00\); 2 not restored/);
+    assert.deepEqual(answer.body.errors, { "gone.txt": "version not found", "leaky.txt": "error hidden: it mentions an include", "keyed.txt": "refused for [redacted] and [redacted]" }, "a per file error is shown through the redaction");
+    assert.match(answer.body.text, /^dashboard-test-peer: restored 1 file of folder Test A from its versions: hello\.txt \(version of 2026-10-25T10:00:00\+02:00\); 3 not restored/);
     assert.deepEqual(notes.map((note) => [note.folderId, note.text]), [["test-a", answer.body.text]]);
   });
 

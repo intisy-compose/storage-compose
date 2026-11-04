@@ -471,6 +471,40 @@ describe("conflict index", () => {
     assert.equal(indexes.count("fb98", "documents"), 2, "the copy left out before is found");
   });
 
+  it("a folder brought under the cap again within the minute is searched for its left-out copies once that minute is up", async () => {
+    const reader = new FakeReader();
+    documentsTree(reader);
+    reader.trees.get("documents")!.set("small", [file("b.txt"), file("b.sync-conflict-20260606-110111-H3SXFPD.txt", 4), file("b.sync-conflict-20260606-110222-H3SXFPD.txt", 5)]);
+    let now = 1_000_000;
+    const { indexes } = await indexesIn(undefined, { maxConflicts: 2, leftOutSearchMinMs: 200, now: () => now });
+    await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
+    await indexes.idle();
+    const rootReads = () => reader.asked.filter((entry) => entry === "documents::0").length;
+    const removeKept = async (sequence: number) => {
+      const kept = indexes.list("fb98", "documents")!.conflicts[0].path;
+      const directory = kept.includes("/") ? kept.slice(0, kept.lastIndexOf("/")) : "";
+      const tree = reader.trees.get("documents")!;
+      tree.set(directory, tree.get(directory)!.filter((entry) => !kept.endsWith(entry.name)));
+      reader.files.set(`documents:${kept}`, indexFile(1, true));
+      reader.sequences.set("documents", sequence);
+      indexes.takeEvent("fb98", indexUpdated("documents", sequence, [kept]));
+      await indexes.idle();
+    };
+    const before = rootReads();
+
+    await removeKept(41);
+    assert.equal(rootReads(), before + 1, "the first time under the cap searches at once");
+    await removeKept(42);
+    assert.equal(rootReads(), before + 1, "a second time within the minute waits");
+    assert.equal(indexes.hasMore("fb98", "documents"), true, "the folder still says it may hold more while it waits");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(rootReads(), before + 1, "the clock has not moved, so the wait goes on");
+    now += 200;
+    await until(() => rootReads() === before + 2, "the search once the minute is up");
+    await indexes.idle();
+    assert.equal(indexes.count("fb98", "documents"), 2);
+  });
+
   it("the sweep pauses between two directory reads", async () => {
     const reader = new FakeReader();
     documentsTree(reader);

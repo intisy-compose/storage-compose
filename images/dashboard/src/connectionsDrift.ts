@@ -2,9 +2,13 @@ import { addressHost } from "./api/deviceText.js";
 import type { ConnectionsState, PeerTable } from "./api/types.js";
 import { hasNoTrustedNetwork } from "./reachability.js";
 
-/** One round over this host's nodes: on the profile after it, not yet on it (no entry or no answering Syncthing), and failed with the reason. */
+/**
+ * One round over this host's nodes: on the profile after it, saved but waiting for the node's Syncthing to restart, not yet on it
+ * (no entry or no answering Syncthing), and failed with the reason.
+ */
 export interface ApplyReport {
   applied: string[];
+  restartNeeded: string[];
   notYet: string[];
   failed: Record<string, string>;
 }
@@ -17,6 +21,7 @@ export function recordDrift(report: ApplyReport): void {
 
 export function connectionsStateOf(nodeId: string): ConnectionsState {
   if (lastReport?.applied.includes(nodeId)) return "on-profile";
+  if (lastReport?.restartNeeded.includes(nodeId)) return "restart-needed";
   if (lastReport && (lastReport.notYet.includes(nodeId) || Object.hasOwn(lastReport.failed, nodeId))) return "not-yet";
   return "unknown";
 }

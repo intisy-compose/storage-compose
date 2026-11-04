@@ -1,5 +1,5 @@
 import { deviceSettingLabels } from "../api/deviceText.js";
-import { keeperProblem } from "../api/keeperText.js";
+import { generalSettingKeys, keeperProblem } from "../api/keeperText.js";
 import { generalSettingLabels } from "../api/optionsText.js";
 import { profileAddressesProblem, profileProblem } from "../api/profileText.js";
 import { type AdvancedTarget, type DeviceSettingsChange, type FolderSettingsChange, type FolderType, folderSettingLabels } from "../api/types.js";
@@ -16,9 +16,11 @@ export const guiManagedText = "the GUI is managed by the stack, so it is not cha
 /** @implNote `address` is the GUI's listen address: none of the objects the editor shows has a key of that name. */
 const guiKeys = new Set(["gui", "address"]);
 
-const usageReportKeys = new Set(["urAccepted", "urSeen", "urUniqueId"]);
+/** The usage reporting answer General sends, under the key General stores it as, and what Syncthing keeps beside it. */
+export const usageReportKeys: ReadonlySet<string> = new Set([generalSettingKeys.usageReporting, "urSeen", "urUniqueId"]);
 const reportAddressKeys = new Set(["urURL", "crURL", "releasesURL"]);
-const folderFormKeys = new Set(["path", "versioning", "devices"]);
+/** Folder form fields whose guards only the form's own route applies; typed by the form's fields, so a renamed field fails to compile here. */
+export const folderFormKeys: ReadonlySet<keyof FolderSettingsChange> = new Set<keyof FolderSettingsChange>(["path", "versioning", "devices"]);
 
 function nestedSecretKey(value: unknown): string | null {
   if (Array.isArray(value)) return value.map(nestedSecretKey).find((key) => key !== null) ?? null;
@@ -40,14 +42,23 @@ function kindOf(value: unknown): string {
   return "an object";
 }
 
+/**
+ * @implNote Go writes only a nil list or map as null, never a number, text or boolean, so a null setting takes a list, an object or null,
+ * which are exactly what `typeof` calls an object.
+ */
+function nullSettingProblem(key: string, value: unknown): string | null {
+  return typeof value === "object" ? null : `${key} must be a list or an object, as Syncthing has it null`;
+}
+
 /** Why a key cannot be sent at all: the GUI's, a secret, one the object does not have, or a value of another kind than Syncthing's. */
 function keyProblem(key: string, value: unknown, current: SyncthingObject, what: string): string | null {
   if (guiKeys.has(key)) return guiManagedText;
   const secret = isSecretKey(key) ? key : nestedSecretKey(value);
   if (secret) return `${secret} is a secret, which the dashboard never reads or sends`;
   if (!Object.hasOwn(current, key)) return `${key} is not a setting of ${what}`;
+  if (current[key] === null) return nullSettingProblem(key, value);
   const expected = kindOf(current[key]);
-  return current[key] === null || kindOf(value) === expected ? null : `${key} must be ${expected}, as Syncthing has it`;
+  return kindOf(value) === expected ? null : `${key} must be ${expected}, as Syncthing has it`;
 }
 
 function picked(change: SyncthingObject, keys: readonly string[]): SyncthingObject {
@@ -84,7 +95,7 @@ function isPlainName(value: unknown): boolean {
 /** @implNote Path, versioning and sharing carry the root, versions-path and typed-ID guards of the folder's own form, so they are changed only there. */
 function folderKeyProblem(key: string, value: unknown): string | null {
   if (key === "id") return "the folder ID cannot be changed";
-  if (folderFormKeys.has(key)) return `${key} is changed in the folder's own form, which checks it`;
+  if (folderFormKeys.has(key as keyof FolderSettingsChange)) return `${key} is changed in the folder's own form, which checks it`;
   if (key === "filesystemType") return `${key} stays as Syncthing set it`;
   if (key === "markerName" && !isPlainName(value)) return "markerName must be a name inside the folder, without / or \\ or ..";
   return null;
