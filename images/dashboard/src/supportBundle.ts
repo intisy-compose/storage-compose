@@ -110,7 +110,10 @@ export function holdsSecret(content: Buffer, secret: string): boolean {
   return secretForms(secret).some((form) => content.includes(form));
 }
 
-/** Each secret, in every form it can be written in, replaced by `[redacted]`; the longest forms go first, so no part of one is left. */
+/**
+ * Each secret, in every form it can be written in, replaced by `[redacted]`; the longest forms go first, so no part of one is left.
+ * @implNote A short secret is replaced even where it garbles ordinary text, by the human partner's choice (2026-11-04).
+ */
 export function withoutSecrets(text: string, secrets: readonly string[]): string {
   const forms = secrets.flatMap(secretForms).sort((left, right) => right.length - left.length);
   return forms.reduce((current, form) => current.split(form).join("[redacted]"), text);
