@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { type LocalInstance, callSyncthing } from "../src/instanceResolver.js";
-import { knownNodeSecrets, secretsClock } from "../src/nodeSecrets.js";
+import { knownNodeSecrets, lastReadSecretsKept, secretsClock } from "../src/nodeSecrets.js";
 import { type SyncthingClient, SyncthingRefusal } from "../src/syncthing.js";
 
 /** A node's Syncthing at `url` whose `/config` holds `password`, or fails while `fails` is set. */
@@ -39,17 +39,17 @@ describe("a refusal's text", () => {
 });
 
 describe("a node's last read secrets", () => {
-  it("are kept for its current endpoint only, so a node that moved keeps no list of the old one", async (context) => {
+  it("are kept for the newest endpoints read, beside a moved node's old one, and the one read longest ago leaves first", async (context) => {
     let now = 1_000_000;
     context.mock.method(secretsClock, "now", () => now);
-    const old = { fails: false };
-    const moved = { fails: false };
-    const oldClient = clientAt("http://127.0.0.1:8384", "old-hash", old);
-    assert.deepEqual(await knownNodeSecrets("n1", oldClient), { secrets: ["key", "old-hash"], complete: true });
-    assert.deepEqual(await knownNodeSecrets("n1", clientAt("http://127.0.0.1:8385", "new-hash", moved)), { secrets: ["key", "new-hash"], complete: true });
+    const states = Array.from({ length: lastReadSecretsKept + 1 }, () => ({ fails: false }));
+    const clients = states.map((state, index) => clientAt(`http://127.0.0.1:${9000 + index}`, `hash-${index}`, state));
+    for (const client of clients) await knownNodeSecrets("n1", client);
     now += 120_000;
-    old.fails = true;
+    for (const state of states) state.fails = true;
 
-    assert.deepEqual(await knownNodeSecrets("n1", oldClient), { secrets: ["key"], complete: false });
+    assert.deepEqual(await knownNodeSecrets("n1", clients[0]), { secrets: ["key"], complete: false }, "the endpoint read longest ago");
+    assert.deepEqual(await knownNodeSecrets("n1", clients[1]), { secrets: ["key", "hash-1"], complete: true }, "an old endpoint of the same node is still known");
+    assert.deepEqual(await knownNodeSecrets("n1", clients.at(-1)!), { secrets: ["key", `hash-${lastReadSecretsKept}`], complete: true });
   });
 });

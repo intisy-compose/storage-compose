@@ -13,12 +13,21 @@ function secretsKey(nodeId: string, client: SyncthingClient): string {
   return `${nodeId}\u0000${client.endpoint.url}`;
 }
 
-/** Keeps one last read list per node: a node whose endpoint moved leaves none for the old one. */
-function rememberLastRead(nodeId: string, key: string, secrets: string[]): void {
-  for (const known of lastReadSecrets.keys()) {
-    if (known !== key && known.startsWith(`${nodeId}\u0000`)) lastReadSecrets.delete(known);
-  }
+/** How many endpoints' last read lists are kept; far more than a host has nodes, so only endpoints long gone fall out. */
+export const lastReadSecretsKept = 64;
+
+/**
+ * Keeps the newest `lastReadSecretsKept` lists, the endpoint read longest ago leaving first.
+ * @implNote Not one list per node: an endpoint that moved can answer beside the new one for a while, and dropping its list then would
+ * hide its texts as if its secrets were never read.
+ */
+function rememberLastRead(key: string, secrets: string[]): void {
+  lastReadSecrets.delete(key);
   lastReadSecrets.set(key, secrets);
+  for (const oldest of lastReadSecrets.keys()) {
+    if (lastReadSecrets.size <= lastReadSecretsKept) break;
+    lastReadSecrets.delete(oldest);
+  }
 }
 
 /**
@@ -40,7 +49,7 @@ export function nodeSecrets(nodeId: string, client: SyncthingClient): Promise<st
   if (kept && secretsClock.now() - kept.readAt < secretsKeptMs) return kept.secrets.then((secrets) => withCurrentApiKey(secrets, client));
   const secrets = client.request<unknown>("GET", "/config").then((config) => {
     const read = withCurrentApiKey(configSecrets(config), client);
-    rememberLastRead(nodeId, key, read);
+    rememberLastRead(key, read);
     return read;
   });
   keptSecrets.set(key, { readAt: secretsClock.now(), secrets });
