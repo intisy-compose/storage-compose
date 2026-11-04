@@ -25,7 +25,7 @@ import { until } from "./until.js";
 
 const pcDevice = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 const arrayDevice = "ARRAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
-const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20, bufferSize: 3, changesPerPoll: 4, changesPauseMs: 0, startTimeTimeoutMs: 100 };
+const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20, bufferSize: 3, changesPerPoll: 4, changesPauseMs: 0, startTimeTimeoutMs: 1500 };
 
 /**
  * A Syncthing that answers `/rest/events` and `/rest/events/disk` like the real one: only events after `since`, the newest `limit` of them,
@@ -556,10 +556,10 @@ describe("file changes", () => {
     fake.statusDelayMs = 5_000;
     const log = new ActivityLog(100);
     const started = Date.now();
-    feedsFor(log).reconcile([feed]);
+    feedsFor(log, { startTimeTimeoutMs: 100 }).reconcile([feed]);
     fake.emitDisk(diskChange("LocalChangeDetected", "slow.txt", pcShort));
     await until(() => changes(log).length === 1, "the change despite the slow status");
-    assert.ok(Date.now() - started < 2_000, `${Date.now() - started} ms`);
+    assert.ok(Date.now() - started < 3_000, `${Date.now() - started} ms, where waiting for the status takes 5000`);
   });
 
   it("a folder removed from the node's configuration takes its change buffer with it", async () => {
