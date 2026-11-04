@@ -45,9 +45,9 @@ function Get-NodePorts($Node) {
 }
 
 function Test-SyncthingBinary {
-    if (-not ($script:syncthingPath -and (Test-Path -LiteralPath $script:syncthingPath))) { return "Syncthing is missing at $script:syncthingPath; run up again" }
+    if (-not ($script:syncthingPath -and (Test-Path -LiteralPath $script:syncthingPath))) { return "Syncthing is missing at $script:syncthingPath; run up or the join again" }
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $script:syncthingPath).Hash.ToLower()
-    if ($hash -ne "$script:syncthingSha256".ToLower()) { return "$script:syncthingPath does not match the checksum recorded at install; run up again" }
+    if ($hash -ne "$script:syncthingSha256".ToLower()) { return "$script:syncthingPath does not match the checksum recorded at install; run up or the join again" }
     return $null
 }
 

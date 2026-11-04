@@ -17,6 +17,7 @@ $smartctlPackage = "winget install --id smartmontools.smartmontools --version 7.
 
 . (Join-Path $PSScriptRoot "windows\disks.ps1")
 . (Join-Path $PSScriptRoot "windows\agent-files.ps1")
+. (Join-Path $PSScriptRoot "windows\nodes.ps1")
 . (Join-Path $PSScriptRoot "windows\agent-install.ps1")
 $composeProject = "storage-compose"
 $attachRequestFile = Join-Path $PSScriptRoot $attachRequestFileName
@@ -310,8 +311,8 @@ function Get-AgentPassThrough {
 <#
 .NOTES
 The agent is a service (specs/2026-10-19-storage-nodes-and-dashboard-design.md, the host agent and its
-lifetime): installed or repaired by every up, removed by down, and gone by itself 10 minutes after the
-stack is.
+lifetime): installed or repaired in stack mode by every up, removed by down or handed back to the
+host's joined nodes in joined mode, and gone by itself 10 minutes after the stack is.
 #>
 function Install-Agent {
     Write-Step "Checking the host agent..."
@@ -328,8 +329,12 @@ function Install-Agent {
 }
 
 function Remove-Agent {
-    try { if ((Uninstall-HostAgent $PSScriptRoot) -eq "removed") { Write-OK "The host agent is removed" } }
-    catch { Write-Err "$_" }
+    try {
+        switch (Uninstall-HostAgent $PSScriptRoot) {
+            "removed" { Write-OK "The host agent is removed" }
+            "joined" { Write-OK "The host agent stays in joined mode for this device's joined nodes" }
+        }
+    } catch { Write-Err "$_" }
 }
 
 function Connect-Drives {
@@ -508,7 +513,7 @@ function Invoke-Data([object[]]$DataArguments) {
 $commands = @{
     "init-config" = "Create config.env, name this host and generate the notification topic"
     "up"          = "Install or repair the host agent (admin shell), pass the drives through to WSL (or attach the enclosures with usbipd), mount and lock the array, join the tailnet, start the stack (default)"
-    "down"        = "Stop the stack, release the lock, unmount and release the drives from WSL (or give the enclosures back), remove the host agent (admin shell)"
+    "down"        = "Stop the stack, release the lock, unmount and release the drives from WSL (or give the enclosures back), remove the host agent or hand it back to the joined nodes in joined mode (admin shell)"
     "attach"      = "[disk number]  list the USB disks, or pass a blank one through to WSL as a replacement drive"
     "restart"     = "down, then up"
     "status"      = "Show the containers and their health"

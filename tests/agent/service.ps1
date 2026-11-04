@@ -14,6 +14,7 @@ Set-StrictMode -Version Latest
 $repository = Split-Path (Split-Path $PSScriptRoot)
 . (Join-Path $repository "windows\disks.ps1")
 . (Join-Path $repository "windows\agent-files.ps1")
+. (Join-Path $repository "windows\nodes.ps1")
 . (Join-Path $repository "windows\agent-install.ps1")
 . (Join-Path $PSScriptRoot "test-volumes.ps1")
 

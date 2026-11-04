@@ -243,12 +243,41 @@ commands and nothing needs installing.
 
 ## Windows: the host agent
 
-What has to run outside Docker on Windows runs in one Windows service, `storage-compose-agent`,
-which `up` installs or repairs and `down` removes. It runs as SYSTEM, so it serves before anyone logs
-in, and it acts only while the stack's containers run: a stack that crashed or was removed without
-`down` gets its drives back within one round. Ten minutes after the stack is gone (its containers
-stopped or removed, or its folder deleted) the agent releases everything and unregisters itself, so
-a deleted stack leaves nothing behind. It does three things:
+What has to run outside Docker on Windows runs in one Windows service, `storage-compose-agent`. It
+runs as SYSTEM, so it serves before anyone logs in, in one of two modes:
+
+- **Stack mode**, which `up` installs or repairs. It acts only while the stack's containers run: a
+  stack that crashed or was removed without `down` gets its drives back within one round. Ten
+  minutes after the stack is gone (its containers stopped or removed, or its folder deleted) it
+  releases everything and unregisters itself, so a deleted stack leaves nothing behind. A stop of
+  Docker itself is not the stack going: while Docker does not answer, or the containers exited with
+  Docker's own stop (a Docker Desktop restart leaves them exited until `up`), it keeps the native
+  nodes' Syncthings running, does not count the ten minutes, and says `waitingForDocker` in its
+  heartbeat; the drives and the Docker backend rules follow the containers as for any stop. It waits
+  at most a day, and a host with no `docker` command has no Docker to wait for. While the
+  device still has joined nodes (see Joining a device), `down` installs it again in joined mode for
+  them instead of removing it, and the ten minutes end the same way: it drops what the stack added
+  and goes on in joined mode. If that install fails, `down` names the joined roots and the join
+  command, run as admin, that restores them.
+- **Joined mode**, which the Windows join installs on a device without the stack. It runs the
+  Syncthing of each node a join named while that node's `.storage\node.toml` exists, with no Docker,
+  no pass-through and no Docker backend rules, and fetches each node's connections entry from its
+  dashboard over the tailnet once a minute, keeping the last copy in
+  `host-agent\connections\joined.json`, and starts each Syncthing on the kept copy before it asks,
+  so a boot without the tailnet still starts it. A changed entry restarts that node's Syncthing,
+  which applies it before it listens again; one round spends at most 10 s asking. Only a deleted
+  node file ends a node: a volume that is away (not mounted yet, unplugged, locked) keeps it, with
+  nothing running for it until it returns, and a file that cannot be read keeps its Syncthing
+  running as last read. A node whose folder or `.storage` folder is missing while its volume is there
+  is kept the same way, and the log says it stays until `storage-join.ps1 -Leave` or the folder
+  returns. When no joined node file is left it stops, removes its rules and
+  unregisters itself at once, with no grace period. `up` on such a device switches it to stack
+  mode, and its joined nodes become nodes the agent finds like any other. A joined agent whose
+  checkout was moved or deleted runs no Syncthing and says so in its log and heartbeat; run the join
+  again from the checkout where it is now.
+
+Its files stay in `host-agent\` of the checkout that installed it. It does three things, the first
+in stack mode only:
 
 - passes the array's drives through to WSL (below), running `wsl.exe` as the user who ran `up`,
   since WSL refuses SYSTEM and keeps one VM per user;
@@ -259,17 +288,18 @@ a deleted stack leaves nothing behind. It does three things:
   device ID on any host, listens on its own port (22001 and up), on the tailnet address until the
   connection profile reaches the node and then on the profile's addresses (`0.0.0.0`, with the
   firewall rules below deciding who gets in), has its API on `127.0.0.1` (8450 and up), and is the
-  pinned release that `up` downloads once into `host-agent\bin` and checks against its SHA-256;
-- writes `host-agent\status\heartbeat.json` every 5 seconds for the dashboard, with each node's
-  Syncthing, the drives passed through and when the agent would remove itself. Its log is
-  `host-agent\agent.log`.
+  pinned release that `up` or the join downloads once into `host-agent\bin` and checks against its
+  SHA-256;
+- writes `host-agent\status\heartbeat.json` every 5 seconds, with its mode, each node's Syncthing,
+  the drives passed through and when the agent would remove itself; the dashboard reads it in stack
+  mode, and a rerun of the join in joined mode. Its log is `host-agent\agent.log`.
 
 **Firewall.** A node without a connections entry keeps TCP from the tailnet and a UDP block on its
 port. With one, Public networks admit the tailnet only (`100.64.0.0/10` and `fd7a:115c:a1e0::/48`),
 and Private and Domain networks admit any address, or the tailnet only when the entry turns local
 discovery and NAT traversal both off; UDP 21027 opens on Private and Domain while local discovery is
-on. The Docker backend gets a Public Block and a Private and Domain Allow on 22000, 22021-22099 and
-22100, by the same rule over every entry of the host: any address while one keeps local discovery or
+on. In stack mode the Docker backend gets a Public Block and a Private and Domain Allow on 22000,
+22021-22099 and 22100, by the same rule over every entry of the host: any address while one keeps local discovery or
 NAT on, else the tailnet. A rule that differs is changed in place, and a connections file that cannot
 be read keeps the rules as they are.
 
@@ -310,7 +340,8 @@ A newly installed device joins the storage network with one script, run once (an
 hook does it on a fresh install) and harmless to run again:
 
 - **Linux** (systemd; Arch, Debian or Fedora): `sudo join/storage-join.sh`
-- **Windows**: `.\join\storage-join.ps1` from a checkout of this repository
+- **Windows**: `.\join\storage-join.ps1` from a checkout of this repository, in an admin shell
+  unless this stack runs on the device
 
 It installs Tailscale and Syncthing if they are missing (on Arch from the stick's offline repository
 first) and joins the tailnet with the auth key in `STORAGE_JOIN_KEY` or the stick's
@@ -319,8 +350,11 @@ Windows; `STORAGE_JOIN_ROOT`) and starts Syncthing with its home on the node, li
 tailnet only until the connection profile reaches it; registers with the storage dashboard (`STORAGE_DASHBOARD`, default
 `https://storage.<tailnet>`), adds the devices and folders it answers with, and on Linux links the
 home folders (`~/Documents`, `~/code`, ...) into the node, moving what they held. On Windows the
-node's Syncthing is the host agent's when this stack runs there, otherwise a logon task of the user
-runs it. A new device node keeps the working and essential bands (threshold 50,
+node's Syncthing is always the host agent's: where this stack runs, its agent finds the node; elsewhere
+the script installs the agent in joined mode from its checkout, which is why it needs an admin shell
+there, and it says so before it changes anything. A device joined before joined mode, whose Syncthing
+a logon task of the user ran, is handed to the agent when the script runs again: the task, that
+Syncthing and the rules the join set go. A new device node keeps the working and essential bands (threshold 50,
 `STORAGE_JOIN_THRESHOLD`); 0, which keeps everything the network holds, is for the cluster, and the
 scripts refuse it unless `STORAGE_JOIN_ALLOW_KEEP_ALL=1`. The Linux script runs from a checkout:
 it installs Syncthing's start step (`join/storage-connections.sh`) with
@@ -335,6 +369,16 @@ CI) runs without asking, from the settings. A folder node is also listed in its 
 `.storage/nodes.toml`, which is how the host agent finds it, and a node inside another (a folder in
 a listed folder node or on a drive node's volume, or a drive node over listed folders) is refused
 before anything is written.
+
+A Windows device leaves with `.\join\storage-join.ps1 -Leave` (no admin shell needed): it deletes
+the node file at the root (`-Root`, `STORAGE_JOIN_ROOT`) and a folder node's line in its volume's
+`.storage\nodes.toml`, and keeps the Syncthing home with its device ID. The agent then stops the
+node's Syncthing and removes its rules within a round, and in joined mode removes itself with its
+last node; deleting the node file by hand does the same. On a device joined before joined mode,
+with no agent, `-Leave` stops the logon task's Syncthing and removes the task, and the join's rules
+when run as admin. A node file whose volume is away is left alone. The dashboard still lists the
+device. A join on a device where this stack's agent runs leaves the node to that agent, and `down`
+does not keep it; run the join again after `down` to keep the node in joined mode.
 
 A Syncthing the device already runs (its home in `%LOCALAPPDATA%\Syncthing`, or the
 one its logon task names) is adopted: it is stopped, its home moves into the node with its
