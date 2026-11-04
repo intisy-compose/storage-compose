@@ -16,6 +16,7 @@ services:
       - ${LAB_IMAGES}:/images
       - storage-status:/status
       - peer-data:/peer:ro
+      - ./gateway/namespace-address.sh:/namespace-address.sh:ro
 
   mounter:
     image: storage-mounter:c24test

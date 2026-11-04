@@ -48,7 +48,7 @@ function Stop-Peer {
 function Show-PeerStatus {
     if (-not (Test-PeerExists)) { Write-Output 'peer is down'; return }
     $key = docker exec $container sh -c "sed -n 's:.*<apikey>\(.*\)</apikey>.*:\1:p' /var/syncthing/config/config.xml"
-    $status = docker exec $container wget -qO- --header "X-API-Key: $key" http://127.0.0.1:8389/rest/system/status | ConvertFrom-Json
+    $status = docker exec $container wget -qO- --header "X-API-Key: $key" http://gateway:8389/rest/system/status | ConvertFrom-Json
     Write-Output "device ID: $($status.myID)"
     $dialAddress = Get-PcDialAddress
     if ($dialAddress) { Write-Output "pc dial address: $dialAddress" }

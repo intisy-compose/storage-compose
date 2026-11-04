@@ -156,7 +156,7 @@ services:
     container_name: storage-tailscale
     environment:
       TS_HOSTNAME: ${TS_HOSTNAME:-storage}
-      TS_OUTBOUND_HTTP_PROXY_LISTEN: :1055
+      TS_OUTBOUND_HTTP_PROXY_LISTEN: gateway:1055
     volumes:
       - ${STORAGE_ROOT:-/mnt/storage}/${ARRAY_PREFIX:-storage}-data1/.storage/tailscale:/var/lib/tailscale
     depends_on:
@@ -197,14 +197,15 @@ services:
     entrypoint: ["/bin/sh", "/start.sh"]
     environment:
       ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
-      STGUIADDRESS: 127.0.0.1:8385
+      STGUIPORT: 8385
       STHOMEDIR: /var/syncthing/config
     # The image's own check probes 8384, which in the shared namespace is Tailscale serve's TLS port.
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -m 2 http://127.0.0.1:8385/rest/noauth/health | grep -q OK"]
+      test: ["CMD-SHELL", "curl -fsS -m 2 \"http://$$(sh /namespace-address.sh --single):8385/rest/noauth/health\" | grep -q OK"]
       interval: 60s
       timeout: 10s
     volumes:
+      - ./gateway/namespace-address.sh:/namespace-address.sh:ro
       - ./services/syncthing/start.sh:/start.sh:ro
       - ./services/syncthing/guard.sh:/guard.sh:ro
       - ./images/nodes/apply-connections.sh:/apply-connections.sh:ro
@@ -231,6 +232,7 @@ services:
     environment:
       ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
     volumes:
+      - ./gateway/namespace-address.sh:/namespace-address.sh:ro
       - ./services/syncthing/guard.sh:/guard.sh:ro
       - storage-status:/status
       - ${STORAGE_ROOT:-/mnt/storage}:/mnt/storage:rslave
@@ -282,6 +284,27 @@ services:
     depends_on:
       pool:
         condition: service_healthy
+
+# Syncthing binds its local discovery listener to every address and has no setting to choose one,
+# so a tailnet device can send it announcements; they only suggest addresses, and every connection
+# is still authenticated by device ID. The connection profile's lan method turns it off.
+x-namespace-listeners:
+  tailscale:
+    "1055": gateway
+  samba:
+    "445": tailnet
+  syncthing:
+    "8385": gateway
+    "22000": tailnet
+    "22000/udp": tailnet
+    "21027/udp": unbound
+  nodes:
+    "8411-8489": gateway
+    "22021-22099": tailnet
+    "22021-22099/udp": tailnet
+    "21027/udp": unbound
+  bridge:
+    "22100": tailnet
 
 x-volume-roles:
   samba-data: rebuilt
