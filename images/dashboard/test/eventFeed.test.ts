@@ -508,6 +508,17 @@ describe("file changes", () => {
     assert.ok(fake.typesSeen.length > 0 && fake.typesSeen.every((types) => !types.includes("ChangeDetected")), fake.typesSeen.join(" | "));
   });
 
+  it("a folder removed from the node's configuration takes its change buffer with it", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "kept.txt", pcShort), diskChange("LocalChangeDetected", "gone.txt", pcShort, "dashboard-test-a"));
+    await until(() => changes(log).length === 2, "a change in each folder");
+    fake.emit({ type: "ConfigSaved", data: { devices: [], folders: [{ id: "documents", label: "Documents" }] } });
+    await until(() => changes(log, { folder: "dashboard-test-a" }).length === 0, "the removed folder's changes dropped");
+    assert.deepEqual(changes(log).map((entry) => entry.change?.path), ["kept.txt"]);
+  });
+
   it("a burst of changes keeps the newest a poll may take", async () => {
     const { fake, feed } = await instance("pc", "pc");
     const log = new ActivityLog(100);

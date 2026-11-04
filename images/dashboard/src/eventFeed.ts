@@ -76,6 +76,11 @@ export class ActivityLog {
     );
   }
 
+  /** Drops every buffer whose key matches. */
+  dropBuffers(matches: (bufferKey: string) => boolean): void {
+    for (const bufferKey of [...this.buffers.keys()]) if (matches(bufferKey)) this.buffers.delete(bufferKey);
+  }
+
   entriesOf(bufferKey: string): readonly ActivityEntry[] {
     return (this.buffers.get(bufferKey) ?? []).map((stored) => stored.entry);
   }
@@ -547,7 +552,20 @@ class InstanceFeed {
   private learnNames(config: unknown): void {
     const { devices, folders } = (config ?? {}) as { devices?: unknown; folders?: unknown };
     if (Array.isArray(devices)) this.context.deviceNames = namesFrom(devices, "deviceID", "name");
-    if (Array.isArray(folders)) this.context.folderLabels = namesFrom(folders, "id", "label");
+    if (Array.isArray(folders)) {
+      this.context.folderLabels = namesFrom(folders, "id", "label");
+      this.dropRemovedFolderChanges();
+    }
+  }
+
+  /**
+   * @implNote Only a saved configuration, which lists every folder, drops a buffer: a folder list that could not be read says nothing of
+   * which folders are gone.
+   */
+  private dropRemovedFolderChanges(): void {
+    const prefix = feedBufferKey(this.instance.nodeId, { type: changeActivityTypes[0], folderId: "" });
+    const isRemovedFolder = (folderId: string) => folderId !== "" && !this.context.folderLabels.has(folderId);
+    this.log.dropBuffers((bufferKey) => bufferKey.startsWith(prefix) && isRemovedFolder(bufferKey.slice(prefix.length)));
   }
 
   private isRepeat(entry: NewActivityEntry): boolean {
