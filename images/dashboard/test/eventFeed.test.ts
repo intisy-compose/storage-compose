@@ -1199,6 +1199,7 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
 describe("a secret's written forms", () => {
   const found = (written: string, secret: string) => assert.ok(holdsSecret(Buffer.from(written), secret), `${written} holds ${JSON.stringify(secret)}`);
   it("are found percent-encoded, as in a URL", () => found("https://x/?pw=a%2Fb%20c%26d", "a/b c&d"));
+  it("are found query-escaped as Go writes them, a space as a plus", () => found("https://x/?pw=it%27s+a%21%28b%29%2A", "it's a!(b)*"));
   it("are found with XML quotes by hex number", () => found("pass&#x22;word&#x27;", `pass"word'`));
   it("are found with an apostrophe by zero-padded number", () => found("it&#039;s", "it's"));
   it("are found with tab, line feed and carriage return as Go's XML writer escapes them", () => found("a&#x9;b&#xA;c&#xD;d", "a\tb\nc\rd"));

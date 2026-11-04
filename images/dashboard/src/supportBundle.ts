@@ -97,13 +97,20 @@ function xmlForm(secret: string, entities: Record<string, string>): string {
   return secret.replace(/[&<>"'\t\n\r]/g, (character) => entities[character] ?? character);
 }
 
+/** As Go's `url.QueryEscape` writes a value: `!'()*` escaped as well, and a space as a plus. */
+function goQueryForm(secret: string): string {
+  return encodeURIComponent(secret)
+    .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replace(/%20/g, "+");
+}
+
 /**
- * Every way a secret can read in a file: as written, percent-encoded as in a URL, as Go writes it into JSON, and as XML escapes it by
- * name, by Go's numbers, by hex numbers and by zero-padded numbers.
+ * Every way a secret can read in a file: as written, percent-encoded as in a URL and as Go's query escaping writes it, as Go writes it
+ * into JSON, and as XML escapes it by name, by Go's numbers, by hex numbers and by zero-padded numbers.
  */
 export function secretForms(secret: string): string[] {
   const xmlForms = [namedXmlEntities, goXmlEntities, hexXmlEntities, paddedXmlEntities].map((entities) => xmlForm(secret, entities));
-  return [...new Set([secret, encodeURIComponent(secret), goJsonForm(secret), ...xmlForms])];
+  return [...new Set([secret, encodeURIComponent(secret), goQueryForm(secret), goJsonForm(secret), ...xmlForms])];
 }
 
 export function holdsSecret(content: Buffer, secret: string): boolean {
