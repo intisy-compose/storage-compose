@@ -146,6 +146,27 @@ migrate_labels() {
     ok "Wrote ARRAY_PREFIX=$id to config.env; start the array with './docker-compose.sh up'."
 }
 
+# split_data_source SOURCE: sets data_url and data_ref from owner/repo[@ref] or a git URL[@ref]. The
+# ref follows the last @ after a URL's user@, so git@host:owner/repo@ref keeps its user.
+split_data_source() {
+    local rest=$1 user=""
+    if [[ $rest =~ ^([A-Za-z][A-Za-z0-9+.-]*://[^/@]+@)(.*)$ || $rest =~ ^([^/@:]+@)([^/:]+:.*)$ ]]; then
+        user=${BASH_REMATCH[1]}
+        rest=${BASH_REMATCH[2]}
+    fi
+    data_ref=main
+    if [[ $rest == *@* ]]; then
+        data_ref=${rest##*@}
+        rest=${rest%@*}
+    fi
+    if [[ -z $data_ref || $data_ref == -* ]]; then
+        printf '\033[31m%s\033[0m\n' "A data ref must not be empty or start with '-': '$data_ref'" >&2
+        exit 1
+    fi
+    data_url=$user$rest
+    [[ $data_url == *://* || -n $user ]] || data_url="https://github.com/$data_url.git"
+}
+
 data_command() {
     local subcommand url ref
     subcommand=$(printf '%s' "${1:-status}" | tr '[:upper:]' '[:lower:]')
@@ -153,10 +174,9 @@ data_command() {
         status) git -C "$here" submodule status -- data ;;
         use)
             if [ -n "${2:-}" ]; then
-                url=${2%%@*}
-                ref=main
-                [ "$url" = "$2" ] || ref=${2#*@}
-                [[ $url == *://* || $url == git@* ]] || url="https://github.com/$url.git"
+                split_data_source "$2"
+                url=$data_url
+                ref=$data_ref
             else
                 url=$(git -C "$here" config -f .gitmodules submodule.data.url)
                 ref=main
