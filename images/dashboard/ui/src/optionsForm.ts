@@ -78,6 +78,16 @@ const stateWords: Record<ConnectionsState, string> = {
   unknown: "not known yet",
 };
 
+/** The node card's words for where the node stands against the profile, warn toned while it does not run it yet. */
+export function connectionsStateLine(state: ConnectionsState): { text: string; tone: "warn" | null } {
+  return { text: stateWords[state], tone: state === "not-yet" || state === "restart-needed" ? "warn" : null };
+}
+
+function connectionsStateElement(state: ConnectionsState): HTMLElement {
+  const line = connectionsStateLine(state);
+  return element("span", { className: line.tone ? `tone-text-${line.tone}` : "" }, line.text);
+}
+
 /** The options the profile sets, as this node's Syncthing has them now; none is changed here. */
 function profileOwnedList(node: StorageNode, options: InstanceOptions): HTMLElement {
   const row = (key: keyof typeof connectionOptionLabels, value: string, why = profileOwnedText(key)): [string, HTMLElement] => [
@@ -86,7 +96,7 @@ function profileOwnedList(node: StorageNode, options: InstanceOptions): HTMLElem
   ];
   const untrustedWhy = node.untrustedNetworks ? untrustedNetworksText : undefined;
   return keyValueList([
-    ["This node", element("span", { className: node.connections === "not-yet" || node.connections === "restart-needed" ? "tone-text-warn" : "" }, stateWords[node.connections])],
+    ["This node", connectionsStateElement(node.connections)],
     row("listenAddresses", listText(options.listenAddresses)),
     row("localAnnounceEnabled", onOff(options.localAnnounceEnabled), untrustedWhy),
     row("globalAnnounceEnabled", onOff(options.globalAnnounceEnabled)),
