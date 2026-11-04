@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Stands in for lsblk: appends "lsblk ARGUMENTS" to $FAKE_DOCKER_DIR/calls.
+set -uo pipefail
+printf 'lsblk %s\n' "$*" >>"${FAKE_DOCKER_DIR:?}/calls"
+exit 0
