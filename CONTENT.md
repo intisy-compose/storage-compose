@@ -249,17 +249,25 @@ runs as SYSTEM, so it serves before anyone logs in, in one of two modes:
 - **Stack mode**, which `up` installs or repairs. It acts only while the stack's containers run: a
   stack that crashed or was removed without `down` gets its drives back within one round. Ten
   minutes after the stack is gone (its containers stopped or removed, or its folder deleted) it
-  releases everything and unregisters itself, so a deleted stack leaves nothing behind. `down`
-  removes it, or, while the device still has joined nodes (see Joining a device), installs it again
-  in joined mode for them.
+  releases everything and unregisters itself, so a deleted stack leaves nothing behind. While the
+  device still has joined nodes (see Joining a device), `down` installs it again in joined mode for
+  them instead of removing it, and the ten minutes end the same way: it drops what the stack added
+  and goes on in joined mode. If that install fails, `down` names the joined roots and the join
+  command, run as admin, that restores them.
 - **Joined mode**, which the Windows join installs on a device without the stack. It runs the
   Syncthing of each node a join named while that node's `.storage\node.toml` exists, with no Docker,
   no pass-through and no Docker backend rules, and fetches each node's connections entry from its
   dashboard over the tailnet once a minute, keeping the last copy in
-  `host-agent\connections\joined.json`; a changed entry restarts that node's Syncthing, which
-  applies it before it listens again. When no joined node file is left it stops, removes its rules
-  and unregisters itself at once, with no grace period. `up` on such a device switches it to stack
-  mode, and its joined nodes become nodes the agent finds like any other.
+  `host-agent\connections\joined.json`, and starts each Syncthing on the kept copy before it asks,
+  so a boot without the tailnet still starts it. A changed entry restarts that node's Syncthing,
+  which applies it before it listens again; one round spends at most 10 s asking. Only a deleted
+  node file ends a node: a volume that is away (not mounted yet, unplugged, locked) keeps it, with
+  nothing running for it until it returns, and a file that cannot be read keeps its Syncthing
+  running as last read. When no joined node file is left it stops, removes its rules and
+  unregisters itself at once, with no grace period. `up` on such a device switches it to stack
+  mode, and its joined nodes become nodes the agent finds like any other. A joined agent whose
+  checkout was moved or deleted runs no Syncthing and says so in its log and heartbeat; run the join
+  again from the checkout where it is now.
 
 Its files stay in `host-agent\` of the checkout that installed it. It does three things, the first
 in stack mode only:
@@ -359,7 +367,11 @@ A Windows device leaves with `.\join\storage-join.ps1 -Leave` (no admin shell ne
 the node file at the root (`-Root`, `STORAGE_JOIN_ROOT`) and a folder node's line in its volume's
 `.storage\nodes.toml`, and keeps the Syncthing home with its device ID. The agent then stops the
 node's Syncthing and removes its rules within a round, and in joined mode removes itself with its
-last node; deleting the node file by hand does the same. The dashboard still lists the device.
+last node; deleting the node file by hand does the same. On a device joined before joined mode,
+with no agent, `-Leave` stops the logon task's Syncthing and removes the task, and the join's rules
+when run as admin. A node file whose volume is away is left alone. The dashboard still lists the
+device. A join on a device where this stack's agent runs leaves the node to that agent, and `down`
+does not keep it; run the join again after `down` to keep the node in joined mode.
 
 A Syncthing the device already runs (its home in `%LOCALAPPDATA%\Syncthing`, or the
 one its logon task names) is adopted: it is stopped, its home moves into the node with its
