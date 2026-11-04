@@ -9,13 +9,21 @@ $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "agent-rounds-$([guid]::N
 $stackFolder = Join-Path $scratch "storage-compose"
 
 $realGetStackLastFinishedAt = (Get-Item function:\Get-StackLastFinishedAt).ScriptBlock
-$realGetStackContainerStates = (Get-Item function:\Get-StackContainerStates).ScriptBlock
-function Get-StackContainerStates {
+$realGetStackContainers = (Get-Item function:\Get-StackContainers).ScriptBlock
+$realGetDockerSystemTime = (Get-Item function:\Get-DockerSystemTime).ScriptBlock
+$realInvokeWatcherRound = (Get-Item function:\Invoke-WatcherRound).ScriptBlock
+function Get-StackContainers {
     $global:dockerCalls++
     if ($null -eq $global:containerStates) { return $null }
-    return ,@($global:containerStates)
+    $index = 0
+    return ,@($global:containerStates | ForEach-Object { [pscustomobject]@{ id = "$($global:containerIdPrefix)$index"; state = $_ }; $index++ })
 }
-function Get-StackLastFinishedAt {
+function Test-DockerIsInstalled { return -not $global:dockerIsMissing }
+function Get-DockerSystemTime {
+    $global:systemTimeCalls++
+    return $global:now.AddSeconds($global:vmClockOffsetSeconds)
+}
+function Get-StackLastFinishedAt([string[]]$Ids) {
     $global:finishedAtCalls++
     if ($global:finishedAtThrows) { throw "docker inspect did not answer" }
     return $global:lastFinishedAt
@@ -78,6 +86,13 @@ function Reset-World([object[]]$States) {
     $global:onWait = $null
     $global:lastFinishedAt = $null
     $global:finishedAtThrows = $false
+    $global:containerIdPrefix = "c"
+    $global:dockerIsMissing = $false
+    $global:vmClockOffsetSeconds = 0
+    $global:systemTimeCalls = 0
+    $script:lastDockerClockRead = [datetime]::MinValue
+    $script:dockerClockOffsetSeconds = $null
+    $script:stoppedWithDockerKey = $null
     $global:finishedAtCalls = 0
     $script:dockerWaitReason = ""
     $script:stackGoneSince = $null
@@ -499,6 +514,18 @@ Describe "joined nodes whose file cannot be read" {
         @($global:logged | Where-Object { $_ -like "*kept running as last read*" }).Count | Should Be 1
     }
 
+    It "keeps a node whose folder is missing on a volume that is there, and names the way out once" {
+        Reset-JoinedWorld @("a001")
+        Invoke-AgentRound $null $true
+        $global:logged = @()
+        Mock Write-WatcherLog { $global:logged += $Message }
+        Remove-Item -Recurse -Force (Get-JoinedRoot "a001")
+        foreach ($round in 1..3) { Invoke-AgentRound $null $false }
+        Test-AgentShouldRemoveItself | Should Be $false
+        @((Get-LastNodeRound).nodes).Count | Should Be 0
+        @($global:logged | Where-Object { $_ -like "*until storage-join.ps1 -Leave or the folder returns*" }).Count | Should Be 1
+    }
+
     It "drops a node whose file was deleted, while its volume and folder are there" {
         Reset-JoinedWorld @("a001", "a002")
         Invoke-AgentRound $null $true
@@ -581,8 +608,8 @@ Describe "waiting out Docker" {
 
     function Assert-StackIsHeld {
         (Get-LastNodeRound).active | Should Be $true
-        $global:passRounds[-1] | Should Be $true
-        $global:backendBlockRounds[-1] | Should Be $true
+        $global:passRounds[-1] | Should Be $false
+        $global:backendBlockRounds[-1] | Should Be $false
         $script:stackGoneSince | Should BeNullOrEmpty
         Test-GraceIsOver | Should Be $false
         (Read-Heartbeat).stack.waitingForDocker | Should Be $true
@@ -596,7 +623,7 @@ Describe "waiting out Docker" {
         Invoke-RoundAt 10 $null
     }
 
-    It "never counts while Docker does not answer, and keeps the nodes, the drives and the Docker rules" {
+    It "never counts while Docker does not answer, and keeps only the native nodes, never passing the drives through" {
         Start-DockerOutage
         Assert-StackIsHeld
         Invoke-RoundAt 1000 $null
@@ -717,17 +744,135 @@ Describe "waiting out Docker" {
             "the stack's containers exited with Docker's own stop; the nodes keep running until the stack runs again or is shut down",
             "no longer waiting for Docker: the stack runs")
     }
+
+    It "stops waiting for Docker after a day, says so once, and then counts the grace" {
+        $global:logged = @()
+        Mock Write-WatcherLog { $global:logged += $Message }
+        Start-DockerOutage
+        Invoke-RoundAt 86409 $null
+        Assert-StackIsHeld
+        Invoke-RoundAt 86410 $null
+        Invoke-RoundAt 86415 $null
+        (Get-LastNodeRound).active | Should Be $false
+        $script:stackGoneSince | Should Be $start.AddSeconds(86410)
+        (Read-Heartbeat).stack.waitingForDocker | Should Be $false
+        @($global:logged | Where-Object { $_ -match "^waited" }) | Should Be @("waited 86400 s for Docker; the stack counts as gone and the grace period counts")
+        Invoke-RoundAt 87010 $null
+        Test-GraceIsOver | Should Be $true
+    }
+
+    It "stops waiting after a day for containers that exited with Docker's stop" {
+        Start-DockerOutage
+        $global:lastFinishedAt = $start.AddSeconds(3)
+        Invoke-RoundAt 100 @("exited")
+        Assert-StackIsHeld
+        Invoke-RoundAt 86410 @("exited")
+        (Get-LastNodeRound).active | Should Be $false
+    }
+
+    It "bounds a wait on a docker inspect that keeps failing by the same day" {
+        Start-DockerOutage
+        $global:finishedAtThrows = $true
+        Invoke-RoundAt 100 @("exited")
+        Assert-StackIsHeld
+        Invoke-RoundAt 86410 @("exited")
+        (Get-LastNodeRound).active | Should Be $false
+    }
+
+    It "takes a host without a docker command as no Docker, and counts the stack as gone" {
+        Reset-World @("running")
+        Invoke-AgentRound $null $true
+        $global:dockerIsMissing = $true
+        Invoke-RoundAt 5 $null
+        (Get-LastNodeRound).active | Should Be $false
+        $script:stackGoneSince | Should Be $start.AddSeconds(5)
+        $script:agentState.dockerOutage | Should BeNullOrEmpty
+        (Read-Heartbeat).stack.waitingForDocker | Should Be $false
+    }
+
+    It "asks Docker when the containers finished once per outage while the same containers stay" {
+        Start-DockerOutage
+        $global:lastFinishedAt = $start.AddSeconds(3)
+        foreach ($second in 100..400) { if ($second % 5 -eq 0) { Invoke-RoundAt $second @("exited", "exited") } }
+        $global:finishedAtCalls | Should Be 1
+        $global:containerIdPrefix = "recreated"
+        Invoke-RoundAt 405 @("exited", "exited")
+        $global:finishedAtCalls | Should Be 2
+    }
+
+    It "compares on the VM's clock when it runs ten minutes behind the host" {
+        Reset-World @("running")
+        $global:vmClockOffsetSeconds = -600
+        Invoke-AgentRound $null $true
+        Invoke-RoundAt 5 @("exited", "exited")
+        Invoke-RoundAt 10 $null
+        $global:lastFinishedAt = $start.AddSeconds(3 - 600)
+        Invoke-RoundAt 100 @("exited", "exited")
+        Assert-StackIsHeld
+        $global:systemTimeCalls | Should Be 2
+    }
+
+    It "drops a saved outage that is not an object and a time that does not parse, and says so once" {
+        $global:logged = @()
+        Mock Write-WatcherLog { $global:logged += $Message }
+        Reset-World @("running")
+        Write-JsonFile $script:agentStateFile ([pscustomobject]@{ ports = [pscustomobject]@{}; dockerOutage = "yesterday"; dockerAnsweredAt = "not a time" })
+        Initialize-Agent (Read-AgentConfig $script:testConfigFile)
+        $script:agentState.dockerOutage | Should BeNullOrEmpty
+        $script:agentState.dockerAnsweredAt | Should BeNullOrEmpty
+        @($global:logged | Where-Object { $_ -match "unreadable" }) | Should Be @("state.json had an unreadable dockerAnsweredAt, dockerOutage; the agent starts without it")
+        Write-JsonFile $script:agentStateFile ([pscustomobject]@{ dockerOutage = [pscustomobject]@{ noticedAt = "soon"; lastAnsweredAt = $null } })
+        Initialize-Agent (Read-AgentConfig $script:testConfigFile)
+        $script:agentState.dockerOutage | Should BeNullOrEmpty
+    }
+
+    It "takes a last answer it cannot read as Docker's stop, within the day" {
+        Start-DockerOutage
+        $script:agentState.dockerOutage = [pscustomobject]@{ lastAnsweredAt = "garbage"; lastAnsweredVmAt = $null; noticedAt = $start.AddSeconds(10).ToString("o") }
+        $global:lastFinishedAt = $start.AddSeconds(-100000)
+        Invoke-RoundAt 100 @("exited")
+        Assert-StackIsHeld
+    }
+
+    It "never takes the attach path while it waits" {
+        Mock Get-DockerVmBootId { return "boot-after-restart" }
+        Mock Get-WindowsDisks { return @() }
+        Mock Update-BlankPassedDisks { }
+        Mock Remove-VanishedDisks { }
+        Mock Update-SmartReports { }
+        Mock Update-PublishedDisks { }
+        Mock Add-RequestedDisks { $global:attachCalls++ }
+        Mock Add-ArrayDisks { $global:attachCalls++ }
+        Mock Invoke-WatcherRound { & $realInvokeWatcherRound $State $StackIsRunning }
+        $global:attachCalls = 0
+        Start-DockerOutage
+        Write-JsonFile (Join-Path $stackFolder "attach-request.json") ([pscustomobject]@{ id = "up-before-the-restart"; active = $true; attach = @(); release = @() })
+        $script:requestFirstSeen["up-before-the-restart"] = $start.AddSeconds(-1000)
+        Invoke-RoundAt 20 $null
+        $global:lastFinishedAt = $start.AddSeconds(3)
+        Invoke-RoundAt 100 @("exited")
+        (Get-LastNodeRound).active | Should Be $true
+        $global:attachCalls | Should Be 0
+        $global:actions -contains "release disks" | Should Be $true
+    }
 }
 
 Describe "asking Docker" {
     It "tells a project without containers from Docker not answering" {
         $script:projectName = "storage-compose"
         Mock Invoke-NativeCommand { return [pscustomobject]@{ Output = ""; ExitCode = 0 } }
-        $states = & $realGetStackContainerStates
-        $null -eq $states | Should Be $false
-        @($states).Count | Should Be 0
+        $containers = & $realGetStackContainers
+        $null -eq $containers | Should Be $false
+        @($containers).Count | Should Be 0
         Mock Invoke-NativeCommand { return [pscustomobject]@{ Output = "error during connect"; ExitCode = 1 } }
-        $null -eq (& $realGetStackContainerStates) | Should Be $true
+        $null -eq (& $realGetStackContainers) | Should Be $true
+    }
+
+    It "lists each container's id and state" {
+        $script:projectName = "storage-compose"
+        Mock Invoke-NativeCommand { return [pscustomobject]@{ Output = "a1 running`nb2 exited"; ExitCode = 0 } }
+        $containers = & $realGetStackContainers
+        @($containers | ForEach-Object { "$($_.id)=$($_.state)" }) | Should Be @("a1=running", "b2=exited")
     }
 
     It "reads nanoseconds and skips a container that never finished" {
@@ -735,15 +880,16 @@ Describe "asking Docker" {
         ConvertFrom-DockerTime "0001-01-01T00:00:00Z" | Should BeNullOrEmpty
     }
 
-    It "gives the latest finish of the project's containers and throws when Docker does not answer" {
-        $script:projectName = "storage-compose"
-        Mock Invoke-NativeCommand {
-            if ($Arguments[0] -eq "ps") { return [pscustomobject]@{ Output = "a1`nb2"; ExitCode = 0 } }
-            return [pscustomobject]@{ Output = "2026-11-03T21:46:10Z`n0001-01-01T00:00:00Z"; ExitCode = 0 }
-        }
-        & $realGetStackLastFinishedAt | Should Be ([DateTimeOffset]::Parse("2026-11-03T21:46:10Z").LocalDateTime)
+    It "gives the latest finish of the given containers and throws when Docker does not answer" {
+        Mock Invoke-NativeCommand { return [pscustomobject]@{ Output = "2026-11-03T21:46:10Z`n0001-01-01T00:00:00Z"; ExitCode = 0 } }
+        & $realGetStackLastFinishedAt @("a1", "b2") | Should Be ([DateTimeOffset]::Parse("2026-11-03T21:46:10Z").LocalDateTime)
         Mock Invoke-NativeCommand { return [pscustomobject]@{ Output = "error during connect"; ExitCode = 1 } }
-        { & $realGetStackLastFinishedAt } | Should Throw
+        { & $realGetStackLastFinishedAt @("a1") } | Should Throw
+    }
+
+    It "reads the VM's clock from docker info" {
+        Mock Invoke-NativeCommand { return [pscustomobject]@{ Output = "2026-11-04T10:00:00.123456789+00:00"; ExitCode = 0 } }
+        & $realGetDockerSystemTime | Should Be ([DateTimeOffset]::Parse("2026-11-04T10:00:00.1234567+00:00").LocalDateTime)
     }
 }
 

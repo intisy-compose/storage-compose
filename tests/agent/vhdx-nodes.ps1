@@ -23,7 +23,7 @@ $stickVhdx = Join-Path $scratch "stick.vhdx"
 $script:passed = 0
 $script:failed = 0
 
-function Get-StackContainerStates { return @("running") }
+function Get-StackContainers { return ,@([pscustomobject]@{ id = "c0"; state = "running" }) }
 function Get-TailnetAddress { return $null }
 function Set-SyncthingFirewallRule($Node, $Ports) { }
 function Remove-NetFirewallRule { }
@@ -123,7 +123,7 @@ try {
     Test-Expectation "same GUI port" $stick.syncthing.guiPort $back.syncthing.guiPort
 
     Write-Host "The stack stops:" -ForegroundColor Cyan
-    function Get-StackContainerStates { return @("exited") }
+    function Get-StackContainers { return ,@([pscustomobject]@{ id = "c0"; state = "exited" }) }
     Invoke-AgentRound $null $false
     Test-Expectation "nodes running" "" (Get-RunningNodeIds)
     Test-Expectation "Syncthing processes left" 0 @(Get-SyncthingProcesses).Count
