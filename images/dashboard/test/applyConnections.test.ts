@@ -339,6 +339,24 @@ describe("applying the connection profile to this host's nodes", () => {
     assert.equal(connectionsStateOf("a1b2"), "restart-needed");
   });
 
+  it("a node no longer among this host's instances is forgotten as waiting for a restart", async (context) => {
+    context.mock.method(console, "error", () => undefined);
+    const array = onProfile(defaultProfile(), wholeTable, "a1b2");
+    array.requiresRestart = true;
+    let instances = [instanceOf("a1b2", array, "array")];
+    const { round: connections } = round([], { profile: async () => limitedProfile(680), instances: async () => instances });
+    await connections.run();
+    instances = [];
+    await connections.run();
+    instances = [instanceOf("a1b2", array, "array")];
+    const reads = array.restartReads;
+
+    const back = await connections.run();
+
+    assert.equal(array.restartReads, reads, "a node back with nothing to write is not asked");
+    assert.deepEqual(back.applied, ["a1b2"]);
+  });
+
   it("a peer missing from the table keeps the addresses it has", async () => {
     const cluster = onProfile(defaultProfile(), wholeTable, "storage");
     const { round: connections } = round([instanceOf("storage", cluster)], { remoteTable: async () => null });

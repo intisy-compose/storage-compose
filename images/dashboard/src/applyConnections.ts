@@ -57,7 +57,8 @@ export class ConnectionsRound {
   private readonly remoteTables = new Map<string, PeerTable>();
   /** Nodes a round wrote to whose restart need is not yet known to be cleared. */
   private readonly awaitingRestart = new Set<string>();
-  private readonly restartLogged = new Set<string>();
+  /** Nodes last read as needing a restart, each logged once when it started to. */
+  private readonly knownWaiting = new Set<string>();
   private last: LastRound | null = null;
   private profileProblem: string | null = null;
 
@@ -147,16 +148,24 @@ export class ConnectionsRound {
       }
     }
     const answered = new Set(instances.map((instance) => instance.nodeId));
+    this.forgetWaitingOutside(answered);
     report.notYet.push(...Object.keys(byNode).filter((nodeId) => !answered.has(nodeId)));
     return report;
+  }
+
+  /** A node gone from this host's instances starts afresh when it answers again, as its Syncthing has started since. */
+  private forgetWaitingOutside(instanceIds: ReadonlySet<string>): void {
+    for (const nodeId of [...this.awaitingRestart]) if (!instanceIds.has(nodeId)) this.awaitingRestart.delete(nodeId);
+    for (const nodeId of [...this.knownWaiting]) if (!instanceIds.has(nodeId)) this.knownWaiting.delete(nodeId);
   }
 
   /**
    * Whether the node holds the profile's values in its config but runs without them until its Syncthing restarts.
    * @implNote A round never restarts a node: a restart stops every folder of the node until it is back, and an array or the PC asks for its
    * name typed. The node's restart banner and Restart action, which read Syncthing's own flag, leave that to the person; the keepers also
-   * apply the profile at the node's next start. The flag is read only after this round wrote or while an earlier write still waits, so a
-   * restart left pending by some other change is never taken for the profile's.
+   * apply the profile at the node's next start. The flag is read only when this round sent a write to the node or an earlier write's
+   * need is still outstanding, so a restart left pending by some other change is never taken for the profile's. A read that fails keeps
+   * what was known.
    */
   private async waitsForRestart(instance: LocalInstance): Promise<boolean> {
     if (!this.awaitingRestart.has(instance.nodeId)) return false;
@@ -164,16 +173,16 @@ export class ConnectionsRound {
     try {
       required = await requiresRestart(instance);
     } catch {
-      return this.restartLogged.has(instance.nodeId);
+      return this.knownWaiting.has(instance.nodeId);
     }
     if (!required) {
       this.awaitingRestart.delete(instance.nodeId);
-      this.restartLogged.delete(instance.nodeId);
+      this.knownWaiting.delete(instance.nodeId);
       return false;
     }
     this.awaitingRestart.add(instance.nodeId);
-    if (!this.restartLogged.has(instance.nodeId)) console.error(`connections: ${instance.nodeId} has the profile's values saved; its Syncthing applies them after it restarts`);
-    this.restartLogged.add(instance.nodeId);
+    if (!this.knownWaiting.has(instance.nodeId)) console.error(`connections: ${instance.nodeId} has the profile's values saved; its Syncthing applies them after it restarts`);
+    this.knownWaiting.add(instance.nodeId);
     return true;
   }
 
