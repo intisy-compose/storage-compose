@@ -3,7 +3,7 @@
 $agentServiceName = "storage-compose-agent"
 $agentServiceDisplayName = "storage-compose host agent"
 $agentInstallFolder = Join-Path $env:ProgramFiles "storage-compose-agent"
-$agentScriptNames = @("agent.ps1", "agent-files.ps1", "disks.ps1", "passthrough.ps1", "nodes.ps1", "syncthing.ps1", "networks.ps1")
+$agentScriptNames = @("agent.ps1", "agent-files.ps1", "disks.ps1", "passthrough.ps1", "nodes.ps1", "syncthing.ps1", "networks.ps1", "dashboard-entry.ps1")
 $agentServiceSourceName = "service\AgentService.cs"
 $agentExecutableName = "storage-compose-agent.exe"
 $agentConfigName = "agent-config.json"
@@ -15,6 +15,7 @@ $agentFolderName = "host-agent"
 $agentStatusFolderName = "status"
 $agentConnectionsFolderName = "connections"
 $agentConnectionsName = "connections.json"
+$agentJoinedConnectionsName = "joined.json"
 $agentHeartbeatName = "heartbeat.json"
 $agentStateName = "state.json"
 $agentLogName = "agent.log"
@@ -34,6 +35,35 @@ function Get-AgentFolder([string]$StackFolder) { return Join-Path $StackFolder $
 function Get-AgentStatusFolder([string]$StackFolder) { return Join-Path (Get-AgentFolder $StackFolder) $agentStatusFolderName }
 
 function Get-AgentConnectionsFile([string]$StackFolder) { return Join-Path (Join-Path (Get-AgentFolder $StackFolder) $agentConnectionsFolderName) $agentConnectionsName }
+
+<#
+.NOTES
+Joined mode's kept entries, in the shape of the dashboard's connections.json but a file of their own:
+a checkout that later runs the stack has the dashboard write connections.json, which the agent never
+writes.
+#>
+function Get-AgentJoinedConnectionsFile([string]$StackFolder) { return Join-Path (Join-Path (Get-AgentFolder $StackFolder) $agentConnectionsFolderName) $agentJoinedConnectionsName }
+
+<#
+.NOTES
+The agent's self-removal runs this detached, since a running executable cannot delete its folder.
+The folder goes only if no service of the name is registered when the delay ends, so a reinstall
+made in the meantime keeps its files: a removal that finds the service still registered leaves the
+folder, and a later install reuses it. The installer also waits for such a command before it copies.
+#>
+function Get-AgentFolderRemovalCommand {
+    return "ping -n 20 127.0.0.1 >nul & sc.exe query $agentServiceName >nul 2>&1 || rmdir /s /q `"$agentInstallFolder`""
+}
+
+function Get-AgentMode($Config) {
+    if ($Config -and $Config.PSObject.Properties["projectName"] -and $Config.projectName) { return "stack" }
+    return "joined"
+}
+
+function Get-ConfiguredJoinedNodes($Config) {
+    if (-not ($Config -and $Config.PSObject.Properties["joinedNodes"] -and $Config.joinedNodes)) { return @() }
+    return @($Config.joinedNodes | Where-Object { $_ -and $_.PSObject.Properties["root"] -and $_.root })
+}
 
 function Get-SyncthingArchitecture {
     if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { return "arm64" }

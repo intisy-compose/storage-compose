@@ -1,8 +1,10 @@
-# Installing, repairing and removing the host agent service, and fetching its Syncthing. Dot-sourced by
-# docker-compose.ps1 after agent-files.ps1 and disks.ps1; defines functions only.
+# Installing, repairing and removing the host agent service, in stack or joined mode, and fetching its
+# Syncthing. Dot-sourced by docker-compose.ps1 and the join after agent-files.ps1, disks.ps1 and
+# nodes.ps1; defines functions only.
 
 $agentHeartbeatWaitSeconds = 120
 $agentStopWaitSeconds = 60
+$agentRemovalWaitSeconds = 60
 $legacyAttachInstallFolder = Join-Path $env:ProgramFiles "storage-compose"
 $nodeSyncthingTaskPrefix = "storage-compose syncthing"
 
@@ -54,7 +56,12 @@ function Get-SyncthingBinary([string]$StackFolder) {
 
 function Get-AgentSourceFolder([string]$StackFolder) { return Join-Path $StackFolder "windows" }
 
-function Get-DesiredAgentConfig([string]$StackFolder, [string]$ProjectName, [string]$PassThrough, [string]$SyncthingPath, [int]$GraceSeconds) {
+<#
+.NOTES
+joinedNodes lists the nodes a join installed the agent for, one { root, dashboard } each. Stack mode
+keeps the list too, so `down` can hand the agent back to them.
+#>
+function Get-DesiredAgentConfig([string]$StackFolder, [string]$ProjectName, [string]$PassThrough, [string]$SyncthingPath, [int]$GraceSeconds, [object[]]$JoinedNodes = @()) {
     return [pscustomobject][ordered]@{
         stackFolder = $StackFolder.TrimEnd('\')
         projectName = $ProjectName
@@ -64,7 +71,41 @@ function Get-DesiredAgentConfig([string]$StackFolder, [string]$ProjectName, [str
         syncthingSha256 = Get-FileSha256 $SyncthingPath
         serviceSourceSha256 = Get-FileSha256 (Join-Path (Get-AgentSourceFolder $StackFolder) $agentServiceSourceName)
         graceSeconds = $GraceSeconds
+        joinedNodes = @($JoinedNodes | ForEach-Object { [pscustomobject][ordered]@{ root = "$($_.root)"; dashboard = "$($_.dashboard)" } })
     }
+}
+
+function Get-InstalledAgentConfig { return Read-JsonFile (Join-Path $agentInstallFolder $agentConfigName) }
+
+function Get-InstalledJoinedNodes { return @(Get-ConfiguredJoinedNodes (Get-InstalledAgentConfig)) }
+
+<#
+.NOTES
+"none" while no service is registered, else the installed config's mode.
+#>
+function Get-InstalledAgentMode {
+    if (-not (Get-AgentService)) { return "none" }
+    $installed = Get-InstalledAgentConfig
+    if (-not $installed) { return "none" }
+    return Get-AgentMode $installed
+}
+
+function Test-IsSameRoot([string]$First, [string]$Second) {
+    return [System.IO.Path]::GetFullPath($First).TrimEnd('\') -ieq [System.IO.Path]::GetFullPath($Second).TrimEnd('\')
+}
+
+<#
+.NOTES
+The agent's own rule (Get-NodeFileState): only a deleted node file drops a node, never a volume that
+is away.
+#>
+function Get-RemainingJoinedNodes([object[]]$Entries) {
+    return @($Entries | Where-Object { $_ -and (Get-NodeFileState $_.root) -ne "gone" })
+}
+
+function Add-JoinedNode([object[]]$Entries, [string]$Root, [string]$Dashboard) {
+    $others = @($Entries | Where-Object { $_ -and -not (Test-IsSameRoot $_.root $Root) })
+    return @($others) + @([pscustomobject][ordered]@{ root = $Root; dashboard = $Dashboard })
 }
 
 function ConvertTo-ComparableJson($Value) { return ConvertTo-Json -InputObject $Value -Depth 5 -Compress }
@@ -160,8 +201,33 @@ function Register-AgentService {
         while ((Get-AgentService) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
     }
     New-Service -Name $agentServiceName -BinaryPathName (Get-AgentServiceCommandLine) -DisplayName $agentServiceDisplayName -StartupType Automatic `
-        -Description "Passes the storage array's drives through to WSL and runs the drive and folder nodes' Syncthing while storage-compose runs; removes itself when the stack is gone." | Out-Null
+        -Description "Runs the storage nodes' Syncthing and keeps their firewall rules, and passes the array's drives through to WSL, while storage-compose runs, or on a joined device while its joined nodes exist; removes itself when neither is left." | Out-Null
     Invoke-ServiceControl @("failure", $agentServiceName, "reset=", "86400", "actions=", "restart/10000/restart/10000/restart/60000")
+}
+
+function Test-AgentServiceIsMarkedForDeletion {
+    $service = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$agentServiceName" -Name DeleteFlag -ErrorAction SilentlyContinue
+    return [bool]($service -and $service.DeleteFlag -eq 1)
+}
+
+function Get-PendingAgentRemovals {
+    $removal = "rmdir /s /q `"$agentInstallFolder`""
+    return @(Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($removal) })
+}
+
+function Test-AgentRemovalIsPending { return (Test-AgentServiceIsMarkedForDeletion) -or @(Get-PendingAgentRemovals).Count -gt 0 }
+
+<#
+.NOTES
+An agent that just removed itself leaves its service marked for deletion and a delayed command that
+deletes the install folder; copying before both are gone would lose the new files.
+#>
+function Wait-ForAgentRemoval {
+    $deadline = (Get-Date).AddSeconds($agentRemovalWaitSeconds)
+    while (Test-AgentRemovalIsPending) {
+        if ((Get-Date) -ge $deadline) { throw "the host agent is still removing itself after $agentRemovalWaitSeconds s; run this again in a minute" }
+        Start-Sleep -Seconds 1
+    }
 }
 
 function Wait-ForAgentHeartbeat([string]$StackFolder) {
@@ -175,20 +241,53 @@ function Wait-ForAgentHeartbeat([string]$StackFolder) {
 
 <#
 .NOTES
-`up` calls this every time: an agent that is installed, current and running is left alone, so `up`
-needs an admin shell only to install or repair it.
+An agent that is installed, current and running is left alone, so only installing or repairing it
+needs an admin shell.
+#>
+function Install-AgentService($Desired, [string]$ElevationHint) {
+    if ((Test-HostAgentIsCurrent $Desired) -and (Wait-ForAgentHeartbeat $Desired.stackFolder)) { return "current" }
+    if (-not (Test-IsElevated)) { throw "the host agent is missing, outdated or stopped; $ElevationHint" }
+    Wait-ForAgentRemoval
+    Stop-AgentService
+    Copy-AgentFiles $Desired
+    Register-AgentService
+    Start-Service -Name $agentServiceName
+    if (-not (Wait-ForAgentHeartbeat $Desired.stackFolder)) { throw "the host agent was installed but wrote no heartbeat within $agentHeartbeatWaitSeconds s; see $agentFolderName\$agentLogName and $agentInstallFolder\service.log" }
+    return "installed"
+}
+
+<#
+.NOTES
+`up` calls this every time, and it always installs stack mode, switching a joined-mode agent over.
+The joined nodes are carried as installed, not pruned, so a node that left does not make a current
+agent outdated; `down` prunes them.
 #>
 function Install-HostAgent([string]$StackFolder, [string]$ProjectName, [string]$PassThrough, [int]$GraceSeconds = 600) {
     $syncthing = Get-SyncthingBinary $StackFolder
-    $desired = Get-DesiredAgentConfig $StackFolder $ProjectName $PassThrough $syncthing $GraceSeconds
-    if ((Test-HostAgentIsCurrent $desired) -and (Wait-ForAgentHeartbeat $StackFolder)) { return "current" }
-    if (-not (Test-IsElevated)) { throw "the host agent is missing, outdated or stopped; run up once in an admin shell to install it" }
-    Stop-AgentService
-    Copy-AgentFiles $desired
-    Register-AgentService
-    Start-Service -Name $agentServiceName
-    if (-not (Wait-ForAgentHeartbeat $StackFolder)) { throw "the host agent was installed but wrote no heartbeat within $agentHeartbeatWaitSeconds s; see $agentFolderName\$agentLogName and $agentInstallFolder\service.log" }
-    return "installed"
+    $desired = Get-DesiredAgentConfig $StackFolder $ProjectName $PassThrough $syncthing $GraceSeconds @(Get-InstalledJoinedNodes)
+    return Install-AgentService $desired "run up once in an admin shell to install it"
+}
+
+function Get-JoinedAgentConfig([string]$Folder, [object[]]$JoinedNodes) {
+    return Get-DesiredAgentConfig $Folder "" "none" (Get-SyncthingBinary $Folder) 0 $JoinedNodes
+}
+
+function Install-JoinedAgentService($Desired) { return Install-AgentService $Desired "run the join once in an admin shell to install it" }
+
+function Get-HandBackFailure([string]$Folder, [object[]]$JoinedNodes, [string]$Problem) {
+    $join = Join-Path $Folder "join\storage-join.ps1"
+    $commands = @($JoinedNodes | ForEach-Object { "& `"$join`" -Root `"$($_.root)`" -Dashboard `"$($_.dashboard)`"" })
+    return "the stack's host agent is removed, but joined mode could not be installed for $(@($JoinedNodes | ForEach-Object { $_.root }) -join ', '): $Problem. Restore it in an admin shell with:`n  $($commands -join "`n  ")"
+}
+
+<#
+.NOTES
+The join's install on a host without the stack: this node is added to the joined nodes that are still
+there, one entry per root.
+#>
+function Install-JoinedAgent([string]$Folder, [string]$Root, [string]$Dashboard) {
+    $joined = Add-JoinedNode (Get-RemainingJoinedNodes (Get-InstalledJoinedNodes)) $Root $Dashboard
+    return Install-JoinedAgentService (Get-JoinedAgentConfig $Folder $joined)
 }
 
 function Stop-StackSyncthings([string]$StackFolder) {
@@ -197,16 +296,28 @@ function Stop-StackSyncthings([string]$StackFolder) {
         Where-Object { $_.ExecutablePath -eq $binary } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
+<#
+.NOTES
+`down` removes everything the stack added (RULES.md section 2), and while a joined node is left the
+agent is installed again in joined mode for it; a joined-mode agent belongs to its joins, not to a
+stack, and is left alone. The install folder holds the only list of the joined nodes, so their config
+(with the Syncthing binary, which may need fetching) is made before anything is removed.
+#>
 function Uninstall-HostAgent([string]$StackFolder) {
     if (-not (Get-AgentService) -and -not (Test-Path -LiteralPath $agentInstallFolder)) { return "absent" }
+    if ((Get-InstalledAgentMode) -eq "joined") { return "joined" }
     if (-not (Test-IsElevated)) { throw "removing the host agent needs an admin shell; left alone, it removes itself 10 minutes after the stack is gone" }
+    $joined = @(Get-RemainingJoinedNodes (Get-InstalledJoinedNodes))
+    $handBack = $(if ($joined.Count -gt 0) { Get-JoinedAgentConfig $StackFolder $joined } else { $null })
     Stop-AgentService
     if (Get-AgentService) { Invoke-ServiceControl @("delete", $agentServiceName) }
     Stop-StackSyncthings $StackFolder
     Remove-NetFirewallRule -Group $agentFirewallGroup -ErrorAction SilentlyContinue
     Remove-ProgramFirewallRules (Join-Path (Get-AgentFolder $StackFolder) "bin")
     Remove-Item -Recurse -Force -LiteralPath $agentInstallFolder -ErrorAction SilentlyContinue
-    return "removed"
+    if (-not $handBack) { return "removed" }
+    try { Install-JoinedAgentService $handBack | Out-Null } catch { throw (Get-HandBackFailure $StackFolder $joined "$_") }
+    return "joined"
 }
 
 <#
@@ -250,12 +361,12 @@ function Get-AgentNodeHomes([string]$StackFolder) {
 
 <#
 .NOTES
-The join registers such a task on a device without the agent. Once the agent runs the node, the task
-would start a second Syncthing on the same home at the next logon, so it goes; only a task of the
-join's name prefix whose home is a node the agent found is touched.
+The join registered such a task on a device without the agent before joined mode. Once the agent runs
+the node, the task would start a second Syncthing on the same home at the next logon, so it goes;
+only a task of the join's name prefix whose home is one of these is touched.
 #>
-function Remove-AgentNodeSyncthingTasks([string]$StackFolder) {
-    $homes = @(Get-AgentNodeHomes $StackFolder)
+function Remove-NodeSyncthingTasks([string[]]$Homes) {
+    $homes = @($Homes | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') })
     if ($homes.Count -eq 0) { return @() }
     $removed = @()
     foreach ($task in @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_ -and $_.TaskName -like "$nodeSyncthingTaskPrefix *" })) {
@@ -266,3 +377,5 @@ function Remove-AgentNodeSyncthingTasks([string]$StackFolder) {
     }
     return $removed
 }
+
+function Remove-AgentNodeSyncthingTasks([string]$StackFolder) { return Remove-NodeSyncthingTasks @(Get-AgentNodeHomes $StackFolder) }

@@ -2,21 +2,25 @@
 <#
 .SYNOPSIS
 Joins this Windows device to the storage network (specs/2026-10-20-connect-devices-design.md, the join
-script): installs Tailscale if missing and joins the tailnet, writes the node file for the data root
-and runs its Syncthing with its home on the node, registers with the storage dashboard and applies
-the answer to that Syncthing. A second run changes nothing.
+script): installs Tailscale if missing and joins the tailnet, writes the node file for the data root,
+has the host agent run its Syncthing with its home on the node, registers with the storage dashboard
+and applies the answer to that Syncthing. A second run changes nothing. -Leave deletes the node file
+instead, and the agent stops the node's Syncthing.
 
 .DESCRIPTION
-The node's Syncthing is the host agent's when storage-compose runs on this device (the agent finds
-the node file and starts it); otherwise this script runs it at logon through a scheduled task of the
-current user. Home folder links are left out on Windows, as tools/drive-sync does.
+The node's Syncthing is always the host agent's (specs/2026-11-03-host-agent-joined-mode-design.md).
+Where storage-compose runs, its agent finds the node file and starts it. Elsewhere this script installs
+the agent in joined mode from this checkout, which needs an admin shell; the script says so before it
+changes anything. A device joined before joined mode, its Syncthing run by a logon task of the user,
+is handed to the agent on a rerun: the task, that Syncthing and the rules the join set go. Home folder
+links are left out on Windows, as tools/drive-sync does.
 
 Settings (parameters, or the same environment variables as the Linux script): STORAGE_JOIN_KEY,
 IMPRINT_PERSONAL, STORAGE_DASHBOARD, STORAGE_JOIN_ROOT (default F:\), STORAGE_JOIN_NAME (default the
 name of the device list's entry with this device's Syncthing ID, from STORAGE_JOIN_LAYOUT, by default
 data\drive-sync.toml, else the computer's name),
-STORAGE_JOIN_THRESHOLD (default 50; 0 only with STORAGE_JOIN_ALLOW_KEEP_ALL=1), STORAGE_JOIN_OFFLINE_DIR (a folder with a Tailscale MSI), and, for a Syncthing
-this script runs itself, STORAGE_JOIN_GUI_PORT and STORAGE_JOIN_LISTEN_PORT (default 8384 and 22000).
+STORAGE_JOIN_THRESHOLD (default 50; 0 only with STORAGE_JOIN_ALLOW_KEEP_ALL=1) and
+STORAGE_JOIN_OFFLINE_DIR (a folder with a Tailscale MSI).
 
 Run from a console with no parameters and none of the STORAGE_JOIN_* variables set, it asks for the
 node, the threshold and whether to join, as imprint's review screen does. A folder node is also listed
@@ -27,7 +31,8 @@ param(
     [string]$Name = $env:STORAGE_JOIN_NAME,
     [int]$Threshold = $(if ($env:STORAGE_JOIN_THRESHOLD) { [int]$env:STORAGE_JOIN_THRESHOLD } else { 50 }),
     [string]$Dashboard = $env:STORAGE_DASHBOARD,
-    [string]$AuthKey = $env:STORAGE_JOIN_KEY
+    [string]$AuthKey = $env:STORAGE_JOIN_KEY,
+    [switch]$Leave
 )
 
 Set-StrictMode -Version Latest
@@ -39,8 +44,6 @@ $repository = Split-Path $PSScriptRoot
 . (Join-Path $repository "windows\syncthing.ps1")
 . (Join-Path $repository "windows\agent-install.ps1")
 
-$userSyncthingGuiPort = $(if ($env:STORAGE_JOIN_GUI_PORT) { [int]$env:STORAGE_JOIN_GUI_PORT } else { 8384 })
-$userSyncthingListenPort = $(if ($env:STORAGE_JOIN_LISTEN_PORT) { [int]$env:STORAGE_JOIN_LISTEN_PORT } else { 22000 })
 $agentNodeWaitSeconds = 120
 $essentialThreshold = 80
 $workingThreshold = 50
@@ -229,8 +232,49 @@ function Register-FolderNode {
     $paths = @(Get-IndexPaths $volume)
     if ($paths -contains $relative) { return }
     $paths += $relative
-    Write-TextFile $index ("paths = [" + (($paths | ForEach-Object { "`"$_`"" }) -join ", ") + "]`n")
+    Write-TextFile $index (Format-IndexPaths $paths)
     Write-JoinChange "listed $relative in $index"
+}
+
+function Format-IndexPaths([string[]]$Paths) { return "paths = [" + ((@($Paths) | ForEach-Object { "`"$_`"" }) -join ", ") + "]`n" }
+
+function Unregister-FolderNode([string]$Folder) {
+    if (Test-IsVolumeRoot $Folder) { return }
+    $volume = Get-VolumeRoot $Folder
+    $relative = Get-RelativeNodePath $Folder
+    $paths = @(Get-IndexPaths $volume)
+    if ($paths -notcontains $relative) { return }
+    $index = Get-NodeIndexPath $volume
+    $remaining = @($paths | Where-Object { $_ -ne $relative })
+    if ($remaining.Count -eq 0) { Remove-Item -Force -LiteralPath $index } else { Write-TextFile $index (Format-IndexPaths $remaining) }
+    Write-JoinChange "removed $relative from $index"
+}
+
+<#
+.NOTES
+Needs no admin shell for the node file: the host agent, running as SYSTEM, stops the node's Syncthing
+and removes its rules within a round, and in joined mode removes itself with its last node. On a
+device joined before joined mode, with no agent, it stops the logon task's Syncthing itself, as the
+join's handover does. The Syncthing home stays, so a later join keeps the device ID. A node file whose
+volume or folder is away, or that cannot be opened, is left alone, by the agent's own rule. Telling
+the dashboard is left to the leave task (specs/2026-11-03-host-agent-joined-mode-design.md, Leaving).
+#>
+function Invoke-Leave {
+    $folder = [System.IO.Path]::GetFullPath($Root)
+    $nodeFile = Get-NodeFilePath $folder
+    switch (Get-NodeFileState $folder) {
+        "gone" { Write-JoinLog "$nodeFile does not exist; nothing to leave"; return }
+        "unreachable" { throw "$nodeFile cannot be reached (its volume or folder is away); nothing was changed" }
+        "unreadable" { throw "$nodeFile is there but cannot be opened; nothing was changed" }
+    }
+    $script:syncthingPath = Get-SyncthingPath $repository
+    $node = $null
+    try { $node = Read-NodeFile $folder } catch { Write-JoinLog "$nodeFile cannot be read ($_); a Syncthing a logon task runs for it is left alone" }
+    if ($node) { Stop-LegacyNodeSyncthing $node }
+    Remove-Item -Force -LiteralPath $nodeFile
+    Write-JoinChange "deleted $nodeFile"
+    Unregister-FolderNode $folder
+    Write-JoinLog "left; the host agent stops this node's Syncthing within a round"
 }
 
 function Read-JoinNode { return Read-NodeFile ([System.IO.Path]::GetFullPath($Root)) }
@@ -243,125 +287,68 @@ function Get-AgentInstance($Node) {
     return [pscustomobject]@{ ports = [pscustomobject]@{ gui = $published.syncthing.guiPort }; apiKey = $published.syncthing.apiKey; owner = "agent" }
 }
 
-function Get-UserTaskName($Node) { return "$nodeSyncthingTaskPrefix $($Node.name)" }
-
-function Get-UserSyncthingArguments($Node) { return Get-NodeSyncthingTaskArguments (Get-SyncthingHome $Node) }
-
-function Get-PowerShellPath { return Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe" }
-
-function Get-JoinedNodeId($Node) {
-    $deviceId = Get-SyncthingDeviceId $Node
-    if (-not $deviceId) { throw "Syncthing in $(Get-SyncthingHome $Node) has no device ID" }
-    return "device-$($deviceId.Substring(0, 7).ToLower())"
-}
-
-function Get-ConnectionsStepArguments($Node) {
-    return "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $repository "join\storage-connections.ps1")`" -Dashboard `"$(Get-DashboardUrl)`" -NodeId $(Get-JoinedNodeId $Node) -SyncthingHome `"$(Get-SyncthingHome $Node)`" -ListenPort $userSyncthingListenPort"
-}
-
 <#
 .NOTES
-Task Scheduler runs a task's actions one after the other, so the connections step has written the
-node's profile into config.xml before Syncthing starts.
+Asked before any change, so a device that cannot have the agent installed is not left half joined.
+Where the stack's agent runs, it runs this node too and nothing is installed.
 #>
-function Get-UserTaskActions($Node) {
-    return @(
-        [pscustomobject]@{ Execute = Get-PowerShellPath; Arguments = Get-ConnectionsStepArguments $Node }
-        [pscustomobject]@{ Execute = $script:syncthingPath; Arguments = Get-UserSyncthingArguments $Node }
-    )
+function Assert-JoinCanInstallAgent {
+    if ((Get-InstalledAgentMode) -eq "stack" -or (Test-IsElevated)) { return }
+    throw "storage-compose does not run on this device, so the join installs the host agent to run the node's Syncthing and keep its firewall rules, which needs an admin shell; nothing was changed, run it again as admin"
 }
 
-function Test-UserTaskIsCurrent($Node, $Wanted) {
-    $task = Get-ScheduledTask -TaskName (Get-UserTaskName $Node) -ErrorAction SilentlyContinue
-    if (-not $task) { return $false }
-    $actions = @($task.Actions)
-    if ($actions.Count -ne $Wanted.Count) { return $false }
-    for ($index = 0; $index -lt $Wanted.Count; $index++) {
-        if ($actions[$index].Execute -ne $Wanted[$index].Execute -or $actions[$index].Arguments -ne $Wanted[$index].Arguments) { return $false }
-    }
-    return $true
-}
-
-function Register-UserSyncthingTask($Node) {
-    $wanted = Get-UserTaskActions $Node
-    if (Test-UserTaskIsCurrent $Node $wanted) { return }
-    $actions = @($wanted | ForEach-Object { New-ScheduledTaskAction -Execute $_.Execute -Argument $_.Arguments })
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-    Register-ScheduledTask -TaskName (Get-UserTaskName $Node) -Action $actions -Trigger $trigger -Settings $settings -Force | Out-Null
-    Write-JoinChange "registered the logon task '$(Get-UserTaskName $Node)'"
+function Test-HasNodeFirewallRules($Node) {
+    return @(Get-AllNodeFirewallRuleNames $Node | Where-Object { Get-NetFirewallRule -Name $_ -ErrorAction SilentlyContinue }).Count -gt 0
 }
 
 <#
 .NOTES
-Without the host agent the device's Syncthing is the user's, on the ports a single Syncthing on a
-device uses; it listens on the tailnet only, like every node.
+A device joined before joined mode ran the node's Syncthing from a logon task of the user, with rules
+the join set itself; the agent would take that Syncthing over on the wrong ports, and a leave would
+leave it running. The task always goes, the Syncthing and the rules only while no agent runs, since
+a joined-mode agent's Syncthing on this home is its own. That Syncthing is shut down through its own
+API first, as an adopted one is. Removing rules needs an admin shell; without one they stay, and the
+script says so.
 #>
-function Start-UserSyncthing($Node) {
-    $ports = [pscustomobject]@{ gui = $userSyncthingGuiPort; listen = $userSyncthingListenPort }
-    New-Item -ItemType Directory -Force -Path (Get-SyncthingHome $Node) | Out-Null
-    if (-not (Test-Path -LiteralPath (Get-SyncthingConfigPath $Node))) { New-JoinSyncthingKeys $Node; Write-JoinChange "generated Syncthing's keys in $(Get-SyncthingHome $Node)" }
-    $listenHost = Get-TailnetAddress
-    if (-not $listenHost) { $listenHost = "127.0.0.1" }
-    $running = Find-SyncthingProcess $Node
-    $before = [System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node))
-    if ($running) {
-        $identity = Get-RunningSyncthingIdentity $Node
-    } else {
-        $identity = Set-SyncthingConfig $Node $ports $listenHost
-        if ([System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node)) -ne $before) { Write-JoinChange "set Syncthing to the tailnet only" }
+function Stop-LegacyNodeSyncthing($Node) {
+    foreach ($removed in @(Remove-NodeSyncthingTasks @(Get-SyncthingHome $Node))) { Write-JoinChange "removed the logon task '$removed'" }
+    if ((Get-InstalledAgentMode) -ne "none") { return }
+    if (@(Get-NodeSyncthingProcesses $Node).Count -gt 0) {
+        Stop-ExistingSyncthing ([pscustomobject]@{ home = (Get-SyncthingHome $Node); tasks = @(); executables = @() })
+        Write-JoinChange "stopped the Syncthing the logon task started"
     }
-    Set-UserSyncthingFirewallRules $Node $ports
-    Register-UserSyncthingTask $Node
-    if (-not $running) {
-        Start-ScheduledTask -TaskName (Get-UserTaskName $Node)
-        Write-JoinChange "started Syncthing for $($Node.root)"
-    }
-    return [pscustomobject]@{ ports = $ports; apiKey = $identity.apiKey; owner = "user" }
+    if (-not (Test-HasNodeFirewallRules $Node)) { return }
+    Remove-NodeFirewallRules $Node
+    if (Test-HasNodeFirewallRules $Node) { Write-JoinLog "the firewall rules the join set for $($Node.root) stay: removing them needs an admin shell"; return }
+    Write-JoinChange "removed the firewall rules the join set"
 }
 
 <#
 .NOTES
-The same rules the host agent makes, set before Syncthing first listens, so Windows never asks to
-allow it and never adds a rule open to every address. They need an admin shell; without one the
-script says so rather than leaving the device to that prompt silently.
-#>
-function Set-UserSyncthingFirewallRules($Node, $Ports) {
-    if (-not (Test-IsElevated)) {
-        Write-JoinLog "not an admin shell: no firewall rules set, so Windows will ask to allow Syncthing; answer for private networks only, or run this script again as admin"
-        return
-    }
-    Set-SyncthingFirewallRule $Node $Ports
-}
-
-function Get-RunningSyncthingIdentity($Node) {
-    $document = [xml][System.IO.File]::ReadAllText((Get-SyncthingConfigPath $Node))
-    return [pscustomobject]@{ apiKey = $document.configuration.gui.apikey }
-}
-
-function Test-HostAgentIsPresent { return [bool](Get-AgentService) -or (Test-AgentHeartbeatIsFresh $repository) }
-
-<#
-.NOTES
-The agent finds a new node file on its next scan, up to a minute later; until then its heartbeat does
-not list the node, which is no reason to start a second Syncthing for the same home.
+The agent finds a new node file on its next scan in stack mode, up to a minute later, and in its next
+round in joined mode; until then its heartbeat does not list the node, which is no reason to start a
+second Syncthing for the same home.
 #>
 function Wait-ForAgentInstance($Node) {
     $deadline = (Get-Date).AddSeconds($agentNodeWaitSeconds)
     while ($true) {
         $instance = Get-AgentInstance $Node
         if ($instance) { return $instance }
-        if ((Get-Date) -ge $deadline) { throw "the host agent runs this host's nodes but has not started $($Node.root) within $agentNodeWaitSeconds s; is the stack up? See $agentFolderName\$agentLogName" }
+        if ((Get-Date) -ge $deadline) { throw "the host agent has not started $($Node.root) within $agentNodeWaitSeconds s; see $agentFolderName\$agentLogName" }
         Start-Sleep -Seconds 2
     }
 }
 
 function Get-NodeSyncthing($Node) {
-    if (-not (Test-HostAgentIsPresent)) { return Start-UserSyncthing $Node }
-    $agent = Wait-ForAgentInstance $Node
-    Write-JoinLog "the host agent runs this node's Syncthing"
-    foreach ($removed in @(Remove-AgentNodeSyncthingTasks $repository)) { Write-JoinChange "removed the logon task '$removed'; the host agent runs its node's Syncthing" }
-    return $agent
+    if ((Get-InstalledAgentMode) -eq "stack") {
+        $agent = Wait-ForAgentInstance $Node
+        Write-JoinLog "the stack's host agent runs this node's Syncthing; down will not keep it, so run this join again after down to keep the node in joined mode"
+        foreach ($removed in @(Remove-AgentNodeSyncthingTasks $repository)) { Write-JoinChange "removed the logon task '$removed'; the host agent runs its node's Syncthing" }
+        return $agent
+    }
+    Stop-LegacyNodeSyncthing $Node
+    if ((Install-JoinedAgent $repository $Node.root (Get-DashboardUrl)) -eq "installed") { Write-JoinChange "installed the host agent in joined mode for $($Node.root)" }
+    return Wait-ForAgentInstance $Node
 }
 
 function Invoke-JoinApi($Instance, [string]$Method, [string]$Path, $Body) {
@@ -709,6 +696,7 @@ function Test-IsInteractiveJoin([int]$BoundParameterCount) {
 }
 
 function Invoke-Join {
+    Assert-JoinCanInstallAgent
     Assert-JoinThreshold
     Assert-NodePlacement
     Install-Tailscale
@@ -728,6 +716,7 @@ function Invoke-Join {
 
 if ($MyInvocation.InvocationName -ne ".") {
     try {
+        if ($Leave) { Invoke-Leave; exit 0 }
         if ((Test-IsInteractiveJoin $PSBoundParameters.Count) -and -not (Read-JoinChoices)) { exit 0 }
         Invoke-Join
     } catch { Write-Host "storage-join: $_" -ForegroundColor Red; exit 1 }

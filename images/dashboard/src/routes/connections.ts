@@ -107,7 +107,7 @@ export function connectionRoutes(repository = setupRepoDirectory, peerTables = d
 /** The path the join port answers a joined device's own connections on. */
 export const joinedNodePathPattern = /^\/api\/connections\/node\/([^/]+)$/;
 
-/** @implNote The join scripts' default listen port (`STORAGE_JOIN_LISTEN_PORT`); the device's own start step listens on its real one. */
+/** @implNote The Linux join's default listen port (`STORAGE_JOIN_LISTEN_PORT`); the device moves the entry to its real one, the Linux start step and the Windows host agent alike. */
 const joinedDeviceSyncPort = 22000;
 
 export interface NodeCallerDependencies {
