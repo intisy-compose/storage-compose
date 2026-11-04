@@ -68,3 +68,21 @@ describe("a node's last read secrets", () => {
     assert.deepEqual(await knownNodeSecrets(clients.at(-1)!), { secrets: ["key", `hash-${lastReadSecretsKept}`], complete: true });
   });
 });
+
+describe("the secrets' cache", () => {
+  it("keeps a re-read endpoint's last list past the insert that would push it out", async (context) => {
+    let now = 5_000_000;
+    context.mock.method(secretsClock, "now", () => now);
+    const states = Array.from({ length: lastReadSecretsKept + 1 }, () => ({ fails: false }));
+    const clients = states.map((state, index) => clientAt(`http://127.0.0.2:${9000 + index}`, `kept-${index}`, state));
+    for (const client of clients.slice(0, lastReadSecretsKept)) await knownNodeSecrets(client);
+    now += 120_000;
+    await knownNodeSecrets(clients[0]);
+    await knownNodeSecrets(clients[lastReadSecretsKept]);
+    now += 120_000;
+    for (const state of states) state.fails = true;
+
+    assert.deepEqual(await knownNodeSecrets(clients[0]), { secrets: ["key", "kept-0"], complete: true }, "read again, so newest");
+    assert.deepEqual(await knownNodeSecrets(clients[1]), { secrets: ["key"], complete: false }, "now the one read longest ago");
+  });
+});
