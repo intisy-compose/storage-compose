@@ -18,7 +18,7 @@ import { shownUnscopedText } from "../src/shownSyncthingError.js";
 import { logLevelOf, nodeLogRoutes } from "../src/routes/activity.js";
 import { holdsSecret, withoutSecrets, zipEntries } from "../src/supportBundle.js";
 import { keptLogLines } from "../src/api/logLines.js";
-import { ActivityLog, EventFeeds, type FeedInstance, ParityWatcher, failedItemsPerFolder } from "../src/eventFeed.js";
+import { ActivityLog, EventFeeds, type FeedInstance, type FeedOptions, ParityWatcher, failedItemsPerFolder } from "../src/eventFeed.js";
 import { ConflictIndexes } from "../src/conflicts.js";
 import { type BrowseEntry, type FolderStatus, SyncthingClient, type SyncthingEvent, type SyncthingFolderConfig, SyncthingRefusal } from "../src/syncthing.js";
 import { until } from "./until.js";
@@ -148,7 +148,7 @@ async function instance(nodeId: string, name: string): Promise<{ fake: FakeSynct
   return { fake, feed: { nodeId, name, client: new SyncthingClient({ url, apiKey: eventFeedApiKey }) } };
 }
 
-function feedsFor(log: ActivityLog, options: Partial<typeof feedOptions> = {}): EventFeeds {
+function feedsFor(log: ActivityLog, options: Partial<FeedOptions> = {}): EventFeeds {
   const feeds = new EventFeeds(log, { ...feedOptions, ...options });
   feedSets.push(feeds);
   return feeds;
@@ -520,11 +520,21 @@ describe("file changes", () => {
   it("a restart during the pause after a poll with changes loses none of the new run's first changes", async () => {
     const { fake, feed } = await instance("pc", "pc");
     const log = new ActivityLog(100);
-    feedsFor(log, { changesPauseMs: 400 }).reconcile([feed]);
+    let entered: () => void = () => {};
+    let release: () => void = () => {};
+    const inPause = new Promise<void>((resolve) => (entered = resolve));
+    let paused = 0;
+    const pause = () => {
+      if (++paused > 1) return Promise.resolve();
+      entered();
+      return new Promise<void>((resolve) => (release = resolve));
+    };
+    feedsFor(log, { pause }).reconcile([feed]);
     fake.emitDisk(diskChange("LocalChangeDetected", "a.txt", pcShort), diskChange("LocalChangeDetected", "b.txt", pcShort));
-    await until(() => changes(log).length === 2, "the changes before the restart");
+    await inPause;
     fake.restart();
     fake.emitDisk(...["new0", "new1", "new2"].map((path) => diskChange("LocalChangeDetected", path, pcShort)));
+    release();
     await until(() => changes(log).some((entry) => entry.change?.path === "new2"), "the new run's changes");
     assert.deepEqual(changes(log).map((entry) => entry.change?.path).filter((path) => path?.startsWith("new")), ["new2", "new1", "new0"]);
   });

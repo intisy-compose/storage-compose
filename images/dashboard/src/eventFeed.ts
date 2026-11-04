@@ -131,6 +131,8 @@ export interface FeedOptions {
   changesPauseMs: number;
   /** How long the start time read before a change poll may take; past it, or failed, the poll goes on from the cursor it has. */
   startTimeTimeoutMs: number;
+  /** Waits out `changesPauseMs`; a test holds the feed inside the pause with its own. */
+  pause?: (milliseconds: number) => Promise<void>;
 }
 
 /** Hears every event a feed reads, besides Activity, and each time events may have been lost; `conflicts.ts` keeps its index current from it. */
@@ -423,6 +425,9 @@ function newFeedPosition(): FeedPosition {
 /** How many failed items of one folder the instance's buffer keeps besides the folder's summary entry. */
 export const failedItemsPerFolder = 20;
 
+/** What a start time read before or after a change poll found. */
+type ChangesRun = "same-run" | "new-run" | "unread";
+
 /** The long polls of one instance's events and file changes into its buffers. */
 class InstanceFeed {
   private stopped = false;
@@ -492,35 +497,43 @@ class InstanceFeed {
    * The long poll of the instance's file changes, `/rest/events/disk`, into one buffer per folder.
    * @implNote The start time is read before every poll: after a quiet one, as the instance may have restarted while the poll waited, and
    * after the pause that follows changes, as no connection is open then for a restart to break, and a new run numbering past the old
-   * cursor within it would otherwise lose its first changes.
+   * cursor within it would otherwise lose its first changes. The read never holds the poll back; when it fails, it is tried once more
+   * after the poll, and an answer from a new run is then dropped and polled again from its start.
    */
   async runChanges(): Promise<void> {
     while (!this.stopped) {
       try {
-        await this.followChangesRestart();
+        const known = await this.followChangesRestart();
         const { changesPerPoll, waitSeconds, requestTimeoutMs } = this.options;
         const events = await this.instance.client.diskEvents(this.position.changesSince, changesPerPoll, waitSeconds, requestTimeoutMs);
         if (this.stopped) return;
+        if (known === "unread" && (await this.readChangesRun()) === "new-run") continue;
         this.context.secrets = await knownNodeSecrets(this.instance.nodeId, this.instance.client);
         this.takeChanges(events);
-        if (events.length) await delay(this.options.changesPauseMs);
+        if (events.length) await (this.options.pause ?? delay)(this.options.changesPauseMs);
       } catch {
         await delay(this.options.retryMs);
       }
     }
   }
 
-  /**
-   * @implNote The disk subscription numbers its events from 1 again after a restart, as `/rest/events` does. A start time that cannot be
-   * read in `startTimeTimeoutMs` leaves the cursor as it is: a slow or failing status read must not hold back or skip the poll.
-   */
-  private async followChangesRestart(): Promise<void> {
-    const startTime = await this.instance.client.startTime(this.options.startTimeTimeoutMs).catch(() => null);
-    if (startTime !== null) {
-      if (this.position.changesStartTime !== null && this.position.changesStartTime !== startTime) this.position.changesSince = 0;
-      this.position.changesStartTime = startTime;
-    }
+  private async followChangesRestart(): Promise<ChangesRun> {
+    const run = await this.readChangesRun();
     if (!this.namesRead) await this.readNames();
+    return run;
+  }
+
+  /**
+   * Reads the start time within `startTimeTimeoutMs`; a new run starts the cursor from 0, and one that cannot be read leaves it as it is.
+   * @implNote The disk subscription numbers its events from 1 again after a restart, as `/rest/events` does.
+   */
+  private async readChangesRun(): Promise<ChangesRun> {
+    const startTime = await this.instance.client.startTime(this.options.startTimeTimeoutMs).catch(() => null);
+    if (startTime === null) return "unread";
+    const isNewRun = this.position.changesStartTime !== null && this.position.changesStartTime !== startTime;
+    if (isNewRun) this.position.changesSince = 0;
+    this.position.changesStartTime = startTime;
+    return isNewRun ? "new-run" : "same-run";
   }
 
   private takeChanges(events: SyncthingEvent[]): void {
