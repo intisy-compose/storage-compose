@@ -4,6 +4,7 @@
 
 $agentHeartbeatWaitSeconds = 120
 $agentStopWaitSeconds = 60
+$agentRemovalWaitSeconds = 60
 $legacyAttachInstallFolder = Join-Path $env:ProgramFiles "storage-compose"
 $nodeSyncthingTaskPrefix = "storage-compose syncthing"
 
@@ -93,8 +94,13 @@ function Test-IsSameRoot([string]$First, [string]$Second) {
     return [System.IO.Path]::GetFullPath($First).TrimEnd('\') -ieq [System.IO.Path]::GetFullPath($Second).TrimEnd('\')
 }
 
+<#
+.NOTES
+The agent's own rule (Get-NodeFileState): only a deleted node file drops a node, never a volume that
+is away.
+#>
 function Get-RemainingJoinedNodes([object[]]$Entries) {
-    return @($Entries | Where-Object { $_ -and [System.IO.File]::Exists((Get-NodeFilePath $_.root)) })
+    return @($Entries | Where-Object { $_ -and (Get-NodeFileState $_.root) -ne "gone" })
 }
 
 function Add-JoinedNode([object[]]$Entries, [string]$Root, [string]$Dashboard) {
@@ -199,6 +205,31 @@ function Register-AgentService {
     Invoke-ServiceControl @("failure", $agentServiceName, "reset=", "86400", "actions=", "restart/10000/restart/10000/restart/60000")
 }
 
+function Test-AgentServiceIsMarkedForDeletion {
+    $service = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$agentServiceName" -Name DeleteFlag -ErrorAction SilentlyContinue
+    return [bool]($service -and $service.DeleteFlag -eq 1)
+}
+
+function Get-PendingAgentRemovals {
+    $removal = "rmdir /s /q `"$agentInstallFolder`""
+    return @(Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($removal) })
+}
+
+function Test-AgentRemovalIsPending { return (Test-AgentServiceIsMarkedForDeletion) -or @(Get-PendingAgentRemovals).Count -gt 0 }
+
+<#
+.NOTES
+An agent that just removed itself leaves its service marked for deletion and a delayed command that
+deletes the install folder; copying before both are gone would lose the new files.
+#>
+function Wait-ForAgentRemoval {
+    $deadline = (Get-Date).AddSeconds($agentRemovalWaitSeconds)
+    while (Test-AgentRemovalIsPending) {
+        if ((Get-Date) -ge $deadline) { throw "the host agent is still removing itself after $agentRemovalWaitSeconds s; run this again in a minute" }
+        Start-Sleep -Seconds 1
+    }
+}
+
 function Wait-ForAgentHeartbeat([string]$StackFolder) {
     $deadline = (Get-Date).AddSeconds($agentHeartbeatWaitSeconds)
     while ((Get-Date) -lt $deadline) {
@@ -216,6 +247,7 @@ needs an admin shell.
 function Install-AgentService($Desired, [string]$ElevationHint) {
     if ((Test-HostAgentIsCurrent $Desired) -and (Wait-ForAgentHeartbeat $Desired.stackFolder)) { return "current" }
     if (-not (Test-IsElevated)) { throw "the host agent is missing, outdated or stopped; $ElevationHint" }
+    Wait-ForAgentRemoval
     Stop-AgentService
     Copy-AgentFiles $Desired
     Register-AgentService
@@ -236,10 +268,16 @@ function Install-HostAgent([string]$StackFolder, [string]$ProjectName, [string]$
     return Install-AgentService $desired "run up once in an admin shell to install it"
 }
 
-function Install-JoinedAgentService([string]$Folder, [object[]]$JoinedNodes) {
-    $syncthing = Get-SyncthingBinary $Folder
-    $desired = Get-DesiredAgentConfig $Folder "" "none" $syncthing 0 $JoinedNodes
-    return Install-AgentService $desired "run the join once in an admin shell to install it"
+function Get-JoinedAgentConfig([string]$Folder, [object[]]$JoinedNodes) {
+    return Get-DesiredAgentConfig $Folder "" "none" (Get-SyncthingBinary $Folder) 0 $JoinedNodes
+}
+
+function Install-JoinedAgentService($Desired) { return Install-AgentService $Desired "run the join once in an admin shell to install it" }
+
+function Get-HandBackFailure([string]$Folder, [object[]]$JoinedNodes, [string]$Problem) {
+    $join = Join-Path $Folder "join\storage-join.ps1"
+    $commands = @($JoinedNodes | ForEach-Object { "& `"$join`" -Root `"$($_.root)`" -Dashboard `"$($_.dashboard)`"" })
+    return "the stack's host agent is removed, but joined mode could not be installed for $(@($JoinedNodes | ForEach-Object { $_.root }) -join ', '): $Problem. Restore it in an admin shell with:`n  $($commands -join "`n  ")"
 }
 
 <#
@@ -249,7 +287,7 @@ there, one entry per root.
 #>
 function Install-JoinedAgent([string]$Folder, [string]$Root, [string]$Dashboard) {
     $joined = Add-JoinedNode (Get-RemainingJoinedNodes (Get-InstalledJoinedNodes)) $Root $Dashboard
-    return Install-JoinedAgentService $Folder $joined
+    return Install-JoinedAgentService (Get-JoinedAgentConfig $Folder $joined)
 }
 
 function Stop-StackSyncthings([string]$StackFolder) {
@@ -262,21 +300,23 @@ function Stop-StackSyncthings([string]$StackFolder) {
 .NOTES
 `down` removes everything the stack added (RULES.md section 2), and while a joined node is left the
 agent is installed again in joined mode for it; a joined-mode agent belongs to its joins, not to a
-stack, and is left alone.
+stack, and is left alone. The install folder holds the only list of the joined nodes, so their config
+(with the Syncthing binary, which may need fetching) is made before anything is removed.
 #>
 function Uninstall-HostAgent([string]$StackFolder) {
     if (-not (Get-AgentService) -and -not (Test-Path -LiteralPath $agentInstallFolder)) { return "absent" }
     if ((Get-InstalledAgentMode) -eq "joined") { return "joined" }
     if (-not (Test-IsElevated)) { throw "removing the host agent needs an admin shell; left alone, it removes itself 10 minutes after the stack is gone" }
     $joined = @(Get-RemainingJoinedNodes (Get-InstalledJoinedNodes))
+    $handBack = $(if ($joined.Count -gt 0) { Get-JoinedAgentConfig $StackFolder $joined } else { $null })
     Stop-AgentService
     if (Get-AgentService) { Invoke-ServiceControl @("delete", $agentServiceName) }
     Stop-StackSyncthings $StackFolder
     Remove-NetFirewallRule -Group $agentFirewallGroup -ErrorAction SilentlyContinue
     Remove-ProgramFirewallRules (Join-Path (Get-AgentFolder $StackFolder) "bin")
     Remove-Item -Recurse -Force -LiteralPath $agentInstallFolder -ErrorAction SilentlyContinue
-    if ($joined.Count -eq 0) { return "removed" }
-    Install-JoinedAgentService $StackFolder $joined | Out-Null
+    if (-not $handBack) { return "removed" }
+    try { Install-JoinedAgentService $handBack | Out-Null } catch { throw (Get-HandBackFailure $StackFolder $joined "$_") }
     return "joined"
 }
 

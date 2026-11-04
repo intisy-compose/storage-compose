@@ -225,7 +225,14 @@ Describe "down" {
     function Stop-StackSyncthings([string]$StackFolder) { $global:downCalls += "stop syncthings" }
     function Remove-NetFirewallRule { [CmdletBinding()] param([string]$Group, [string]$Name) $global:downCalls += "remove rules" }
     function Remove-ProgramFirewallRules([string]$Folder) { $global:downCalls += "remove program rules" }
-    function Install-JoinedAgentService([string]$Folder, [object[]]$JoinedNodes) { $global:downCalls += "install joined"; $global:joinedInstall = @($Folder, @($JoinedNodes)); return "installed" }
+    function Get-JoinedAgentConfig([string]$Folder, [object[]]$JoinedNodes) { $global:downCalls += "joined config"; return [pscustomobject]@{ stackFolder = $Folder; joinedNodes = @($JoinedNodes) } }
+    function Install-JoinedAgentService($Desired) {
+        $global:downCalls += "install joined"
+        $global:joinedInstall = $Desired
+        if ($global:joinedInstallFails) { throw "no heartbeat within 120 s" }
+        return "installed"
+    }
+    $global:joinedInstallFails = $false
     $kept = New-JoinedRoot "down-kept" -WithNodeFile
     $left = New-JoinedRoot "down-left"
     $global:fakeService = [pscustomobject]@{ State = "Running"; PathName = "agent"; ProcessId = 0 }
@@ -246,9 +253,24 @@ Describe "down" {
             [pscustomobject]@{ root = $left; dashboard = "https://storage.tail-test.ts.net" }
         )
         Uninstall-HostAgent $stack | Should Be "joined"
-        $global:downCalls | Should Be @("stop service", "sc delete", "stop syncthings", "remove rules", "remove program rules", "install joined")
-        $global:joinedInstall[0] | Should Be $stack
-        @($global:joinedInstall[1] | ForEach-Object { $_.root }) | Should Be @($kept)
+        $global:downCalls | Should Be @("joined config", "stop service", "sc delete", "stop syncthings", "remove rules", "remove program rules", "install joined")
+        $global:joinedInstall.stackFolder | Should Be $stack
+        @($global:joinedInstall.joinedNodes | ForEach-Object { $_.root }) | Should Be @($kept)
+    }
+
+    It "keeps a joined node whose volume is away" {
+        $away = "$([char[]](68..90) | Where-Object { -not [System.IO.Directory]::Exists("$($_):\") } | Select-Object -Last 1):\"
+        Write-InstalledConfig "storage-compose" @([pscustomobject]@{ root = $away; dashboard = "https://storage.tail-test.ts.net" })
+        Uninstall-HostAgent $stack | Should Be "joined"
+        @($global:joinedInstall.joinedNodes | ForEach-Object { $_.root }) | Should Be @($away)
+    }
+
+    It "names the joined roots and the command that restores them when the hand-back fails" {
+        Write-InstalledConfig "storage-compose" @([pscustomobject]@{ root = $kept; dashboard = "https://storage.tail-test.ts.net" })
+        $global:joinedInstallFails = $true
+        try { $failure = try { Uninstall-HostAgent $stack; "" } catch { "$_" } } finally { $global:joinedInstallFails = $false }
+        $failure | Should Match ([regex]::Escape("joined mode could not be installed for $kept"))
+        $failure | Should Match ([regex]::Escape("& `"$(Join-Path $stack "join\storage-join.ps1")`" -Root `"$kept`" -Dashboard `"https://storage.tail-test.ts.net`""))
     }
 
     It "leaves a joined-mode agent alone" {
@@ -258,6 +280,67 @@ Describe "down" {
         @($global:downCalls).Count | Should Be 0
     }
     $global:fakeService = $null
+}
+
+Describe "a removal still pending" {
+    $global:pendingChecks = 0
+    $global:installCalls = @()
+    function Test-IsElevated { return $true }
+    function Test-HostAgentIsCurrent($Desired) { return $false }
+    function Test-AgentRemovalIsPending { $global:pendingChecks++; $global:installCalls += "pending?"; return $global:pendingChecks -le $global:pendingRounds }
+    function Start-Sleep { }
+    function Stop-AgentService { $global:installCalls += "stop service" }
+    function Copy-AgentFiles($Desired) { $global:installCalls += "copy" }
+    function Register-AgentService { $global:installCalls += "register" }
+    function Start-Service { [CmdletBinding()] param([string]$Name) $global:installCalls += "start" }
+    function Wait-ForAgentHeartbeat([string]$StackFolder) { return $true }
+    $desired = [pscustomobject]@{ stackFolder = $scratch }
+
+    It "is waited for before anything is copied" {
+        $global:pendingChecks = 0
+        $global:pendingRounds = 2
+        $global:installCalls = @()
+        Install-AgentService $desired "hint" | Should Be "installed"
+        $global:installCalls | Should Be @("pending?", "pending?", "pending?", "stop service", "copy", "register", "start")
+    }
+
+    It "stops the install, with nothing copied, when it does not end" {
+        $global:pendingChecks = 0
+        $global:pendingRounds = 1000
+        $global:installCalls = @()
+        $agentRemovalWaitSeconds = 0
+        { Install-AgentService $desired "hint" } | Should Throw "still removing itself"
+        $global:installCalls -contains "copy" | Should Be $false
+    }
+}
+
+Describe "the self-removal's delayed folder removal" {
+    function Invoke-RemovalWithoutDelay([string]$ServiceName, [string]$Folder) {
+        $agentServiceName = $ServiceName
+        $agentInstallFolder = $Folder
+        $command = (Get-AgentFolderRemovalCommand) -replace '^ping -n 20 127\.0\.0\.1 >nul & ', 'ping -n 1 127.0.0.1 >nul & '
+        Start-Process -FilePath "cmd.exe" -ArgumentList "/c $command" -WindowStyle Hidden -Wait
+    }
+
+    It "waits, then removes the folder only while no service of the name is registered" {
+        $command = Get-AgentFolderRemovalCommand
+        $command | Should Match '^ping -n 20 127\.0\.0\.1 >nul & sc\.exe query '
+        $command | Should Match ([regex]::Escape("|| rmdir /s /q `"$agentInstallFolder`""))
+    }
+
+    It "removes the folder when the service is gone" {
+        $folder = Join-Path $scratch "removal-gone"
+        New-Item -ItemType Directory -Force -Path $folder | Out-Null
+        Invoke-RemovalWithoutDelay "storage-compose-agent-test-never-installed" $folder
+        Test-Path $folder | Should Be $false
+    }
+
+    It "keeps the folder when a service of the name is registered again" {
+        $folder = Join-Path $scratch "removal-kept"
+        New-Item -ItemType Directory -Force -Path $folder | Out-Null
+        Invoke-RemovalWithoutDelay "EventLog" $folder
+        Test-Path $folder | Should Be $true
+    }
 }
 
 Describe "replacing the old logon task" {
