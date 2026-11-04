@@ -1206,7 +1206,11 @@ describe("a secret's written forms", () => {
 
 describe("Syncthing's texts outside the event feed", () => {
   it("a refused request answers its status and Syncthing's text only through the redaction", async () => {
-    const syncthing = createServer((_request, response) => {
+    const syncthing = createServer((request, response) => {
+      if (request.url === "/rest/config") {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        return response.end(JSON.stringify({ gui: { apiKey: "key" } }));
+      }
       response.writeHead(500, { "Content-Type": "text/plain" });
       response.end("failed to load #include ../../config/config.xml\n");
     });

@@ -309,13 +309,35 @@ export class SyncthingClient {
     }
   }
 
-  async request<T>(method: string, path: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
+  private async unclearedRequest<T>(method: string, path: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
     const response = await this.raw(method, `/rest${path}`, timeoutMs, body);
     const text = await response.text().catch((error: Error) => {
       throw new SyncthingUnavailable(`${method} ${path}: ${error.message}`);
     });
     if (!response.ok) throw new SyncthingRefusal(`${method} ${path}`, response.status, text);
     return (text ? JSON.parse(text) : null) as T;
+  }
+
+  /**
+   * A refusal as every caller may see it: its answer cleared of this Syncthing's secrets.
+   * @implNote Done here, not by each caller, so a direct call cannot pass a secret on; the secrets' own read goes through
+   * `configForSecrets`, which is not cleared, as clearing it would wait on itself.
+   */
+  private async cleared(refusal: SyncthingRefusal): Promise<SyncthingRefusal> {
+    return refusal.clearedOf(await knownNodeSecrets(this));
+  }
+
+  async request<T>(method: string, path: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
+    try {
+      return await this.unclearedRequest<T>(method, path, body, timeoutMs);
+    } catch (error) {
+      throw error instanceof SyncthingRefusal ? await this.cleared(error) : error;
+    }
+  }
+
+  /** The whole configuration, read only for its secrets (`nodeSecrets.ts`). */
+  configForSecrets(): Promise<unknown> {
+    return this.unclearedRequest("GET", "/config");
   }
 
   myId(): Promise<string> {
@@ -391,7 +413,7 @@ export class SyncthingClient {
       throw new SyncthingUnavailable(`GET /db/file: ${error.message}`);
     });
     if (response.status === 404) return null;
-    if (!response.ok) throw new SyncthingRefusal("GET /db/file", response.status, text);
+    if (!response.ok) throw await this.cleared(new SyncthingRefusal("GET /db/file", response.status, text));
     return JSON.parse(text) as IndexFile;
   }
 
@@ -433,7 +455,7 @@ export class SyncthingClient {
     const path = `/folder/versions?folder=${encodeURIComponent(folderId)}`;
     const response = await this.raw("GET", `/rest${path}`, listTimeoutMs);
     const text = await boundedText(response, maxBytes, `GET ${path}`);
-    if (!response.ok) throw new SyncthingRefusal(`GET ${path}`, response.status, text);
+    if (!response.ok) throw await this.cleared(new SyncthingRefusal(`GET ${path}`, response.status, text));
     return { files: (text ? JSON.parse(text) : null) ?? {}, bytes: Buffer.byteLength(text) };
   }
 
@@ -692,7 +714,7 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint, nod
       optional(client.pendingDevices(), {}),
       optional(client.pendingFolders(), {}),
       optional(client.systemErrors(), []),
-      knownNodeSecrets(key, client),
+      knownNodeSecrets(client),
     ]);
     const folderRates = rates(key, connections);
     const folders = await folderViews(client, status.myID, folderConfigs, deviceConfigs, folderStats);

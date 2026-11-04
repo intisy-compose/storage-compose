@@ -461,7 +461,7 @@ class InstanceFeed {
         if (mayHaveRestarted) await this.followRestart();
         const events = await this.instance.client.events(this.position.since, followedEventTypes, this.options.waitSeconds, this.options.requestTimeoutMs);
         if (this.stopped) return;
-        this.context.secrets = await knownNodeSecrets(this.instance.nodeId, this.instance.client);
+        this.context.secrets = await knownNodeSecrets(this.instance.client);
         const mayHaveMissed = this.pollFailed || events.length >= this.options.bufferSize;
         this.pollFailed = false;
         this.take(events);
@@ -508,7 +508,7 @@ class InstanceFeed {
         const events = await this.instance.client.diskEvents(this.position.changesSince, changesPerPoll, waitSeconds, requestTimeoutMs);
         if (this.stopped) return;
         if (known === "unread" && (await this.readChangesRun()) === "new-run") continue;
-        this.context.secrets = await knownNodeSecrets(this.instance.nodeId, this.instance.client);
+        this.context.secrets = await knownNodeSecrets(this.instance.client);
         this.takeChanges(events);
         if (events.length) await (this.options.pause ?? delay)(this.options.changesPauseMs);
       } catch {

@@ -259,7 +259,7 @@ export async function restoreVersions(instance: ResolvedInstance, folderId: stri
   let errors: Record<string, string>;
   try {
     const answered = await callSyncthing(local, (client) => client.restoreVersions(folderId, files));
-    const secrets = await knownNodeSecrets(local.nodeId, local.client);
+    const secrets = await knownNodeSecrets(local.client);
     errors = Object.fromEntries(Object.entries(answered).map(([path, error]) => [path, shownNodeText(String(error), secrets)]));
   } catch (error) {
     if (error instanceof RequestError && error.status === 503) throw new UnconfirmedWrite(local.name);

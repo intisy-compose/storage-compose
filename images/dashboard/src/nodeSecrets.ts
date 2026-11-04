@@ -9,8 +9,9 @@ const lastReadSecrets = new Map<string, string[]>();
 /** The time the minute's cache of secrets is judged by; a test moves it instead of the process's `Date`. */
 export const secretsClock = { now: (): number => Date.now() };
 
-function secretsKey(nodeId: string, client: SyncthingClient): string {
-  return `${nodeId}\u0000${client.endpoint.url}`;
+/** @implNote The secrets are the Syncthing's at the endpoint, so they are kept by its URL, whichever node names it. */
+function secretsKey(client: SyncthingClient): string {
+  return client.endpoint.url;
 }
 
 /** How many endpoints' last read lists are kept; far more than a host has nodes, so only endpoints long gone fall out. */
@@ -43,11 +44,11 @@ function withCurrentApiKey(secrets: readonly string[], client: SyncthingClient):
  * folder encryption passwords among them; read again after a minute, and not kept when the read failed.
  * @implNote The GUI's plain password is never known to the dashboard: Syncthing keeps only its bcrypt hash, so only the hash is searched for.
  */
-export function nodeSecrets(nodeId: string, client: SyncthingClient): Promise<string[]> {
-  const key = secretsKey(nodeId, client);
+export function nodeSecrets(client: SyncthingClient): Promise<string[]> {
+  const key = secretsKey(client);
   const kept = keptSecrets.get(key);
   if (kept && secretsClock.now() - kept.readAt < secretsKeptMs) return kept.secrets.then((secrets) => withCurrentApiKey(secrets, client));
-  const secrets = client.request<unknown>("GET", "/config").then((config) => {
+  const secrets = client.configForSecrets().then((config) => {
     const read = withCurrentApiKey(configSecrets(config), client);
     rememberLastRead(key, read);
     return read;
@@ -68,9 +69,9 @@ export interface KnownSecrets {
 export const allSecretsKnown = (secrets: readonly string[]): KnownSecrets => ({ secrets, complete: true });
 
 /** The node's secrets, or the ones last read from it when its configuration cannot be read now, or only its API key when it never could. */
-export function knownNodeSecrets(nodeId: string, client: SyncthingClient): Promise<KnownSecrets> {
-  return nodeSecrets(nodeId, client).then(allSecretsKnown, () => {
-    const lastRead = lastReadSecrets.get(secretsKey(nodeId, client));
+export function knownNodeSecrets(client: SyncthingClient): Promise<KnownSecrets> {
+  return nodeSecrets(client).then(allSecretsKnown, () => {
+    const lastRead = lastReadSecrets.get(secretsKey(client));
     return lastRead ? allSecretsKnown(withCurrentApiKey(lastRead, client)) : { secrets: withCurrentApiKey([], client), complete: false };
   });
 }

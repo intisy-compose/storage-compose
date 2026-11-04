@@ -7,8 +7,7 @@ import { fileJoinRecords } from "./join.js";
 import { otherHostNodes } from "./nodes.js";
 import type { LocalNodeSource } from "./nodeSource.js";
 import { clusterArrayId, hostAgentHeartbeatFile, joinsFile, poolPath, registryDirectory } from "./settings.js";
-import { knownNodeSecrets } from "./nodeSecrets.js";
-import { type SyncthingEndpoint, SyncthingClient, SyncthingRefusal, SyncthingUnavailable, listTimeoutMs } from "./syncthing.js";
+import { type SyncthingEndpoint, SyncthingClient, SyncthingUnavailable, listTimeoutMs } from "./syncthing.js";
 import { fetchTailnet } from "./tailnet.js";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -192,7 +191,6 @@ export async function callSyncthing<T>(instance: LocalInstance, call: (client: S
     return await call(instance.client);
   } catch (error) {
     if (error instanceof SyncthingUnavailable) throw notAnswering(instance.name);
-    if (error instanceof SyncthingRefusal) throw error.clearedOf(await knownNodeSecrets(instance.nodeId, instance.client));
     throw error;
   }
 }

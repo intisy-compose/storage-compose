@@ -95,7 +95,7 @@ function sinceOf(url: URL): string | null {
 
 /** The node's secrets (`nodeSecrets.ts`); a node that does not answer is a 503, so nothing is shown unchecked. */
 function nodeSecrets(local: LocalInstance): Promise<string[]> {
-  return callSyncthing(local, (client) => readNodeSecrets(local.nodeId, client));
+  return callSyncthing(local, (client) => readNodeSecrets(client));
 }
 
 function nodePath(nodeId: string, rest: string): string {
@@ -154,7 +154,7 @@ export async function clearNodeErrors(instance: ResolvedInstance, readBackDelays
     },
     readBackDelaysMs,
   );
-  const [after, secrets] = await Promise.all([localErrors(local).catch(() => [] as SystemError[]), knownNodeSecrets(local.nodeId, local.client)]);
+  const [after, secrets] = await Promise.all([localErrors(local).catch(() => [] as SystemError[]), knownNodeSecrets(local.client)]);
   return { answer: { errors: after.map((error) => nodeErrorOf(error, secrets)) }, note: { nodeId: local.nodeId, nodeName: local.name, folderId: null, text: `${local.name}: cleared ${plural(before.length, "Syncthing error")}` } };
 }
 

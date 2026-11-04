@@ -143,6 +143,8 @@ describe("tree listing of one node", () => {
       const requestUrl = new URL(request.url ?? "/", "http://fake");
       const folder = folderOf(requestUrl);
       switch (requestUrl.pathname) {
+        case "/rest/config":
+          return reply(response, { gui: { apiKey: "", password: "" } });
         case "/rest/system/status":
           return reply(response, { myID: ownId });
         case "/rest/config/folders":
@@ -505,6 +507,8 @@ describe("tree listing of all nodes", () => {
     const folder = instance.folders.find((candidate) => candidate.id === requestUrl.searchParams.get("folder"));
     const everyDevice = [...instances.values()].map((other) => ({ deviceID: other.deviceId, name: other.name }));
     switch (rest) {
+      case "/rest/config":
+        return reply(response, { gui: { apiKey: "", password: "" } });
       case "/rest/system/status":
         return reply(response, { myID: instance.deviceId });
       case "/rest/config/folders":
