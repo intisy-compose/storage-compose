@@ -252,15 +252,25 @@ function Unregister-FolderNode([string]$Folder) {
 
 <#
 .NOTES
-Needs no admin shell: it only deletes files, and the host agent, running as SYSTEM, stops the node's
-Syncthing and removes its rules within a round, and in joined mode removes itself with its last node.
-The Syncthing home stays, so a later join keeps the device ID. Telling the dashboard is left to the
-leave task (specs/2026-11-03-host-agent-joined-mode-design.md, Leaving).
+Needs no admin shell for the node file: the host agent, running as SYSTEM, stops the node's Syncthing
+and removes its rules within a round, and in joined mode removes itself with its last node. On a
+device joined before joined mode, with no agent, it stops the logon task's Syncthing itself, as the
+join's handover does. The Syncthing home stays, so a later join keeps the device ID. A node file whose
+volume or folder is away, or that cannot be opened, is left alone, by the agent's own rule. Telling
+the dashboard is left to the leave task (specs/2026-11-03-host-agent-joined-mode-design.md, Leaving).
 #>
 function Invoke-Leave {
     $folder = [System.IO.Path]::GetFullPath($Root)
     $nodeFile = Get-NodeFilePath $folder
-    if (-not (Test-Path -LiteralPath $nodeFile)) { Write-JoinLog "$nodeFile does not exist; nothing to leave"; return }
+    switch (Get-NodeFileState $folder) {
+        "gone" { Write-JoinLog "$nodeFile does not exist; nothing to leave"; return }
+        "unreachable" { throw "$nodeFile cannot be reached (its volume or folder is away); nothing was changed" }
+        "unreadable" { throw "$nodeFile is there but cannot be opened; nothing was changed" }
+    }
+    $script:syncthingPath = Get-SyncthingPath $repository
+    $node = $null
+    try { $node = Read-NodeFile $folder } catch { Write-JoinLog "$nodeFile cannot be read ($_); a Syncthing a logon task runs for it is left alone" }
+    if ($node) { Stop-LegacyNodeSyncthing $node }
     Remove-Item -Force -LiteralPath $nodeFile
     Write-JoinChange "deleted $nodeFile"
     Unregister-FolderNode $folder
@@ -294,21 +304,23 @@ function Test-HasNodeFirewallRules($Node) {
 <#
 .NOTES
 A device joined before joined mode ran the node's Syncthing from a logon task of the user, with rules
-the join set itself; the agent would take that Syncthing over on the wrong ports. The task always
-goes, the Syncthing and the rules only while no agent runs, since a joined-mode agent's Syncthing on
-this home is its own. That Syncthing is shut down through its own API first, as an adopted one is.
+the join set itself; the agent would take that Syncthing over on the wrong ports, and a leave would
+leave it running. The task always goes, the Syncthing and the rules only while no agent runs, since
+a joined-mode agent's Syncthing on this home is its own. That Syncthing is shut down through its own
+API first, as an adopted one is. Removing rules needs an admin shell; without one they stay, and the
+script says so.
 #>
-function Move-NodeSyncthingToAgent($Node) {
-    foreach ($removed in @(Remove-NodeSyncthingTasks @(Get-SyncthingHome $Node))) { Write-JoinChange "removed the logon task '$removed'; the host agent runs the node's Syncthing" }
+function Stop-LegacyNodeSyncthing($Node) {
+    foreach ($removed in @(Remove-NodeSyncthingTasks @(Get-SyncthingHome $Node))) { Write-JoinChange "removed the logon task '$removed'" }
     if ((Get-InstalledAgentMode) -ne "none") { return }
     if (@(Get-NodeSyncthingProcesses $Node).Count -gt 0) {
         Stop-ExistingSyncthing ([pscustomobject]@{ home = (Get-SyncthingHome $Node); tasks = @(); executables = @() })
         Write-JoinChange "stopped the Syncthing the logon task started"
     }
-    if (Test-HasNodeFirewallRules $Node) {
-        Remove-NodeFirewallRules $Node
-        Write-JoinChange "removed the firewall rules the join set; the host agent keeps them"
-    }
+    if (-not (Test-HasNodeFirewallRules $Node)) { return }
+    Remove-NodeFirewallRules $Node
+    if (Test-HasNodeFirewallRules $Node) { Write-JoinLog "the firewall rules the join set for $($Node.root) stay: removing them needs an admin shell"; return }
+    Write-JoinChange "removed the firewall rules the join set"
 }
 
 <#
@@ -330,11 +342,11 @@ function Wait-ForAgentInstance($Node) {
 function Get-NodeSyncthing($Node) {
     if ((Get-InstalledAgentMode) -eq "stack") {
         $agent = Wait-ForAgentInstance $Node
-        Write-JoinLog "the host agent runs this node's Syncthing"
+        Write-JoinLog "the stack's host agent runs this node's Syncthing; down will not keep it, so run this join again after down to keep the node in joined mode"
         foreach ($removed in @(Remove-AgentNodeSyncthingTasks $repository)) { Write-JoinChange "removed the logon task '$removed'; the host agent runs its node's Syncthing" }
         return $agent
     }
-    Move-NodeSyncthingToAgent $Node
+    Stop-LegacyNodeSyncthing $Node
     if ((Install-JoinedAgent $repository $Node.root (Get-DashboardUrl)) -eq "installed") { Write-JoinChange "installed the host agent in joined mode for $($Node.root)" }
     return Wait-ForAgentInstance $Node
 }

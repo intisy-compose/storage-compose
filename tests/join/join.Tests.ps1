@@ -190,6 +190,7 @@ $testSyncthing = Join-Path $scratch "bin\syncthing.exe"
 New-Item -ItemType Directory -Force -Path (Split-Path $testSyncthing) | Out-Null
 Copy-Item (Get-SyncthingBinary $repository) $testSyncthing
 function Get-SyncthingBinary([string]$StackFolder) { return $testSyncthing }
+function Get-SyncthingPath([string]$StackFolder) { return $testSyncthing }
 $script:syncthingPath = $testSyncthing
 Add-TestFirewallGuard $script:syncthingPath
 $script:substLetter = Get-FreeDriveLetter
@@ -402,6 +403,7 @@ try {
             $registrationsBefore = $global:registrations
             try { $instance = Get-NodeSyncthing $node } finally { $global:agentMode = $modeBefore }
             $instance.owner | Should Be "agent"
+            ($global:logLines -join "|") | Should Match "down will not keep it, so run this join again after down"
             $instance.ports.gui | Should Be 8450
             $instance.apiKey | Should Be "agent-key"
             $global:registrations | Should Be $registrationsBefore
@@ -479,7 +481,7 @@ try {
         $modeBefore = $global:agentMode
         $global:agentMode = "none"
         $script:joinChanges = 0
-        Move-NodeSyncthingToAgent $node
+        Stop-LegacyNodeSyncthing $node
 
         It "removes the logon task" { $global:tasks.ContainsKey($taskName) | Should Be $false }
         It "stops the Syncthing the task started" { @(Get-NodeSyncthingProcesses $node).Count | Should Be 0 }
@@ -490,7 +492,7 @@ try {
             Start-OldSyncthing
             $global:agentMode = "joined"
             try {
-                Move-NodeSyncthingToAgent $node
+                Stop-LegacyNodeSyncthing $node
                 @(Get-NodeSyncthingProcesses $node).Count -gt 0 | Should Be $true
                 Test-HasNodeFirewallRules $node | Should Be $true
             } finally {
@@ -869,6 +871,36 @@ try {
             Test-Path "$($script:nodeRoot).storage\syncthing\config.xml" | Should Be $true
             @(Get-RequestLines).Count | Should Be $requestsBeforeLeave
         }
+        It "leaves a node file whose volume is away alone, and says so" {
+            $Root = "$([char[]](68..90) | Where-Object { -not [System.IO.Directory]::Exists("$($_):\") } | Select-Object -Last 1):\"
+            { Invoke-Leave } | Should Throw "cannot be reached"
+        }
+    }
+
+    Describe "leaving a device joined before joined mode" {
+        $legacyRoot = Join-Path $scratch "legacy-root"
+        New-Item -ItemType Directory -Force -Path (Join-Path $legacyRoot ".storage\syncthing") | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $legacyRoot ".storage\node.toml"), "[node]`nid = `"$(New-NodeId)`"`nname = `"legacy-pc`"`nkind = `"folder`"`nthreshold = 50`nassigned = []`n")
+        $node = Read-NodeFile $legacyRoot
+        $legacyPorts = [pscustomobject]@{ gui = 18499; listen = 32199 }
+        $taskName = "storage-compose syncthing legacy-pc"
+        New-SyncthingConfig $node
+        Set-SyncthingConfig $node $legacyPorts "127.0.0.1" $null | Out-Null
+        $global:tasks[$taskName] = [pscustomobject]@{ TaskName = $taskName; TaskPath = "\"; Actions = @([pscustomobject]@{ Execute = $script:syncthingPath; Arguments = (Get-NodeSyncthingTaskArguments (Get-SyncthingHome $node)) }) }
+        Set-SyncthingFirewallRule $node $legacyPorts
+        Start-SyncthingProcess $node | Out-Null
+        $key = Get-ApiKey (Get-SyncthingHome $node)
+        $deadline = (Get-Date).AddSeconds(60)
+        while ((Get-Date) -lt $deadline) { try { Invoke-RestMethod -Uri "http://127.0.0.1:$($legacyPorts.gui)/rest/system/status" -Headers @{ "X-API-Key" = $key } -UseBasicParsing | Out-Null; break } catch { Start-Sleep -Milliseconds 500 } }
+        $modeBefore = $global:agentMode
+        $global:agentMode = "none"
+        $Root = $legacyRoot
+        try { Invoke-Leave } finally { $global:agentMode = $modeBefore }
+
+        It "deletes the node file" { Test-Path (Join-Path $legacyRoot ".storage\node.toml") | Should Be $false }
+        It "removes the logon task" { $global:tasks.ContainsKey($taskName) | Should Be $false }
+        It "stops the Syncthing the task started" { @(Get-NodeSyncthingProcesses $node).Count | Should Be 0 }
+        It "removes the rules the join set" { Test-HasNodeFirewallRules $node | Should Be $false }
     }
 
     Describe "the test node ids" {
