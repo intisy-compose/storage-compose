@@ -3,7 +3,9 @@ import { configSecrets, withoutSecrets } from "./supportBundle.js";
 import type { SyncthingClient } from "./syncthing.js";
 
 const secretsKeptMs = 60_000;
-const keptSecrets = new Map<string, { readAt: number; secrets: Promise<string[]> }>();
+/** A failed read is kept this long, so a node that refuses its configuration is not asked again on every text that needs its secrets. */
+const failedSecretsKeptMs = 10_000;
+const keptSecrets = new Map<string, { readAt: number; secrets: Promise<string[]>; failed: boolean }>();
 const lastReadSecrets = new Map<string, string[]>();
 
 /** The time the minute's cache of secrets is judged by; a test moves it instead of the process's `Date`. */
@@ -41,21 +43,22 @@ function withCurrentApiKey(secrets: readonly string[], client: SyncthingClient):
 
 /**
  * What is never let out of the node: its API key and every password or API key its configuration holds, the GUI's password hash and
- * folder encryption passwords among them; read again after a minute, and not kept when the read failed.
+ * folder encryption passwords among them; read again after a minute, or after ten seconds when the read failed.
  * @implNote The GUI's plain password is never known to the dashboard: Syncthing keeps only its bcrypt hash, so only the hash is searched for.
  */
 export function nodeSecrets(client: SyncthingClient): Promise<string[]> {
   const key = secretsKey(client);
   const kept = keptSecrets.get(key);
-  if (kept && secretsClock.now() - kept.readAt < secretsKeptMs) return kept.secrets.then((secrets) => withCurrentApiKey(secrets, client));
+  if (kept && secretsClock.now() - kept.readAt < (kept.failed ? failedSecretsKeptMs : secretsKeptMs)) return kept.secrets.then((secrets) => withCurrentApiKey(secrets, client));
   const secrets = client.configForSecrets().then((config) => {
     const read = withCurrentApiKey(configSecrets(config), client);
     rememberLastRead(key, read);
     return read;
   });
-  keptSecrets.set(key, { readAt: secretsClock.now(), secrets });
+  const entry = { readAt: secretsClock.now(), secrets, failed: false };
+  keptSecrets.set(key, entry);
   secrets.catch(() => {
-    if (keptSecrets.get(key)?.secrets === secrets) keptSecrets.delete(key);
+    entry.failed = true;
   });
   return secrets;
 }

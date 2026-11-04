@@ -85,4 +85,25 @@ describe("the secrets' cache", () => {
     assert.deepEqual(await knownNodeSecrets(clients[0]), { secrets: ["key", "kept-0"], complete: true }, "read again, so newest");
     assert.deepEqual(await knownNodeSecrets(clients[1]), { secrets: ["key"], complete: false }, "now the one read longest ago");
   });
+
+  it("asks a node whose configuration cannot be read at most once in ten seconds", async (context) => {
+    let now = 9_000_000;
+    context.mock.method(secretsClock, "now", () => now);
+    let reads = 0;
+    const client = {
+      endpoint: { url: "http://127.0.0.3:9384", apiKey: "key" },
+      configForSecrets: async () => {
+        reads++;
+        throw new Error("HTTP 500");
+      },
+    } as unknown as SyncthingClient;
+
+    await knownNodeSecrets(client);
+    now += 9_000;
+    await knownNodeSecrets(client);
+    assert.equal(reads, 1);
+    now += 2_000;
+    await knownNodeSecrets(client);
+    assert.equal(reads, 2);
+  });
 });
