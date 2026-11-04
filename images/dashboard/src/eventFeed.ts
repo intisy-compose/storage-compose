@@ -486,21 +486,23 @@ class InstanceFeed {
     this.context.folderLabels = namesFrom(folders, "id", "label");
   }
 
-  /** The long poll of the instance's file changes, `/rest/events/disk`, into one buffer per folder. */
+  /**
+   * The long poll of the instance's file changes, `/rest/events/disk`, into one buffer per folder.
+   * @implNote The start time is read before every poll: after a quiet one, as the instance may have restarted while the poll waited, and
+   * after the pause that follows changes, as no connection is open then for a restart to break, and a new run numbering past the old
+   * cursor within it would otherwise lose its first changes.
+   */
   async runChanges(): Promise<void> {
-    let mayHaveRestarted = true;
     while (!this.stopped) {
       try {
-        if (mayHaveRestarted) await this.followChangesRestart();
+        await this.followChangesRestart();
         const { changesPerPoll, waitSeconds, requestTimeoutMs } = this.options;
         const events = await this.instance.client.diskEvents(this.position.changesSince, changesPerPoll, waitSeconds, requestTimeoutMs);
         if (this.stopped) return;
         this.context.secrets = await knownNodeSecrets(this.instance.nodeId, this.instance.client);
         this.takeChanges(events);
-        mayHaveRestarted = events.length === 0;
         if (events.length) await delay(this.options.changesPauseMs);
       } catch {
-        mayHaveRestarted = true;
         await delay(this.options.retryMs);
       }
     }

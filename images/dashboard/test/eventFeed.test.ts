@@ -139,8 +139,8 @@ async function instance(nodeId: string, name: string): Promise<{ fake: FakeSynct
   return { fake, feed: { nodeId, name, client: new SyncthingClient({ url, apiKey: eventFeedApiKey }) } };
 }
 
-function feedsFor(log: ActivityLog): EventFeeds {
-  const feeds = new EventFeeds(log, feedOptions);
+function feedsFor(log: ActivityLog, options: Partial<typeof feedOptions> = {}): EventFeeds {
+  const feeds = new EventFeeds(log, { ...feedOptions, ...options });
   feedSets.push(feeds);
   return feeds;
 }
@@ -506,6 +506,18 @@ describe("file changes", () => {
     assert.ok(fake.diskQueries.every((query) => query.limit === feedOptions.changesPerPoll), JSON.stringify(fake.diskQueries));
     assert.deepEqual(fake.diskQueries.map((query) => query.since).filter((since, index, all) => all.indexOf(since) === index), [0, 1, 2]);
     assert.ok(fake.typesSeen.length > 0 && fake.typesSeen.every((types) => !types.includes("ChangeDetected")), fake.typesSeen.join(" | "));
+  });
+
+  it("a restart during the pause after a poll with changes loses none of the new run's first changes", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log, { changesPauseMs: 400 }).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "a.txt", pcShort), diskChange("LocalChangeDetected", "b.txt", pcShort));
+    await until(() => changes(log).length === 2, "the changes before the restart");
+    fake.restart();
+    fake.emitDisk(...["new0", "new1", "new2"].map((path) => diskChange("LocalChangeDetected", path, pcShort)));
+    await until(() => changes(log).some((entry) => entry.change?.path === "new2"), "the new run's changes");
+    assert.deepEqual(changes(log).map((entry) => entry.change?.path).filter((path) => path?.startsWith("new")), ["new2", "new1", "new0"]);
   });
 
   it("a folder removed from the node's configuration takes its change buffer with it", async () => {
