@@ -42,9 +42,12 @@ function kindOf(value: unknown): string {
   return "an object";
 }
 
-/** @implNote Go writes only a nil list or map as null, never a number, text or boolean, so a null setting takes one of those two or null. */
+/**
+ * @implNote Go writes only a nil list or map as null, never a number, text or boolean, so a null setting takes a list, an object or null,
+ * which are exactly what `typeof` calls an object.
+ */
 function nullSettingProblem(key: string, value: unknown): string | null {
-  return value === null || Array.isArray(value) || typeof value === "object" ? null : `${key} must be a list or an object, as Syncthing has it null`;
+  return typeof value === "object" ? null : `${key} must be a list or an object, as Syncthing has it null`;
 }
 
 /** Why a key cannot be sent at all: the GUI's, a secret, one the object does not have, or a value of another kind than Syncthing's. */
