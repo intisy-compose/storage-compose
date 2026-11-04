@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { deviceDisplayName, listedAddresses } from "./api/deviceText.js";
 import { bridgeHostOf, connectionKind } from "./connectionKind.js";
 import { needTotalOf } from "./folderLists.js";
-import { type KnownSecrets, knownNodeSecrets } from "./nodeSecrets.js";
+import { type KnownSecrets, knownNodeSecrets, shownNodeText } from "./nodeSecrets.js";
 import { shownUnscopedText } from "./shownSyncthingError.js";
 import { effectiveSharing, sharedDevices } from "./syncthingConfig.js";
 import { type FileVersion, type FolderFile, type FolderPeer, type FolderType, type NodeFolder, type NodeSync, type Peer, type RemoteState, type SyncthingDevice, type SyncthingInstance, listTimeoutMs } from "./api/types.js";
@@ -213,19 +213,31 @@ export class SyncthingError extends Error {}
 /**
  * Syncthing answered the request with an error status; `shownBody` is its answer as the page may see it.
  * @implNote The answer is Syncthing's own text, which can quote an ignore file, so it is passed through `shownUnscopedText` before it
- * enters the message, and every path that shows an error's message shows only that.
+ * enters the message, and every path that shows an error's message shows only that. `callSyncthing` replaces it with `clearedOf` the node's
+ * secrets, which only it knows the node of.
  */
 export class SyncthingRefusal extends SyncthingError {
   readonly shownBody: string;
+  readonly #request: string;
+  readonly #body: string;
 
   constructor(
     request: string,
     readonly status: number,
     body: string,
+    secrets?: KnownSecrets,
   ) {
-    const shownBody = shownUnscopedText(body.trim());
+    const trimmed = body.trim();
+    const shownBody = !trimmed ? "" : secrets ? shownNodeText(trimmed, secrets) : shownUnscopedText(trimmed);
     super(`${request}: HTTP ${status}${shownBody ? ` ${shownBody}` : ""}`);
     this.shownBody = shownBody;
+    this.#request = request;
+    this.#body = body;
+  }
+
+  /** The same refusal with its answer cleared of the node's secrets, or hidden while they are not all known. */
+  clearedOf(secrets: KnownSecrets): SyncthingRefusal {
+    return new SyncthingRefusal(this.#request, this.status, this.#body, secrets);
   }
 }
 
