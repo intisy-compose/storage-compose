@@ -80,24 +80,30 @@ export function configSecrets(config: unknown): string[] {
   return Object.entries(config).flatMap(([key, value]) => (secretKey.test(key) && typeof value === "string" && value ? [value] : configSecrets(value)));
 }
 
-/** A secret as it reads in a JSON file that Go wrote, which escapes `<`, `>` and `&` besides what JSON must. */
+/** A secret as it reads in a JSON file that Go wrote, which escapes `<`, `>`, `&` and the line and paragraph separators besides what JSON must. */
 function goJsonForm(secret: string): string {
   return JSON.stringify(secret)
     .slice(1, -1)
-    .replace(/[<>&]/g, (character) => `\\u00${character.charCodeAt(0).toString(16)}`);
+    .replace(/[<>&\u2028\u2029]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 const namedXmlEntities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
-/** Go's `encoding/xml` writes the quotes by number, not by name. */
-const goXmlEntities: Record<string, string> = { ...namedXmlEntities, '"': "&#34;", "'": "&#39;" };
+/** Go's `encoding/xml` writes the quotes by number, not by name, and escapes tab, line feed and carriage return in text. */
+const goXmlEntities: Record<string, string> = { ...namedXmlEntities, '"': "&#34;", "'": "&#39;", "\t": "&#x9;", "\n": "&#xA;", "\r": "&#xD;" };
+const hexXmlEntities: Record<string, string> = { ...namedXmlEntities, '"': "&#x22;", "'": "&#x27;" };
+const paddedXmlEntities: Record<string, string> = { ...namedXmlEntities, '"': "&#034;", "'": "&#039;" };
 
 function xmlForm(secret: string, entities: Record<string, string>): string {
-  return secret.replace(/[&<>"']/g, (character) => entities[character]);
+  return secret.replace(/[&<>"'\t\n\r]/g, (character) => entities[character] ?? character);
 }
 
-/** Every way a secret can read in a file: as written, as Go writes it into JSON, as XML escapes it by name and as Go's XML writer does. */
+/**
+ * Every way a secret can read in a file: as written, percent-encoded as in a URL, as Go writes it into JSON, and as XML escapes it by
+ * name, by Go's numbers, by hex numbers and by zero-padded numbers.
+ */
 export function secretForms(secret: string): string[] {
-  return [...new Set([secret, goJsonForm(secret), xmlForm(secret, namedXmlEntities), xmlForm(secret, goXmlEntities)])];
+  const xmlForms = [namedXmlEntities, goXmlEntities, hexXmlEntities, paddedXmlEntities].map((entities) => xmlForm(secret, entities));
+  return [...new Set([secret, encodeURIComponent(secret), goJsonForm(secret), ...xmlForms])];
 }
 
 export function holdsSecret(content: Buffer, secret: string): boolean {
