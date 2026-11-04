@@ -139,8 +139,8 @@ export class ConnectionsRound {
         continue;
       }
       try {
-        const wrote = await this.applyOne(instance, entry);
-        const waits = await this.waitsForRestart(instance, wrote);
+        await this.applyOne(instance, entry);
+        const waits = await this.waitsForRestart(instance);
         (waits ? report.restartNeeded : report.applied).push(instance.nodeId);
       } catch (error) {
         report.failed[instance.nodeId] = reasonOf(error);
@@ -158,8 +158,8 @@ export class ConnectionsRound {
    * apply the profile at the node's next start. The flag is read only after this round wrote or while an earlier write still waits, so a
    * restart left pending by some other change is never taken for the profile's.
    */
-  private async waitsForRestart(instance: LocalInstance, wrote: boolean): Promise<boolean> {
-    if (!wrote && !this.awaitingRestart.has(instance.nodeId)) return false;
+  private async waitsForRestart(instance: LocalInstance): Promise<boolean> {
+    if (!this.awaitingRestart.has(instance.nodeId)) return false;
     let required: boolean;
     try {
       required = await requiresRestart(instance);
@@ -179,15 +179,14 @@ export class ConnectionsRound {
   }
 
   /**
-   * Answers whether anything was written.
    * @implNote Only `addresses` of devices the node already has: never a device added, never introducer or auto-accept, never a folder, so an array's pending folders stay pending.
+   * A node is marked as awaiting its restart need before each write is sent, as a write whose answer is lost may still have been applied.
    */
-  private async applyOne(instance: LocalInstance, entry: NodeConnections): Promise<boolean> {
+  private async applyOne(instance: LocalInstance, entry: NodeConnections): Promise<void> {
     const delays = this.dependencies.readBackDelaysMs;
-    let wrote = false;
     const options = pendingOptions(await configuredOptions(instance), { ...entry.options, listenAddresses: entry.listenAddresses });
     if (Object.keys(options).length > 0) {
-      wrote = true;
+      this.awaitingRestart.add(instance.nodeId);
       await writeConfirmed(
         instance,
         (client) => client.request("PATCH", "/config/options", options),
@@ -199,7 +198,7 @@ export class ConnectionsRound {
       const deviceId = String(device.deviceID);
       const addresses = entry.deviceAddresses[deviceId];
       if (!addresses || isChangeInPlace(device, { addresses })) continue;
-      wrote = true;
+      this.awaitingRestart.add(instance.nodeId);
       await writeConfirmed(
         instance,
         (client) => client.request("PATCH", `/config/devices/${encodeURIComponent(deviceId)}`, { addresses }),
@@ -207,7 +206,6 @@ export class ConnectionsRound {
         delays,
       );
     }
-    return wrote;
   }
 }
 

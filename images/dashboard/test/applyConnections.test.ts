@@ -46,6 +46,8 @@ class FakeSyncthing {
   /** What `/config/restart-required` answers; an Error makes the read fail. */
   requiresRestart: boolean | Error = false;
   restartReads = 0;
+  /** The next options PATCH is applied, then the node stops answering before its answer, as a restart does. */
+  losePatchAnswer = false;
 
   constructor(
     public options: SyncthingObject,
@@ -64,6 +66,11 @@ class FakeSyncthing {
     if (method === "GET" && path === "/config/devices") return structuredClone(this.devices) as T;
     if (method === "PATCH" && path === "/config/options") {
       Object.assign(this.options, body);
+      if (this.losePatchAnswer) {
+        this.losePatchAnswer = false;
+        this.answers = false;
+        throw new SyncthingUnavailable(`${method} ${path}: connection reset`);
+      }
       return null as T;
     }
     const device = /^\/config\/devices\/([^/]+)$/.exec(path);
@@ -300,6 +307,22 @@ describe("applying the connection profile to this host's nodes", () => {
     assert.deepEqual(first.failed, {});
     assert.deepEqual(second.restartNeeded, ["storage"], "the next round asks again although it writes nothing");
     assert.equal(cluster.sent.length, 1);
+  });
+
+  it("a write whose answer is lost after Syncthing applied it still leaves the node waiting for a restart", async (context) => {
+    context.mock.method(console, "error", () => undefined);
+    const array = onProfile(defaultProfile(), wholeTable, "a1b2");
+    array.losePatchAnswer = true;
+    const { round: connections } = round([instanceOf("a1b2", array, "array")], { profile: async () => limitedProfile(640) });
+
+    const lost = await connections.run();
+    array.answers = true;
+    array.requiresRestart = true;
+    const next = await connections.run();
+
+    assert.deepEqual(Object.keys(lost.failed), ["a1b2"]);
+    assert.equal(array.sent.length, 1, "the next round finds the values in place and writes nothing");
+    assert.deepEqual(next.restartNeeded, ["a1b2"]);
   });
 
   it("a peer missing from the table keeps the addresses it has", async () => {
