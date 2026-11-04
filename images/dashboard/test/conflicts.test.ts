@@ -475,7 +475,8 @@ describe("conflict index", () => {
     const reader = new FakeReader();
     documentsTree(reader);
     reader.trees.get("documents")!.set("small", [file("b.txt"), file("b.sync-conflict-20260606-110111-H3SXFPD.txt", 4), file("b.sync-conflict-20260606-110222-H3SXFPD.txt", 5)]);
-    const { indexes } = await indexesIn(undefined, { maxConflicts: 2, leftOutSearchMinMs: 400 });
+    let now = 1_000_000;
+    const { indexes } = await indexesIn(undefined, { maxConflicts: 2, leftOutSearchMinMs: 200, now: () => now });
     await indexes.reconcile([{ nodeId: "fb98", client: reader }]);
     await indexes.idle();
     const rootReads = () => reader.asked.filter((entry) => entry === "documents::0").length;
@@ -496,6 +497,9 @@ describe("conflict index", () => {
     await removeKept(42);
     assert.equal(rootReads(), before + 1, "a second time within the minute waits");
     assert.equal(indexes.hasMore("fb98", "documents"), true, "the folder still says it may hold more while it waits");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(rootReads(), before + 1, "the clock has not moved, so the wait goes on");
+    now += 200;
     await until(() => rootReads() === before + 2, "the search once the minute is up");
     await indexes.idle();
     assert.equal(indexes.count("fb98", "documents"), 2);
