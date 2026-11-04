@@ -325,6 +325,20 @@ describe("applying the connection profile to this host's nodes", () => {
     assert.deepEqual(next.restartNeeded, ["a1b2"]);
   });
 
+  it("a failed re-read of a node already waiting for a restart keeps it waiting", async (context) => {
+    context.mock.method(console, "error", () => undefined);
+    const array = onProfile(defaultProfile(), wholeTable, "a1b2");
+    array.requiresRestart = true;
+    const { round: connections } = round([instanceOf("a1b2", array, "array")], { profile: async () => limitedProfile(660) });
+    await connections.run();
+    array.requiresRestart = new SyncthingUnavailable("GET /config/restart-required: connection refused");
+
+    const report = await connections.run();
+
+    assert.deepEqual(report.restartNeeded, ["a1b2"]);
+    assert.equal(connectionsStateOf("a1b2"), "restart-needed");
+  });
+
   it("a peer missing from the table keeps the addresses it has", async () => {
     const cluster = onProfile(defaultProfile(), wholeTable, "storage");
     const { round: connections } = round([instanceOf("storage", cluster)], { remoteTable: async () => null });

@@ -164,8 +164,7 @@ export class ConnectionsRound {
     try {
       required = await requiresRestart(instance);
     } catch {
-      this.awaitingRestart.add(instance.nodeId);
-      return false;
+      return this.restartLogged.has(instance.nodeId);
     }
     if (!required) {
       this.awaitingRestart.delete(instance.nodeId);
