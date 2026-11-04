@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # The Linux CLI, with the same commands as docker-compose.ps1; the drives are already on this host's USB.
 set -euo pipefail
+# shellcheck disable=SC2034 # read by the CLI parity check, not here
+windows_only=(attach)
 
 here=$(cd "$(dirname "$0")" && pwd)
 config_file="$here/config.env"
