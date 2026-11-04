@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # The Linux CLI, with the same commands as docker-compose.ps1; the drives are already on this host's USB.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 3 ]; }; then
+    echo "docker-compose.sh needs bash 4.3 or newer; this is bash $BASH_VERSION" >&2
+    exit 1
+fi
 set -euo pipefail
 # shellcheck disable=SC2034 # read by the CLI parity check, not here
 windows_only=(attach)
