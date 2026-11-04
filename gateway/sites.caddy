@@ -1,9 +1,7 @@
-# Syncthing's GUI listens on 8385 in this same namespace and rejects any Host but its own; its sync
-# protocol on 22000 and Samba on 445 bypass Caddy.
+# Syncthing's GUI listens on 8385 on this namespace's Docker address, which Docker names gateway; its
+# sync protocol on 22000 and Samba on 445 bypass Caddy.
 (syncthing) {
-	reverse_proxy 127.0.0.1:8385 {
-		header_up Host 127.0.0.1:8385
-	}
+	reverse_proxy gateway:8385
 }
 
 # tailscale names each caller in a PROXY protocol header (TAILNET_PROXY_PROTOCOL), and the join port
