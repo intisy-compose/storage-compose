@@ -251,8 +251,10 @@ runs as SYSTEM, so it serves before anyone logs in, in one of two modes:
   minutes after the stack is gone (its containers stopped or removed, or its folder deleted) it
   releases everything and unregisters itself, so a deleted stack leaves nothing behind. A stop of
   Docker itself is not the stack going: while Docker does not answer, or the containers exited with
-  Docker's own stop (a Docker Desktop restart leaves them exited until `up`), it keeps everything
-  running, does not count the ten minutes, and says `waitingForDocker` in its heartbeat. While the
+  Docker's own stop (a Docker Desktop restart leaves them exited until `up`), it keeps the native
+  nodes' Syncthings running, does not count the ten minutes, and says `waitingForDocker` in its
+  heartbeat; the drives and the Docker backend rules follow the containers as for any stop. It waits
+  at most a day, and a host with no `docker` command has no Docker to wait for. While the
   device still has joined nodes (see Joining a device), `down` installs it again in joined mode for
   them instead of removing it, and the ten minutes end the same way: it drops what the stack added
   and goes on in joined mode. If that install fails, `down` names the joined roots and the join
@@ -266,7 +268,9 @@ runs as SYSTEM, so it serves before anyone logs in, in one of two modes:
   which applies it before it listens again; one round spends at most 10 s asking. Only a deleted
   node file ends a node: a volume that is away (not mounted yet, unplugged, locked) keeps it, with
   nothing running for it until it returns, and a file that cannot be read keeps its Syncthing
-  running as last read. When no joined node file is left it stops, removes its rules and
+  running as last read. A node whose folder or `.storage` folder is missing while its volume is there
+  is kept the same way, and the log says it stays until `storage-join.ps1 -Leave` or the folder
+  returns. When no joined node file is left it stops, removes its rules and
   unregisters itself at once, with no grace period. `up` on such a device switches it to stack
   mode, and its joined nodes become nodes the agent finds like any other. A joined agent whose
   checkout was moved or deleted runs no Syncthing and says so in its log and heartbeat; run the join
