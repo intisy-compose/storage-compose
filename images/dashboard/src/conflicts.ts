@@ -66,6 +66,8 @@ export interface ConflictIndexOptions {
   retryMaxMs: number;
   /** The most conflict copies kept per folder; beyond it the folder says there are more. */
   maxConflicts: number;
+  /** The least time between two searches of one folder for the copies left out at the cap: a sweep of a large folder takes minutes. */
+  leftOutSearchMinMs: number;
   report: (message: string) => void;
   now: () => number;
 }
@@ -79,6 +81,7 @@ const defaultOptions: ConflictIndexOptions = {
   retryFirstMs: 5 * 60_000,
   retryMaxMs: 6 * 3_600_000,
   maxConflicts: 1000,
+  leftOutSearchMinMs: 60_000,
   report: (message) => console.error(message),
   now: Date.now,
 };
@@ -116,6 +119,9 @@ interface FolderIndex {
   retryAt: number;
   writeTimer: NodeJS.Timeout | null;
   writing: Promise<void>;
+  /** When the copies left out at the cap were last searched for, and the search waiting for that minute to pass. */
+  leftOutSearchedAt: number | null;
+  leftOutTimer: NodeJS.Timeout | null;
 }
 
 /** A folder's conflict copies; `complete` is false while it is still being searched, `more` when it holds more than the index keeps. */
@@ -226,7 +232,10 @@ export class ConflictIndexes {
   stop(): void {
     this.stopped = true;
     this.clients.clear();
-    for (const index of this.indexes.values()) if (index.writeTimer) clearTimeout(index.writeTimer);
+    for (const index of this.indexes.values()) {
+      if (index.writeTimer) clearTimeout(index.writeTimer);
+      if (index.leftOutTimer) clearTimeout(index.leftOutTimer);
+    }
   }
 
   /** Keeps the node's index work in one line, so an update never overtakes an earlier one. */
@@ -331,11 +340,14 @@ export class ConflictIndexes {
       retryAt: 0,
       writeTimer: null,
       writing: Promise.resolve(),
+      leftOutSearchedAt: null,
+      leftOutTimer: null,
     });
   }
 
   private async forget(index: FolderIndex): Promise<void> {
     if (index.writeTimer) clearTimeout(index.writeTimer);
+    if (index.leftOutTimer) clearTimeout(index.leftOutTimer);
     this.indexes.delete(keyOf(index.nodeId, index.folderId));
     await index.writing;
     await rm(this.filePath(index.nodeId, index.folderId), { force: true });
@@ -454,8 +466,23 @@ export class ConflictIndexes {
     else this.writeLater(index);
   }
 
-  /** Copies left out at the cap may fit now; only a sweep can name them. */
+  /**
+   * Copies left out at the cap may fit now; only a sweep can name them.
+   * @implNote At most one search per `leftOutSearchMinMs` and folder, by the human partner's ruling (2026-11-04): a later one waits for the
+   * rest of that time, the folder still saying it may hold more meanwhile.
+   */
   private searchForLeftOut(index: FolderIndex): void {
+    if (index.leftOutTimer || this.stopped) return;
+    const wait = index.leftOutSearchedAt === null ? 0 : index.leftOutSearchedAt + this.options.leftOutSearchMinMs - this.options.now();
+    if (wait > 0) {
+      index.leftOutTimer = setTimeout(() => {
+        index.leftOutTimer = null;
+        if (this.indexes.get(keyOf(index.nodeId, index.folderId)) === index) this.searchForLeftOut(index);
+      }, wait);
+      index.leftOutTimer.unref();
+      return;
+    }
+    index.leftOutSearchedAt = this.options.now();
     index.more = false;
     if (index.sweep) return;
     index.needsSweep = true;
