@@ -232,8 +232,39 @@ function Register-FolderNode {
     $paths = @(Get-IndexPaths $volume)
     if ($paths -contains $relative) { return }
     $paths += $relative
-    Write-TextFile $index ("paths = [" + (($paths | ForEach-Object { "`"$_`"" }) -join ", ") + "]`n")
+    Write-TextFile $index (Format-IndexPaths $paths)
     Write-JoinChange "listed $relative in $index"
+}
+
+function Format-IndexPaths([string[]]$Paths) { return "paths = [" + ((@($Paths) | ForEach-Object { "`"$_`"" }) -join ", ") + "]`n" }
+
+function Unregister-FolderNode([string]$Folder) {
+    if (Test-IsVolumeRoot $Folder) { return }
+    $volume = Get-VolumeRoot $Folder
+    $relative = Get-RelativeNodePath $Folder
+    $paths = @(Get-IndexPaths $volume)
+    if ($paths -notcontains $relative) { return }
+    $index = Get-NodeIndexPath $volume
+    $remaining = @($paths | Where-Object { $_ -ne $relative })
+    if ($remaining.Count -eq 0) { Remove-Item -Force -LiteralPath $index } else { Write-TextFile $index (Format-IndexPaths $remaining) }
+    Write-JoinChange "removed $relative from $index"
+}
+
+<#
+.NOTES
+Needs no admin shell: it only deletes files, and the host agent, running as SYSTEM, stops the node's
+Syncthing and removes its rules within a round, and in joined mode removes itself with its last node.
+The Syncthing home stays, so a later join keeps the device ID. Telling the dashboard is left to the
+leave task (specs/2026-11-03-host-agent-joined-mode-design.md, Leaving).
+#>
+function Invoke-Leave {
+    $folder = [System.IO.Path]::GetFullPath($Root)
+    $nodeFile = Get-NodeFilePath $folder
+    if (-not (Test-Path -LiteralPath $nodeFile)) { Write-JoinLog "$nodeFile does not exist; nothing to leave"; return }
+    Remove-Item -Force -LiteralPath $nodeFile
+    Write-JoinChange "deleted $nodeFile"
+    Unregister-FolderNode $folder
+    Write-JoinLog "left; the host agent stops this node's Syncthing within a round"
 }
 
 function Read-JoinNode { return Read-NodeFile ([System.IO.Path]::GetFullPath($Root)) }
@@ -673,6 +704,7 @@ function Invoke-Join {
 
 if ($MyInvocation.InvocationName -ne ".") {
     try {
+        if ($Leave) { Invoke-Leave; exit 0 }
         if ((Test-IsInteractiveJoin $PSBoundParameters.Count) -and -not (Read-JoinChoices)) { exit 0 }
         Invoke-Join
     } catch { Write-Host "storage-join: $_" -ForegroundColor Red; exit 1 }

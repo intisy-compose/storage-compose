@@ -837,6 +837,40 @@ try {
         }
     }
 
+    Describe "leaving" {
+        $requestsBeforeLeave = @(Get-RequestLines).Count
+        It "deletes a folder node's file and its line in the index, and keeps its Syncthing home" {
+            $Root = "$($volume)node2"
+            $script:joinChanges = 0
+            Invoke-Leave
+            Test-Path "$($volume)node2\.storage\node.toml" | Should Be $false
+            Test-Path "$($volume)node2\.storage\syncthing\config.xml" | Should Be $true
+            @(Get-IndexPaths $volume) | Should Be @("files", "more", "outer/in")
+            $script:joinChanges | Should Be 2
+        }
+        It "has nothing to do the second time" {
+            $Root = "$($volume)node2"
+            $script:joinChanges = 0
+            Invoke-Leave
+            $script:joinChanges | Should Be 0
+        }
+        It "deletes the index once its last folder node left" {
+            New-Item -ItemType Directory -Force -Path "$($volume)files\.storage" | Out-Null
+            [System.IO.File]::WriteAllText("$($volume)files\.storage\node.toml", "[node]`nid = `"abcd`"`nname = `"files`"`nkind = `"folder`"`n")
+            [System.IO.File]::WriteAllText("$($volume).storage\nodes.toml", "paths = [`"files`"]`n")
+            $Root = "$($volume)files"
+            Invoke-Leave
+            Test-Path "$($volume).storage\nodes.toml" | Should Be $false
+        }
+        It "deletes a drive node's file through the script's own -Leave, which never joins" {
+            & (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe") -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repository "join\storage-join.ps1") -Leave -Root $script:nodeRoot | Out-Null
+            $LASTEXITCODE | Should Be 0
+            Test-Path "$($script:nodeRoot).storage\node.toml" | Should Be $false
+            Test-Path "$($script:nodeRoot).storage\syncthing\config.xml" | Should Be $true
+            @(Get-RequestLines).Count | Should Be $requestsBeforeLeave
+        }
+    }
+
     Describe "the test node ids" {
         It "skip every id a live rule names" {
             $live = $global:liveRuleNodeIds
