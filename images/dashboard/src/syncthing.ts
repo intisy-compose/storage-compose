@@ -335,9 +335,16 @@ export class SyncthingClient {
     }
   }
 
-  /** The whole configuration, read only for its secrets (`nodeSecrets.ts`). */
-  configForSecrets(): Promise<unknown> {
-    return this.unclearedRequest("GET", "/config");
+  /**
+   * The whole configuration, read only for its secrets (`nodeSecrets.ts`).
+   * @implNote A refusal of this read hides its answer whole: the secrets it would be cleared of are what it failed to read.
+   */
+  async configForSecrets(): Promise<unknown> {
+    try {
+      return await this.unclearedRequest("GET", "/config");
+    } catch (error) {
+      throw error instanceof SyncthingRefusal ? error.clearedOf({ secrets: [], complete: false }) : error;
+    }
   }
 
   myId(): Promise<string> {

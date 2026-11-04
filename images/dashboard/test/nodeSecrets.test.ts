@@ -51,6 +51,25 @@ describe("a refusal's text", () => {
       syncthing.close();
     }
   });
+
+  it("hides the answer of a refused read of the secrets themselves", async () => {
+    const apiKey = "config-refusal-key";
+    const syncthing = createServer((_request, response) => {
+      response.writeHead(403, { "Content-Type": "text/plain" });
+      response.end(`${apiKey} may not read the configuration`);
+    });
+    await new Promise<void>((resolve) => syncthing.listen(0, "127.0.0.1", resolve));
+    try {
+      const client = new SyncthingClient({ url: `http://127.0.0.1:${(syncthing.address() as AddressInfo).port}`, apiKey });
+
+      const refusal = await refusalOf(client.configForSecrets());
+
+      assert.equal(refusal.status, 403);
+      assert.ok(!refusal.message.includes(apiKey), refusal.message);
+    } finally {
+      syncthing.close();
+    }
+  });
 });
 
 describe("a node's last read secrets", () => {
