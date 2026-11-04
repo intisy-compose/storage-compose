@@ -4,9 +4,10 @@
 The storage-compose host agent on Windows (specs/2026-10-19-storage-nodes-and-dashboard-design.md, the
 host agent and its lifetime, and specs/2026-11-03-host-agent-joined-mode-design.md). In stack mode it
 passes the array's drives through to WSL, runs one native Syncthing per drive or folder node it finds,
-and writes a heartbeat for the dashboard, all only while the stack's containers run, and removes
-itself ten minutes after the stack is gone. In joined mode, on a device joined without the stack, it
-runs the Syncthing of each node its joins named while that node's file exists, with the entry fetched
+and writes a heartbeat for the dashboard, all only while the stack's containers run or wait out a
+stop of Docker itself, and removes itself ten minutes after the stack is gone. In joined mode, on a
+device joined without the stack, it runs the Syncthing of each node its joins named while that node's
+file exists, with the entry fetched
 from the node's dashboard, and removes itself once none is left. Run as SYSTEM by the
 storage-compose-agent service; started without -ConfigFile it only defines its functions (the tests
 use that).
@@ -27,6 +28,7 @@ $joinedFetchIntervalSeconds = 60
 $joinedFetchBudgetSeconds = 10
 $stackGraceSeconds = 600
 $requestStartWindowSeconds = 600
+$dockerStopWindowSeconds = 120
 $volumeEventName = "storage-compose-volume-change"
 $runningContainerStates = @("running", "restarting")
 
@@ -48,6 +50,7 @@ $joinedFetchProblems = @{}
 $lastJoinedNodes = @{}
 $joinedNodeProblems = @{}
 $binaryProblem = ""
+$dockerWaitReason = ""
 
 function Get-Now { return Get-Date }
 
@@ -80,9 +83,18 @@ function Initialize-Agent($Config) {
     $script:agentState = New-AgentState (Read-JsonFile $script:agentStateFile)
 }
 
+<#
+.NOTES
+dockerAnsweredAt is kept in memory every round and written with the rest of the state, and at a service
+stop, so an agent that starts again during a Docker outage (a reboot) still knows when Docker last
+answered.
+#>
 function New-AgentState($Saved) {
-    $state = [pscustomobject]@{ ports = [pscustomobject]@{} }
-    if ($Saved -and $Saved.PSObject.Properties["ports"] -and $Saved.ports) { $state.ports = $Saved.ports }
+    $state = [pscustomobject]@{ ports = [pscustomobject]@{}; dockerAnsweredAt = $null; dockerOutage = $null }
+    if (-not $Saved) { return $state }
+    foreach ($name in @("ports", "dockerAnsweredAt", "dockerOutage")) {
+        if ($Saved.PSObject.Properties[$name] -and $Saved.$name) { $state.$name = $Saved.$name }
+    }
     return $state
 }
 
@@ -97,16 +109,55 @@ function Test-StackFolderExists { return Test-Path -LiteralPath (Join-Path $scri
 <#
 .NOTES
 Docker Desktop answers SYSTEM on its default pipe. While Docker is unreachable the stack counts as not
-running: its containers cannot be running then either.
+running (its containers cannot be running then either), and the agent waits for Docker
+(Update-DockerWait). $null means exactly that, so an empty list is returned wrapped: PowerShell
+unrolls an empty array to $null, which read a removed stack as Docker not answering.
 #>
 function Get-StackContainerStates {
     $result = Invoke-NativeCommand "docker" @("ps", "-a", "--filter", "label=com.docker.compose.project=$script:projectName", "--format", "{{.State}}")
     if ($result.ExitCode -ne 0) { return $null }
-    return @($result.Output -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    return ,@(Split-OutputLines $result.Output)
 }
 
+function Split-OutputLines([string]$Output) { return @($Output -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+
+<#
+.NOTES
+Throws when Docker does not answer, so a failed question never reads as a stack whose containers
+never ran.
+#>
+function Get-StackLastFinishedAt {
+    $ids = Invoke-NativeCommand "docker" @("ps", "-a", "-q", "--filter", "label=com.docker.compose.project=$script:projectName")
+    if ($ids.ExitCode -ne 0) { throw "docker ps did not answer: $($ids.Output)" }
+    $idList = @(Split-OutputLines $ids.Output)
+    if ($idList.Count -eq 0) { return $null }
+    $times = Invoke-NativeCommand "docker" (@("inspect", "--format", "{{.State.FinishedAt}}") + $idList)
+    if ($times.ExitCode -ne 0) { throw "docker inspect did not answer: $($times.Output)" }
+    $finished = @(Split-OutputLines $times.Output | ForEach-Object { ConvertFrom-DockerTime $_ } | Where-Object { $_ })
+    if ($finished.Count -eq 0) { return $null }
+    return ($finished | Sort-Object | Select-Object -Last 1)
+}
+
+<#
+.NOTES
+Docker writes nanoseconds, which .NET does not parse past seven digits, and 0001-01-01 for a
+container that never finished.
+#>
+function ConvertFrom-DockerTime([string]$Text) {
+    if (-not $Text -or $Text.StartsWith("0001-")) { return $null }
+    $trimmed = $Text -replace '(\.\d{7})\d+', '$1'
+    return [DateTimeOffset]::Parse($trimmed, [System.Globalization.CultureInfo]::InvariantCulture).LocalDateTime
+}
+
+function ConvertFrom-SavedTime($Text) {
+    if (-not $Text) { return $null }
+    return [datetime]::Parse("$Text", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+}
+
+function New-StackStatus { return [pscustomobject]@{ dockerReachable = $false; containers = 0; running = 0; folderExists = (Test-StackFolderExists); waitingForDocker = $false } }
+
 function Get-StackStatus {
-    $status = [pscustomobject]@{ dockerReachable = $false; containers = 0; running = 0; folderExists = (Test-StackFolderExists) }
+    $status = New-StackStatus
     $states = Get-StackContainerStates
     if ($null -eq $states) { return $status }
     $status.dockerReachable = $true
@@ -115,7 +166,7 @@ function Get-StackStatus {
     return $status
 }
 
-function New-JoinedStatus { return [pscustomobject]@{ dockerReachable = $false; containers = 0; running = 0; folderExists = (Test-StackFolderExists) } }
+function New-JoinedStatus { return New-StackStatus }
 
 function Get-RoundStatus {
     if ($script:agentMode -eq "joined") { return New-JoinedStatus }
@@ -141,6 +192,55 @@ function Test-StackIsRunning($Status, $Request) {
 function Update-StackGoneSince([bool]$IsRunning) {
     if ($IsRunning) { $script:stackGoneSince = $null; return }
     if (-not $script:stackGoneSince) { $script:stackGoneSince = Get-Now }
+}
+
+<#
+.NOTES
+A Docker Desktop restart kills every container and leaves the stack exited until `up`. That is not
+a shutdown, so it must not start the grace that ends with the host's Syncthings stopped: while Docker
+does not answer, or the stack's containers exited with Docker's own stop, the stack counts as active.
+The agent judges this from what it saw itself, since Docker reports no start or stop time of its own:
+containers that Docker's stop took down finished at most $dockerStopWindowSeconds before Docker last
+answered, while a `docker stop`, `compose stop` or `down` leaves Docker answering for longer (the
+window also absorbs the VM's clock running apart from the host's). Unknown last answer: Docker's stop.
+#>
+function Update-DockerWait($Status, [bool]$IsRunning) {
+    if ($Status.dockerReachable) { $script:agentState.dockerAnsweredAt = (Get-Now).ToString("o") }
+    $reason = Get-DockerWaitReason $Status $IsRunning
+    if ($reason -eq "unreachable" -and -not $script:agentState.dockerOutage) { Set-DockerOutage ([pscustomobject]@{ lastAnsweredAt = $script:agentState.dockerAnsweredAt; noticedAt = (Get-Now).ToString("o") }) }
+    if (-not $reason -and $Status.dockerReachable -and $script:agentState.dockerOutage) { Set-DockerOutage $null }
+    Write-DockerWaitChange $reason $IsRunning
+    return [bool]$reason
+}
+
+function Get-DockerWaitReason($Status, [bool]$IsRunning) {
+    if ($IsRunning -or -not $Status.folderExists) { return "" }
+    if (-not $Status.dockerReachable) { return "unreachable" }
+    if ($script:agentState.dockerOutage -and (Test-StackStoppedWithDocker $Status)) { return "stopped with Docker" }
+    return ""
+}
+
+function Test-StackStoppedWithDocker($Status) {
+    if ($Status.containers -eq 0) { return $false }
+    try { $finishedAt = Get-StackLastFinishedAt } catch { return $true }
+    if (-not $finishedAt) { return $false }
+    $answeredAt = ConvertFrom-SavedTime $script:agentState.dockerOutage.lastAnsweredAt
+    if (-not $answeredAt) { return $true }
+    return $finishedAt -ge $answeredAt.AddSeconds(-$dockerStopWindowSeconds)
+}
+
+function Set-DockerOutage($Outage) {
+    $script:agentState.dockerOutage = $Outage
+    $script:agentStateChanged = $true
+}
+
+function Write-DockerWaitChange([string]$Reason, [bool]$IsRunning) {
+    if ($Reason -eq $script:dockerWaitReason) { return }
+    if ($Reason -eq "unreachable") { Write-WatcherLog "Docker does not answer; the nodes keep running and the grace period waits for Docker" }
+    elseif ($Reason) { Write-WatcherLog "the stack's containers exited with Docker's own stop; the nodes keep running until the stack runs again or is shut down" }
+    elseif ($IsRunning) { Write-WatcherLog "no longer waiting for Docker: the stack runs" }
+    else { Write-WatcherLog "no longer waiting for Docker: the stack was stopped or removed while Docker ran; the grace period counts" }
+    $script:dockerWaitReason = $Reason
 }
 
 function Test-GraceIsOver {
@@ -356,6 +456,7 @@ function Get-Heartbeat($Status, [bool]$IsActive, $PassState, [string]$State, [st
         processId = $PID
         stack = [ordered]@{
             project = $script:projectName; active = $IsActive; dockerReachable = $Status.dockerReachable
+            waitingForDocker = $Status.waitingForDocker
             runningContainers = $Status.running; goneSince = $(if ($script:stackGoneSince) { $script:stackGoneSince.ToString("o") } else { $null })
             removesItselfAt = $removesAt
         }
@@ -428,14 +529,16 @@ function Invoke-StackRound($PassState, [bool]$VolumeChanged) {
     $request = $null
     if ($status.folderExists) { $request = Read-AttachRequest }
     $isRunning = Test-StackIsRunning $status $request
-    Update-StackGoneSince $isRunning
-    if ($PassState) { Invoke-WatcherRound $PassState $isRunning }
+    $status.waitingForDocker = Update-DockerWait $status $isRunning
+    $isActive = $isRunning -or $status.waitingForDocker
+    Update-StackGoneSince $isActive
+    if ($PassState) { Invoke-WatcherRound $PassState $isActive }
     Update-FoundNodes $VolumeChanged
-    $binaryProblem = Update-NodeInstances $script:foundNodes.nodes $isRunning
+    $binaryProblem = Update-NodeInstances $script:foundNodes.nodes $isActive
     Write-BinaryProblemChange $binaryProblem
-    Update-DockerBackendRules $isRunning
+    Update-DockerBackendRules $isActive
     Save-AgentState
-    Write-Heartbeat (Get-Heartbeat $status $isRunning $PassState "running" $binaryProblem)
+    Write-Heartbeat (Get-Heartbeat $status $isActive $PassState "running" $binaryProblem)
 }
 
 <#
@@ -575,6 +678,8 @@ function Start-Agent {
         $volumeChanged = $wait.volumeChanged
     }
     Stop-AllNodeInstances "the service is stopping"
+    $script:agentStateChanged = $true
+    Save-AgentState
     Write-Heartbeat (Get-Heartbeat (Get-RoundStatus) $false $passState "stopped" $null)
     Write-WatcherLog "agent stopped"
 }

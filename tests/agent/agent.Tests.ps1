@@ -8,7 +8,18 @@ $repository = Split-Path (Split-Path $PSScriptRoot)
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "agent-rounds-$([guid]::NewGuid())"
 $stackFolder = Join-Path $scratch "storage-compose"
 
-function Get-StackContainerStates { $global:dockerCalls++; return $global:containerStates }
+$realGetStackLastFinishedAt = (Get-Item function:\Get-StackLastFinishedAt).ScriptBlock
+$realGetStackContainerStates = (Get-Item function:\Get-StackContainerStates).ScriptBlock
+function Get-StackContainerStates {
+    $global:dockerCalls++
+    if ($null -eq $global:containerStates) { return $null }
+    return ,@($global:containerStates)
+}
+function Get-StackLastFinishedAt {
+    $global:finishedAtCalls++
+    if ($global:finishedAtThrows) { throw "docker inspect did not answer" }
+    return $global:lastFinishedAt
+}
 function Get-Now { return $global:now }
 function Get-VolumeRoots { return @("F:\") }
 function Find-Nodes([string[]]$VolumeRoots) { $global:scans++; return [pscustomobject]@{ nodes = @($global:nodes); problems = @() } }
@@ -43,6 +54,7 @@ $agentFirewallGroup = "storage-compose test group"
 function Wait-ForNextRound($StopHandle, [bool]$HasVolumeEvents) {
     $global:now = $global:now.AddSeconds(5)
     $global:waits++
+    if ($global:onWait) { & $global:onWait }
     return [pscustomobject]@{ volumeChanged = $false; stopRequested = ($global:stopAfterWaits -and $global:waits -ge $global:stopAfterWaits) }
 }
 
@@ -63,6 +75,11 @@ function Reset-World([object[]]$States) {
     $global:actions = @()
     $global:waits = 0
     $global:stopAfterWaits = 0
+    $global:onWait = $null
+    $global:lastFinishedAt = $null
+    $global:finishedAtThrows = $false
+    $global:finishedAtCalls = 0
+    $script:dockerWaitReason = ""
     $script:stackGoneSince = $null
     $script:requestFirstSeen = @{}
     $script:lastNodeScan = [datetime]::MinValue
@@ -155,13 +172,6 @@ Describe "acting only while the stack runs" {
         Reset-World @("exited", "exited")
         Invoke-AgentRound $null $true
         (Get-LastNodeRound).active | Should Be $false
-    }
-
-    It "holds nothing while Docker does not answer" {
-        Reset-World $null
-        Invoke-AgentRound $null $true
-        (Get-LastNodeRound).active | Should Be $false
-        (Read-Heartbeat).stack.dockerReachable | Should Be $false
     }
 
     It "counts a fresh active request as the stack starting, for ten minutes" {
@@ -562,6 +572,181 @@ Describe "joined mode's rounds" {
     }
 }
 
+Describe "waiting out Docker" {
+    function Invoke-RoundAt([int]$Seconds, $States) {
+        $global:now = $start.AddSeconds($Seconds)
+        $global:containerStates = $States
+        Invoke-AgentRound (New-WatcherState $null) $false
+    }
+
+    function Assert-StackIsHeld {
+        (Get-LastNodeRound).active | Should Be $true
+        $global:passRounds[-1] | Should Be $true
+        $global:backendBlockRounds[-1] | Should Be $true
+        $script:stackGoneSince | Should BeNullOrEmpty
+        Test-GraceIsOver | Should Be $false
+        (Read-Heartbeat).stack.waitingForDocker | Should Be $true
+        (Read-Heartbeat).stack.removesItselfAt | Should BeNullOrEmpty
+    }
+
+    function Start-DockerOutage {
+        Reset-World @("running")
+        Invoke-AgentRound $null $true
+        Invoke-RoundAt 5 @("exited", "exited")
+        Invoke-RoundAt 10 $null
+    }
+
+    It "never counts while Docker does not answer, and keeps the nodes, the drives and the Docker rules" {
+        Start-DockerOutage
+        Assert-StackIsHeld
+        Invoke-RoundAt 1000 $null
+        Assert-StackIsHeld
+        (Read-Heartbeat).stack.dockerReachable | Should Be $false
+    }
+
+    It "keeps waiting once Docker answers again while the containers exited with Docker's own stop" {
+        Start-DockerOutage
+        $global:lastFinishedAt = $start.AddSeconds(3)
+        Invoke-RoundAt 100 @("exited", "exited")
+        Assert-StackIsHeld
+        Invoke-RoundAt 2000 @("exited", "exited")
+        Assert-StackIsHeld
+        (Read-Heartbeat).stack.dockerReachable | Should Be $true
+    }
+
+    It "waits for a container that Docker's start could not bring back, finished after Docker returned" {
+        Start-DockerOutage
+        $global:lastFinishedAt = $start.AddSeconds(95)
+        Invoke-RoundAt 100 @("exited")
+        Assert-StackIsHeld
+    }
+
+    It "counts a stack stopped while Docker kept running, without asking when its containers finished" {
+        Reset-World @("running")
+        Invoke-AgentRound $null $true
+        Invoke-RoundAt 5 @("exited")
+        Invoke-RoundAt 605 @("exited")
+        Test-GraceIsOver | Should Be $true
+        $global:finishedAtCalls | Should Be 0
+        (Read-Heartbeat).stack.waitingForDocker | Should Be $false
+    }
+
+    It "counts a stack stopped well before Docker went away, from when Docker answers again" {
+        Reset-World @("running")
+        Invoke-AgentRound $null $true
+        Invoke-RoundAt 5 @("exited")
+        Invoke-RoundAt 300 @("exited")
+        Invoke-RoundAt 305 $null
+        $script:stackGoneSince | Should BeNullOrEmpty
+        $global:lastFinishedAt = $start.AddSeconds(4)
+        Invoke-RoundAt 400 @("exited")
+        (Get-LastNodeRound).active | Should Be $false
+        $script:stackGoneSince | Should Be $start.AddSeconds(400)
+        $script:agentState.dockerOutage | Should BeNullOrEmpty
+        Invoke-RoundAt 1000 @("exited")
+        Test-GraceIsOver | Should Be $true
+    }
+
+    It "counts a stack whose containers were removed while Docker ran" {
+        Start-DockerOutage
+        Invoke-RoundAt 100 @()
+        (Get-LastNodeRound).active | Should Be $false
+        Invoke-RoundAt 700 @()
+        Test-GraceIsOver | Should Be $true
+    }
+
+    It "keeps waiting while Docker lists the containers but does not say when they finished" {
+        Start-DockerOutage
+        $global:finishedAtThrows = $true
+        Invoke-RoundAt 100 @("exited")
+        Assert-StackIsHeld
+    }
+
+    It "forgets the outage once the stack runs again, so a later stop counts" {
+        Start-DockerOutage
+        $global:lastFinishedAt = $start.AddSeconds(3)
+        Invoke-RoundAt 100 @("exited")
+        Invoke-RoundAt 200 @("running")
+        $script:agentState.dockerOutage | Should BeNullOrEmpty
+        Invoke-RoundAt 300 @("exited")
+        Invoke-RoundAt 900 @("exited")
+        Test-GraceIsOver | Should Be $true
+    }
+
+    It "never waits for Docker for a deleted stack folder" {
+        Reset-World @("running")
+        Invoke-AgentRound $null $true
+        Remove-Item -Recurse -Force $stackFolder
+        Invoke-RoundAt 5 $null
+        (Get-LastNodeRound).active | Should Be $false
+        $script:stackGoneSince | Should Be $start.AddSeconds(5)
+    }
+
+    It "keeps when Docker last answered across a restart of the agent" {
+        Reset-World @("running")
+        $global:stopAfterWaits = 1
+        $ConfigFile = $script:testConfigFile
+        Start-Agent | Out-Null
+        Initialize-Agent (Read-AgentConfig $script:testConfigFile)
+        Invoke-RoundAt 60 $null
+        ConvertFrom-SavedTime $script:agentState.dockerOutage.lastAnsweredAt | Should Be $start
+        $global:lastFinishedAt = $start.AddSeconds(-1000)
+        Invoke-RoundAt 120 @("exited")
+        (Get-LastNodeRound).active | Should Be $false
+    }
+
+    It "takes a stop as Docker's when it never saw Docker answer before the outage" {
+        Reset-World $null
+        Invoke-AgentRound $null $true
+        $global:lastFinishedAt = $start.AddSeconds(-100000)
+        Invoke-RoundAt 60 @("exited")
+        Assert-StackIsHeld
+    }
+
+    It "logs each change once" {
+        $global:logged = @()
+        Mock Write-WatcherLog { $global:logged += $Message }
+        Start-DockerOutage
+        Invoke-RoundAt 15 $null
+        $global:lastFinishedAt = $start.AddSeconds(3)
+        Invoke-RoundAt 100 @("exited")
+        Invoke-RoundAt 105 @("exited")
+        Invoke-RoundAt 110 @("running")
+        @($global:logged | Where-Object { $_ -match "Docker" }) | Should Be @(
+            "Docker does not answer; the nodes keep running and the grace period waits for Docker",
+            "the stack's containers exited with Docker's own stop; the nodes keep running until the stack runs again or is shut down",
+            "no longer waiting for Docker: the stack runs")
+    }
+}
+
+Describe "asking Docker" {
+    It "tells a project without containers from Docker not answering" {
+        $script:projectName = "storage-compose"
+        Mock Invoke-NativeCommand { return [pscustomobject]@{ Output = ""; ExitCode = 0 } }
+        $states = & $realGetStackContainerStates
+        $null -eq $states | Should Be $false
+        @($states).Count | Should Be 0
+        Mock Invoke-NativeCommand { return [pscustomobject]@{ Output = "error during connect"; ExitCode = 1 } }
+        $null -eq (& $realGetStackContainerStates) | Should Be $true
+    }
+
+    It "reads nanoseconds and skips a container that never finished" {
+        ConvertFrom-DockerTime "2026-11-03T21:46:12.123456789Z" | Should Be ([DateTimeOffset]::Parse("2026-11-03T21:46:12.1234567Z").LocalDateTime)
+        ConvertFrom-DockerTime "0001-01-01T00:00:00Z" | Should BeNullOrEmpty
+    }
+
+    It "gives the latest finish of the project's containers and throws when Docker does not answer" {
+        $script:projectName = "storage-compose"
+        Mock Invoke-NativeCommand {
+            if ($Arguments[0] -eq "ps") { return [pscustomobject]@{ Output = "a1`nb2"; ExitCode = 0 } }
+            return [pscustomobject]@{ Output = "2026-11-03T21:46:10Z`n0001-01-01T00:00:00Z"; ExitCode = 0 }
+        }
+        & $realGetStackLastFinishedAt | Should Be ([DateTimeOffset]::Parse("2026-11-03T21:46:10Z").LocalDateTime)
+        Mock Invoke-NativeCommand { return [pscustomobject]@{ Output = "error during connect"; ExitCode = 1 } }
+        { & $realGetStackLastFinishedAt } | Should Throw
+    }
+}
+
 Describe "stack mode's end with joined nodes left" {
     function Reset-StackWithJoined([object[]]$Entries) {
         Reset-World @("exited")
@@ -598,6 +783,35 @@ Describe "stack mode's end with joined nodes left" {
         Start-Agent | Out-Null
         $script:agentExitCode | Should Be 3
         $global:actions | Should Be @("stop syncthings", "remove firewall rules", "release disks", "remove service")
+    }
+
+    It "never hands over to joined mode while Docker does not answer" {
+        Reset-StackWithJoined @((New-JoinedEntry (Get-JoinedRoot "a001")))
+        Write-TestNodeFile (Get-JoinedRoot "a001") "a001"
+        $global:containerStates = $null
+        $global:stopAfterWaits = 40
+        $ConfigFile = $script:testConfigFile
+        $script:agentExitCode = 0
+        Start-Agent | Out-Null
+        $global:actions | Should Be @("stop syncthings")
+        Get-AgentMode (Read-JsonFile $script:testConfigFile) | Should Be "stack"
+    }
+
+    It "hands over once Docker answers again and the stack was stopped well before it went away" {
+        Reset-StackWithJoined @((New-JoinedEntry (Get-JoinedRoot "a001")))
+        Write-TestNodeFile (Get-JoinedRoot "a001") "a001"
+        $global:containerStates = @("running")
+        $global:lastFinishedAt = $start.AddSeconds(-1000)
+        $global:onWait = {
+            if ($global:waits -eq 1) { $global:containerStates = $null }
+            if ($global:waits -eq 10) { $global:containerStates = @("exited") }
+        }
+        $global:stopAfterWaits = 30
+        $ConfigFile = $script:testConfigFile
+        $script:agentExitCode = 0
+        Start-Agent | Out-Null
+        Get-AgentMode (Read-JsonFile $script:testConfigFile) | Should Be "joined"
+        $global:actions[0..1] | Should Be @("stop syncthings", "release disks")
     }
 }
 
