@@ -249,7 +249,10 @@ runs as SYSTEM, so it serves before anyone logs in, in one of two modes:
 - **Stack mode**, which `up` installs or repairs. It acts only while the stack's containers run: a
   stack that crashed or was removed without `down` gets its drives back within one round. Ten
   minutes after the stack is gone (its containers stopped or removed, or its folder deleted) it
-  releases everything and unregisters itself, so a deleted stack leaves nothing behind. While the
+  releases everything and unregisters itself, so a deleted stack leaves nothing behind. A stop of
+  Docker itself is not the stack going: while Docker does not answer, or the containers exited with
+  Docker's own stop (a Docker Desktop restart leaves them exited until `up`), it keeps everything
+  running, does not count the ten minutes, and says `waitingForDocker` in its heartbeat. While the
   device still has joined nodes (see Joining a device), `down` installs it again in joined mode for
   them instead of removing it, and the ten minutes end the same way: it drops what the stack added
   and goes on in joined mode. If that install fails, `down` names the joined roots and the join
