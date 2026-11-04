@@ -317,7 +317,7 @@ export interface StorageNode {
   untrustedNetworks?: boolean;
 }
 
-export type ConnectionsState = "on-profile" | "not-yet" | "unknown";
+export type ConnectionsState = "on-profile" | "restart-needed" | "not-yet" | "unknown";
 
 export type WarningKind =
   | "array"

@@ -16,16 +16,16 @@ import { type WriteNote } from "../src/routeTypes.js";
 import { type WriteEffects, errorAnswer, requestHandler } from "../src/routes.js";
 import { shownUnscopedText } from "../src/shownSyncthingError.js";
 import { logLevelOf, nodeLogRoutes } from "../src/routes/activity.js";
-import { zipEntries } from "../src/supportBundle.js";
+import { holdsSecret, withoutSecrets, zipEntries } from "../src/supportBundle.js";
 import { keptLogLines } from "../src/api/logLines.js";
-import { ActivityLog, EventFeeds, type FeedInstance, ParityWatcher, failedItemsPerFolder } from "../src/eventFeed.js";
+import { ActivityLog, EventFeeds, type FeedInstance, type FeedOptions, ParityWatcher, failedItemsPerFolder } from "../src/eventFeed.js";
 import { ConflictIndexes } from "../src/conflicts.js";
 import { type BrowseEntry, type FolderStatus, SyncthingClient, type SyncthingEvent, type SyncthingFolderConfig, SyncthingRefusal } from "../src/syncthing.js";
 import { until } from "./until.js";
 
 const pcDevice = "PCAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
 const arrayDevice = "ARRAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
-const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20, bufferSize: 3, changesPerPoll: 4, changesPauseMs: 0 };
+const feedOptions = { waitSeconds: 1, requestTimeoutMs: 2000, retryMs: 20, bufferSize: 3, changesPerPoll: 4, changesPauseMs: 0, startTimeTimeoutMs: 1500 };
 
 /**
  * A Syncthing that answers `/rest/events` and `/rest/events/disk` like the real one: only events after `since`, the newest `limit` of them,
@@ -42,6 +42,9 @@ class FakeSyncthing {
   /** What `/rest/config` answers, or a 500 while `configFails`. */
   config: unknown = null;
   configFails = false;
+  /** `/rest/system/status` answers 500 while set, or only after `statusDelayMs`. */
+  statusFails = false;
+  statusDelayMs = 0;
   readonly server: Server;
 
   constructor() {
@@ -51,7 +54,13 @@ class FakeSyncthing {
         response.writeHead(200, { "Content-Type": "application/json" });
         response.end(JSON.stringify(body));
       };
-      if (url.pathname === "/rest/system/status") return reply({ myID: pcDevice, startTime: this.startTime });
+      if (url.pathname === "/rest/system/status") {
+        if (this.statusFails) {
+          response.writeHead(500);
+          return response.end("status unreadable");
+        }
+        return void setTimeout(() => reply({ myID: pcDevice, startTime: this.startTime }), this.statusDelayMs);
+      }
       if (url.pathname === "/rest/config/devices") return reply([{ deviceID: arrayDevice, name: "private-array", addresses: [] }]);
       if (url.pathname === "/rest/config/folders") return reply([{ id: "documents", label: "Documents", path: "/x", type: "sendreceive", paused: false, devices: [] }]);
       if (url.pathname === "/rest/config") {
@@ -139,8 +148,8 @@ async function instance(nodeId: string, name: string): Promise<{ fake: FakeSynct
   return { fake, feed: { nodeId, name, client: new SyncthingClient({ url, apiKey: eventFeedApiKey }) } };
 }
 
-function feedsFor(log: ActivityLog): EventFeeds {
-  const feeds = new EventFeeds(log, feedOptions);
+function feedsFor(log: ActivityLog, options: Partial<FeedOptions> = {}): EventFeeds {
+  const feeds = new EventFeeds(log, { ...feedOptions, ...options });
   feedSets.push(feeds);
   return feeds;
 }
@@ -506,6 +515,62 @@ describe("file changes", () => {
     assert.ok(fake.diskQueries.every((query) => query.limit === feedOptions.changesPerPoll), JSON.stringify(fake.diskQueries));
     assert.deepEqual(fake.diskQueries.map((query) => query.since).filter((since, index, all) => all.indexOf(since) === index), [0, 1, 2]);
     assert.ok(fake.typesSeen.length > 0 && fake.typesSeen.every((types) => !types.includes("ChangeDetected")), fake.typesSeen.join(" | "));
+  });
+
+  it("a restart during the pause after a poll with changes loses none of the new run's first changes", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    let entered: () => void = () => {};
+    let release: () => void = () => {};
+    const inPause = new Promise<void>((resolve) => (entered = resolve));
+    let paused = 0;
+    const pause = () => {
+      if (++paused > 1) return Promise.resolve();
+      entered();
+      return new Promise<void>((resolve) => (release = resolve));
+    };
+    feedsFor(log, { pause }).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "a.txt", pcShort), diskChange("LocalChangeDetected", "b.txt", pcShort));
+    await inPause;
+    fake.restart();
+    fake.emitDisk(...["new0", "new1", "new2"].map((path) => diskChange("LocalChangeDetected", path, pcShort)));
+    release();
+    await until(() => changes(log).some((entry) => entry.change?.path === "new2"), "the new run's changes");
+    assert.deepEqual(changes(log).map((entry) => entry.change?.path).filter((path) => path?.startsWith("new")), ["new2", "new1", "new0"]);
+  });
+
+  it("a start time that cannot be read holds no change poll back, and the cursor stays", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "first.txt", pcShort));
+    await until(() => changes(log).length === 1, "the change before the status fails");
+    fake.statusFails = true;
+    fake.emitDisk(diskChange("LocalChangeDetected", "second.txt", pcShort));
+    await until(() => changes(log).length === 2, "the change polled while the status fails");
+    assert.ok(fake.diskQueries.every((query, index) => index === 0 || query.since >= fake.diskQueries[index - 1].since), "the cursor never went back");
+  });
+
+  it("a slow start time read is cut short and the change poll goes on", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    fake.statusDelayMs = 5_000;
+    const log = new ActivityLog(100);
+    const started = Date.now();
+    feedsFor(log, { startTimeTimeoutMs: 100 }).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "slow.txt", pcShort));
+    await until(() => changes(log).length === 1, "the change despite the slow status");
+    assert.ok(Date.now() - started < 3_000, `${Date.now() - started} ms, where waiting for the status takes 5000`);
+  });
+
+  it("a folder removed from the node's configuration takes its change buffer with it", async () => {
+    const { fake, feed } = await instance("pc", "pc");
+    const log = new ActivityLog(100);
+    feedsFor(log).reconcile([feed]);
+    fake.emitDisk(diskChange("LocalChangeDetected", "kept.txt", pcShort), diskChange("LocalChangeDetected", "gone.txt", pcShort, "dashboard-test-a"));
+    await until(() => changes(log).length === 2, "a change in each folder");
+    fake.emit({ type: "ConfigSaved", data: { devices: [], folders: [{ id: "documents", label: "Documents" }] } });
+    await until(() => changes(log, { folder: "dashboard-test-a" }).length === 0, "the removed folder's changes dropped");
+    assert.deepEqual(changes(log).map((entry) => entry.change?.path), ["kept.txt"]);
   });
 
   it("a burst of changes keeps the newest a poll may take", async () => {
@@ -878,6 +943,10 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     assert.deepEqual(since.messages.map((message) => message.when), ["2026-10-27T10:00:02Z", "2026-10-27T10:00:03Z"]);
     assert.ok(fake.received.includes("GET /rest/system/log?since=2026-10-27T10%3A00%3A01.5Z"), fake.received.join("\n"));
     assert.equal((await fetch(`${dashboard}/api/nodes/fb98/log?since=yesterday`)).status, 400);
+    for (const notRfc3339 of ["2026-10-27", "Tue, 27 Oct 2026 10:00:00 GMT", "2026-10-27 10:00:00Z", "2026-10-27T10:00:00"]) {
+      assert.equal((await fetch(`${dashboard}/api/nodes/fb98/log?since=${encodeURIComponent(notRfc3339)}`)).status, 400, `${notRfc3339} is not an RFC 3339 instant, which Syncthing parses`);
+    }
+    assert.equal((await fetch(`${dashboard}/api/nodes/fb98/log?since=${encodeURIComponent("2026-10-27T11:00:01.1234567+01:00")}`)).status, 200);
     assert.deepEqual([logLevelOf("WRN"), logLevelOf("ERROR"), logLevelOf(-4), logLevelOf(8), logLevelOf("odd")], ["warning", "error", "debug", "error", "info"]);
   });
 
@@ -1045,6 +1114,20 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     assert.equal(fake.supportReads, 1);
   });
 
+  it("a support bundle asked for from another site is refused before the node is asked for one", async () => {
+    const { fake, node } = await localNode("d7e5", "dashboard-test-peer");
+    fake.bundle = zipOf({ "metrics.txt": "x 1\n" });
+    const dashboard = await dashboardFor([node]);
+    for (const headers of <Record<string, string>[]>[{ "Sec-Fetch-Site": "cross-site" }, { "Sec-Fetch-Site": "same-site" }, { Origin: "https://elsewhere.example" }]) {
+      const refused = await fetch(`${dashboard}/api/nodes/d7e5/support-bundle`, { headers });
+      assert.equal(refused.status, 403, JSON.stringify(headers));
+    }
+    assert.equal(fake.supportReads, 0);
+    for (const headers of <Record<string, string>[]>[{ "Sec-Fetch-Site": "same-origin" }, { "Sec-Fetch-Site": "none" }, {}]) {
+      assert.equal((await fetch(`${dashboard}/api/nodes/d7e5/support-bundle`, { headers })).status, 200, `${JSON.stringify(headers)}: the page's own link, a typed address, a script`);
+    }
+  });
+
   it("the support bundle carries no api key", async () => {
     const { fake, node } = await localNode("d7e5", "dashboard-test-peer");
     fake.bundle = zipOf({
@@ -1101,6 +1184,9 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
     fake.bundle = zipOf({ "a.txt": randomBytes(600).toString("hex"), "b.txt": randomBytes(600).toString("hex") });
     const overTotal = await fetch(`${await dashboardFor([node], 2000)}/api/nodes/d7e5/support-bundle`);
     assert.equal(overTotal.status, 501, "the files together unpack to more than the bound");
+    fake.bundle = zipOfBytes({ "a.pprof": gzipSync(randomBytes(600).toString("hex")), "b.pprof": gzipSync(randomBytes(600).toString("hex")) });
+    const profilesOverTotal = await fetch(`${await dashboardFor([node], 3000)}/api/nodes/d7e5/support-bundle`);
+    assert.equal(profilesOverTotal.status, 501, "gzipped profiles unpack within what the bound leaves, not each to the whole bound");
     fake.bundle = Buffer.from("not a zip archive at all, but long enough to be looked at");
     assert.equal((await fetch(`${dashboard}/api/nodes/d7e5/support-bundle`)).status, 501, "a bundle that cannot be read is not passed on unread");
     fake.bundle = zipOf({ "metrics.txt": randomBytes(4096).toString("hex") });
@@ -1110,9 +1196,29 @@ describe("a node's log, errors, debug facilities and support bundle", () => {
   });
 });
 
+describe("a secret's written forms", () => {
+  const found = (written: string, secret: string) => assert.ok(holdsSecret(Buffer.from(written), secret), `${written} holds ${JSON.stringify(secret)}`);
+  it("are found percent-encoded, as in a URL", () => found("https://x/?pw=a%2Fb%20c%26d", "a/b c&d"));
+  it("are found query-escaped as Go writes them, a space as a plus", () => found("https://x/?pw=it%27s+a%21%28b%29%2A", "it's a!(b)*"));
+  it("are found with XML quotes by hex number", () => found("pass&#x22;word&#x27;", `pass"word'`));
+  it("are found with an apostrophe by zero-padded number", () => found("it&#039;s", "it's"));
+  it("are found with tab, line feed and carriage return as Go's XML writer escapes them", () => found("a&#x9;b&#xA;c&#xD;d", "a\tb\nc\rd"));
+  it("are found with the line and paragraph separators as Go's JSON writer escapes them", () => found("a\\u2028b\\u2029c", "a\u2028b\u2029c"));
+
+  it("are found as Go's XML writer escapes quotes, by number", () => {
+    const secret = `pass"word'`;
+    assert.ok(holdsSecret(Buffer.from("<password>pass&#34;word&#39;</password>"), secret));
+    assert.equal(withoutSecrets("<password>pass&#34;word&#39;</password>", [secret]), "<password>[redacted]</password>");
+  });
+});
+
 describe("Syncthing's texts outside the event feed", () => {
   it("a refused request answers its status and Syncthing's text only through the redaction", async () => {
-    const syncthing = createServer((_request, response) => {
+    const syncthing = createServer((request, response) => {
+      if (request.url === "/rest/config") {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        return response.end(JSON.stringify({ gui: { apiKey: "key" } }));
+      }
       response.writeHead(500, { "Content-Type": "text/plain" });
       response.end("failed to load #include ../../config/config.xml\n");
     });

@@ -76,6 +76,11 @@ export class ActivityLog {
     );
   }
 
+  /** Drops every buffer whose key matches. */
+  dropBuffers(matches: (bufferKey: string) => boolean): void {
+    for (const bufferKey of [...this.buffers.keys()]) if (matches(bufferKey)) this.buffers.delete(bufferKey);
+  }
+
   entriesOf(bufferKey: string): readonly ActivityEntry[] {
     return (this.buffers.get(bufferKey) ?? []).map((stored) => stored.entry);
   }
@@ -124,6 +129,10 @@ export interface FeedOptions {
    * @implNote A folder being scanned reports a thousand changes in milliseconds (pc's `documents`, 2026-10-27), so without it the poll would spin.
    */
   changesPauseMs: number;
+  /** How long the start time read before a change poll may take; past it, or failed, the poll goes on from the cursor it has. */
+  startTimeTimeoutMs: number;
+  /** Waits out `changesPauseMs`; a test holds the feed inside the pause with its own. */
+  pause?: (milliseconds: number) => Promise<void>;
 }
 
 /** Hears every event a feed reads, besides Activity, and each time events may have been lost; `conflicts.ts` keeps its index current from it. */
@@ -138,7 +147,7 @@ export interface FeedListener {
 
 const quietListener: FeedListener = { event: () => {}, mayHaveMissed: () => {} };
 
-export const defaultFeedOptions: FeedOptions = { waitSeconds: 50, requestTimeoutMs: 60_000, retryMs: 5_000, bufferSize: 1000, changesPerPoll: 1000, changesPauseMs: 2_000 };
+export const defaultFeedOptions: FeedOptions = { waitSeconds: 50, requestTimeoutMs: 60_000, retryMs: 5_000, bufferSize: 1000, changesPerPoll: 1000, changesPauseMs: 2_000, startTimeTimeoutMs: 3_000 };
 
 /**
  * The events read from `/rest/events`.
@@ -416,6 +425,9 @@ function newFeedPosition(): FeedPosition {
 /** How many failed items of one folder the instance's buffer keeps besides the folder's summary entry. */
 export const failedItemsPerFolder = 20;
 
+/** What a start time read before or after a change poll found. */
+type ChangesRun = "same-run" | "new-run" | "unread";
+
 /** The long polls of one instance's events and file changes into its buffers. */
 class InstanceFeed {
   private stopped = false;
@@ -449,7 +461,7 @@ class InstanceFeed {
         if (mayHaveRestarted) await this.followRestart();
         const events = await this.instance.client.events(this.position.since, followedEventTypes, this.options.waitSeconds, this.options.requestTimeoutMs);
         if (this.stopped) return;
-        this.context.secrets = await knownNodeSecrets(this.instance.nodeId, this.instance.client);
+        this.context.secrets = await knownNodeSecrets(this.instance.client);
         const mayHaveMissed = this.pollFailed || events.length >= this.options.bufferSize;
         this.pollFailed = false;
         this.take(events);
@@ -481,32 +493,47 @@ class InstanceFeed {
     this.context.folderLabels = namesFrom(folders, "id", "label");
   }
 
-  /** The long poll of the instance's file changes, `/rest/events/disk`, into one buffer per folder. */
+  /**
+   * The long poll of the instance's file changes, `/rest/events/disk`, into one buffer per folder.
+   * @implNote The start time is read before every poll: after a quiet one, as the instance may have restarted while the poll waited, and
+   * after the pause that follows changes, as no connection is open then for a restart to break, and a new run numbering past the old
+   * cursor within it would otherwise lose its first changes. The read never holds the poll back; when it fails, it is tried once more
+   * after the poll, and an answer from a new run is then dropped and polled again from its start.
+   */
   async runChanges(): Promise<void> {
-    let mayHaveRestarted = true;
     while (!this.stopped) {
       try {
-        if (mayHaveRestarted) await this.followChangesRestart();
+        const known = await this.followChangesRestart();
         const { changesPerPoll, waitSeconds, requestTimeoutMs } = this.options;
         const events = await this.instance.client.diskEvents(this.position.changesSince, changesPerPoll, waitSeconds, requestTimeoutMs);
         if (this.stopped) return;
-        this.context.secrets = await knownNodeSecrets(this.instance.nodeId, this.instance.client);
+        if (known === "unread" && (await this.readChangesRun()) === "new-run") continue;
+        this.context.secrets = await knownNodeSecrets(this.instance.client);
         this.takeChanges(events);
-        mayHaveRestarted = events.length === 0;
-        if (events.length) await delay(this.options.changesPauseMs);
+        if (events.length) await (this.options.pause ?? delay)(this.options.changesPauseMs);
       } catch {
-        mayHaveRestarted = true;
         await delay(this.options.retryMs);
       }
     }
   }
 
-  /** @implNote The disk subscription numbers its events from 1 again after a restart, as `/rest/events` does. */
-  private async followChangesRestart(): Promise<void> {
-    const startTime = await this.instance.client.startTime();
-    if (this.position.changesStartTime !== null && this.position.changesStartTime !== startTime) this.position.changesSince = 0;
-    this.position.changesStartTime = startTime;
+  private async followChangesRestart(): Promise<ChangesRun> {
+    const run = await this.readChangesRun();
     if (!this.namesRead) await this.readNames();
+    return run;
+  }
+
+  /**
+   * Reads the start time within `startTimeTimeoutMs`; a new run starts the cursor from 0, and one that cannot be read leaves it as it is.
+   * @implNote The disk subscription numbers its events from 1 again after a restart, as `/rest/events` does.
+   */
+  private async readChangesRun(): Promise<ChangesRun> {
+    const startTime = await this.instance.client.startTime(this.options.startTimeTimeoutMs).catch(() => null);
+    if (startTime === null) return "unread";
+    const isNewRun = this.position.changesStartTime !== null && this.position.changesStartTime !== startTime;
+    if (isNewRun) this.position.changesSince = 0;
+    this.position.changesStartTime = startTime;
+    return isNewRun ? "new-run" : "same-run";
   }
 
   private takeChanges(events: SyncthingEvent[]): void {
@@ -547,7 +574,20 @@ class InstanceFeed {
   private learnNames(config: unknown): void {
     const { devices, folders } = (config ?? {}) as { devices?: unknown; folders?: unknown };
     if (Array.isArray(devices)) this.context.deviceNames = namesFrom(devices, "deviceID", "name");
-    if (Array.isArray(folders)) this.context.folderLabels = namesFrom(folders, "id", "label");
+    if (Array.isArray(folders)) {
+      this.context.folderLabels = namesFrom(folders, "id", "label");
+      this.dropRemovedFolderChanges();
+    }
+  }
+
+  /**
+   * @implNote Only a saved configuration, which lists every folder, drops a buffer: a folder list that could not be read says nothing of
+   * which folders are gone.
+   */
+  private dropRemovedFolderChanges(): void {
+    const prefix = feedBufferKey(this.instance.nodeId, { type: changeActivityTypes[0], folderId: "" });
+    const isRemovedFolder = (folderId: string) => folderId !== "" && !this.context.folderLabels.has(folderId);
+    this.log.dropBuffers((bufferKey) => bufferKey.startsWith(prefix) && isRemovedFolder(bufferKey.slice(prefix.length)));
   }
 
   private isRepeat(entry: NewActivityEntry): boolean {

@@ -1,5 +1,6 @@
 import {
   type ConnectionProfile,
+  type ConnectionsState,
   type ProfileRead,
   changedFields,
   fetchConnectionProfile,
@@ -174,14 +175,21 @@ function overridesList(): HTMLElement {
   );
 }
 
-/** Where the profile stands: the data repo's last pull, and the nodes that do not run it yet. */
+function nodeNamesIn(state: ConnectionsState): string[] {
+  return (appState.data?.nodes ?? []).filter((node) => node.connections === state).map((node) => node.name);
+}
+
+/** Where the profile stands: the data repo's last pull, the nodes that do not run it yet, and those that run it after a restart. */
 function profileState(read: ProfileRead): HTMLElement {
-  const behind = (appState.data?.nodes ?? []).filter((node) => node.connections === "not-yet").map((node) => node.name);
+  const behind = nodeNamesIn("not-yet");
+  const waiting = nodeNamesIn("restart-needed");
+  const waitingRow: [string, string][] = waiting.length ? [["Waiting for a restart", `${waiting.join(", ")}: saved, applied when its Syncthing restarts`]] : [];
   return keyValueList([
     ["Kept in", "connections.toml in the data repo, pulled by every host's dashboard"],
     ["Applied", read.profileProblem ? element("span", { className: "tone-text-bad" }, read.profileProblem) : "as saved"],
     ["Last pull", read.pullProblem ? element("span", { className: "tone-text-bad" }, `failed: ${read.pullProblem}`) : read.pulledAt ? formatAge(read.pulledAt) : "not pulled yet"],
     ["Not yet on it", behind.length ? behind.join(", ") : "none"],
+    ...waitingRow,
   ]);
 }
 

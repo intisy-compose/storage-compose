@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { deviceDisplayName, listedAddresses } from "./api/deviceText.js";
 import { bridgeHostOf, connectionKind } from "./connectionKind.js";
 import { needTotalOf } from "./folderLists.js";
-import { type KnownSecrets, knownNodeSecrets } from "./nodeSecrets.js";
+import { type KnownSecrets, knownNodeSecrets, shownNodeText } from "./nodeSecrets.js";
 import { shownUnscopedText } from "./shownSyncthingError.js";
 import { effectiveSharing, sharedDevices } from "./syncthingConfig.js";
 import { type FileVersion, type FolderFile, type FolderPeer, type FolderType, type NodeFolder, type NodeSync, type Peer, type RemoteState, type SyncthingDevice, type SyncthingInstance, listTimeoutMs } from "./api/types.js";
@@ -213,19 +213,31 @@ export class SyncthingError extends Error {}
 /**
  * Syncthing answered the request with an error status; `shownBody` is its answer as the page may see it.
  * @implNote The answer is Syncthing's own text, which can quote an ignore file, so it is passed through `shownUnscopedText` before it
- * enters the message, and every path that shows an error's message shows only that.
+ * enters the message, and every path that shows an error's message shows only that. `callSyncthing` replaces it with `clearedOf` the node's
+ * secrets, which only it knows the node of.
  */
 export class SyncthingRefusal extends SyncthingError {
   readonly shownBody: string;
+  readonly #request: string;
+  readonly #body: string;
 
   constructor(
     request: string,
     readonly status: number,
     body: string,
+    secrets?: KnownSecrets,
   ) {
-    const shownBody = shownUnscopedText(body.trim());
+    const trimmed = body.trim();
+    const shownBody = !trimmed ? "" : secrets ? shownNodeText(trimmed, secrets) : shownUnscopedText(trimmed);
     super(`${request}: HTTP ${status}${shownBody ? ` ${shownBody}` : ""}`);
     this.shownBody = shownBody;
+    this.#request = request;
+    this.#body = body;
+  }
+
+  /** The same refusal with its answer cleared of the node's secrets, or hidden while they are not all known. */
+  clearedOf(secrets: KnownSecrets): SyncthingRefusal {
+    return new SyncthingRefusal(this.#request, this.status, this.#body, secrets);
   }
 }
 
@@ -297,13 +309,42 @@ export class SyncthingClient {
     }
   }
 
-  async request<T>(method: string, path: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
+  private async unclearedRequest<T>(method: string, path: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
     const response = await this.raw(method, `/rest${path}`, timeoutMs, body);
     const text = await response.text().catch((error: Error) => {
       throw new SyncthingUnavailable(`${method} ${path}: ${error.message}`);
     });
     if (!response.ok) throw new SyncthingRefusal(`${method} ${path}`, response.status, text);
     return (text ? JSON.parse(text) : null) as T;
+  }
+
+  /**
+   * A refusal as every caller may see it: its answer cleared of this Syncthing's secrets.
+   * @implNote Done here, not by each caller, so a direct call cannot pass a secret on; the secrets' own read goes through
+   * `configForSecrets`, which is not cleared, as clearing it would wait on itself.
+   */
+  private async cleared(refusal: SyncthingRefusal): Promise<SyncthingRefusal> {
+    return refusal.clearedOf(await knownNodeSecrets(this));
+  }
+
+  async request<T>(method: string, path: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
+    try {
+      return await this.unclearedRequest<T>(method, path, body, timeoutMs);
+    } catch (error) {
+      throw error instanceof SyncthingRefusal ? await this.cleared(error) : error;
+    }
+  }
+
+  /**
+   * The whole configuration, read only for its secrets (`nodeSecrets.ts`).
+   * @implNote A refusal of this read hides its answer whole: the secrets it would be cleared of are what it failed to read.
+   */
+  async configForSecrets(): Promise<unknown> {
+    try {
+      return await this.unclearedRequest("GET", "/config");
+    } catch (error) {
+      throw error instanceof SyncthingRefusal ? error.clearedOf({ secrets: [], complete: false }) : error;
+    }
   }
 
   myId(): Promise<string> {
@@ -335,8 +376,8 @@ export class SyncthingClient {
   }
 
   /** When the instance last started; a new value means its event IDs started again from 1. */
-  startTime(): Promise<string> {
-    return this.request<{ startTime?: string }>("GET", "/system/status").then((status) => status.startTime ?? "");
+  startTime(timeoutMs = this.timeoutMs): Promise<string> {
+    return this.request<{ startTime?: string }>("GET", "/system/status", undefined, timeoutMs).then((status) => status.startTime ?? "");
   }
 
   /**
@@ -379,7 +420,7 @@ export class SyncthingClient {
       throw new SyncthingUnavailable(`GET /db/file: ${error.message}`);
     });
     if (response.status === 404) return null;
-    if (!response.ok) throw new SyncthingRefusal("GET /db/file", response.status, text);
+    if (!response.ok) throw await this.cleared(new SyncthingRefusal("GET /db/file", response.status, text));
     return JSON.parse(text) as IndexFile;
   }
 
@@ -421,7 +462,7 @@ export class SyncthingClient {
     const path = `/folder/versions?folder=${encodeURIComponent(folderId)}`;
     const response = await this.raw("GET", `/rest${path}`, listTimeoutMs);
     const text = await boundedText(response, maxBytes, `GET ${path}`);
-    if (!response.ok) throw new SyncthingRefusal(`GET ${path}`, response.status, text);
+    if (!response.ok) throw await this.cleared(new SyncthingRefusal(`GET ${path}`, response.status, text));
     return { files: (text ? JSON.parse(text) : null) ?? {}, bytes: Buffer.byteLength(text) };
   }
 
@@ -680,7 +721,7 @@ export async function instanceView(key: string, endpoint: SyncthingEndpoint, nod
       optional(client.pendingDevices(), {}),
       optional(client.pendingFolders(), {}),
       optional(client.systemErrors(), []),
-      knownNodeSecrets(key, client),
+      knownNodeSecrets(client),
     ]);
     const folderRates = rates(key, connections);
     const folders = await folderViews(client, status.myID, folderConfigs, deviceConfigs, folderStats);
