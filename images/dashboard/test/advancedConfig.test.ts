@@ -42,6 +42,7 @@ function nodeConfig(listenAddress: string): Config {
       featureFlags: [],
       auditEnabled: false,
       auditFile: "",
+      unackedNotificationIDs: null,
     },
     gui: { enabled: true, address: "0.0.0.0:8389", user: "", password: "", authMode: "static", useTLS: false, apiKey, theme: "default" },
     folders: [
@@ -271,6 +272,7 @@ describe("the advanced config editor and restarts", () => {
       ["options", { minHomeDiskFree: { value: 200, unit: "%" } }, /cannot be more than 100 %/],
       ["options", { madeUpOption: 1 }, "madeUpOption is not a setting of these options"],
       ["options", { keepTemporariesH: "24" }, "keepTemporariesH must be a number, as Syncthing has it"],
+      ["options", { unackedNotificationIDs: "authenticationUserAndPassword" }, "unackedNotificationIDs must be a list or an object, as Syncthing has it null"],
       ["folders/dashboard-test-a", { id: "renamed" }, "the folder ID cannot be changed"],
       ["folders/dashboard-test-a", { path: "/etc" }, "path is changed in the folder's own form, which checks it"],
       ["folders/dashboard-test-a", { devices: [] }, "devices is changed in the folder's own form, which checks it"],

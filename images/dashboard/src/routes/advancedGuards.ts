@@ -40,14 +40,20 @@ function kindOf(value: unknown): string {
   return "an object";
 }
 
+/** @implNote Go writes only a nil list or map as null, never a number, text or boolean, so a null setting takes one of those two or null. */
+function nullSettingProblem(key: string, value: unknown): string | null {
+  return value === null || Array.isArray(value) || typeof value === "object" ? null : `${key} must be a list or an object, as Syncthing has it null`;
+}
+
 /** Why a key cannot be sent at all: the GUI's, a secret, one the object does not have, or a value of another kind than Syncthing's. */
 function keyProblem(key: string, value: unknown, current: SyncthingObject, what: string): string | null {
   if (guiKeys.has(key)) return guiManagedText;
   const secret = isSecretKey(key) ? key : nestedSecretKey(value);
   if (secret) return `${secret} is a secret, which the dashboard never reads or sends`;
   if (!Object.hasOwn(current, key)) return `${key} is not a setting of ${what}`;
+  if (current[key] === null) return nullSettingProblem(key, value);
   const expected = kindOf(current[key]);
-  return current[key] === null || kindOf(value) === expected ? null : `${key} must be ${expected}, as Syncthing has it`;
+  return kindOf(value) === expected ? null : `${key} must be ${expected}, as Syncthing has it`;
 }
 
 function picked(change: SyncthingObject, keys: readonly string[]): SyncthingObject {
