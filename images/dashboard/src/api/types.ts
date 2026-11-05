@@ -614,6 +614,8 @@ export interface FolderCopy extends NodeFolder {
   /** Runs on this host, so its actions are offered here. */
   local: boolean;
   paused: boolean;
+  /** A hand-off folder on its node, as the node's host plans it: send-only, what it holds leaves once a keeper confirms it; absent from an older dashboard. */
+  handoff?: boolean;
 }
 
 /** A folder another device offers a node that the node has not accepted. */

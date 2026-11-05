@@ -9,13 +9,17 @@ export interface FolderCondition {
   label: string;
 }
 
-/** How one copy stands; a higher rank is worse. */
+/**
+ * How one copy stands; a higher rank is worse.
+ * @implNote An idle hand-off folder reads as fine whatever its completion: an ignore line whose file left the node can leave it one item short for good (section 4b), which is no fault.
+ */
 export function copyCondition(copy: FolderCopy): FolderCondition {
   const completion = normaliseCompletion(copy.completion);
   if (copy.state.includes("error")) return { rank: 7, tone: "bad", label: copy.state };
   if (copy.errors > 0) return { rank: 6, tone: "bad", label: plural(copy.errors, "failed item") };
   if (copy.state === "unknown") return { rank: 5, tone: "muted", label: "not answering" };
   if (copy.state === "paused") return { rank: 4, tone: "warn", label: "paused" };
+  if (copy.handoff && copy.state === "idle") return { rank: 0, tone: "ok", label: "sends only, hands off" };
   if (completion < 1) return { rank: 3, tone: "accent", label: `${copy.state}, ${formatPercent(completion)}` };
   if (copy.state !== "idle") return { rank: 1, tone: "accent", label: copy.state };
   return { rank: 0, tone: "ok", label: "up to date" };

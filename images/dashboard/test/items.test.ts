@@ -336,7 +336,9 @@ describe("local changes: list, revert and override", () => {
     { id: "test-so", label: "Test SO", path: "/var/syncthing/data/test-so", type: "sendonly", paused: false, devices: [{ deviceID: ownId }, { deviceID: peerId }], versioning: off },
     { id: "test-sr", label: "Test SR", path: "/var/syncthing/data/test-sr", type: "sendreceive", paused: false, devices: [{ deviceID: ownId }], versioning: off },
     { id: "test-paused", label: "", path: "/var/syncthing/data/test-paused", type: "receiveonly", paused: true, devices: [{ deviceID: ownId }], versioning: off },
+    { id: "test-handoff", label: "Test HO", path: "/var/syncthing/data/test-handoff", type: "sendonly", paused: false, devices: [{ deviceID: ownId }, { deviceID: peerId }], versioning: off },
   ];
+  let ignoresUnreadable = false;
 
   const syncthing = createServer((request, response) => {
     if (request.headers["x-api-key"] !== apiKey) return reply(response, { error: "forbidden" }, 403);
@@ -354,6 +356,10 @@ describe("local changes: list, revert and override", () => {
       return reply(response, { receiveOnlyTotalItems: folderId === "test-ro" ? 2 : 0, needFiles: 3, ...needTotal });
     }
     if (url.pathname === "/rest/db/localchanged") return reply(response, { page: 1, perpage: 50, files: [fileInfo("added-here.txt", { modifiedBy: "D7E5AAA" }), fileInfo("hello.txt", { deleted: true, modifiedBy: "D7E5AAA" })] });
+    if (url.pathname === "/rest/db/ignores") {
+      if (ignoresUnreadable) return reply(response, { error: "the include file is missing" }, 500);
+      return reply(response, { ignore: folderId === "test-handoff" ? ["// layered sync begin", "#include .stignore-handoff", "/.stignore-handoff", "// layered sync end"] : [] });
+    }
     if (url.pathname === "/rest/db/revert" || url.pathname === "/rest/db/override") {
       if (loseDiscardAnswer) return void request.socket.destroy();
       return reply(response, {});
@@ -398,6 +404,20 @@ describe("local changes: list, revert and override", () => {
   after(() => {
     syncthing.close();
     dashboard.close();
+  });
+
+  it("an override is never made on a hand-off folder, nor while its ignores cannot be read, and nothing reaches Activity", async () => {
+    const refusal = await post("/api/nodes/d7e5/folders/test-handoff/override", { confirm: "test-handoff" });
+    assert.equal(refusal.status, 409);
+    assert.match(refusal.body.error ?? "", /^Override changes is never offered on a hand-off folder: .* would delete every copy the keepers hold \(Test HO on dashboard-test-peer\)$/);
+    ignoresUnreadable = true;
+    try {
+      assert.equal((await post("/api/nodes/d7e5/folders/test-so/override", { confirm: "test-so" })).status, 409, "a folder whose ignores cannot be read counts as a hand-off folder");
+    } finally {
+      ignoresUnreadable = false;
+    }
+    assert.deepEqual(writes(), []);
+    assert.deepEqual(notes, []);
   });
 
   it("a revert or override whose answer is lost may have been done, drops the shared read and enters nothing in Activity", async () => {

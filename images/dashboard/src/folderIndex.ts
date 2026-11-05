@@ -4,6 +4,7 @@ import { versioningParamKeys, versioningTypeTexts } from "./api/versioningText.j
 import { conflictIndexes } from "./conflicts.js";
 import { RequestError } from "./http.js";
 import type { SetupLayout } from "./setupRepo.js";
+import { withHandoffFlags } from "./handoffFolders.js";
 import { type NodeOs, placeFolders } from "./treePaths.js";
 import { type SyncthingClient, type SyncthingDeviceConfig, SyncthingError, type PendingFolders, type SyncthingFolderSettings, SyncthingUnavailable, instanceFolders } from "./syncthing.js";
 
@@ -103,7 +104,7 @@ function mergeSummaries(local: Pick<InstanceFolders, "copies" | "offers">[], rem
     return existing;
   };
   for (const { copies, offers } of local) {
-    for (const copy of copies) summaryFor(copy.id, copy.label).copies.push(copy);
+    for (const copy of withHandoffFlags(copies, layout)) summaryFor(copy.id, copy.label).copies.push(copy);
     for (const offer of offers) summaryFor(offer.folderId, offer.label).offers.push(offer);
   }
   for (const peer of remote) {

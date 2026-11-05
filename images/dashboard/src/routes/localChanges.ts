@@ -1,4 +1,4 @@
-import { type LocalChangesAction, localChangesDoneText, localChangesFolderType } from "../api/localChangesText.js";
+import { type LocalChangesAction, handoffOverrideText, localChangesDoneText, localChangesFolderType } from "../api/localChangesText.js";
 import { type LocalChangesDone, folderTypeTexts } from "../api/types.js";
 import { folderSettings } from "../folderIndex.js";
 import { RequestError, UnconfirmedWrite, readBody, sendJson } from "../http.js";
@@ -6,6 +6,8 @@ import { type LocalInstance, type ResolvedInstance, arrayConfirmProblem, callSyn
 import type { AnyRoute, WriteNote } from "../routeTypes.js";
 import type { FolderStatus, SyncthingFolderSettings } from "../syncthing.js";
 import { decodedSegment } from "./devices.js";
+import { isHandoffFolder } from "../handoffFolders.js";
+import { readLayout } from "../setupRepo.js";
 
 const actionWords: Record<LocalChangesAction, { doing: string; guard: string; done: string }> = {
   revert: { doing: "revert its local changes", guard: "revert the local changes", done: "reverted" },
@@ -61,13 +63,14 @@ export interface LocalChangesResult {
 /**
  * Reverts a receive only folder's local changes, or overrides what other devices changed in a send only folder, once its ID is typed exactly.
  * @implNote Both discard data, here or on every other device, so the typed ID is checked before the node is asked anything and the
- * folder type before Syncthing is told to act. A lost answer may mean Syncthing already discarded the data, so it is never a plain failure.
+ * folder type before Syncthing is told to act. An override is refused on a hand-off folder, where it deletes every kept copy. A lost answer may mean Syncthing already discarded the data, so it is never a plain failure.
  */
-export async function discardChanges(instance: ResolvedInstance, folderId: string, action: LocalChangesAction, body: unknown): Promise<LocalChangesResult> {
+export async function discardChanges(instance: ResolvedInstance, folderId: string, action: LocalChangesAction, body: unknown, isHandoff: HandoffCheck = liveHandoffCheck): Promise<LocalChangesResult> {
   const local = requireLocal(instance);
   requireTypedId(local, folderId, action, body);
   const folder = await knownFolder(local, folderId);
   requireFolderFor(action, folder, local);
+  if (action === "override" && (await isHandoff(local, folderId))) throw new RequestError(409, `${handoffOverrideText} (${folder.label || folder.id} on ${local.name})`);
   const status = await callSyncthing(local, (client) => client.folderStatus(folderId)).catch(() => null);
   await askToDiscard(local, folderId, action);
   const items = discardedCount(action, status);
@@ -75,8 +78,14 @@ export async function discardChanges(instance: ResolvedInstance, folderId: strin
   return { done: { folderId, action, items, text }, note: { nodeId: local.nodeId, nodeName: local.name, folderId, text } };
 }
 
+/** Whether the folder is a hand-off folder on the node, which no override may touch. */
+export type HandoffCheck = (instance: LocalInstance, folderId: string) => Promise<boolean>;
+
+const liveHandoffCheck: HandoffCheck = async (instance, folderId) => isHandoffFolder(instance, folderId, await readLayout().catch(() => null));
+
 export interface LocalChangesSources {
   resolve(nodeId: string): Promise<ResolvedInstance>;
+  isHandoff?: HandoffCheck;
 }
 
 const liveSources: LocalChangesSources = { resolve: (nodeId) => resolveInstance(nodeId) };
@@ -88,7 +97,7 @@ export function localChangesRoutes(sources: LocalChangesSources = liveSources): 
       pattern: /^\/api\/nodes\/([^/]+)\/folders\/([^/]+)\/(revert|override)$/,
       write: async ({ request, response, params: [nodeSegment, folderSegment, action] }) => {
         const instance = await sources.resolve(decodedSegment(nodeSegment, "node ID"));
-        const result = await discardChanges(instance, decodedSegment(folderSegment, "folder ID"), action as LocalChangesAction, await readBody(request));
+        const result = await discardChanges(instance, decodedSegment(folderSegment, "folder ID"), action as LocalChangesAction, await readBody(request), sources.isHandoff ?? liveHandoffCheck);
         sendJson(response, 200, result.done);
         return result.note;
       },

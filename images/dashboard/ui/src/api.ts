@@ -180,7 +180,7 @@ export { changedFields } from "../../src/syncthingConfig.js";
 export { ignoreLinesOf, ignoreLinesProblem } from "../../src/api/ignorePatterns.js";
 export { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, isKeptBySyncthing, offeredVersioningTypes, restoreConsequences, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versioningWords, versionsPathLabel, versionsReadLongestSeconds } from "../../src/api/versioningText.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
-export { type LocalChangesAction, discardedCount, localChangesFolderType, overrideLossText, revertLossText } from "../../src/api/localChangesText.js";
+export { type LocalChangesAction, discardedCount, handoffOverrideText, localChangesFolderType, overrideLossText, revertLossText } from "../../src/api/localChangesText.js";
 
 export interface ActionResult {
   ok: boolean;
