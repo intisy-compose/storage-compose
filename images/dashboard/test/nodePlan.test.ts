@@ -290,6 +290,9 @@ function sharedFolders(plan: NodePlan): PlannedFolder[] {
   return byId(plan.folders.filter((entry) => !entry.local));
 }
 
+/** Every field of a planned folder; the reconciler has no ignoreDelete to set, so a keeper applies a deletion into its versions. */
+const plannedFolderFields = ["devices", "handsOff", "id", "ignores", "keptBy", "label", "local", "path", "paused", "priority", "relativePath", "type", "versioning"];
+
 function asDriveSync(folder: PlannedFolder): DriveSyncFolder {
   return {
     id: folder.id,
@@ -328,7 +331,7 @@ describe("the golden test against drive-sync", async () => {
         );
       });
 
-      it(`makes every array folder send-receive with 90 days and no ignoreDelete (${variant}, pc at ${pcThreshold})`, () => {
+      it(`makes every array folder send-receive with 90 days and nothing that keeps deletions (${variant}, pc at ${pcThreshold})`, () => {
         const array = new Map(sharedFolders(planFor("c1c1")).map((folder) => [folder.id, folder]));
 
         for (const theirs of golden[variant].array) {
@@ -336,7 +339,7 @@ describe("the golden test against drive-sync", async () => {
           assert.ok(ours, theirs.id);
           assert.equal(ours.type, "sendreceive", theirs.id);
           assert.deepEqual(ours.versioning, { type: "staggered", maxAgeDays: clusterVersionsDays }, theirs.id);
-          assert.equal("ignoreDelete" in ours, false, theirs.id);
+          assert.deepEqual(Object.keys(ours).sort(), plannedFolderFields, `${theirs.id}: the reconciler reads these fields, none of which keeps deletions`);
         }
         assert.ok(golden[variant].array.some((theirs) => theirs.type === "receiveonly" && theirs.ignore_delete), "drive-sync made the archive receive-only with ignoreDelete");
       });
