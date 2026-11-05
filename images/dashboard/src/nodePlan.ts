@@ -74,10 +74,16 @@ function joinPath(root: string, ...parts: string[]): string {
   return root.replace(/[\\/]+$/, "") + separator + parts.flatMap((part) => part.split("/")).join(separator);
 }
 
+/**
+ * The highest pin at the folder or above it.
+ * @implNote A pin covers its subtree so the node keeps receiving a pinned parent's children instead of holding a stale send-only copy; a priority 0 child stays the node's own (session ruling).
+ */
 function pinOf(node: LayoutNode, folder: LayoutFolder): number | null {
   const key = pathKey(folder.relativePath);
-  const pin = Object.entries(node.pins).find(([path]) => pathKey(path) === key);
-  return pin ? pin[1] : null;
+  const pins = Object.entries(node.pins)
+    .filter(([path]) => pathKey(path) === key || (folder.priority > 0 && covers(path, folder.relativePath)))
+    .map(([, value]) => value);
+  return pins.length ? Math.max(...pins) : null;
 }
 
 function isAssigned(node: LayoutNode, folder: LayoutFolder): boolean {
@@ -230,9 +236,8 @@ function hasEntryAtOrBelow(folders: LayoutFolder[], path: string): boolean {
 }
 
 function unplacedPaths(folders: LayoutFolder[], node: LayoutNode): string[] {
-  const pins = Object.keys(node.pins).filter((path) => !folders.some((folder) => pathKey(folder.relativePath) === pathKey(path)));
-  const assigned = node.assigned.filter((path) => !hasEntryAtOrBelow(folders, path));
-  return [...new Set([...pins, ...assigned])].sort((left, right) => left.localeCompare(right));
+  const paths = [...Object.keys(node.pins), ...node.assigned].filter((path) => !hasEntryAtOrBelow(folders, path));
+  return [...new Set(paths)].sort((left, right) => left.localeCompare(right));
 }
 
 function holdsItems(localFolders: ReadonlySet<string>, folder: LayoutFolder): boolean {

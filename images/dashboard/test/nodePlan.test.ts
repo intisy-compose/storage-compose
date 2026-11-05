@@ -199,6 +199,19 @@ describe("a node's plan", () => {
     assert.equal(nodePlan(layout, "ffff", new Set()), null);
   });
 
+  it("raises a pinned parent's children above 0 to the pin, and leaves its priority 0 children local", () => {
+    const pinnedParent = parseLayout(`${layoutText}\n[nodes.a006]\nname = "pinner"\ndevice = "laptop"\nthreshold = 92\nadmitted = true\n[nodes.a006.pins]\nDocuments = 95\n`);
+    const plan = nodePlan(pinnedParent, "a006", new Set(["Documents/GitHub/scratch"]));
+    assert.ok(plan);
+
+    assert.equal(folder(plan, "documents").keptBy, "pin");
+    assert.equal(folder(plan, "documents-github").keptBy, "pin");
+    assert.equal(folder(plan, "documents-github").priority, 95);
+    assert.equal(folder(plan, "documents-github").type, "sendreceive");
+    assert.equal(folder(plan, "a006-documents-github-scratch").local, true);
+    assert.deepEqual(plan.unplaced, []);
+  });
+
   it("plans nothing for a node with a blocking layout problem, and leaves it out of every other plan", () => {
     const broken = parseLayout(layoutText.replace('name      = "laptop-data"', 'name      = "Laptop Data"'));
     const laptop = nodePlan(broken, "a002", new Set(["Music"]));
