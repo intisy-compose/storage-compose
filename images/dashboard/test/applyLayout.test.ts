@@ -592,7 +592,8 @@ describe("keepers by their own decision", () => {
 describe("the hand-off trash", () => {
   it("counts as freeing on its own, so a node in the middle of a hand-off stays raised, and lets nothing pull on it", async () => {
     const syncthing = nodeAtFifty();
-    const result = (trashBytes: number) => ({ schema: 1, nodeId: "a001", contractWrittenAt: "", finishedAt: "", refused: null, results: [], trash: [], notes: [], purged: 0, trashBytes });
+    let finishedAt = "2026-11-05T11:58:00.000Z";
+    const result = (trashBytes: number) => ({ schema: 1, nodeId: "a001", contractWrittenAt: "", finishedAt, refused: null, results: [], trash: [], notes: [], purged: 0, trashBytes });
     let trash = 100;
     const publisher: HandoffPublisher = { publish: async () => 0, clear: async () => {}, last: () => null, result: async () => result(trash) };
     const space: SpaceReads = {
@@ -605,9 +606,57 @@ describe("the hand-off trash", () => {
     assert.deepEqual(layeredStateOf("a001")?.space, { state: "raised", threshold: 80, neededBytes: 100, availableBytes: 250 }, "Old has left into the trash, which frees 100 by itself");
     assert.equal(folderOf(syncthing, "documents-old").type, "sendonly", "no type-up on bytes still in the trash");
 
+    finishedAt = "2026-11-05T11:54:59.000Z";
+    await round.run();
+    assert.equal(layeredStateOf("a001")?.space?.state, "stopped", "a result older than the contract's age limit says nothing of the trash now");
+    finishedAt = "2026-11-05T12:01:01.000Z";
+    await round.run();
+    assert.equal(layeredStateOf("a001")?.space?.state, "stopped", "nor one written more than a minute ahead of this host's clock");
+
+    finishedAt = "2026-11-05T11:58:00.000Z";
     trash = 0;
     await round.run();
     assert.equal(layeredStateOf("a001")?.space?.state, "stopped", "without it the same node would stop");
+  });
+});
+
+describe("resuming on a recorded size", () => {
+  /** Both folders paused by a stop with 100 bytes recorded each, on a node whose paused folders report nothing. */
+  function pausedNode(size: { globalBytes: number; localBytes: number; needBytes: number } | null) {
+    const syncthing = nodeAtTwenty();
+    for (const folder of syncthing.folders) folder.paused = true;
+    const pauses = memoryLayeredPauses({ a001: { documents: { at: "2026-11-05T11:30:00.000Z", size }, "documents-old": { at: "2026-11-05T11:00:00.000Z", size } } });
+    return { syncthing, pauses };
+  }
+  const reads = (freeBytes: number): SpaceReads => ({ space: async () => ({ totalBytes: 1000, freeBytes }), sizes: async () => Promise.reject(new Error("folder is paused")) });
+
+  it("needs a 25% margin on the recorded global size, and says the record's age while it waits", async () => {
+    const size = { globalBytes: 100, localBytes: 0, needBytes: 100 };
+    const tight = pausedNode(size);
+    await roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(tight.syncthing)], [], { space: reads(300), pauses: tight.pauses }).run();
+    assert.equal(layeredStateOf("a001")?.space?.state, "fits", "200 needed of 300 free leaves the 100 of 10% plus nothing more");
+    assert.ok(tight.syncthing.folders.every((folder) => folder.paused === true), "250 with the margin does not fit");
+    const held = layeredStateOf("a001")?.drift.find((change) => change.field === "paused")?.held ?? "";
+    assert.match(held, /on sizes recorded 60 minutes ago with a 25% margin/);
+
+    const roomy = pausedNode(size);
+    await roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(roomy.syncthing)], [], { space: reads(400), pauses: roomy.pauses }).run();
+    assert.ok(roomy.syncthing.folders.every((folder) => folder.paused === false), "with the margin it fits, so it resumes; the next round decides on live sizes");
+  });
+
+  it("never resumes a pause recorded without a size by itself, saying the typed resume does", async () => {
+    const unsized = pausedNode(null);
+    await roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(unsized.syncthing)], [], { space: reads(900), pauses: unsized.pauses }).run();
+    assert.ok(unsized.syncthing.folders.every((folder) => folder.paused === true));
+    assert.match(layeredStateOf("a001")?.drift.find((change) => change.field === "paused")?.held ?? "", /paused with no size recorded: only the typed resume on the node page resumes it/);
+  });
+
+  it("names the trash bytes a paused folder cannot empty", async () => {
+    const node = pausedNode(null);
+    const publisher: HandoffPublisher = { publish: async () => 0, clear: async () => {}, last: () => null, result: async () => ({ schema: 1, nodeId: "a001", contractWrittenAt: "", finishedAt: "2026-11-05T11:59:00.000Z", refused: null, results: [], trash: [], notes: [], purged: 0, trashBytes: 42 }) };
+    await roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(node.syncthing)], [], { space: reads(900), pauses: node.pauses, handoffs: publisher }).run();
+    assert.match(layeredStateOf("a001")?.drift.find((change) => change.field === "paused")?.held ?? "", /a paused folder cannot empty its trash, so 42 bytes wait in it and the typed resume on the node page may be needed$/);
+    assert.equal(layeredStateOf("a001")?.trashBytes, 42);
   });
 });
 

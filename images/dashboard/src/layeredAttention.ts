@@ -119,7 +119,8 @@ function stopPausedWarnings(node: StorageNode, state: LayeredState): Warning[] {
   const way = acting
     ? `they resume once ${state.stopped ? "the stop ends and " : ""}its space decision lets it pull, or by Resume on its node page`
     : "it no longer acts on its plan, so no round resumes them: resume them on its node page";
-  return [warning({ id: `stop-paused:${node.id}`, level: acting ? "info" : "warning", kind: "stop-paused", text: `${node.name}: ${count} ${paused.length === 1 ? "is" : "are"} paused by a stop; ${way}`, nodeId: node.id })];
+  const trash = (state.trashBytes ?? 0) > 0 ? `; a paused folder cannot empty its trash, so ${state.trashBytes} bytes wait in it and the typed resume on its node page may be needed` : "";
+  return [warning({ id: `stop-paused:${node.id}`, level: acting ? "info" : "warning", kind: "stop-paused", text: `${node.name}: ${count} ${paused.length === 1 ? "is" : "are"} paused by a stop; ${way}${trash}`, nodeId: node.id })];
 }
 
 /** The round's space decision, made in report mode too: a stop pauses the node only once it acts. */

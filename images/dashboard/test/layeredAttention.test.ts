@@ -24,7 +24,7 @@ function handoff(overrides: Partial<LayeredHandoff> = {}): LayeredHandoff {
 }
 
 function nodeWith(layered: Partial<LayeredState>): StorageNode {
-  const state: LayeredState = { mode: "apply", threshold: 50, effectiveThreshold: 50, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt: "2026-11-06T11:59:00Z", space: null, stopped: null, pausedByStop: [], pauseHeld: null, handoff: null, ...layered };
+  const state: LayeredState = { mode: "apply", threshold: 50, effectiveThreshold: 50, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt: "2026-11-06T11:59:00Z", space: null, stopped: null, pausedByStop: [], pauseHeld: null, trashBytes: 0, handoff: null, ...layered };
   return { id: "a1b2", name: "pc", folders: [{ id: "videos", label: "Videos" }], layered: state } as unknown as StorageNode;
 }
 
@@ -141,6 +141,8 @@ describe("Attention for the layered sync", () => {
       assert.deepEqual([entry.level, entry.text], ["warning", "pc: 1 folder is paused by a stop; it no longer acts on its plan, so no round resumes them: resume them on its node page"], JSON.stringify(layered));
     }
     assert.equal(only(layeredWarnings(nodeWith({}), now), "stop-paused").length, 0);
+    const [trash] = only(layeredWarnings(nodeWith({ pausedByStop: ["videos"], stopped: "pc does not fit even at its top priority", trashBytes: 42 }), now), "stop-paused");
+    assert.match(trash.text, /; a paused folder cannot empty its trash, so 42 bytes wait in it and the typed resume on its node page may be needed$/);
   });
 
   it("drift is information while the node reports, held changes name why, and a failed round is a warning", () => {

@@ -70,7 +70,7 @@ function nodeOnlyText(entry: NodeReconcile["nodeOnlyIgnores"][number]): string {
 }
 
 function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: string): LayeredState {
-  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt, space: null, stopped: null, pausedByStop: [], pauseHeld: null, handoff: null };
+  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt, space: null, stopped: null, pausedByStop: [], pauseHeld: null, trashBytes: 0, handoff: null };
 }
 
 function spaceView(decision: SpaceDecision | null): LayeredSpace | null {
@@ -83,7 +83,7 @@ type Prepared =
   | { kind: "unadmitted"; node: LayoutNode; marks: Marks }
   | { kind: "blocked"; node: LayoutNode; problems: string[]; marks: Marks }
   | { kind: "failed"; node: LayoutNode; error: unknown; marks: Marks }
-  | { kind: "planned"; node: LayoutNode; localFolders: Set<string>; plan: NodePlan; inputs: SpaceInputs | null; decision: SpaceDecision | null; marks: Marks };
+  | { kind: "planned"; node: LayoutNode; localFolders: Set<string>; plan: NodePlan; inputs: SpaceInputs | null; decision: SpaceDecision | null; resumeDecision: SpaceDecision | null; marks: Marks };
 
 type Marks = Map<string, PauseMark> | "unreadable";
 
@@ -92,7 +92,20 @@ interface SpaceInputs {
   sizes: FolderSizes;
   /** What the node's hand-off trash holds, which leaves it by itself once due. */
   trashBytes: number;
+  /** Folders sized from their pause record, by ID, with when it was recorded. */
+  recorded: Map<string, string>;
+  /** Folders paused by a stop with no size recorded and none reported. */
+  unsized: string[];
 }
+
+/** A size recorded with a pause counts for a resume only with this much of its global size on top, as the network may have grown since. */
+export const recordedSizeMargin = 0.25;
+
+/** A result older than this says nothing about the trash now: the contract's own age limit (phase 3). */
+const resultMaxAgeSeconds = 300;
+
+/** A result written further ahead of this host's clock than a contract may be (phase 3) is not one to trust either. */
+const resultAheadSeconds = 60;
 
 /**
  * Each round brings this host's nodes to their layered plans from the shared layout, or only reports how they differ, and writes each
@@ -237,15 +250,22 @@ export class LayoutRound {
     const space = await reads.space(instance).catch(() => null);
     if (!space) return null;
     const sizes: FolderSizes = {};
+    const recorded = new Map<string, string>();
+    const unsized: string[] = [];
     for (const folder of plan.folders) {
       const status = await reads.sizes(instance, folder.id).catch(() => null);
-      const recorded = marks.get(folder.id)?.size ?? null;
+      const mark = marks.get(folder.id) ?? null;
       if (status && isIndexed(status, folder.devices.length > 1)) sizes[folder.id] = { globalBytes: status.globalBytes, localBytes: status.localBytes, needBytes: status.needBytes };
-      else if (recorded) sizes[folder.id] = recorded;
+      else if (mark?.size) {
+        sizes[folder.id] = mark.size;
+        recorded.set(folder.id, mark.at);
+      } else if (mark) unsized.push(folder.id);
     }
     const result = await this.dependencies.handoffs?.result?.(instance).catch(() => null);
-    const trashBytes = Number.isFinite(result?.trashBytes) ? Math.max(0, result?.trashBytes as number) : 0;
-    return { space, sizes, trashBytes };
+    const age = result ? (this.clock().getTime() - Date.parse(result.finishedAt)) / 1000 : Number.NaN;
+    const fresh = Number.isFinite(age) && age >= -resultAheadSeconds && age <= resultMaxAgeSeconds;
+    const trashBytes = fresh && Number.isFinite(result?.trashBytes) ? Math.max(0, result?.trashBytes as number) : 0;
+    return { space, sizes, trashBytes, recorded, unsized };
   }
 
   /**
@@ -284,7 +304,12 @@ export class LayoutRound {
         if (await this.keeperHolds(layout, instance, instances, first, folder.id)) releasable[folder.id] = heldInSync(size);
       }
       entry.decision = effectiveThreshold(entry.plan, entry.inputs.sizes, entry.inputs.space, releasable, entry.inputs.trashBytes);
+      entry.resumeDecision = entry.inputs.recorded.size ? effectiveThreshold(entry.plan, withMargin(entry.inputs.sizes, entry.inputs.recorded), entry.inputs.space, releasable, entry.inputs.trashBytes) : entry.decision;
     }
+  }
+
+  private clock(): Date {
+    return this.dependencies.now?.() ?? new Date();
   }
 
   private async marksOf(nodeId: string): Promise<Map<string, PauseMark> | "unreadable"> {
@@ -305,7 +330,7 @@ export class LayoutRound {
       if (!plan) return { kind: "unlisted" };
       if (plan.problems.length) return { kind: "blocked", node, problems: plan.problems, marks };
       const inputs = await this.spaceInputs(instance, plan, marks instanceof Map ? marks : new Map());
-      return { kind: "planned", node, localFolders, plan, inputs, decision: null, marks };
+      return { kind: "planned", node, localFolders, plan, inputs, decision: null, resumeDecision: null, marks };
     } catch (error) {
       return { kind: "failed", node, error, marks };
     }
@@ -344,7 +369,7 @@ export class LayoutRound {
         space: decision,
         stopped,
         pauses: this.dependencies.pauses,
-        resumeHeld: resumeHeldBy(node, decision, plan),
+        resumeHeld: resumeHeldBy(node, prepared.resumeDecision, plan, resumeContext(prepared.inputs, this.clock())),
         sizes: prepared.inputs?.sizes,
         handoffFiles: this.dependencies.handoffFiles,
         onWritten: (folderId, text) => this.dependencies.record(instance.nodeId, folderId, text),
@@ -354,7 +379,7 @@ export class LayoutRound {
       const pauseHeld = stopped && node.apply ? heldPause(result) : null;
       await this.notifyPauses(instance, result, stopped, pauseHeld);
       const marks = await this.marksOf(node.id);
-      return { ...state, pausedByStop: pausedIds(marks), pauseHeld, effectiveThreshold: plan.appliedThreshold, space: spaceView(decision), stopped, pendingHandoffs, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
+      return { ...state, pausedByStop: pausedIds(marks), pauseHeld, trashBytes: prepared.inputs?.trashBytes ?? 0, effectiveThreshold: plan.appliedThreshold, space: spaceView(decision), stopped, pendingHandoffs, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
     } catch (error) {
       return this.failedState(instance, node, state, error);
     }
@@ -427,11 +452,46 @@ function heldPause(result: NodeReconcile): string | null {
   return /type the folder ID/.test(reason ?? "") ? "it cannot be paused without the folder ID typed" : reason ? `its pause is held: ${reason}` : null;
 }
 
-/** Why a recorded pause is not resumed this round, or null: only a decision that lets the enabled node pull resumes it. */
-export function resumeHeldBy(node: LayoutNode, decision: SpaceDecision | null, plan: NodePlan): string | null {
+/** The sizes with `recordedSizeMargin` of each recorded folder's global size added to what it needs. */
+function withMargin(sizes: FolderSizes, recorded: ReadonlyMap<string, string>): FolderSizes {
+  return Object.fromEntries(Object.entries(sizes).map(([id, size]) => [id, recorded.has(id) ? { ...size, globalBytes: Math.ceil(size.globalBytes * (1 + recordedSizeMargin)) } : size]));
+}
+
+/** What a resume rests on besides the decision: the age of the sizes recorded, folders without one, and the trash a pause holds back. */
+export interface ResumeContext {
+  /** The oldest recorded size the decision uses, in whole minutes; null when none is used. */
+  recordedMinutes: number | null;
+  unsized: string[];
+  trashBytes: number;
+}
+
+function resumeContext(inputs: SpaceInputs | null, now: Date): ResumeContext {
+  const times = [...(inputs?.recorded.values() ?? [])].map((at) => Date.parse(at)).filter(Number.isFinite);
+  return {
+    recordedMinutes: times.length ? Math.max(0, Math.floor((now.getTime() - Math.min(...times)) / 60_000)) : null,
+    unsized: inputs?.unsized ?? [],
+    trashBytes: inputs?.trashBytes ?? 0,
+  };
+}
+
+/**
+ * Why a recorded pause is not resumed this round, or null: only a decision that lets the enabled node pull resumes it, on recorded sizes
+ * only with their margin. The next round decides on the live sizes and pauses again if they do not fit.
+ * @implNote A paused folder serves no index, so its trash cannot empty while it is paused (N3): the reason names what waits there, since the
+ * typed resume on the node page may be the only way out.
+ */
+export function resumeHeldBy(node: LayoutNode, decision: SpaceDecision | null, plan: NodePlan, context: ResumeContext = { recordedMinutes: null, unsized: [], trashBytes: 0 }): string | null {
+  const reason = resumeReason(node, decision, plan, context);
+  if (!reason) return null;
+  return context.trashBytes > 0 ? `${reason}; a paused folder cannot empty its trash, so ${context.trashBytes} bytes wait in it and the typed resume on the node page may be needed` : reason;
+}
+
+function resumeReason(node: LayoutNode, decision: SpaceDecision | null, plan: NodePlan, context: ResumeContext): string | null {
   if (!node.enabled) return `${node.name} is not enabled`;
+  if (context.unsized.length) return `${context.unsized.join(", ")} paused with no size recorded: only the typed resume on the node page resumes it`;
   if (!decision) return "a resume waits until the node's space can be read";
-  if (!spaceAllowsPull(decision, plan)) return `a resume waits for a space decision that lets the node pull (it is ${decision.state})`;
+  const recorded = context.recordedMinutes === null ? "" : `, on sizes recorded ${context.recordedMinutes} minutes ago with a ${recordedSizeMargin * 100}% margin`;
+  if (!spaceAllowsPull(decision, plan)) return `a resume waits for a space decision that lets the node pull (it is ${decision.state}${recorded})`;
   return null;
 }
 

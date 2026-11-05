@@ -360,6 +360,8 @@ export interface LayeredState {
   pausedByStop: string[];
   /** Why a stop could not pause the node (an array without its folder ID typed); null when its pause was written or none was needed. */
   pauseHeld: string | null;
+  /** What the node's hand-off trash holds, from its executor's last fresh result; a paused folder cannot empty its share of it. */
+  trashBytes: number;
   /** The node's hand-off as this host's last round decided it and its executor last reported it; null while no contract was written. */
   handoff: LayeredHandoff | null;
 }
