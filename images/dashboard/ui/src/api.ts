@@ -97,6 +97,7 @@ export type {
   PriorityInfo,
   PullOrder,
   Peer,
+  LayeredState,
   RemoteState,
   RemoteNeedPage,
   RemoveDeviceBody,

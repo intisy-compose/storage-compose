@@ -197,13 +197,13 @@ describe("a confirmed hand-off", () => {
 
     assert.deepEqual(decision.confirmed, []);
     assert.equal(decision.waiting[0].reason, "keeper-offline", "the cluster keeps it and has not reported");
-    assert.equal(reasonOf([keeper("c1c1", {}, { effectiveThreshold: 40 })]), "no-keeper");
+    assert.equal(decide([keeper("c1c1", {}, { effectiveThreshold: 95 })]).confirmed.length, 1, "the cluster keeps every folder whatever its threshold");
   });
 
   it("never takes a reported threshold below the committed one", () => {
-    const raised = parseLayout(layoutText.replace("threshold = 0\nadmitted  = true", "threshold = 40\nadmitted  = true"));
+    const withoutCluster = parseLayout(layoutText.replace("threshold = 0\nadmitted  = true", "threshold = 0"));
 
-    assert.equal(decide([keeper("c1c1", {}, { effectiveThreshold: 0 })], [clip], raised).waiting[0].reason, "no-keeper");
+    assert.equal(decide([keeper("a002", {}, { effectiveThreshold: 0 })], [clip], withoutCluster).waiting[0].reason, "no-keeper");
   });
 
   it("does not count a degraded, stopped or frozen keeper, or one not enabled", () => {
