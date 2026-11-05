@@ -59,14 +59,25 @@ function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: st
 export class LayoutRound {
   constructor(private readonly dependencies: LayoutRoundDependencies) {}
 
+  /**
+   * @implNote Whether a node applies comes from the committed, pushed layout through `nodeFileAction`, the same gate as its node file, so
+   * the two never disagree; the working tree's layout still makes the plans and the report. A failed read of the instances leaves the last
+   * round's states and writes nothing.
+   */
   async run(): Promise<void> {
     const layout = await this.dependencies.layout();
     const states = new Map<string, LayeredState>();
-    if (this.dependencies.nodeFiles) await this.followNodeFiles(await this.dependencies.instances());
+    const instances = await this.dependencies.instances().catch((error) => {
+      console.error(`layered sync: this host's nodes cannot be read: ${reasonOf(error)}`);
+      return null;
+    });
+    if (!instances) return;
+    const committed = await (this.dependencies.committedLayout?.() ?? Promise.resolve(null)).catch(() => null);
+    if (this.dependencies.nodeFiles) await this.followNodeFiles(instances, committed);
     if (layout) {
-      const instances = await this.dependencies.instances();
+      const gated = withCommittedApply(layout, committed);
       for (const instance of instances) {
-        const state = await this.nodeState(layout, instance, instances);
+        const state = await this.nodeState(gated, instance, instances);
         if (!state) continue;
         const handoff = await this.handoffView(instance, state.checkedAt);
         this.recordHandoffActivity(instance, state, handoff);
@@ -149,9 +160,8 @@ export class LayoutRound {
    * Every node file this host keeps follows the committed layout: fully, `apply = true` included, only for a node `nodeFileAction` lets act;
    * otherwise only its `apply` line is taken out, the layout unreadable or missing included.
    */
-  private async followNodeFiles(instances: LocalInstance[]): Promise<void> {
+  private async followNodeFiles(instances: LocalInstance[], committed: CommittedLayout | null): Promise<void> {
     const files = this.dependencies.nodeFiles as NodeFiles;
-    const committed = await (this.dependencies.committedLayout?.() ?? Promise.resolve(null)).catch(() => null);
     for (const instance of instances) {
       const action = nodeFileAction(committed, instance.nodeId);
       try {
@@ -274,6 +284,11 @@ export function nodeFileAction(committed: CommittedLayout | null, nodeId: string
   if (!node.apply) return { kind: "withdraw", reason: "the committed layout does not say apply = true" };
   if (!committed.pushed) return { kind: "withdraw", reason: "the commit that says apply = true is not on the upstream yet" };
   return { kind: "follow", policy: node };
+}
+
+/** The working tree's layout with each node's `apply` as `nodeFileAction` lets it act, so a dirty or unpushed `apply = true` only reports. */
+export function withCommittedApply(layout: SetupLayout, committed: CommittedLayout | null): SetupLayout {
+  return { ...layout, nodes: layout.nodes.map((node) => ({ ...node, apply: nodeFileAction(committed, node.id).kind === "follow" })) };
 }
 
 /** Brings a node file to the committed policy, or takes its `apply` line out; each answers whether it wrote. */

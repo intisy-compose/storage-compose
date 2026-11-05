@@ -64,6 +64,10 @@ interface Recorded {
 function roundOf(layout: () => SetupLayout | null, instances: LocalInstance[], recorded: Recorded[] = [], overrides: Partial<LayoutRoundDependencies> = {}): LayoutRound {
   return new LayoutRound({
     layout: async () => layout(),
+    committedLayout: async () => {
+      const current = layout();
+      return current ? { layout: current, pushed: true } : null;
+    },
     instances: async () => instances,
     handoffFiles: { ensure: async () => null },
     record: (nodeId, folderId, text) => recorded.push({ nodeId, folderId, text }),
@@ -92,6 +96,30 @@ describe("reconciling this host's nodes on every pull", () => {
     assert.equal(state.checkedAt, "2026-11-05T12:00:00.000Z");
     assert.deepEqual(syncthing.writes(), []);
     assert.deepEqual(recorded, []);
+  });
+
+  it("a node applies only from a committed, pushed apply = true: one only in the working tree or not pushed reports and writes nothing", async () => {
+    for (const committed of [{ layout: parseLayout(layoutText(false)), pushed: true }, { layout: parseLayout(layoutText(true)), pushed: false }, null]) {
+      const syncthing = nodeAtTwenty();
+      const recorded: Recorded[] = [];
+      await roundOf(() => parseLayout(layoutText(true)), [instanceOf(syncthing)], recorded, { committedLayout: async () => committed }).run();
+      assert.equal(layeredStateOf("a001")?.mode, "report", JSON.stringify(committed?.pushed));
+      assert.deepEqual(syncthing.writes(), []);
+      assert.deepEqual(recorded, []);
+    }
+  });
+
+  it("a failed read of this host's nodes is caught, writes nothing and keeps the last states", async () => {
+    const syncthing = nodeAtTwenty();
+    await roundOf(() => parseLayout(layoutText(false)), [instanceOf(syncthing)]).run();
+    const before = layeredStateOf("a001");
+    const calls: string[] = [];
+    await roundOf(() => parseLayout(layoutText(true)), [], [], {
+      instances: () => Promise.reject(new Error("the registry cannot be read")),
+      nodeFiles: { follow: async () => calls.push("follow") > 0, withdraw: async () => calls.push("withdraw") > 0 },
+    }).run();
+    assert.deepEqual(calls, []);
+    assert.equal(layeredStateOf("a001"), before);
   });
 
   it("brings a pulled layout change to the node within one round", async () => {
