@@ -47,6 +47,7 @@ function Invoke-SyncthingApi($Instance, [string]$Method, [string]$Path) {
         }
         return $record
     }
+    if ($Method -eq "Get" -and $route -eq "/rest/system/connections") { return $global:fakeConnections }
     if ($Method -eq "Post" -and $route -eq "/rest/db/scan") {
         $folderId = ConvertFrom-QueryValue $query 'folder'
         $folderPath = $global:fakeFolders[$folderId].path
@@ -112,6 +113,7 @@ function New-TestNode([string]$Name) {
     $global:fakeNeverIgnores = $false
     $global:fakeWriteOnScan = $null
     $global:replaceContractWith = $null
+    $global:fakeConnections = [pscustomobject]@{ connections = [pscustomobject]@{ $keeperDevice = [pscustomobject]@{ connected = $true } } }
     $global:moveRefuses = $false
     $global:moveBackFails = $false
     $global:moveGrows = $false
@@ -198,13 +200,12 @@ Describe "the hand-off executor" {
 
         Invoke-TestHandoff
 
-        foreach ($name in @("grown.mp4", "touched.mp4", "fresh.mp4")) {
+        foreach ($name in @("grown.mp4", "touched.mp4", "fresh.mp4", "rewritten.mp4")) {
             "$(Test-Present $name) $(Get-ListedCount $name) $(Get-Outcome $name)" | Should Be "True 0 refused"
         }
         Get-Reason "grown.mp4" | Should Be "its size is 14, not the confirmed 5"
         Get-Reason "touched.mp4" | Should Be "it was modified at $($global:handoffTestNow - 1800), not at the confirmed $($global:handoffTestNow - 3600)"
-        "$(Test-Present 'rewritten.mp4') $(Get-ListedCount 'rewritten.mp4') $(Get-Outcome 'rewritten.mp4')" | Should Be "True 0 released"
-        Get-Reason "rewritten.mp4" | Should Be "its content is not the confirmed content after its ignore was written; its ignore line was removed, so it syncs again"
+        Get-Reason "rewritten.mp4" | Should Be "its content is not the confirmed content"
         Get-Reason "fresh.mp4" | Should Be "it changed within the last 10 minutes"
         Get-Outcome "clip.mp4" | Should Be "moved"
     }
@@ -345,16 +346,123 @@ Describe "the hand-off executor" {
         Get-Reason "boom.mp4" | Should Be "the executor failed on it: a failure on this path alone"
     }
 
-    It "stops hashing at the run's deadline and leaves the rest to the next round" {
+    It "hashes before the ignore, and leaves a file whose hash the deadline cut short without any trace on the node" {
         New-TestNode "budget"
         $check = Get-HandoffContentCheck $global:folder (New-Entry "clip.mp4") ([datetime]::MinValue)
         $check.ContainsKey("budget") | Should Be $true
+        Add-TestFile "second.mp4" "hello"
+        $script:handoffRunSeconds = 0
+        try {
+            Write-Contract @((New-Entry "clip.mp4"), (New-Entry "second.mp4"))
+            Invoke-TestHandoff
+            "$(Get-Outcome 'clip.mp4') $(Get-Outcome 'second.mp4') $(Get-ListedCount 'clip.mp4') [$(Get-PendingPaths)]" | Should Be "deferred deferred 0 []"
+            $deferred = @(Read-HandoffLines (Join-Path $global:root ".storage\handoff-deferred.jsonl"))
+            "$(@($deferred | Where-Object { $_.path -eq 'clip.mp4' })[0].attempts) $(@($deferred | Where-Object { $_.path -eq 'second.mp4' })[0].attempts)" | Should Be "1 0"
+        } finally { $script:handoffRunSeconds = 20 }
+    }
+
+    It "stops hashing a file too large for the round once it ran out alone often enough" {
+        New-TestNode "toolarge"
+        $script:handoffPendingAttempts = 2
         $script:handoffRunSeconds = 0
         try {
             Write-Contract @(New-Entry "clip.mp4")
             Invoke-TestHandoff
-            "$(Test-Present 'clip.mp4') $(Get-Outcome 'clip.mp4') $(Get-PendingPaths)" | Should Be "True ignored-not-moved clip.mp4"
+            Invoke-TestHandoff
+            Invoke-TestHandoff
+            "$(Get-Outcome 'clip.mp4') $(Get-ListedCount 'clip.mp4') [$(Get-PendingPaths)]" | Should Be "refused 0 []"
+            Get-Reason "clip.mp4" | Should Be "it is too large to hash within the agent's round"
         } finally { $script:handoffRunSeconds = 20 }
+        Invoke-TestHandoff
+        Get-Outcome "clip.mp4" | Should Be "refused"
+        Set-IndexEntry "clip.mp4" 5 "STICK:2"
+        $global:fakeFiles["videos|clip.mp4"].global.version = @("STICK:2")
+        $entry = New-Entry "clip.mp4"
+        $entry.version = @("STICK:2")
+        Write-Contract @($entry)
+        Invoke-TestHandoff
+        Get-Outcome "clip.mp4" | Should Be "moved"
+    }
+
+    It "completes a move a run left between the rename and the manifest line, and never releases it" {
+        New-TestNode "crashed"
+        $global:fakeNeverIgnores = $true
+        Write-Contract @(New-Entry "clip.mp4")
+        Invoke-TestHandoff
+        $global:fakeNeverIgnores = $false
+        $relative = "$(Get-TrashDay)/videos/clip.mp4"
+        $trashed = Join-Path (Get-TrashRoot) ($relative -replace '/', '\')
+        New-Item -ItemType Directory -Force -Path (Split-Path $trashed) | Out-Null
+        [System.IO.File]::Move((Join-Path $global:folder "clip.mp4"), $trashed)
+        Set-PendingMoving ([pscustomobject]@{ pendingFile = (Join-Path $global:root ".storage\handoff-pending.jsonl") }) "videos" "clip.mp4" $relative
+        Write-Contract @()
+        Invoke-TestHandoff
+        "$(Get-Outcome 'clip.mp4') $(Get-ListedCount 'clip.mp4') [$(Get-PendingPaths)] $(@(Read-HandoffLines (Join-Path (Get-TrashRoot) 'manifest.jsonl')).Count)" | Should Be "moved 1 [] 1"
+
+        New-TestNode "crashedunclear"
+        $global:fakeNeverIgnores = $true
+        Write-Contract @(New-Entry "clip.mp4")
+        Invoke-TestHandoff
+        $global:fakeNeverIgnores = $false
+        $trashed = Join-Path (Get-TrashRoot) "$(Get-TrashDay)\videos\clip.mp4"
+        New-Item -ItemType Directory -Force -Path (Split-Path $trashed) | Out-Null
+        Copy-Item -LiteralPath (Join-Path $global:folder "clip.mp4") -Destination $trashed
+        [System.IO.File]::AppendAllText((Join-Path $global:folder "clip.mp4"), "changed")
+        Set-PendingMoving ([pscustomobject]@{ pendingFile = (Join-Path $global:root ".storage\handoff-pending.jsonl") }) "videos" "clip.mp4" "$(Get-TrashDay)/videos/clip.mp4"
+        Write-Contract @()
+        Invoke-TestHandoff
+        "$(Get-Outcome 'clip.mp4') $(Get-ListedCount 'clip.mp4') $(Get-PendingPaths)" | Should Be "ignored-not-moved 1 clip.mp4"
+        Test-WasMoved ([pscustomobject]@{ pendingFile = (Join-Path $global:root ".storage\handoff-pending.jsonl"); manifest = (Join-Path (Get-TrashRoot) "manifest.jsonl") }) "videos" "clip.mp4" | Should Be $true
+    }
+
+    It "sets a torn pending line aside and appends after a last line without its newline" {
+        New-TestNode "torn"
+        Add-TestFile "second.mp4" "hello"
+        $global:fakeNeverIgnores = $true
+        Write-Contract @(New-Entry "clip.mp4")
+        Invoke-TestHandoff
+        $global:fakeNeverIgnores = $false
+        $pendingFile = Join-Path $global:root ".storage\handoff-pending.jsonl"
+        [System.IO.File]::AppendAllText($pendingFile, '{"folderId": "videos", "pa')
+        Write-Contract @(New-Entry "second.mp4")
+        Invoke-TestHandoff
+        "$(Get-Outcome 'clip.mp4') $(Get-Outcome 'second.mp4') $(@([System.IO.File]::ReadAllLines("$pendingFile.bad")).Count)" | Should Be "moved moved 1"
+        [System.IO.File]::WriteAllText((Join-Path $global:folder ".stignore-handoff"), "/clip.mp4")
+        Add-TestFile "third.mp4" "hello"
+        Write-Contract @(New-Entry "third.mp4")
+        Invoke-TestHandoff
+        ([System.IO.File]::ReadAllLines((Join-Path $global:folder ".stignore-handoff")) -join " ") | Should Be "/clip.mp4 /third.mp4"
+    }
+
+    It "counts attempts for a pending path whose folder is refused, and releases it when they run out" {
+        New-TestNode "refusedfolder"
+        $global:fakeNeverIgnores = $true
+        Write-Contract @(New-Entry "clip.mp4")
+        Invoke-TestHandoff
+        $global:fakeFolders.videos.type = "sendreceive"
+        $script:handoffPendingAttempts = 2
+        Write-Contract @()
+        Invoke-TestHandoff
+        Get-Outcome "clip.mp4" | Should Be "ignored-not-moved"
+        Invoke-TestHandoff
+        "$(Get-Outcome 'clip.mp4') $(Get-ListedCount 'clip.mp4')" | Should Be "released 0"
+    }
+
+    It "looks at a bounded number of handed-off paths per run" {
+        New-TestNode "strays"
+        [System.IO.File]::WriteAllText((Join-Path $global:folder ".stignore-handoff"), "/a.mp4`n/b.mp4`n")
+        Add-TestFile "a.mp4" "hello"
+        Add-TestFile "b.mp4" "hello"
+        $script:handoffStrayLimit = 1
+        try {
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            $first = (@((Get-Result).results | Where-Object { $_.outcome -eq "unsynced-at-handed-off-path" }) | ForEach-Object { $_.path }) -join " "
+            Write-Contract @()
+            Invoke-TestHandoff
+            $second = (@((Get-Result).results | Where-Object { $_.outcome -eq "unsynced-at-handed-off-path" }) | ForEach-Object { $_.path }) -join " "
+            "$first|$second" | Should Be "a.mp4|b.mp4"
+        } finally { $script:handoffStrayLimit = 1000 }
     }
 
     It "acts only inside the node's own root, and never through a link" {
@@ -484,21 +592,37 @@ Describe "the hand-off executor" {
         (Get-Result).purged | Should Be 0
     }
 
-    It "keeps a trash copy whose version no keeper holds, and empties it once one does" {
+    It "keeps a trash copy until its recorded keeper is connected and holds that version or a later one" {
         New-TestNode "keeperless"
         Write-Contract @(New-Entry "clip.mp4")
         Invoke-TestHandoff
         $day = Get-TrashDay
         $trashed = Join-Path (Get-TrashRoot) "$day\videos\clip.mp4"
-        Set-IndexEntry "clip.mp4" 5 "STICK:1" @()
+        Set-IndexEntry "clip.mp4" 5 "STICK:1" @([pscustomobject]@{ id = "OTHER-DEVICE"; fromTemporary = $false })
         $global:handoffTestNow += 8 * 86400
         Write-Contract @()
         Invoke-TestHandoff
-        "$(Test-Path -LiteralPath $trashed) $((Get-Result).purged) $(Get-TrashKept)" | Should Be "True 0 $day/videos/clip.mp4: no keeper holds its version, as this node sees it"
-        Set-IndexEntry "clip.mp4" 5 "STICK:2"
+        "$(Test-Path -LiteralPath $trashed) $((Get-Result).purged) $(Get-TrashKept)" | Should Be "True 0 $day/videos/clip.mp4: its keeper does not hold it, as this node sees it"
+        $manifest = Join-Path (Get-TrashRoot) "manifest.jsonl"
+        $keptAt = (@(Read-HandoffLines $manifest)[0]).keptAt
+        $global:handoffTestNow += 60
+        Write-Contract @()
         Invoke-TestHandoff
-        Get-TrashKept | Should Be "$day/videos/clip.mp4: the network no longer has its version"
+        "$(@((Get-Result).trash).Count) $((@(Read-HandoffLines $manifest)[0]).keptAt)" | Should Be "1 $keptAt"
         Set-IndexEntry "clip.mp4" 5
+        $global:fakeConnections = [pscustomobject]@{ connections = [pscustomobject]@{ $keeperDevice = [pscustomobject]@{ connected = $false } } }
+        Invoke-TestHandoff
+        Get-TrashKept | Should Be "$day/videos/clip.mp4: its keeper is not connected to this node"
+        $global:fakeConnections = [pscustomobject]@{ connections = [pscustomobject]@{ $keeperDevice = [pscustomobject]@{ connected = $true } } }
+        Set-IndexEntry "clip.mp4" 5 "OTHER:7"
+        Invoke-TestHandoff
+        Get-TrashKept | Should Be "$day/videos/clip.mp4: the network no longer has its version or a later one"
+        Set-IndexEntry "clip.mp4" 5
+        $global:fakeFiles["videos|clip.mp4"].global | Add-Member -NotePropertyName deleted -NotePropertyValue $true -Force
+        Invoke-TestHandoff
+        Get-TrashKept | Should Be "$day/videos/clip.mp4: the network has its deletion"
+        Set-IndexEntry "clip.mp4" 9
+        $global:fakeFiles["videos|clip.mp4"].global.version = @("STICK:1", "KEEPER:1")
         Invoke-TestHandoff
         "$(Test-Path -LiteralPath $trashed) $((Get-Result).purged)" | Should Be "False 1"
     }

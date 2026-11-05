@@ -16,6 +16,8 @@ $handoffContractMaxAheadSeconds = 60
 $handoffIgnoreWaitSeconds = 15
 $handoffRunSeconds = 20
 $handoffPendingAttempts = 10
+$handoffStrayLimit = 1000
+$handoffKeptLogSeconds = 86400
 $handoffRoundSeconds = 60
 $handoffListName = ".stignore-handoff"
 $lastHandoffRound = [datetime]::MinValue
@@ -226,13 +228,46 @@ function New-HandoffResultLine([string]$FolderId, [string]$Relative, [string]$Ou
     return [pscustomobject]$line
 }
 
-function Read-HandoffLines([string]$Path) {
-    if (-not [System.IO.File]::Exists($Path)) { return @() }
-    return @([System.IO.File]::ReadAllLines($Path) | Where-Object { $_.Trim() } | ForEach-Object { try { ConvertFrom-Json $_ } catch { } } | Where-Object { $_ })
+function ConvertFrom-HandoffLine([string]$Line) {
+    try { $value = ConvertFrom-Json $Line } catch { return $null }
+    if ($value -is [System.Management.Automation.PSCustomObject]) { return $value }
+    return $null
 }
 
-function Add-HandoffLine([string]$Path, $Value) {
-    [System.IO.File]::AppendAllText($Path, "$(ConvertTo-Json -InputObject $Value -Compress -Depth 10)`n", [System.Text.UTF8Encoding]::new($false))
+function Read-HandoffLines([string]$Path) {
+    if (-not [System.IO.File]::Exists($Path)) { return @() }
+    return @([System.IO.File]::ReadAllLines($Path) | Where-Object { $_.Trim() } | ForEach-Object { ConvertFrom-HandoffLine $_ } | Where-Object { $_ })
+}
+
+<#
+.NOTES
+Ends a last line that a torn write left without its newline before appending, so the new line is a
+line of its own.
+#>
+function Add-HandoffText([string]$Path, [string]$Line) {
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    if ([System.IO.File]::Exists($Path)) {
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        if ($bytes.Length -gt 0 -and $bytes[-1] -ne 10) { [System.IO.File]::AppendAllText($Path, "`n", $encoding) }
+    }
+    [System.IO.File]::AppendAllText($Path, "$Line`n", $encoding)
+}
+
+function Add-HandoffLine([string]$Path, $Value) { Add-HandoffText $Path (ConvertTo-Json -InputObject $Value -Compress -Depth 10) }
+
+<#
+.NOTES
+Lines of the pending file that are not JSON objects (a torn write) go to a side file, so the rest still
+reads.
+#>
+function Move-BadPendingLines($Run) {
+    if (-not [System.IO.File]::Exists($Run.pendingFile)) { return }
+    $lines = @([System.IO.File]::ReadAllLines($Run.pendingFile) | Where-Object { $_.Trim() })
+    $bad = @($lines | Where-Object { -not (ConvertFrom-HandoffLine $_) })
+    if ($bad.Count -eq 0) { return }
+    foreach ($line in $bad) { Add-HandoffText "$($Run.pendingFile).bad" $line }
+    Write-HandoffLines $Run.pendingFile @($lines | ForEach-Object { ConvertFrom-HandoffLine $_ } | Where-Object { $_ })
+    $Run.notes += "$($bad.Count) unreadable lines of the pending file were moved to handoff-pending.jsonl.bad"
 }
 
 function Write-HandoffLines([string]$Path, [object[]]$Values) {
@@ -265,8 +300,28 @@ function Add-PendingAttempt($Run, [string]$FolderId, [string]$Relative) {
     return $attempts
 }
 
+function Test-IsMoving($Record) { return $Record -and $Record.PSObject.Properties["moving"] -and $Record.moving -eq $true }
+
+<#
+.NOTES
+A pending record marked moving counts as moved: a run that ended between the rename and its manifest
+line must never lead to a release.
+#>
 function Test-WasMoved($Run, [string]$FolderId, [string]$Relative) {
-    return @(Read-HandoffLines $Run.manifest | Where-Object { Test-IsHandoffRecord $_ $FolderId $Relative }).Count -gt 0
+    if (@(Read-HandoffLines $Run.manifest | Where-Object { Test-IsHandoffRecord $_ $FolderId $Relative }).Count -gt 0) { return $true }
+    return Test-IsMoving (Get-PendingRecord $Run $FolderId $Relative)
+}
+
+function Set-PendingMoving($Run, [string]$FolderId, [string]$Relative, [string]$Trash) {
+    $records = @(Read-HandoffLines $Run.pendingFile | ForEach-Object {
+        if (Test-IsHandoffRecord $_ $FolderId $Relative) {
+            $record = [ordered]@{}
+            foreach ($property in $_.PSObject.Properties) { if ($property.Name -notin @("moving", "trash")) { $record[$property.Name] = $property.Value } }
+            if ($Trash) { $record.moving = $true; $record.trash = $Trash }
+            [pscustomobject]$record
+        } else { $_ }
+    })
+    Write-HandoffLines $Run.pendingFile $records
 }
 
 <#
@@ -317,27 +372,62 @@ function Move-ToHandoffTrash($Run, [string]$FolderId, [string]$Folder, $Entry) {
     $target = Join-Path $Run.trashRoot ($relative -replace '/', '\')
     if (Test-HandoffPathExists $target) { return @{ stayed = "a file of that name is in the trash already" } }
     try { New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null } catch { return @{ stayed = "the trash folder cannot be made" } }
-    if (-not (Move-HandoffFile $source $target)) { return @{ stayed = "it could not be renamed into the trash" } }
+    Set-PendingMoving $Run $FolderId $Entry.path $relative
+    if (-not (Move-HandoffFile $source $target)) {
+        if ([System.IO.File]::Exists($source) -and -not (Test-HandoffPathExists $target)) { Set-PendingMoving $Run $FolderId $Entry.path "" }
+        return @{ stayed = "it could not be renamed into the trash" }
+    }
     $moved = [System.IO.FileInfo]::new($target)
     if ($moved.Length -ne [int64]$Entry.size -or (Get-UnixSeconds $moved.LastWriteTimeUtc) -ne [int64]$Entry.modifiedSeconds) {
-        if ((Move-HandoffFile $target $source) -and [System.IO.File]::Exists($source) -and -not [System.IO.File]::Exists($target)) { return @{ putBack = $true } }
+        if ((Move-HandoffFile $target $source) -and [System.IO.File]::Exists($source) -and -not [System.IO.File]::Exists($target)) { Set-PendingMoving $Run $FolderId $Entry.path ""; return @{ putBack = $true } }
         Add-HandoffLine (Join-Path $Run.trashRoot "unlisted.jsonl") ([ordered]@{ at = (Get-HandoffNow); trash = $relative; folderId = $FolderId; path = $Entry.path; reason = "changed while it was moved and could not be put back" })
         return @{ unlisted = $relative }
     }
-    Add-HandoffLine $Run.manifest ([ordered]@{
-        movedAt = (Get-HandoffNow); trash = $relative; folderId = $FolderId; folderPath = $Entry.folderPath; path = $Entry.path; version = @($Entry.version)
-        size = [int64]$Entry.size; modifiedSeconds = [int64]$Entry.modifiedSeconds; blocksHash = $Entry.blocksHash; keeper = $Entry.keeper; keeperDevice = $Entry.keeperDevice
-    })
+    Add-MovedRecord $Run $FolderId $Entry $relative
     return @{ trash = $relative }
 }
 
+function Add-MovedRecord($Run, [string]$FolderId, $Entry, [string]$Relative) {
+    Add-HandoffLine $Run.manifest ([ordered]@{
+        movedAt = (Get-HandoffNow); trash = $Relative; folderId = $FolderId; folderPath = $Entry.folderPath; path = $Entry.path; version = @($Entry.version)
+        size = [int64]$Entry.size; modifiedSeconds = [int64]$Entry.modifiedSeconds; blocksHash = $Entry.blocksHash; keeper = $Entry.keeper; keeperDevice = $Entry.keeperDevice
+    })
+}
+
+<#
+.NOTES
+A record marked moving from a run that ended mid-move: the copy in the trash and none at the path means
+the rename happened, so its manifest line is written now; a file at the path and none in the trash means
+it did not, so the mark is cleared and the path retried as usual; anything else stays, reported.
+Returns a result line when it settled the path, $null to go on with the retry.
+#>
+function Resume-MovingRecord($Run, [string]$FolderId, [string]$Folder, $Entry) {
+    $record = Get-PendingRecord $Run $FolderId $Entry.path
+    $relative = if ($record.PSObject.Properties["trash"]) { "$($record.trash)" } else { "" }
+    $source = Get-HandoffPath $Folder $Entry.path
+    $target = if ($relative) { Join-Path $Run.trashRoot ($relative -replace '/', '\') } else { "" }
+    if ($relative -and (Test-IsPlainHandoffPath $relative) -and (Test-IsPlainHandoffFile $Run.trashRoot $relative) -and -not (Test-HandoffPathExists $source)) {
+        $info = [System.IO.FileInfo]::new($target)
+        if ($info.Length -eq [int64]$Entry.size -and (Get-UnixSeconds $info.LastWriteTimeUtc) -eq [int64]$Entry.modifiedSeconds) {
+            Add-MovedRecord $Run $FolderId $Entry $relative
+            Remove-PendingRecord $Run $FolderId $Entry.path
+            return New-HandoffResultLine $FolderId $Entry.path "moved" "a run ended between its rename and its manifest line; the line is written now" $relative
+        }
+    }
+    if ((Test-HandoffPathExists $source) -and (-not $target -or -not (Test-HandoffPathExists $target))) { Set-PendingMoving $Run $FolderId $Entry.path ""; return $null }
+    return New-HandoffResultLine $FolderId $Entry.path "ignored-not-moved" "a run ended while it was moved and neither its path nor its trash copy is as recorded; it is left as it is"
+}
+
+<#
+.NOTES
+After Syncthing reports the path ignored. Its content was hashed before the ignore line, through a handle
+no other process could write through; here its size, time and openness are checked once more, so a
+change since then (which moves the modification time) is caught without a second read of the file.
+#>
 function Complete-HandoffPath($Run, $Instance, [string]$FolderId, [string]$Folder, $Entry) {
     $problem = Get-HandoffMetadataDifference $Folder $Entry
     if ($problem) { return Invoke-HandoffRelease $Run $Instance $FolderId $Folder $Entry.path "$problem after its ignore was written" }
-    $check = Get-HandoffContentCheck $Folder $Entry $Run.deadline
-    if ($check.ContainsKey("open")) { return Get-RetryOrRelease $Run $Instance $FolderId $Folder $Entry.path "it is open" }
-    if ($check.ContainsKey("budget")) { return Get-RetryOrRelease $Run $Instance $FolderId $Folder $Entry.path "the round's time ran out while it was hashed" }
-    if ($check.ContainsKey("problem")) { return Invoke-HandoffRelease $Run $Instance $FolderId $Folder $Entry.path "$($check.problem) after its ignore was written" }
+    if (Test-HandoffFileIsOpen (Get-HandoffPath $Folder $Entry.path)) { return Get-RetryOrRelease $Run $Instance $FolderId $Folder $Entry.path "it is open" }
     $moved = Move-ToHandoffTrash $Run $FolderId $Folder $Entry
     if ($moved.ContainsKey("trash")) { Remove-PendingRecord $Run $FolderId $Entry.path; return New-HandoffResultLine $FolderId $Entry.path "moved" "" $moved.trash }
     if ($moved.ContainsKey("putBack")) { return Invoke-HandoffRelease $Run $Instance $FolderId $Folder $Entry.path "it changed while it was moved and was put back" }
@@ -362,6 +452,10 @@ A pending path from an earlier run: returns "wait" to poll it, "finish" when it 
 line when it was settled here.
 #>
 function Get-RetryState($Run, $Instance, [string]$FolderId, [string]$Folder, $Entry) {
+    if (Test-IsMoving (Get-PendingRecord $Run $FolderId $Entry.path)) {
+        $resumed = Resume-MovingRecord $Run $FolderId $Folder $Entry
+        if ($resumed) { return $resumed }
+    }
     if (-not (Test-HandoffPathExists (Get-HandoffPath $Folder $Entry.path))) {
         Remove-PendingRecord $Run $FolderId $Entry.path
         return New-HandoffResultLine $FolderId $Entry.path "refused" "it is gone from the node without being moved; its ignore line stays"
@@ -380,9 +474,10 @@ function Invoke-HandoffPathSafely([string]$FolderId, [string]$Relative, [string]
 
 <#
 .NOTES
-One folder: earlier pending paths retried, then the contract's entries checked against the index and the
-file's size and time (no hash yet), recorded as pending, ignored together with one rescan of their paths,
-and each, once Syncthing reports it ignored, hashed and moved. Every path runs in its own try, so a
+One folder: earlier pending paths retried, then the contract's entries checked against the index, the
+file's size and time, and its content, hashed before any ignore so a file that does not hash leaves no
+trace; recorded as pending, ignored together with one rescan of their paths, and each, once Syncthing
+reports it ignored, checked again and moved. Every path runs in its own try, so a
 failure leaves only that path to its outcome. The folder has its own deadline, within the run's, checked
 before each path.
 #>
@@ -395,7 +490,9 @@ function Invoke-FolderHandoff($Run, $Instance, [string]$FolderId, [string]$Folde
     if (-not $problem) { $problem = Get-HandoffFolderDifference $Instance $FolderId $folder $Run.rootFull }
     if ($problem) {
         $results += @($Entries | ForEach-Object { New-HandoffResultLine $FolderId $_.path "refused" $problem })
-        $results += @($pending | ForEach-Object { New-HandoffResultLine $FolderId $_.path "ignored-not-moved" "$problem; it is retried next run" })
+        foreach ($entry in $pending) {
+            $results += Invoke-HandoffPathSafely $FolderId $entry.path "ignored-not-moved" { Get-RetryOrRelease $Run $Instance $FolderId $folder $entry.path $problem }
+        }
         return $results
     }
     $waiting = @()
@@ -416,11 +513,12 @@ function Invoke-FolderHandoff($Run, $Instance, [string]$FolderId, [string]$Folde
             if (-not (Test-IsPlainHandoffFile $folder $entry.path)) { return New-HandoffResultLine $FolderId $entry.path "refused" "it is not a regular file inside the folder, or a link is on its way" }
             $problem = Get-HandoffIndexDifference $Instance $FolderId $entry $false
             if (-not $problem) { $problem = Get-HandoffMetadataDifference $folder $entry }
-            if (-not $problem -and (Test-HandoffFileIsOpen (Get-HandoffPath $folder $entry.path))) { $problem = "it is open" }
             if ($problem) { return New-HandoffResultLine $FolderId $entry.path "refused" $problem }
+            $hashed = Get-HandoffHashBeforeIgnore $Run $FolderId $folder $entry
+            if ($hashed) { return $hashed }
             Add-PendingRecord $Run $entry
             $list = Join-Path $folder $handoffListName
-            if (-not (Test-FileHasLine $list "/$($entry.path)")) { [System.IO.File]::AppendAllText($list, "/$($entry.path)`n", [System.Text.UTF8Encoding]::new($false)) }
+            if (-not (Test-FileHasLine $list "/$($entry.path)")) { Add-HandoffText $list "/$($entry.path)" }
             return $null
         }
         if ($line) { $results += $line; continue }
@@ -454,11 +552,51 @@ function Invoke-FolderHandoff($Run, $Instance, [string]$FolderId, [string]$Folde
 
 <#
 .NOTES
+The content check before the ignore line, within the run's deadline: an open file and a file of another
+content are refused with nothing written; a hash the deadline cut short leaves no trace on the node but a
+count in handoff-deferred.jsonl, kept only when this was the run's first hash so the budget was the file's
+alone, and a file that ran out $handoffPendingAttempts times is not hashed again at that version.
+Returns a result line, or $null when the file is the confirmed one.
+#>
+function Get-HandoffHashBeforeIgnore($Run, [string]$FolderId, [string]$Folder, $Entry) {
+    $deferred = @(Read-HandoffLines $Run.deferredFile)
+    $mine = @($deferred | Where-Object { (Test-IsHandoffRecord $_ $FolderId $Entry.path) -and (Test-SameVersion $_.version $Entry.version) }) | Select-Object -First 1
+    if ($mine -and [int]$mine.attempts -ge $handoffPendingAttempts) { return New-HandoffResultLine $FolderId $Entry.path "refused" "it is too large to hash within the agent's round" }
+    $wasFirst = -not $Run.hashed
+    $Run.hashed = $true
+    $check = Get-HandoffContentCheck $Folder $Entry $Run.deadline
+    if ($check.ContainsKey("open")) { return New-HandoffResultLine $FolderId $Entry.path "refused" "it is open" }
+    if ($check.ContainsKey("problem")) { return New-HandoffResultLine $FolderId $Entry.path "refused" $check.problem }
+    $others = @($deferred | Where-Object { -not (Test-IsHandoffRecord $_ $FolderId $Entry.path) })
+    if ($check.ContainsKey("budget")) {
+        $attempts = if ($mine) { [int]$mine.attempts } else { 0 }
+        if ($wasFirst) { $attempts++ }
+        Write-HandoffLines $Run.deferredFile @($others + [pscustomobject][ordered]@{ folderId = $FolderId; path = $Entry.path; version = @($Entry.version); attempts = $attempts })
+        return New-HandoffResultLine $FolderId $Entry.path "deferred" "the round's time ran out while it was hashed; nothing was written for it, and it is hashed again next round"
+    }
+    if ($mine) { Write-HandoffLines $Run.deferredFile $others }
+    return $null
+}
+
+<#
+.NOTES
 A file at a path the list ignores that is not pending and is newer than its hand-off is on this node only.
+At most $handoffStrayLimit lines per folder and run, from where the last run stopped.
 #>
 function Get-HandoffStrays($Run, [string]$FolderId, [string]$Folder) {
     $moves = @(Read-HandoffLines $Run.manifest)
-    foreach ($line in [System.IO.File]::ReadAllLines((Join-Path $Folder $handoffListName))) {
+    $lines = @([System.IO.File]::ReadAllLines((Join-Path $Folder $handoffListName)))
+    $offsetsFile = Join-Path $Run.rootFull ".storage\handoff-strays.json"
+    $offsets = $null
+    try { $offsets = [System.IO.File]::ReadAllText($offsetsFile) | ConvertFrom-Json } catch { }
+    if (-not ($offsets -is [System.Management.Automation.PSCustomObject])) { $offsets = [pscustomobject]@{} }
+    $offset = 0
+    if ($offsets.PSObject.Properties[$FolderId]) { $offset = [int]$offsets.$FolderId }
+    if ($offset -ge $lines.Count) { $offset = 0 }
+    $next = if ($offset + $handoffStrayLimit -lt $lines.Count) { $offset + $handoffStrayLimit } else { 0 }
+    $offsets | Add-Member -NotePropertyName $FolderId -NotePropertyValue $next -Force
+    [System.IO.File]::WriteAllText($offsetsFile, (ConvertTo-Json -InputObject $offsets -Compress))
+    foreach ($line in @($lines | Select-Object -Skip $offset -First $handoffStrayLimit)) {
         if (-not $line.StartsWith("/")) { continue }
         $relative = $line.Substring(1)
         if (-not (Test-IsPlainHandoffPath $relative) -or -not (Test-IsPlainHandoffFile $Folder $relative) -or (Get-PendingRecord $Run $FolderId $relative)) { continue }
@@ -469,18 +607,67 @@ function Get-HandoffStrays($Run, [string]$FolderId, [string]$Folder) {
     }
 }
 
-function Get-TrashKeeperProblem($Instance, $Record) {
+function Get-VersionCounters($Version) {
+    $counters = @{}
+    foreach ($counter in @($Version)) {
+        $device, $value = "$counter" -split ':', 2
+        $number = 0L
+        if ([int64]::TryParse($value, [ref]$number)) { $counters[$device] = $number } else { $counters[$device] = -1L }
+    }
+    return $counters
+}
+
+<#
+.NOTES
+A global version descends from the recorded one when it has every recorded counter at least as large,
+so a keeper's later edit still holds the content handed off.
+#>
+function Test-VersionDescends($Global, $Recorded) {
+    $globalCounters = Get-VersionCounters $Global
+    foreach ($entry in (Get-VersionCounters $Recorded).GetEnumerator()) {
+        if (-not $globalCounters.ContainsKey($entry.Key) -or $globalCounters[$entry.Key] -lt $entry.Value) { return $false }
+    }
+    return $true
+}
+
+<#
+.NOTES
+The recorded keeper must be connected to this node now (one last seen hours ago may have lost the file
+since), in the path's availability not from a temporary file, and the global version must descend from
+the recorded one, not deleted.
+#>
+function Get-TrashKeeperProblem($Run, $Instance, $Record) {
     if (-not $Record.PSObject.Properties["version"] -or @($Record.version).Count -eq 0) { return "no version was recorded with it" }
+    if (-not $Record.PSObject.Properties["keeperDevice"] -or -not $Record.keeperDevice) { return "no keeper was recorded with it" }
+    $device = "$($Record.keeperDevice)"
+    if ($null -eq $Run.connections) {
+        try { $Run.connections = Invoke-SyncthingApi $Instance "Get" "/rest/system/connections" } catch { $Run.connections = [pscustomobject]@{ connections = [pscustomobject]@{} } }
+    }
+    $connection = $Run.connections.connections.PSObject.Properties[$device]
+    if (-not $connection -or $connection.Value.connected -ne $true) { return "its keeper is not connected to this node" }
     try { $report = Get-HandoffFileReport $Instance $Record.folderId $Record.path } catch { return "its index entry cannot be read" }
-    $deleted = $report.global.PSObject.Properties["deleted"] -and $report.global.deleted
-    if (-not (Test-SameVersion $report.global.version $Record.version) -or $deleted) { return "the network no longer has its version" }
-    if (@($report.availability | Where-Object { $_ -and -not $_.fromTemporary }).Count -eq 0) { return "no keeper holds its version, as this node sees it" }
+    if ($report.global.PSObject.Properties["deleted"] -and $report.global.deleted) { return "the network has its deletion" }
+    if (-not (Test-VersionDescends $report.global.version $Record.version)) { return "the network no longer has its version or a later one" }
+    if (@($report.availability | Where-Object { $_ -and $_.id -ceq $device -and -not $_.fromTemporary }).Count -eq 0) { return "its keeper does not hold it, as this node sees it" }
     return $null
 }
 
-function New-TrashKept($Record, [string]$Reason) {
+<#
+.NOTES
+The result lists a kept copy once per run; the log says it again only when the reason changes or a day
+passed, by the keptReason and keptAt the manifest line carries. Returns the manifest line to keep.
+#>
+function Add-TrashKept($Run, $Record, [string]$Line, [string]$Reason) {
+    if (-not @($Run.trash | Where-Object { $_.trash -ceq "$($Record.trash)" }).Count) {
+        $Run.trash += [pscustomobject][ordered]@{ trash = "$($Record.trash)"; folderId = "$($Record.folderId)"; path = "$($Record.path)"; reason = $Reason }
+    }
+    $lastReason = if ($Record.PSObject.Properties["keptReason"]) { "$($Record.keptReason)" } else { "" }
+    $lastAt = if ($Record.PSObject.Properties["keptAt"]) { [int64]$Record.keptAt } else { 0 }
+    if ($lastReason -ceq $Reason -and $lastAt + $handoffKeptLogSeconds -gt (Get-HandoffNow)) { return $Line }
     Write-WatcherLog "hand-off: kept $($Record.trash) in the trash: $Reason"
-    return [pscustomobject][ordered]@{ trash = "$($Record.trash)"; folderId = "$($Record.folderId)"; path = "$($Record.path)"; reason = $Reason }
+    $Record | Add-Member -NotePropertyName keptReason -NotePropertyValue $Reason -Force
+    $Record | Add-Member -NotePropertyName keptAt -NotePropertyValue (Get-HandoffNow) -Force
+    return ConvertTo-Json -InputObject $Record -Compress -Depth 10
 }
 
 <#
@@ -497,17 +684,16 @@ function Clear-HandoffTrash($Run, $Instance) {
         if (-not $line.Trim()) { continue }
         try { $record = ConvertFrom-Json $line } catch { $kept.Add($line); continue }
         if (-not ($record.movedAt -is [int64] -or $record.movedAt -is [int]) -or [int64]$record.movedAt + $handoffTrashDays * 86400 -gt (Get-HandoffNow)) { $kept.Add($line); continue }
-        if (-not (Test-IsPlainHandoffPath "$($record.trash)")) { $Run.trash += New-TrashKept $record "its manifest line points outside the trash"; $kept.Add($line); continue }
+        if (-not (Test-IsPlainHandoffPath "$($record.trash)")) { $kept.Add((Add-TrashKept $Run $record $line "its manifest line points outside the trash")); continue }
         $target = Join-Path $Run.trashRoot ("$($record.trash)" -replace '/', '\')
         if (-not (Test-HandoffPathExists $target)) { continue }
         $info = [System.IO.FileInfo]::new($target)
         if (-not (Test-IsPlainHandoffFile $Run.trashRoot "$($record.trash)") -or $info.Length -ne [int64]$record.size -or (Get-UnixSeconds $info.LastWriteTimeUtc) -ne [int64]$record.modifiedSeconds) {
-            $Run.trash += New-TrashKept $record "it is not the file the executor moved there"
-            $kept.Add($line)
+            $kept.Add((Add-TrashKept $Run $record $line "it is not the file the executor moved there"))
             continue
         }
-        $problem = Get-TrashKeeperProblem $Instance $record
-        if ($problem) { $Run.trash += New-TrashKept $record $problem; $kept.Add($line); continue }
+        $problem = Get-TrashKeeperProblem $Run $Instance $record
+        if ($problem) { $kept.Add((Add-TrashKept $Run $record $line $problem)); continue }
         [System.IO.File]::Delete($target)
         $Run.purged++
         $directory = Split-Path $target
@@ -536,11 +722,11 @@ function Get-HandoffContractProblem($Contract, [string]$NodeId) {
     return Get-HandoffContractAgeProblem $Contract
 }
 
-function Write-HandoffResult([string]$Path, [string]$NodeId, $Contract, [string]$Refused, [object[]]$Results, [object[]]$Trash, [int]$Purged) {
+function Write-HandoffResult([string]$Path, [string]$NodeId, $Contract, [string]$Refused, [object[]]$Results, [object[]]$Trash, [int]$Purged, [object[]]$Notes = @()) {
     $result = [ordered]@{
         schema = 1; nodeId = $NodeId; contractWrittenAt = $(if ($Contract) { "$($Contract.writtenAt)" } else { "" })
         finishedAt = [DateTimeOffset]::FromUnixTimeSeconds((Get-HandoffNow)).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        refused = $(if ($Refused) { $Refused } else { $null }); results = @($Results); trash = @($Trash); notes = @(); purged = $Purged
+        refused = $(if ($Refused) { $Refused } else { $null }); results = @($Results); trash = @($Trash); notes = @($Notes); purged = $Purged
     }
     if ($Refused) { Write-WatcherLog "hand-off $NodeId`: nothing handed off: $Refused" }
     Write-JsonFile $Path $result
@@ -583,8 +769,10 @@ function Invoke-LockedHandoff($Instance, [string]$ContractPath, [string]$ResultP
     if (Test-IsReparsePoint $trashRoot) { return Write-HandoffResult $ResultPath $nodeId $contract "the trash folder is a link" @() @() 0 }
     $run = [pscustomobject]@{
         contract = $contract; rootFull = $RootFull; trashRoot = $trashRoot; manifest = Join-Path $trashRoot "manifest.jsonl"
-        pendingFile = Join-Path $RootFull ".storage\handoff-pending.jsonl"; deadline = (Get-Date).AddSeconds($handoffRunSeconds); trash = @(); purged = 0
+        pendingFile = Join-Path $RootFull ".storage\handoff-pending.jsonl"; deferredFile = Join-Path $RootFull ".storage\handoff-deferred.jsonl"
+        deadline = (Get-Date).AddSeconds($handoffRunSeconds); trash = @(); purged = 0; hashed = $false; connections = $null; notes = @()
     }
+    Move-BadPendingLines $run
     $results = @()
     $folders = Get-HandoffRunFolders $run
     foreach ($folderId in @($folders.Keys)) {
@@ -593,7 +781,7 @@ function Invoke-LockedHandoff($Instance, [string]$ContractPath, [string]$ResultP
         catch { $results += @($entries | ForEach-Object { New-HandoffResultLine $folderId $_.path "refused" "the executor failed on its folder: $($_.Exception.Message)" }) }
     }
     try { Clear-HandoffTrash $run $Instance } catch { Write-WatcherLog "hand-off $nodeId`: the trash was not emptied: $_" }
-    Write-HandoffResult $ResultPath $nodeId $contract $null $results (@($run.trash) + @(Get-UnlistedTrash $run)) $run.purged
+    Write-HandoffResult $ResultPath $nodeId $contract $null $results (@($run.trash) + @(Get-UnlistedTrash $run)) $run.purged $run.notes
 }
 
 <#
