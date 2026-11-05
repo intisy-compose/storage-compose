@@ -5,6 +5,7 @@ import { localInstances, readDashboard } from "../instanceResolver.js";
 import type { Route } from "../routeTypes.js";
 import { hostName, peerDashboards } from "../settings.js";
 import { readLayout } from "../setupRepo.js";
+import { publishedContract } from "../handoffFeed.js";
 import { decodedSegment } from "./devices.js";
 
 async function fromEveryPeer(dashboards: string[], path: string): Promise<unknown[]> {
@@ -35,6 +36,7 @@ const liveSources: FolderIndexSources = {
   localInstances: async () => (await localInstances()).map((instance) => ({ nodeId: instance.nodeId, nodeName: instance.name, host: hostName, client: instance.client, root: instance.root, os: instance.os })),
   ...peerFolderReads(peerDashboards),
   layout: readLayout,
+  handoffCounts: (nodeId) => publishedContract(nodeId),
 };
 
 function scopeOf(url: URL): "all" | "local" {

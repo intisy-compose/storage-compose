@@ -64,10 +64,43 @@ export class LayoutRound {
       const instances = await this.dependencies.instances();
       for (const instance of instances) {
         const state = await this.nodeState(layout, instance, instances);
-        if (state) states.set(instance.nodeId, { ...state, handoff: await this.handoffView(instance, state.checkedAt) });
+        if (!state) continue;
+        const handoff = await this.handoffView(instance, state.checkedAt);
+        this.recordHandoffActivity(instance, state, handoff);
+        states.set(instance.nodeId, { ...state, handoff });
       }
     }
     recordLayered(states);
+  }
+
+  /** The executor run and the space state each node's last Activity entries were made for, so each is entered once. */
+  private readonly reported = new Map<string, { finishedAt: string | null; space: string }>();
+
+  /**
+   * Activity for each new executor run (files handed off and released, by folder) and for each change of the node's space state
+   * (a raise, a stop, back at its threshold).
+   */
+  private recordHandoffActivity(instance: LocalInstance, state: LayeredState, handoff: LayeredHandoff | null): void {
+    const before = this.reported.get(instance.nodeId) ?? { finishedAt: null, space: `fits:${state.threshold}` };
+    const result = handoff?.result ?? null;
+    const space = handoff?.space ?? null;
+    const spaceKey = space ? `${space.state}:${space.threshold}` : before.space;
+    if (result && result.finishedAt !== before.finishedAt && before.finishedAt !== null) {
+      for (const [outcome, words] of [["moved", "handed off"], ["released", "released back into sync"]] as const) {
+        const byFolder = new Map<string, number>();
+        for (const entry of result.results.filter((candidate) => candidate.outcome === outcome)) byFolder.set(entry.folderId, (byFolder.get(entry.folderId) ?? 0) + 1);
+        for (const [folderId, count] of byFolder) this.dependencies.record(instance.nodeId, folderId, `${instance.name}: ${words} ${count} ${count === 1 ? "file" : "files"} of ${folderId}`);
+      }
+    }
+    if (space && spaceKey !== before.space) {
+      const text =
+        space.state === "raised" ? `${instance.name}: threshold raised from ${state.threshold} to ${space.threshold} for space`
+        : space.state === "stopped" ? `${instance.name}: does not fit even at its top priority, nothing is handed off`
+        : space.state === "fits" ? `${instance.name}: fits at its threshold ${state.threshold} again`
+        : `${instance.name}: its space decision is unknown, nothing is handed off`;
+      this.dependencies.record(instance.nodeId, null, text);
+    }
+    this.reported.set(instance.nodeId, { finishedAt: result?.finishedAt ?? before.finishedAt ?? "", space: spaceKey });
   }
 
   /** When this host first saw each file the contract waits with, by node, folder and path, so Attention can tell a wait of a day. */

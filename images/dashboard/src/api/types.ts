@@ -1035,6 +1035,31 @@ export interface FolderSummary {
   prioritySource: "setup-repo" | "none";
   copies: FolderCopy[];
   offers: PendingFolderOffer[];
+  /** How each admitted node of the layout carries the folder; null for a folder the layout does not list. Absent from an older dashboard. */
+  layered?: FolderLayered | null;
+}
+
+/** One admitted node's place for a layout folder. */
+export interface FolderLayeredNode {
+  nodeId: string;
+  nodeName: string;
+  threshold: number;
+  /** Null when the node's plan does not share the folder with it. */
+  type: "sendreceive" | "sendonly" | null;
+  keptBy: "threshold" | "assigned" | "pin" | null;
+  /** The node's own pin of the folder's layout path. */
+  pinned: number | null;
+  why: string;
+  /** Files the node's contract names for its executor in this folder; null where this host writes no contract for the node. */
+  pending: number | null;
+  /** Files the contract waits with in this folder. */
+  waiting: number | null;
+}
+
+export interface FolderLayered {
+  path: string;
+  priority: number;
+  nodes: FolderLayeredNode[];
 }
 
 /** `GET /api/folders`; `?scope=local` leaves the other hosts out, which is what hosts ask each other. */

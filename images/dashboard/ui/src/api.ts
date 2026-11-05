@@ -102,6 +102,7 @@ export type {
   LayoutSaveAnswer,
   LayoutView,
   NodePlanChangeView,
+  FolderLayeredNode,
   NodeAdmission,
   NodePolicyPreview,
   PriorityPreview,
