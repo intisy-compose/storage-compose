@@ -21,6 +21,7 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "syncthing.ps1")
 . (Join-Path $PSScriptRoot "networks.ps1")
 . (Join-Path $PSScriptRoot "dashboard-entry.ps1")
+. (Join-Path $PSScriptRoot "handoff.ps1")
 
 $agentRoundSeconds = 5
 $nodeScanIntervalSeconds = 60
@@ -637,6 +638,7 @@ function Invoke-StackRound($PassState, [bool]$VolumeChanged) {
     Update-DockerBackendRules $isRunning
     Save-AgentState
     Write-Heartbeat (Get-Heartbeat $status $isActive $PassState "running" $binaryProblem)
+    if ($isActive) { Invoke-HandoffRound }
 }
 
 <#

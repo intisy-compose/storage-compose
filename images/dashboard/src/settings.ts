@@ -87,6 +87,10 @@ export const hostAgentHeartbeatFile = "/host-agent/heartbeat.json";
 export const connectionsFile = `${statusDirectory}/connections.json`;
 /** @implNote The host agent's status folder is mounted read-only, so its copy of `connectionsFile` has a writable mount of its own. */
 export const hostAgentConnectionsFile = process.env.HOST_AGENT_CONNECTIONS_FILE ?? "/host-agent-connections/connections.json";
+/** Each node's hand-off contract and its executor's result, for the nodes service's executors. */
+export const handoffDirectory = `${statusDirectory}/handoff`;
+/** @implNote The host agent's status folder is mounted read-only, so its nodes' contracts have a writable mount of their own, as its connections do. */
+export const hostAgentHandoffDirectory = process.env.HOST_AGENT_HANDOFF_DIRECTORY ?? "/host-agent-handoff";
 export const hostAgentSyncthingHost = process.env.HOST_AGENT_SYNCTHING_HOST ?? "host.docker.internal";
 
 export interface AttentionThresholds {
@@ -138,6 +142,13 @@ export function explorerNeedLimit(environment: Record<string, string | undefined
 }
 
 export const explorerSettings = { needLimit: explorerNeedLimit(process.env) };
+
+/** HANDOFF_QUIET_MINUTES from config.env: a file changed more recently is not handed off yet (call 11); a missing or unusable value takes 10. */
+export function handoffQuietMinutesOf(environment: Record<string, string | undefined>): number {
+  return positiveNumber(environment.HANDOFF_QUIET_MINUTES, 10);
+}
+
+export const handoffSettings = { quietMinutes: handoffQuietMinutesOf(process.env) };
 
 /** SEEN_WRITE_INTERVAL_S from config.env: the devices and drives seen files are rewritten at most this often. */
 export function seenWriteIntervalSeconds(environment: Record<string, string | undefined>): number {
