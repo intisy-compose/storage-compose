@@ -43,7 +43,7 @@ export async function nodeOptions(instance: ResolvedInstance): Promise<NodeOptio
   });
 }
 
-/** This host's settings; the bands are the layout's own, null when it has none or there is no setup repo. */
+/** This host's settings; the bands are the layout's own or the design's default, null without a layout. */
 export function hostSettings(layout: SetupLayout | null): HostSettings {
   return {
     name: hostName,
@@ -51,6 +51,7 @@ export function hostSettings(layout: SetupLayout | null): HostSettings {
     peerDashboards,
     ntfy: { url: ntfyUrl, topicSet: ntfyTopicSet },
     priorityBands: layout?.bands.length ? layout.bands : null,
+    priorityBandsFromLayout: layout?.bandsFromLayout ?? false,
     setupRepo: setupRepoDirectory !== "",
   };
 }

@@ -1,5 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { NodeAccess } from "./api/types.js";
+import type { LayoutNode } from "./setupRepo.js";
 import { type TomlTable, TomlError, formatPairs, parseToml } from "./toml.js";
 
 export type NodeFileKind = "array" | "drive" | "folder";
@@ -14,7 +16,7 @@ export interface MemberDescription {
 
 /** `.storage/node.toml`; for an array the whole membership is on every member, the highest revision wins. */
 export interface NodeFile {
-  node: { id: string; name: string; kind: NodeFileKind; threshold: number; assigned: string[] };
+  node: { id: string; name: string; kind: NodeFileKind; threshold: number; assigned: string[]; access: NodeAccess };
   array?: { revision: number; members: MemberDescription[] };
 }
 
@@ -58,7 +60,8 @@ export function parseNodeFile(source: string): NodeFile {
   if (!nodeNamePattern.test(name)) throw new TomlError(`node name '${name}' does not match [a-z0-9-]`);
   if (!kinds.includes(kind)) throw new TomlError(`node kind '${kind}' is not array, drive or folder`);
   const assigned = Array.isArray(node.assigned) ? node.assigned.filter((entry): entry is string => typeof entry === "string") : [];
-  const file: NodeFile = { node: { id, name, kind, threshold: integer(node, "threshold"), assigned } };
+  const access: NodeAccess = text(node, "access") === "closed" ? "closed" : "open";
+  const file: NodeFile = { node: { id, name, kind, threshold: integer(node, "threshold"), assigned, access } };
   const array = toml.array;
   if (kind === "array" && typeof array === "object" && !Array.isArray(array)) {
     const members = Array.isArray(array.members) ? array.members : [];
@@ -71,7 +74,7 @@ export function parseNodeFile(source: string): NodeFile {
 }
 
 export function formatNodeFile(file: NodeFile): string {
-  const lines = ["[node]", ...formatPairs({ ...file.node }, ["id", "name", "kind", "threshold", "assigned"])];
+  const lines = ["[node]", ...formatPairs({ ...file.node }, ["id", "name", "kind", "threshold", "assigned", "access"])];
   if (file.array) {
     lines.push("", "[array]", `revision = ${file.array.revision}`);
     for (const entry of file.array.members) {
@@ -93,6 +96,24 @@ export async function writeNodeFile(path: string, file: NodeFile): Promise<void>
   await mkdir(dirname(path), { recursive: true });
   await writeFile(`${path}.new`, formatNodeFile(file));
   await rename(`${path}.new`, path);
+}
+
+/** The node file with the policy the layout commits for it; identity and membership stay the node's own. */
+export function nodeFileFromLayout(file: NodeFile, policy: LayoutNode): NodeFile {
+  return { ...file, node: { ...file.node, threshold: policy.threshold, assigned: [...policy.assigned], access: policy.access } };
+}
+
+/**
+ * Rewrites the node file at `path` with the layout's policy for it, and reports whether it wrote.
+ * @implNote A missing or unreadable file, or one of another node, is left alone: the node file is the node's identity, which only a join creates.
+ */
+export async function followLayout(path: string, policy: LayoutNode): Promise<boolean> {
+  const file = await readNodeFile(path);
+  if (file === null || file.node.id !== policy.id) return false;
+  const followed = nodeFileFromLayout(file, policy);
+  if (formatNodeFile(followed) === formatNodeFile(file)) return false;
+  await writeNodeFile(path, followed);
+  return true;
 }
 
 /** The description of the array `id` with the highest revision among the given copies. */
