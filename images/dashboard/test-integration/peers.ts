@@ -274,3 +274,9 @@ export async function resumeDevice(peer: Peer, remote: Peer): Promise<void> {
   await request(peer, "PATCH", `/rest/config/devices/${remote.deviceId}`, { paused: false });
   await waitUntil(async () => (await connectedDevices(peer)).includes(remote.deviceId), `${peer.name} reconnected to ${remote.name}`);
 }
+
+/** Creates an empty file at the absolute path inside the peer, leaving one that is there as it is; false when its directory is missing. */
+export async function ensureEmptyFile(peer: Peer, absolutePath: string): Promise<boolean> {
+  const answer = await inPeer(peer, 'if [ ! -d "$(dirname "$1")" ]; then echo no; else [ -e "$1" ] || : > "$1"; echo yes; fi', absolutePath);
+  return answer.trim() === "yes";
+}
