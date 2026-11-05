@@ -141,7 +141,7 @@ check "is moved into the node's trash" "no yes moved" "$(present clip.mp4) $(in_
 check "with its content" hello "$(cat "$root/.storage/handoff-trash/$trash_day/videos/clip.mp4")"
 check "after its ignore line was written and the folder rescanned while it was still there" "1 scan videos /clip.mp4 present" "$(listed clip.mp4) $(cat "$FAKE/scans")"
 check "and the manifest records what was moved" "$trash_day/videos/clip.mp4 5 $((now - 3600))" "$(jq -r '"\(.trash) \(.size) \(.modifiedSeconds)"' "$root/.storage/handoff-trash/manifest.jsonl")"
-check "the only write it sends is the rescan" "POST /rest/db/scan?folder=videos" "$(grep -v '^GET ' "$CURL_LOG")"
+check "the only write it sends is the rescan of its path" "POST /rest/db/scan?folder=videos&sub=clip.mp4" "$(grep -v '^GET ' "$CURL_LOG")"
 check "the lock is an owner file, not a directory" "file" "$([ -f "$root/.storage/handoff.lock" ] && echo file || echo other)"
 
 echo "a file that is not the confirmed one is left untouched, and the others go on"

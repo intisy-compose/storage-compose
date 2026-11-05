@@ -237,11 +237,13 @@ hand_off_folder() {   # <folder id>
         passed+=("$entry")
     done
     [ ${#passed[@]} -gt 0 ] || return
+    local subs=
     for entry in "${passed[@]}"; do
         path=$(jq -r .path <<< "$entry")
         has_line "$folder_real/$handoff_list" "/$path" || printf '/%s\n' "$path" >> "$folder_real/$handoff_list"
+        subs+="&sub=$(uri "$path")"
     done
-    api_post "/rest/db/scan?folder=$(uri "$folder_id")" || log "$folder_id: the rescan was not accepted; waiting for Syncthing's own"
+    api_post "/rest/db/scan?folder=$(uri "$folder_id")$subs" || log "$folder_id: the rescan was not accepted; waiting for Syncthing's own"
     waiting=("${passed[@]}")
     deadline=$(( SECONDS + ignore_wait ))
     while [ ${#waiting[@]} -gt 0 ]; do
