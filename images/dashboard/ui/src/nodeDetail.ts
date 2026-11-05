@@ -6,6 +6,7 @@ import { nodeFolderState, rescanAllQuestion } from "./folderCondition.js";
 import { registerForm } from "./forms.js";
 import { formatAge, formatBytes, formatDate, formatDuration, formatRate, usedFraction } from "./format.js";
 import { icon } from "./icons.js";
+import { layeredSection } from "./layeredSection.js";
 import { warningBanner } from "./nodesPage.js";
 import { arrayStateLabel, countRoles, isArrayAbsent, isNotConnected, isOffline, shortSyncState, spaceTone, warningsFor } from "./nodeStatus.js";
 import { peersSection } from "./peersSection.js";
@@ -250,6 +251,7 @@ export function renderNodeDetail(response: NodesResponse, node: StorageNode): HT
     syncthingSection(node),
     peersSection(response, node),
     foldersSection(node),
+    layeredSection(node),
     detailsSection(node),
   );
 }

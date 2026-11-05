@@ -315,6 +315,41 @@ export interface StorageNode {
   connections: ConnectionsState;
   /** Whether the node's host is on networks the person does not own only, so its local discovery and NAT are off; absent when not known. */
   untrustedNetworks?: boolean;
+  /** How the node's Syncthing stands against its layered plan, as its own host's last round found it; null for a node the layout does not list. */
+  layered?: LayeredState | null;
+}
+
+/** One field of one folder that differs from the node's plan. */
+export interface LayeredChange {
+  folderId: string;
+  label: string;
+  field: "type" | "sharing" | "ignores" | "versioning";
+  text: string;
+  written: boolean;
+  /** Why it was not written although the node applies its plan; null when nothing held it. */
+  held: string | null;
+}
+
+export interface LayeredState {
+  /** `report` until the layout commits `apply = true` for the node: it shows what it would change and writes nothing. */
+  mode: "report" | "apply";
+  threshold: number;
+  /** The threshold the plan is made at. */
+  effectiveThreshold: number;
+  drift: LayeredChange[];
+  /** Planned folders the node's Syncthing does not have, by label; they are never added by a round. */
+  missing: string[];
+  /** Layout folders the node has that its plan leaves out, by folder ID; they are never removed by a round. */
+  unplanned: string[];
+  /** Devices a planned folder is shared with that the node does not know yet. */
+  unknownDevices: string[];
+  /** Null while no hand-off decision is made for the node. */
+  pendingHandoffs: number | null;
+  /** The layout's problems with the node, which leave it unplanned. */
+  problems: string[];
+  /** Why the last round could not read or change the node; its drift is then the last one found. */
+  failed: string | null;
+  checkedAt: string;
 }
 
 export type ConnectionsState = "on-profile" | "restart-needed" | "not-yet" | "unknown";

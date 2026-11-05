@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { LayoutRound, pullThenReconcile } from "../src/applyLayout.js";
 import type { LocalInstance } from "../src/instanceResolver.js";
+import { layeredStateOf } from "../src/layeredDrift.js";
 import { type NodePlan, handoffIgnoreFile, handoffIgnoreLines, nodePlan } from "../src/nodePlan.js";
 import { type HandoffFiles, carriedLayoutPaths, reconcileNode } from "../src/reconcileNode.js";
 import { type SetupLayout, parseLayout } from "../src/setupRepo.js";
@@ -25,7 +27,7 @@ after(async () => {
 type SyncthingObject = Record<string, unknown>;
 
 /** The stick at threshold 50, the keeper and the other peer keeping everything; `folders` is the layout's `[folders]` part. */
-function layoutOf(folders: string): SetupLayout {
+function layoutOf(folders: string, apply = false): SetupLayout {
   return parseLayout(`
 [devices.stick]
 id   = "${peers.stick.deviceId}"
@@ -46,6 +48,7 @@ name      = "stick"
 device    = "stick"
 threshold = 50
 admitted  = true
+apply     = ${apply}
 
 [nodes.e002]
 name      = "keeper"
@@ -220,4 +223,30 @@ test("the ignore order and the .stignore-handoff file are correct", async () => 
   await scan(peers.stick, "ord");
   await waitUntil(async () => fileExists(peers.keeper, "Ord", "marker.txt"), "the marker on the keeper");
   assert.equal(await fileExists(peers.keeper, "Ord", handoffIgnoreFile), false, "the list never reaches a keeper");
+});
+
+test("a layout round reports while apply is off, and applies a pulled change within one round", async () => {
+  await putFolder(peers.stick, "pull", "Pull", "sendreceive", [peers.keeper]);
+  let layout = layoutOf(`[folders.Pull]
+priority = 30
+`);
+  const entered: string[] = [];
+  const round = new LayoutRound({ layout: async () => layout, instances: async () => [stickInstance()], handoffFiles: peerHandoffFiles(peers.stick), record: (_nodeId, folderId, text) => entered.push(`${folderId}: ${text}`), readBackDelaysMs: [] });
+  const before = await request<SyncthingObject>(peers.stick, "GET", "/rest/config");
+
+  await round.run();
+
+  assert.equal(layeredStateOf("e001")?.mode, "report");
+  assert.ok(layeredStateOf("e001")?.drift.some((change) => change.field === "type" && !change.written));
+  assert.deepEqual(await request<SyncthingObject>(peers.stick, "GET", "/rest/config"), before);
+  assert.deepEqual(entered, []);
+
+  await pullThenReconcile({ run: async () => void (layout = layoutOf(`[folders.Pull]
+priority = 30
+`, true)) }, round);
+
+  assert.equal((await folderConfig(peers.stick, "pull")).type, "sendonly");
+  assert.equal(layeredStateOf("e001")?.mode, "apply");
+  assert.ok(layeredStateOf("e001")?.drift.every((change) => change.written));
+  assert.ok(entered.some((line) => /^pull: stick: layered sync changed folder Pull: type send and receive to send only$/.test(line)));
 });

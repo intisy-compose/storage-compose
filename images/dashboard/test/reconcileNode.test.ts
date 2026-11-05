@@ -4,11 +4,7 @@ import type { LocalInstance } from "../src/instanceResolver.js";
 import { type NodePlan, handoffIgnoreLines, nodePlan } from "../src/nodePlan.js";
 import { type HandoffFiles, type ReconcileOptions, carriedLayoutPaths, layoutDeviceIds, reconcileNode } from "../src/reconcileNode.js";
 import { parseLayout } from "../src/setupRepo.js";
-import { type SyncthingClient, SyncthingUnavailable } from "../src/syncthing.js";
-
-const ownId = "LAPTOP-ID";
-const keeperId = "KEEPER-ID";
-const phoneId = "PHONE-ID";
+import { type FakeSyncthing, type SyncthingObject, clientOf, folderOf, keeperId, onPlan, ownId, phoneId, versioningOf } from "./fakeFolderSyncthing.js";
 
 const layoutText = `
 [devices.laptop]
@@ -43,81 +39,6 @@ admitted  = true
 
 const layout = parseLayout(layoutText);
 
-type SyncthingObject = Record<string, unknown>;
-
-interface Sent {
-  method: string;
-  path: string;
-  body: unknown;
-}
-
-function versioningOf(maxAgeDays: number | null): SyncthingObject {
-  return maxAgeDays === null
-    ? { type: "", params: {}, cleanupIntervalS: 3600, fsPath: "", fsType: "basic" }
-    : { type: "staggered", params: { maxAge: String(maxAgeDays * 86400) }, cleanupIntervalS: 3600, fsPath: "", fsType: "basic" };
-}
-
-/** A node's Syncthing in memory: its folders, devices and ignore files, every write kept. */
-class FakeSyncthing {
-  sent: Sent[] = [];
-  answers = true;
-  folders: SyncthingObject[] = [];
-  ignores = new Map<string, string[]>();
-  devices: SyncthingObject[] = [{ deviceID: ownId }, { deviceID: keeperId }, { deviceID: phoneId }];
-
-  async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    if (!this.answers) throw new SyncthingUnavailable(`${method} ${path}: connection refused`);
-    if (method !== "GET") this.sent.push({ method, path, body });
-    if (method === "GET" && path === "/system/status") return { myID: ownId } as T;
-    if (method === "GET" && path === "/config/folders") return structuredClone(this.folders) as T;
-    if (method === "GET" && path === "/config/devices") return structuredClone(this.devices) as T;
-    const folder = /^\/config\/folders\/([^/]+)$/.exec(path);
-    if (folder) {
-      const entry = this.folders.find((candidate) => candidate.id === decodeURIComponent(folder[1]));
-      if (!entry) throw new Error(`no folder ${folder[1]}`);
-      if (method === "GET") return structuredClone(entry) as T;
-      if (method === "PATCH") {
-        Object.assign(entry, structuredClone(body));
-        return null as T;
-      }
-    }
-    const ignores = /^\/db\/ignores\?folder=(.+)$/.exec(path);
-    if (ignores) {
-      const id = decodeURIComponent(ignores[1]);
-      if (method === "POST") this.ignores.set(id, [...((body as { ignore: string[] }).ignore)]);
-      return { ignore: this.ignores.get(id) ?? [], expanded: [], error: null } as T;
-    }
-    throw new Error(`unexpected ${method} ${path}`);
-  }
-
-  myId(): Promise<string> {
-    return this.request<{ myID: string }>("GET", "/system/status").then((status) => status.myID);
-  }
-
-  folderSettings(folderId: string): Promise<SyncthingObject> {
-    return this.request("GET", `/config/folders/${encodeURIComponent(folderId)}`);
-  }
-
-  devicesList(): Promise<SyncthingObject[]> {
-    return this.request("GET", "/config/devices");
-  }
-
-  writes(): Sent[] {
-    return this.sent;
-  }
-}
-
-/** The client methods the reconciler uses, answered by the fake. */
-function clientOf(syncthing: FakeSyncthing): SyncthingClient {
-  return {
-    request: syncthing.request.bind(syncthing),
-    myId: syncthing.myId.bind(syncthing),
-    folders: () => syncthing.request("GET", "/config/folders"),
-    devices: () => syncthing.request("GET", "/config/devices"),
-    folderSettings: syncthing.folderSettings.bind(syncthing),
-  } as unknown as SyncthingClient;
-}
-
 function instanceOf(syncthing: FakeSyncthing, source: LocalInstance["source"] = "registry"): LocalInstance {
   return { kind: "local", nodeId: "a001", name: "laptop-data", client: clientOf(syncthing), root: "/data", os: "linux", threshold: 50, source };
 }
@@ -127,30 +48,6 @@ function planOf(configured: string[], threshold = 50): NodePlan {
   const plan = nodePlan(at, "a001", carriedLayoutPaths(at, "a001", new Set(configured)));
   assert.ok(plan);
   return plan;
-}
-
-/** A Syncthing whose every planned folder is exactly as the plan has it. */
-function onPlan(plan: NodePlan): FakeSyncthing {
-  const syncthing = new FakeSyncthing();
-  for (const folder of plan.folders) {
-    syncthing.folders.push({
-      id: folder.id,
-      label: folder.label,
-      path: folder.path,
-      type: folder.type,
-      paused: false,
-      devices: folder.devices.map((deviceID) => ({ deviceID, introducedBy: "", encryptionPassword: "" })),
-      versioning: versioningOf(folder.versioning?.maxAgeDays ?? null),
-    });
-    syncthing.ignores.set(folder.id, [...folder.ignores]);
-  }
-  return syncthing;
-}
-
-function folderOf(syncthing: FakeSyncthing, id: string): SyncthingObject {
-  const found = syncthing.folders.find((entry) => entry.id === id);
-  assert.ok(found, `folder ${id}`);
-  return found;
 }
 
 const presentHandoffFiles: HandoffFiles = { ensure: async () => true };
