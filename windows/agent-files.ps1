@@ -3,7 +3,7 @@
 $agentServiceName = "storage-compose-agent"
 $agentServiceDisplayName = "storage-compose host agent"
 $agentInstallFolder = Join-Path $env:ProgramFiles "storage-compose-agent"
-$agentScriptNames = @("agent.ps1", "agent-files.ps1", "disks.ps1", "passthrough.ps1", "nodes.ps1", "syncthing.ps1", "networks.ps1", "dashboard-entry.ps1")
+$agentScriptNames = @("agent.ps1", "agent-files.ps1", "disks.ps1", "passthrough.ps1", "nodes.ps1", "syncthing.ps1", "networks.ps1", "dashboard-entry.ps1", "handoff.ps1")
 $agentServiceSourceName = "service\AgentService.cs"
 $agentExecutableName = "storage-compose-agent.exe"
 $agentConfigName = "agent-config.json"
