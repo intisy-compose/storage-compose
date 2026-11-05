@@ -9,11 +9,13 @@ import { agentEntries, agentProblem, readHeartbeat } from "./hostAgent.js";
 import { registryWarnings, statusRegistryEntries, syncthingEndpoint } from "./instances.js";
 import { bridgesByAddress, connectionsStateOf, isOnUntrustedNetworks } from "./connectionsDrift.js";
 import { layeredStateOf } from "./layeredDrift.js";
+import { layeredWarnings, setupWarnings } from "./layeredAttention.js";
+import { pullStateOf } from "./setupRepo.js";
 import { type JoinRecords, joinedNodeId } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { type LocalNodeSource, localNodeRules } from "./nodeSource.js";
 import { parityState } from "./parity.js";
-import { attentionSettings, hostName, peerDashboards, poolPath, registryDirectory } from "./settings.js";
+import { attentionSettings, hostName, peerDashboards, poolPath, registryDirectory, setupRepoDirectory } from "./settings.js";
 import { deviceSeenStore, localDeviceIds, recordDevices, rememberable, rememberedLocalNodes } from "./seenStore.js";
 import { ScopedShare, SharedRead } from "./sharedRead.js";
 import { type InstanceView, classifyConnections, instanceView, peerSync } from "./syncthing.js";
@@ -131,7 +133,7 @@ function withConflictCounts(node: StorageNode): StorageNode {
 
 /** What a node's own Syncthing and its space say needs a person. */
 function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
-  const warnings = [...folderErrorWarnings(node), ...conflictWarnings(node), ...fullWarnings(node, attentionSettings), ...pausedWarnings(node)];
+  const warnings = [...folderErrorWarnings(node), ...conflictWarnings(node), ...fullWarnings(node, attentionSettings), ...pausedWarnings(node), ...layeredWarnings(node)];
   if (view) warnings.push(...systemErrorWarnings(node, view.systemErrors, view.secrets), ...pendingWarnings(node, view.pendingDevices, view.pendingFolders));
   return warnings;
 }
@@ -178,6 +180,7 @@ async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes
   }
   for (const agentNode of heartbeat?.nodes ?? []) if (agentNode.syncthing?.deviceId) agentNodes.set(agentNode.syncthing.deviceId, agentNode.id);
   warnings.push(...hostWarnings(hostName, await registryWarnings(), agentProblem(heartbeat), heartbeat?.problems ?? []));
+  if (setupRepoDirectory) warnings.push(...setupWarnings(hostName, pullStateOf(setupRepoDirectory).pullProblem));
   return nodes;
 }
 

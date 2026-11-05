@@ -1,9 +1,9 @@
 import { constants } from "node:fs";
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import type { LayeredChange, LayeredState } from "./api/types.js";
+import type { HandoffWaitingView, LayeredChange, LayeredHandoff, LayeredState } from "./api/types.js";
 import { recordDashboardActivity } from "./eventFeed.js";
-import { type HandoffPublisher, handoffPublisher } from "./handoffFeed.js";
+import { type HandoffPublisher, type HandoffWaiting, handoffPublisher } from "./handoffFeed.js";
 import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances } from "./instanceResolver.js";
 import { layeredStateOf, recordLayered } from "./layeredDrift.js";
 import { handoffIgnoreFile, nodePlan } from "./nodePlan.js";
@@ -45,7 +45,7 @@ function nodeOnlyText(entry: NodeReconcile["nodeOnlyIgnores"][number]): string {
 }
 
 function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: string): LayeredState {
-  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt };
+  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt, handoff: null };
 }
 
 /**
@@ -64,10 +64,34 @@ export class LayoutRound {
       const instances = await this.dependencies.instances();
       for (const instance of instances) {
         const state = await this.nodeState(layout, instance, instances);
-        if (state) states.set(instance.nodeId, state);
+        if (state) states.set(instance.nodeId, { ...state, handoff: await this.handoffView(instance, state.checkedAt) });
       }
     }
     recordLayered(states);
+  }
+
+  /** When this host first saw each file the contract waits with, by node, folder and path, so Attention can tell a wait of a day. */
+  private readonly waitingSince = new Map<string, string>();
+
+  private sinceOf(nodeId: string, waiting: HandoffWaiting[], checkedAt: string): HandoffWaitingView[] {
+    const prefix = `${nodeId}\n`;
+    const current = new Set(waiting.map((entry) => `${prefix}${entry.folderId}\n${entry.path}`));
+    for (const key of [...this.waitingSince.keys()]) if (key.startsWith(prefix) && !current.has(key)) this.waitingSince.delete(key);
+    return waiting.map((entry) => {
+      const key = `${prefix}${entry.folderId}\n${entry.path}`;
+      if (!this.waitingSince.has(key)) this.waitingSince.set(key, checkedAt);
+      return { ...entry, since: this.waitingSince.get(key) as string };
+    });
+  }
+
+  /** The node's last contract, its space decision and its executor's last result, for the node detail and Attention; null before any contract. */
+  private async handoffView(instance: LocalInstance, checkedAt: string): Promise<LayeredHandoff | null> {
+    const publisher = this.dependencies.handoffs;
+    const last = publisher?.last?.(instance.nodeId);
+    if (!publisher || !last) return null;
+    const result = publisher.result ? await publisher.result(instance).catch(() => null) : null;
+    const space = last.space ? { state: last.space.state, threshold: last.space.threshold, neededBytes: last.space.neededBytes, availableBytes: last.space.availableBytes } : null;
+    return { writtenAt: last.contract.writtenAt, entries: last.contract.entries.length, waiting: this.sinceOf(instance.nodeId, last.contract.waiting, checkedAt), notes: [...last.contract.notes], space, result };
   }
 
   private async clearHandoffs(instance: LocalInstance, apply: boolean): Promise<void> {

@@ -352,6 +352,58 @@ export interface LayeredState {
   /** Why the last round could not read the node (its drift is then the last one found), or which folders' writes failed. */
   failed: string | null;
   checkedAt: string;
+  /** The node's hand-off as this host's last round decided it and its executor last reported it; null while no contract was written. */
+  handoff: LayeredHandoff | null;
+}
+
+/** One file the contract waits with, and since when this host has seen it wait. */
+export interface HandoffWaitingView {
+  folderId: string;
+  path: string;
+  reason: "changed" | "held" | "no-keeper" | "keeper-offline" | "not-confirmed";
+  since: string;
+}
+
+/** One path of an executor run, as `handoff.sh` and `handoff.ps1` write it. */
+export interface HandoffOutcome {
+  folderId: string;
+  path: string;
+  outcome: "moved" | "refused" | "ignored-not-moved" | "released" | "in-trash-unlisted" | "unsynced-at-handed-off-path" | "deferred" | string;
+  reason: string;
+  trash?: string;
+}
+
+/** A copy the hand-off trash keeps past its days, or one outside its manifest, with the reason. */
+export interface HandoffTrashEntry {
+  trash: string;
+  folderId: string;
+  path: string;
+  reason: string;
+}
+
+/** `<node id>.result.json`, the executor's last run. */
+export interface HandoffResult {
+  schema: number;
+  nodeId: string;
+  contractWrittenAt: string;
+  finishedAt: string;
+  /** Why the run acted on nothing at all; null when it went through the contract. */
+  refused: string | null;
+  results: HandoffOutcome[];
+  trash: HandoffTrashEntry[];
+  notes: string[];
+  purged: number;
+}
+
+export interface LayeredHandoff {
+  writtenAt: string;
+  /** The files the contract names for the executor. */
+  entries: number;
+  waiting: HandoffWaitingView[];
+  notes: string[];
+  /** The space decision the contract rests on; null in report mode, where none is made. */
+  space: { state: "fits" | "raised" | "stopped" | "unknown"; threshold: number; neededBytes: number; availableBytes: number } | null;
+  result: HandoffResult | null;
 }
 
 export type ConnectionsState = "on-profile" | "restart-needed" | "not-yet" | "unknown";
@@ -370,6 +422,20 @@ export type WarningKind =
   | "full"
   | "paused"
   | "conflicts"
+  | "handoff-waiting"
+  | "handoff-refused"
+  | "handoff-pending"
+  | "handoff-unsynced"
+  | "handoff-trash"
+  | "handoff-deferred"
+  | "handoff-note"
+  | "handoff-probe"
+  | "space-stopped"
+  | "space-raised"
+  | "layout-drift"
+  | "layout-held"
+  | "layout-problem"
+  | "setup-unpushed"
   | "other";
 
 export interface Warning {
