@@ -1,0 +1,43 @@
+# Start only through run.ps1 or test-integration/peers.ts: they seed each config.xml (seed-config.sh) before the first start.
+name: storage-layered-test
+
+x-peer: &peer
+  image: ghcr.io/syncthing/syncthing:2.1.6
+  networks:
+    - layered-test
+
+services:
+  stick:
+    <<: *peer
+    container_name: layered-test-stick
+    hostname: layered-test-stick
+    environment:
+      STGUIADDRESS: 0.0.0.0:8384
+      STGUIAPIKEY: layered-test-stick-key
+      STNODEFAULTFOLDER: "1"
+    ports:
+      - 127.0.0.1:38401:8384
+  keeper:
+    <<: *peer
+    container_name: layered-test-keeper
+    hostname: layered-test-keeper
+    environment:
+      STGUIADDRESS: 0.0.0.0:8384
+      STGUIAPIKEY: layered-test-keeper-key
+      STNODEFAULTFOLDER: "1"
+    ports:
+      - 127.0.0.1:38402:8384
+  other:
+    <<: *peer
+    container_name: layered-test-other
+    hostname: layered-test-other
+    environment:
+      STGUIADDRESS: 0.0.0.0:8384
+      STGUIAPIKEY: layered-test-other-key
+      STNODEFAULTFOLDER: "1"
+    ports:
+      - 127.0.0.1:38403:8384
+
+networks:
+  layered-test:
+    name: layered-test
