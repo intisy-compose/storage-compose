@@ -43,8 +43,8 @@ function answerOf(body: unknown): NodeAdmissionBody["answer"] {
  * The layout with the node admitted at the threshold the person confirmed: its device entry (found by its Syncthing ID, else added under
  * the node's name) and its node entry, `apply = false` written outright.
  * @implNote Admission is the commit that lets every other node share with it, so it is made before any share; it is never a path to `apply`,
- * which only its own confirmed switch turns on. A device name the layout already gives another ID is refused rather than overwritten, and a
- * listed entry's empty device (a refused node's) is set to the resolved one.
+ * which only its own confirmed switch turns on. A device name the layout already gives another ID is refused rather than overwritten. A
+ * listed entry's `device` is repointed to the entry its Syncthing ID resolves to, whatever it named before, an empty one included.
  */
 export function admitted(text: string, info: LocalNodeInfo, deviceId: string, threshold: number): string {
   const layout = parseLayout(text);
