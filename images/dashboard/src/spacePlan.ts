@@ -75,6 +75,7 @@ function candidateThresholds(plan: NodePlan): number[] {
  * The decision returns to the committed threshold by itself once space allows.
  */
 export function effectiveThreshold(plan: NodePlan, sizes: FolderSizes, space: NodeSpace, confirmed: ConfirmedBytes = {}): SpaceDecision {
+  if (plan.appliedThreshold !== plan.threshold) throw new Error(`the plan of ${plan.nodeId} was made at threshold ${plan.appliedThreshold}, not at its committed ${plan.threshold}`);
   const reserve = space.totalBytes * spaceHeadroom;
   const committed = tryThreshold(plan, sizes, space, confirmed, plan.threshold);
   if (plan.folders.some((folder) => keptAt(folder, plan.threshold) && sizes[folder.id] === undefined)) {

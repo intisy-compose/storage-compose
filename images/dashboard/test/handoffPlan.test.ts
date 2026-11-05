@@ -126,6 +126,14 @@ describe("hand-off candidates", () => {
     assert.deepEqual(decide([keeper("c1c1")], [clip], layout, stopped), { confirmed: [], waiting: [] });
   });
 
+  it("are none from a plan made at another threshold than the space decision's", () => {
+    const raisedDecision: SpaceDecision = { ...fits, state: "raised", threshold: 90 };
+
+    assert.deepEqual(handoffCandidates(layout, planOf(), [clip], raisedDecision, now), []);
+    assert.deepEqual(confirmedHandoffs(layout, planOf(), [clip], [clip], [keeper("c1c1")], raisedDecision, now).confirmed, []);
+    assert.equal(handoffCandidates(layout, planOf(layout, 90), [clip], raisedDecision, now).length, 1);
+  });
+
   it("are none from a stopped space decision turned into a plan", () => {
     const committed = planOf();
     const decision = effectiveThreshold(committed, { work: { globalBytes: 100, localBytes: 0 }, videos: { globalBytes: 100, localBytes: 100 } }, { totalBytes: 100, freeBytes: 0 });

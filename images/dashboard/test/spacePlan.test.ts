@@ -137,6 +137,12 @@ admitted = true
 });
 
 describe("a raised threshold as a plan", () => {
+  it("is refused as the input of a space decision, which starts from the committed threshold", () => {
+    const raised = nodePlan(layout, "b001", new Set(["Old"]), 80) as NodePlan;
+
+    assert.throws(() => effectiveThreshold(raised, sizes, space(1000, 900)), /made at threshold 80, not at its committed 50/);
+  });
+
   it("sends what the raise drops, and keeps what stays", () => {
     const raised = nodePlan(layout, "b001", new Set(["Old", "Notes"]), 80) as NodePlan;
 

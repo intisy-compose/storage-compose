@@ -104,9 +104,12 @@ function isComparable(file: LocalFile): boolean {
   return Number.isFinite(file.size) && hasHash(file.blocksHash) && file.version.length > 0;
 }
 
-/** No hand-off at all from a node that only reports, is not enabled, has a blocking layout problem, or whose space decision is stopped or unknown. */
+/**
+ * No hand-off at all from a node that only reports, is not enabled, has a blocking layout problem, or whose space decision is stopped or unknown.
+ * @implNote The plan must be the one made at the decision's threshold, or a folder the raise keeps could be taken for one it hands off, or the other way round.
+ */
 function mayHandOff(node: LayoutNode | null, plan: NodePlan, decision: SpaceDecision): node is LayoutNode {
-  return node !== null && node.apply && node.enabled && plan.problems.length === 0 && decision.handoffAllowed;
+  return node !== null && node.apply && node.enabled && plan.problems.length === 0 && decision.handoffAllowed && plan.appliedThreshold === decision.threshold;
 }
 
 /** The folder that hands the file off, unless policy holds the file on the node. */
