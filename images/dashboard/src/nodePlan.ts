@@ -37,6 +37,8 @@ export interface NodePlan {
   admitted: boolean;
   /** The threshold the layout commits for the node, before any raise for space. */
   threshold: number;
+  /** The threshold the plan was made at: the committed one, or a raise for space. */
+  appliedThreshold: number;
   folders: PlannedFolder[];
   /** Layout paths below the threshold that the node holds nothing in, so it does not share them. */
   notShared: string[];
@@ -261,14 +263,17 @@ function networkOf(layout: SetupLayout): Network {
  * The Syncthing folders the node should have, from the shared layout alone.
  * One folder per layout entry (call 1); at or above the threshold, assigned or pinned there, send-receive;
  * below, send-only while the node holds items in it (`localFolders`, layout paths), else not shared.
+ * `threshold`, a raise from `effectiveThreshold`, plans at that threshold; it never lowers the committed one.
  * Null for a node the layout does not list.
  */
-export function nodePlan(layout: SetupLayout, nodeId: string, localFolders: ReadonlySet<string>): NodePlan | null {
-  const node = layout.nodes.find((entry) => entry.id === nodeId);
-  if (!node) return null;
+export function nodePlan(layout: SetupLayout, nodeId: string, localFolders: ReadonlySet<string>, threshold?: number): NodePlan | null {
+  const listed = layout.nodes.find((entry) => entry.id === nodeId);
+  if (!listed) return null;
+  const appliedThreshold = Math.max(listed.threshold, threshold ?? listed.threshold);
+  const node = { ...listed, threshold: appliedThreshold };
   const network = networkOf(layout);
   const problems = layout.problems.filter((problem) => problem.blocksNode && problem.nodeId === nodeId).map((problem) => problem.text);
-  const plan: NodePlan = { nodeId, admitted: node.admitted, threshold: node.threshold, folders: [], notShared: [], unplaced: unplacedPaths(network.folders, node), problems };
+  const plan: NodePlan = { nodeId, admitted: node.admitted, threshold: listed.threshold, appliedThreshold, folders: [], notShared: [], unplaced: unplacedPaths(network.folders, node), problems };
   if (!node.admitted || problems.length) return plan;
   const device = deviceOf(layout, node);
   for (const folder of network.folders) {

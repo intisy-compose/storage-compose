@@ -9,58 +9,81 @@ export interface FolderSize {
 /** By folder ID. */
 export type FolderSizes = Record<string, FolderSize>;
 
+/** Bytes of confirmed hand-offs by folder ID, which leave the node whatever the threshold. */
+export type ConfirmedBytes = Record<string, number>;
+
 export interface NodeSpace {
   totalBytes: number;
   freeBytes: number;
 }
 
-export type SpaceState = "fits" | "raised" | "stopped";
+/** `unknown`: a folder the node keeps has no size yet, so nothing can be said to fit. */
+export type SpaceState = "fits" | "raised" | "stopped" | "unknown";
 
 export interface SpaceDecision {
   state: SpaceState;
-  /** The threshold the node syncs at; when stopped, the top value, which did not fit either. */
+  /** The threshold to plan with; the committed one when stopped or unknown. */
   threshold: number;
-  /** What the node keeps at that threshold. */
+  /** What the node keeps at the threshold tried last. */
   neededBytes: number;
-  /** Its free space with what it holds of the planned folders counted back in. */
+  /** Its free space with what it holds of kept folders and its confirmed hand-offs counted in, at that threshold. */
   availableBytes: number;
+  /** False when stopped or unknown: nothing may leave a node whose space decision is not sound. */
+  handoffAllowed: boolean;
 }
 
 /** Every node keeps this share of itself free (section 5, item 10). */
 export const spaceHeadroom = 0.1;
 
-/** @implNote Assigned folders and the node's own priority 0 entries are never dropped for space; only the threshold moves. */
+/** @implNote Assigned folders and priority 0 entries (the node's own, or other nodes' on the cluster) are never dropped for space; only the threshold moves. */
 function keptAt(folder: PlannedFolder, threshold: number): boolean {
-  if (folder.keptBy === "assigned" || (folder.local && folder.type === "sendonly")) return true;
+  if (folder.keptBy === "assigned" || folder.local) return true;
   return folder.keptBy !== null && folder.priority >= threshold;
 }
 
-function bytes(sizes: FolderSizes, folder: PlannedFolder, key: keyof FolderSize): number {
-  return sizes[folder.id]?.[key] ?? 0;
+interface Tried {
+  threshold: number;
+  neededBytes: number;
+  availableBytes: number;
 }
 
-function neededAt(plan: NodePlan, sizes: FolderSizes, threshold: number): number {
-  return plan.folders.filter((folder) => keptAt(folder, threshold)).reduce((total, folder) => total + bytes(sizes, folder, "globalBytes"), 0);
+/**
+ * @implNote What the node holds of a kept folder is already on it; a folder it hands off frees its bytes only once confirmed, since an unconfirmed hand-off may never leave.
+ */
+function tryThreshold(plan: NodePlan, sizes: FolderSizes, space: NodeSpace, confirmed: ConfirmedBytes, threshold: number): Tried {
+  let neededBytes = 0;
+  let availableBytes = space.freeBytes;
+  for (const folder of plan.folders) {
+    if (keptAt(folder, threshold)) {
+      neededBytes += sizes[folder.id]?.globalBytes ?? 0;
+      availableBytes += sizes[folder.id]?.localBytes ?? 0;
+    } else {
+      availableBytes += confirmed[folder.id] ?? 0;
+    }
+  }
+  return { threshold, neededBytes, availableBytes };
 }
 
 /** The committed threshold, then each higher priority the node keeps, lowest first. */
 function candidateThresholds(plan: NodePlan): number[] {
-  const higher = plan.folders.filter((folder) => folder.keptBy !== null && folder.keptBy !== "assigned" && folder.priority > plan.threshold).map((folder) => folder.priority);
+  const higher = plan.folders.filter((folder) => folder.keptBy !== null && folder.keptBy !== "assigned" && !folder.local && folder.priority > plan.threshold).map((folder) => folder.priority);
   return [plan.threshold, ...[...new Set(higher)].sort((left, right) => left - right)];
 }
 
 /**
- * The threshold at which what the node keeps fits with `spaceHeadroom` of it free (call 9).
- * @implNote What the node holds of a planned folder counts as available, so a hand-off that frees it changes nothing here and a raise never flaps back; the decision returns to the committed threshold by itself once space allows.
+ * The threshold at which what the node keeps fits with `spaceHeadroom` of it free (call 9), from its plan at the committed threshold.
+ * The decision returns to the committed threshold by itself once space allows.
  */
-export function effectiveThreshold(plan: NodePlan, sizes: FolderSizes, space: NodeSpace): SpaceDecision {
-  const availableBytes = space.freeBytes + plan.folders.reduce((total, folder) => total + bytes(sizes, folder, "localBytes"), 0);
+export function effectiveThreshold(plan: NodePlan, sizes: FolderSizes, space: NodeSpace, confirmed: ConfirmedBytes = {}): SpaceDecision {
   const reserve = space.totalBytes * spaceHeadroom;
-  const candidates = candidateThresholds(plan);
-  for (const threshold of candidates) {
-    const neededBytes = neededAt(plan, sizes, threshold);
-    if (availableBytes - neededBytes >= reserve) return { state: threshold === plan.threshold ? "fits" : "raised", threshold, neededBytes, availableBytes };
+  const committed = tryThreshold(plan, sizes, space, confirmed, plan.threshold);
+  if (plan.folders.some((folder) => keptAt(folder, plan.threshold) && sizes[folder.id] === undefined)) {
+    return { state: "unknown", ...committed, threshold: plan.threshold, handoffAllowed: false };
   }
-  const top = candidates[candidates.length - 1];
-  return { state: "stopped", threshold: top, neededBytes: neededAt(plan, sizes, top), availableBytes };
+  let tried = committed;
+  for (const threshold of candidateThresholds(plan)) {
+    tried = tryThreshold(plan, sizes, space, confirmed, threshold);
+    if (tried.availableBytes - tried.neededBytes >= reserve) return { state: threshold === plan.threshold ? "fits" : "raised", ...tried, handoffAllowed: true };
+  }
+  return { state: "stopped", ...tried, threshold: plan.threshold, handoffAllowed: false };
 }
