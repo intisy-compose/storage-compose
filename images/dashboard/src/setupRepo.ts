@@ -6,7 +6,7 @@ import { ProfileError, defaultProfile, formatProfile, parseProfile } from "./con
 import { heldCommitText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseInProgressText, rebaseRefusedText, unpushedText } from "./api/profileText.js";
 import { RequestError } from "./http.js";
 import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
-import { type TomlTable, parseToml } from "./toml.js";
+import { type TomlTable, type TomlValue, parseToml } from "./toml.js";
 
 export interface LayoutFolder {
   relativePath: string;
@@ -46,10 +46,18 @@ export interface LayoutNode {
   enabled: boolean;
 }
 
+/** A layout entry that cannot be read as written; a blocking one leaves its node out of every plan. */
+export interface LayoutProblem {
+  nodeId: string | null;
+  text: string;
+  blocksNode: boolean;
+}
+
 export interface SetupLayout {
   devices: LayoutDevice[];
   folders: LayoutFolder[];
   nodes: LayoutNode[];
+  problems: LayoutProblem[];
   /** The layout's `[bands]` table, highest first, or the design's bands when it sets none. */
   bands: PriorityBand[];
 }
@@ -118,20 +126,74 @@ function parseFolder(key: string, entry: TomlTable): LayoutFolder {
   return { relativePath, id: folderId(relativePath), priority, ignore: textsOf(entry, "ignore"), versionsDays: numberOf(entry, "versions_days", defaultVersionsDays) };
 }
 
-function parseNode(id: string, entry: TomlTable): LayoutNode {
-  const pins = Object.fromEntries(Object.entries(asTable(entry.pins)).flatMap(([path, value]) => (typeof value === "number" ? [[normaliseRelativePath(path), value]] : [])));
+/** The node file's patterns, so a layout entry always names a node a node file can hold. */
+const nodeIdPattern = /^[0-9a-f]{4}$/;
+const nodeNamePattern = /^[a-z0-9][a-z0-9-]*$/;
+
+/** @implNote A pin that is not a number still protects its path, as the highest pin, so a typo never lets the path be handed off. */
+function parsePins(id: string, table: TomlTable, problems: LayoutProblem[]): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(table).map(([path, value]) => {
+      const relativePath = normaliseRelativePath(path);
+      if (typeof value === "number") return [relativePath, value];
+      problems.push({ nodeId: id, text: `pin ${relativePath} is not a number; it protects the path as the highest pin`, blocksNode: false });
+      return [relativePath, Number.POSITIVE_INFINITY];
+    }),
+  );
+}
+
+/** @implNote An assigned entry that is not a path cannot say what it protects, so the node is stopped rather than planned without it. */
+function parseAssigned(id: string, value: TomlValue | undefined, problems: LayoutProblem[]): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    problems.push({ nodeId: id, text: "assigned is not a list of paths", blocksNode: true });
+    return [];
+  }
+  if (value.some((item) => typeof item !== "string")) problems.push({ nodeId: id, text: "assigned holds an entry that is not a path", blocksNode: true });
+  return value.filter((item): item is string => typeof item === "string").map(normaliseRelativePath);
+}
+
+function parseEnabled(id: string, value: TomlValue | undefined, problems: LayoutProblem[]): boolean {
+  if (value === undefined || typeof value === "boolean") return value !== false;
+  problems.push({ nodeId: id, text: "enabled is not true or false", blocksNode: true });
+  return false;
+}
+
+function parseNode(id: string, entry: TomlTable, problems: LayoutProblem[]): LayoutNode {
+  const name = textOf(entry, "name");
+  if (!nodeIdPattern.test(id)) problems.push({ nodeId: id, text: `node ID '${id}' is not 4 lowercase hex digits`, blocksNode: true });
+  else if (!nodeNamePattern.test(name)) problems.push({ nodeId: id, text: `name '${name}' does not match [a-z0-9-]`, blocksNode: true });
   return {
     id,
-    name: textOf(entry, "name"),
+    name,
     device: textOf(entry, "device"),
     threshold: numberOf(entry, "threshold", 0),
-    assigned: textsOf(entry, "assigned").map(normaliseRelativePath),
-    pins,
+    assigned: parseAssigned(id, entry.assigned, problems),
+    pins: parsePins(id, asTable(entry.pins), problems),
     access: entry.access === "closed" ? "closed" : "open",
     admitted: entry.admitted === true,
     apply: entry.apply === true,
-    enabled: entry.enabled !== false,
+    enabled: parseEnabled(id, entry.enabled, problems),
   };
+}
+
+function sharedNameProblems(nodes: LayoutNode[]): LayoutProblem[] {
+  return nodes
+    .filter((node) => node.name !== "" && nodes.some((other) => other !== node && other.name === node.name))
+    .map((node) => ({ nodeId: node.id, text: `name '${node.name}' is used by another node too`, blocksNode: true }));
+}
+
+/** @implNote The cluster is the one node on an archive device; with two, neither is taken for it, since either could be the one that keeps everything. */
+function archiveProblems(devices: LayoutDevice[], nodes: LayoutNode[]): LayoutProblem[] {
+  const onArchive = nodes.filter((node) => devices.find((device) => device.name === node.device)?.role === "archive");
+  if (onArchive.length < 2) return [];
+  const names = onArchive.map((node) => node.id).join(", ");
+  return onArchive.map((node) => ({ nodeId: node.id, text: `more than one node is on an archive device (${names})`, blocksNode: true }));
+}
+
+/** The nodes a blocking layout problem leaves out of every plan. */
+export function blockedNodeIds(layout: SetupLayout): Set<string> {
+  return new Set(layout.problems.filter((problem) => problem.blocksNode && problem.nodeId !== null).map((problem) => problem.nodeId as string));
 }
 
 function parseBands(table: TomlTable): PriorityBand[] {
@@ -143,10 +205,14 @@ function parseBands(table: TomlTable): PriorityBand[] {
 
 export function parseLayout(text: string): SetupLayout {
   const toml = parseToml(text);
+  const problems: LayoutProblem[] = [];
+  const devices = Object.entries(asTable(toml.devices)).map(([name, value]) => parseDevice(name, asTable(value)));
+  const nodes = Object.entries(asTable(toml.nodes)).map(([id, value]) => parseNode(id, asTable(value), problems));
   return {
-    devices: Object.entries(asTable(toml.devices)).map(([name, value]) => parseDevice(name, asTable(value))),
+    devices,
     folders: Object.entries(asTable(toml.folders)).map(([key, value]) => parseFolder(key, asTable(value))),
-    nodes: Object.entries(asTable(toml.nodes)).map(([id, value]) => parseNode(id, asTable(value))),
+    nodes,
+    problems: [...problems, ...sharedNameProblems(nodes), ...archiveProblems(devices, nodes)],
     bands: parseBands(asTable(toml.bands)),
   };
 }

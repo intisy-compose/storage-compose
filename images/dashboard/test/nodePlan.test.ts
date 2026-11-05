@@ -199,8 +199,24 @@ describe("a node's plan", () => {
     assert.equal(nodePlan(layout, "ffff", new Set()), null);
   });
 
+  it("plans nothing for a node with a blocking layout problem, and leaves it out of every other plan", () => {
+    const broken = parseLayout(layoutText.replace('name      = "laptop-data"', 'name      = "Laptop Data"'));
+    const laptop = nodePlan(broken, "a002", new Set(["Music"]));
+
+    assert.deepEqual(laptop?.folders, []);
+    assert.deepEqual(laptop?.problems, ["name 'Laptop Data' does not match [a-z0-9-]"]);
+    assert.deepEqual(nodePlan(broken, "a001", new Set())?.folders.find((entry) => entry.id === "music")?.devices, ["ARRAY-ID", "PC-ID"]);
+  });
+
+  it("takes no cluster while two nodes are on archive devices", () => {
+    const twoArchives = parseLayout(`${layoutText}\n[devices.second]\nid = "SECOND-ID"\nrole = "archive"\n[nodes.c2c2]\nname = "second"\ndevice = "second"\nadmitted = true\n`);
+
+    assert.deepEqual(nodePlan(twoArchives, "c1c1", new Set())?.folders, []);
+    assert.equal(nodePlan(twoArchives, "a001", new Set(["Documents/GitHub/scratch"]))?.folders.find((entry) => entry.local)?.devices.join(), "PC-ID");
+  });
+
   it("names the pins and assigned paths that have no folder of their own", () => {
-    const pinned = parseLayout(`${layoutText}\n[nodes.a005]\ndevice = "laptop"\nadmitted = true\nassigned = ["Videos/Holiday"]\n[nodes.a005.pins]\n"Music/Live" = 90\n`);
+    const pinned = parseLayout(`${layoutText}\n[nodes.a005]\nname = "laptop-two"\ndevice = "laptop"\nadmitted = true\nassigned = ["Videos/Holiday"]\n[nodes.a005.pins]\n"Music/Live" = 90\n`);
 
     assert.deepEqual(nodePlan(pinned, "a005", new Set())?.unplaced, ["Music/Live", "Videos/Holiday"]);
   });

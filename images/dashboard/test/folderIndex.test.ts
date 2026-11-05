@@ -215,7 +215,7 @@ describe("folder index", () => {
   });
 
   it("priority comes from the layout when it has the folder", async () => {
-    layout = { devices: [], folders: [{ relativePath: "Documents", id: "documents", priority: 80, ignore: [], versionsDays: 365 }], nodes: [], bands: [] };
+    layout = { devices: [], folders: [{ relativePath: "Documents", id: "documents", priority: 80, ignore: [], versionsDays: 365 }], nodes: [], problems: [], bands: [] };
     const { folders } = await foldersResponse("all", sources);
     layout = null;
     assert.deepEqual([byId(folders, "documents").priority, byId(folders, "documents").prioritySource], [80, "setup-repo"]);
@@ -299,7 +299,7 @@ describe("folder index", () => {
     assert.equal((await folderDetail("documents", "all", sources)).treePath, "Documents");
     assert.equal((await folderDetail("music", "all", sources)).treePath, "Music", "the first node with a copy places it");
     assert.equal((await folderDetail("pictures", "all", sources)).treePath, "Other folders/Pictures", "an offer no node keeps sits under Other folders");
-    layout = { devices: [], folders: [{ relativePath: "Media/Pictures", id: "pictures", priority: 50, ignore: [], versionsDays: 365 }], nodes: [], bands: [] };
+    layout = { devices: [], folders: [{ relativePath: "Media/Pictures", id: "pictures", priority: 50, ignore: [], versionsDays: 365 }], nodes: [], problems: [], bands: [] };
     const placed = await folderDetail("pictures", "all", sources).finally(() => (layout = null));
     assert.equal(placed.treePath, "Media/Pictures", "or where the layout puts it");
     const peerOnly = await folderDetail("music", "all", { ...sources, localInstances: async () => [], peerFolderDetails: async () => [{ summary: remoteMusic, settings: {}, treePath: "Audio/Music" }] });

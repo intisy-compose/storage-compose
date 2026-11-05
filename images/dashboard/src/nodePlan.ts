@@ -1,4 +1,4 @@
-import { type LayoutDevice, type LayoutFolder, type LayoutNode, type SetupLayout, topDirectoryPath } from "./setupRepo.js";
+import { type LayoutDevice, type LayoutFolder, type LayoutNode, type SetupLayout, blockedNodeIds, topDirectoryPath } from "./setupRepo.js";
 
 export type PlannedType = "sendreceive" | "sendonly";
 
@@ -42,6 +42,8 @@ export interface NodePlan {
   notShared: string[];
   /** Pins and assigned paths without a layout entry at or below them, which no folder can carry. */
   unplaced: string[];
+  /** The layout's blocking problems with this node, which leave its plan empty. */
+  problems: string[];
 }
 
 /** The cluster's deletions stay in its version store this long (section 5, item 2). */
@@ -243,6 +245,13 @@ function clusterOf(layout: SetupLayout): LayoutNode | null {
   return layout.nodes.find((node) => node.admitted && deviceOf(layout, node)?.role === "archive") ?? null;
 }
 
+/** The layout without the nodes a blocking problem leaves out, so no plan shares with one, waits for one or takes one for the cluster. */
+function networkOf(layout: SetupLayout): Network {
+  const blocked = blockedNodeIds(layout);
+  const usable = { ...layout, nodes: layout.nodes.filter((node) => !blocked.has(node.id)) };
+  return { layout: usable, folders: layout.folders.filter((folder) => folder.relativePath !== topDirectoryPath), cluster: clusterOf(usable) };
+}
+
 /**
  * The Syncthing folders the node should have, from the shared layout alone.
  * One folder per layout entry (call 1); at or above the threshold, assigned or pinned there, send-receive;
@@ -252,9 +261,10 @@ function clusterOf(layout: SetupLayout): LayoutNode | null {
 export function nodePlan(layout: SetupLayout, nodeId: string, localFolders: ReadonlySet<string>): NodePlan | null {
   const node = layout.nodes.find((entry) => entry.id === nodeId);
   if (!node) return null;
-  const network: Network = { layout, folders: layout.folders.filter((folder) => folder.relativePath !== topDirectoryPath), cluster: clusterOf(layout) };
-  const plan: NodePlan = { nodeId, admitted: node.admitted, threshold: node.threshold, folders: [], notShared: [], unplaced: unplacedPaths(network.folders, node) };
-  if (!node.admitted) return plan;
+  const network = networkOf(layout);
+  const problems = layout.problems.filter((problem) => problem.blocksNode && problem.nodeId === nodeId).map((problem) => problem.text);
+  const plan: NodePlan = { nodeId, admitted: node.admitted, threshold: node.threshold, folders: [], notShared: [], unplaced: unplacedPaths(network.folders, node), problems };
+  if (!node.admitted || problems.length) return plan;
   const device = deviceOf(layout, node);
   for (const folder of network.folders) {
     if (!carriesShared(network, node, folder)) {
@@ -271,10 +281,10 @@ export function nodePlan(layout: SetupLayout, nodeId: string, localFolders: Read
 
 /** Whether the node's policy keeps the shared folder both ways, which makes it a keeper a hand-off may wait for. */
 export function keepsFolder(layout: SetupLayout, nodeId: string, folderId: string, threshold?: number): boolean {
-  const node = layout.nodes.find((entry) => entry.id === nodeId);
-  const folder = layout.folders.find((entry) => entry.id === folderId && entry.relativePath !== topDirectoryPath);
+  const network = networkOf(layout);
+  const node = network.layout.nodes.find((entry) => entry.id === nodeId);
+  const folder = network.folders.find((entry) => entry.id === folderId);
   if (!node?.admitted || !folder) return false;
-  const network: Network = { layout, folders: layout.folders, cluster: clusterOf(layout) };
   if (!carriesShared(network, node, folder)) return false;
   return keptBy(network, { ...node, threshold: threshold ?? node.threshold }, folder) !== null;
 }

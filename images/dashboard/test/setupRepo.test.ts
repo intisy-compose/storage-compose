@@ -127,3 +127,48 @@ describe("the layout's bands", () => {
     ]);
   });
 });
+
+describe("a malformed node policy", () => {
+  function problemsOf(text: string) {
+    return parseLayout(text).problems;
+  }
+
+  it("keeps a pin with a value that is not a number, protecting like an infinite pin, and reports it", () => {
+    const layout = parseLayout(`[nodes.a3f9]\nname = "pc"\n[nodes.a3f9.pins]\n"Videos/Clips" = "high"\nMusic = 60\n`);
+
+    assert.deepEqual(layout.nodes[0].pins, { "Videos/Clips": Number.POSITIVE_INFINITY, Music: 60 });
+    assert.deepEqual(layout.problems, [{ nodeId: "a3f9", text: "pin Videos/Clips is not a number; it protects the path as the highest pin", blocksNode: false }]);
+  });
+
+  it("stops a node whose assigned list holds anything but paths", () => {
+    assert.deepEqual(problemsOf(`[nodes.a3f9]\nname = "pc"\nassigned = ["Videos", 3]\n`), [{ nodeId: "a3f9", text: "assigned holds an entry that is not a path", blocksNode: true }]);
+    assert.deepEqual(problemsOf(`[nodes.a3f9]\nname = "pc"\nassigned = "Videos"\n`), [{ nodeId: "a3f9", text: "assigned is not a list of paths", blocksNode: true }]);
+  });
+
+  it("stops a node whose enabled is not true or false", () => {
+    assert.deepEqual(problemsOf(`[nodes.a3f9]\nname = "pc"\nenabled = "no"\n`), [{ nodeId: "a3f9", text: "enabled is not true or false", blocksNode: true }]);
+  });
+
+  it("stops a node whose name or ID the node file would refuse", () => {
+    assert.deepEqual(problemsOf(`[nodes.a3f9]\nname = "PC Data"\n`), [{ nodeId: "a3f9", text: "name 'PC Data' does not match [a-z0-9-]", blocksNode: true }]);
+    assert.deepEqual(problemsOf(`[nodes.A3F9]\nname = "pc"\n`), [{ nodeId: "A3F9", text: "node ID 'A3F9' is not 4 lowercase hex digits", blocksNode: true }]);
+  });
+
+  it("stops every node that shares a name with another", () => {
+    assert.deepEqual(problemsOf(`[nodes.a001]\nname = "stick"\n[nodes.a002]\nname = "stick"\n[nodes.a003]\nname = "other"\n`), [
+      { nodeId: "a001", text: "name 'stick' is used by another node too", blocksNode: true },
+      { nodeId: "a002", text: "name 'stick' is used by another node too", blocksNode: true },
+    ]);
+  });
+
+  it("stops every node on an archive device when there is more than one", () => {
+    const text = `[devices.array]\nid = "A"\nrole = "archive"\n[devices.second]\nid = "B"\nrole = "archive"\n[nodes.c001]\nname = "one"\ndevice = "array"\n[nodes.c002]\nname = "two"\ndevice = "second"\n`;
+
+    assert.deepEqual(problemsOf(text).map((problem) => [problem.nodeId, problem.blocksNode]), [["c001", true], ["c002", true]]);
+    assert.match(problemsOf(text)[0].text, /more than one node is on an archive device/);
+  });
+
+  it("has no problems when the policy is well formed", () => {
+    assert.deepEqual(parseLayout(nodesText).problems, []);
+  });
+});
