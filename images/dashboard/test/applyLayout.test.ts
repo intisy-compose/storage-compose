@@ -280,6 +280,37 @@ function disabled(text: string): string {
   return text.replace(/(apply {5}= (true|false))/, "$1\nenabled   = false");
 }
 
+describe("the cluster short of space", () => {
+  const clusterText = layoutText(true).replace('root = "/keep"', 'root = "/keep"\nrole = "archive"');
+
+  function clusterInstance(): { syncthing: FakeSyncthing; instance: LocalInstance } {
+    const layout = parseLayout(clusterText);
+    const plan = nodePlan(layout, "a002", carriedLayoutPaths(layout, "a002", new Set(["documents", "documents-old"])));
+    assert.ok(plan?.cluster);
+    const syncthing = onPlan(plan);
+    return { syncthing, instance: { ...instanceOf(syncthing, "a002"), name: "keeper-data" } };
+  }
+
+  it("is full, never paused or raised, and notified once when it turns full and once when it has room again", async () => {
+    const { syncthing, instance } = clusterInstance();
+    const notified: Notification[] = [];
+    let space = spaceOf(210, 10);
+    const round = roundOf(() => parseLayout(clusterText), [instance], [], { space: { space: (at) => space.space(at), sizes: (at, id) => space.sizes(at, id) }, pauses: memoryLayeredPauses(), notify: async (entry) => void notified.push(entry) });
+
+    await round.run();
+    await round.run();
+
+    assert.deepEqual(layeredStateOf("a002")?.space, { state: "full", threshold: 0, neededBytes: 200, availableBytes: 110 });
+    assert.equal(layeredStateOf("a002")?.stopped, null);
+    assert.ok(syncthing.folders.every((folder) => folder.paused === false && folder.type === "sendreceive"));
+    assert.deepEqual(notified.map((entry) => `${entry.priority} ${entry.title}`), ["4 keeper-data is short of space"]);
+
+    space = spaceOf(10_000, 9_000);
+    await round.run();
+    assert.deepEqual(notified.map((entry) => entry.title), ["keeper-data is short of space", "keeper-data has room again"]);
+  });
+});
+
 describe("stopping a node and rejoining", () => {
   it("a node that does not fit even at its top priority is paused, notified once, and resumed once it fits", async () => {
     const syncthing = nodeAtTwenty();

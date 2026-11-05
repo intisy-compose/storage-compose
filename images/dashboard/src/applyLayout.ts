@@ -110,6 +110,7 @@ export class LayoutRound {
         if (!state) continue;
         const handoff = await this.handoffView(instance, state.checkedAt);
         this.recordHandoffActivity(instance, state, handoff);
+        await this.notifyFull(instance, state);
         states.set(instance.nodeId, { ...state, handoff });
       }
     }
@@ -281,6 +282,24 @@ export class LayoutRound {
     } catch (error) {
       return this.failedState(instance, node, state, error);
     }
+  }
+
+  /** Whether each cluster was last notified as full. */
+  private readonly notifiedFull = new Map<string, boolean>();
+
+  /** One notification when the cluster turns full, and one when it has room again; an unknown decision changes neither. */
+  private async notifyFull(instance: LocalInstance, state: LayeredState): Promise<void> {
+    const notify = this.dependencies.notify;
+    const space = state.space;
+    if (!notify || !space || space.state === "unknown") return;
+    const full = space.state === "full";
+    const before = this.notifiedFull.get(instance.nodeId) ?? false;
+    if (full === before) return;
+    this.notifiedFull.set(instance.nodeId, full);
+    const notification: Notification = full
+      ? { priority: 4, tags: "warning", title: `${instance.name} is short of space`, message: `The cluster needs ${space.neededBytes} bytes and has ${space.availableBytes}, under 10% free once it holds everything. It confirms no new hand-off until it fits, so those files stay on their nodes.` }
+      : { priority: 3, tags: "white_check_mark", title: `${instance.name} has room again`, message: "The cluster fits with 10% free again and confirms hand-offs." };
+    await notify(notification).catch((error) => console.error(`layered sync: no notification queued for ${instance.name}: ${reasonOf(error)}`));
   }
 
   /** One notification for a round that paused the node's folders, and one for a round that resumed them. */
