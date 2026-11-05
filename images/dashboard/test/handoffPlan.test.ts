@@ -119,11 +119,11 @@ describe("hand-off candidates", () => {
     const stopped: SpaceDecision = { ...fits, state: "stopped", handoffAllowed: false };
 
     assert.deepEqual(candidatesOf([clip], reporting), []);
-    assert.deepEqual(decide([keeper("c1c1")], [clip], reporting), { confirmed: [], waiting: [] });
+    assert.deepEqual(decide([keeper("c1c1")], [clip], reporting), { confirmed: [], waiting: [], notes: [] });
     assert.deepEqual(candidatesOf([clip], disabled), []);
-    assert.deepEqual(decide([keeper("c1c1")], [clip], disabled), { confirmed: [], waiting: [] });
+    assert.deepEqual(decide([keeper("c1c1")], [clip], disabled), { confirmed: [], waiting: [], notes: [] });
     assert.deepEqual(candidatesOf([clip], layout, stopped), []);
-    assert.deepEqual(decide([keeper("c1c1")], [clip], layout, stopped), { confirmed: [], waiting: [] });
+    assert.deepEqual(decide([keeper("c1c1")], [clip], layout, stopped), { confirmed: [], waiting: [], notes: [] });
   });
 
   it("are none from a plan made at another threshold than the space decision's", () => {
@@ -141,7 +141,7 @@ describe("hand-off candidates", () => {
     const plan = planOf(layout, decision.threshold);
 
     assert.deepEqual(handoffCandidates(layout, plan, [clip], decision, now), []);
-    assert.deepEqual(confirmedHandoffs(layout, plan, [clip], [clip], [keeper("c1c1")], decision, now), { confirmed: [], waiting: [] });
+    assert.deepEqual(confirmedHandoffs(layout, plan, [clip], [clip], [keeper("c1c1")], decision, now), { confirmed: [], waiting: [], notes: [] });
   });
 });
 
@@ -208,8 +208,21 @@ describe("a confirmed hand-off", () => {
     assert.equal(decide([keeper("c1c1", {}, { observedAt: "2026-11-05T11:58:00Z" })]).confirmed.length, 1);
   });
 
-  it("refuses two reports for one node", () => {
-    assert.throws(() => decide([keeper("c1c1"), keeper("c1c1", { blocksHash: "hash-b" })]), /two keeper reports for node c1c1/);
+  it("drops both reports of a node reported twice, counts it offline and says so", () => {
+    const twice = [keeper("c1c1"), keeper("c1c1", { blocksHash: "hash-b" })];
+    const decision = decide(twice);
+
+    assert.deepEqual(decision.confirmed, []);
+    assert.equal(decision.waiting[0].reason, "keeper-offline");
+    assert.deepEqual(decision.notes, ["two keeper reports for node c1c1; both were dropped, so it counts as offline"]);
+  });
+
+  it("still decides by the other keepers when one node is reported twice", () => {
+    const laptopKeeps = parseLayout(layoutText.replace("threshold = 50", "threshold = 20"));
+    const decision = decide([keeper("c1c1"), keeper("c1c1"), keeper("a002")], [clip], laptopKeeps);
+
+    assert.deepEqual(decision.confirmed, [{ ...clip, keeper: "a002" }]);
+    assert.equal(decision.notes.length, 1);
   });
 
   it("re-checks every candidate against the plan and the node's pins and assigned paths", () => {

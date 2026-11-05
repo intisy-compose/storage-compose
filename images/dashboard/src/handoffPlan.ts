@@ -59,6 +59,8 @@ export type WaitingHandoff = HandoffCandidate & { reason: WaitingReason };
 export interface HandoffDecision {
   confirmed: ConfirmedHandoff[];
   waiting: WaitingHandoff[];
+  /** What went wrong with the reports themselves, for Attention to show. */
+  notes: string[];
 }
 
 /** A file changed this recently may still be written to, so it waits (call 11). */
@@ -203,14 +205,19 @@ function fileKey(file: Pick<LocalFile, "folderId" | "path">): string {
   return `${file.folderId}\n${normaliseFilePath(file.path)}`;
 }
 
-/** The online, fresh reports by node; a node reported twice is refused, since either report could be the stale one. */
-function reportsByNode(keepers: KeeperReport[], handingId: string, now: Date, maxAgeSeconds: number): Map<string, KeeperReport> {
-  const seen = new Set<string>();
-  for (const report of keepers) {
-    if (seen.has(report.nodeId)) throw new Error(`two keeper reports for node ${report.nodeId}`);
-    seen.add(report.nodeId);
-  }
-  return new Map(keepers.filter((report) => report.nodeId !== handingId && report.online && isFresh(report, now, maxAgeSeconds)).map((report) => [report.nodeId, report]));
+/**
+ * The online, fresh reports by node, and a note for each node reported more than once.
+ * @implNote Both reports of a node reported twice are dropped, since either could be the stale one; that node counts as offline and every other node decides as usual.
+ */
+function reportsByNode(keepers: KeeperReport[], handingId: string, now: Date, maxAgeSeconds: number): { reports: Map<string, KeeperReport>; notes: string[] } {
+  const counts = new Map<string, number>();
+  for (const report of keepers) counts.set(report.nodeId, (counts.get(report.nodeId) ?? 0) + 1);
+  const twice = [...counts].filter(([, count]) => count > 1).map(([nodeId]) => nodeId);
+  const usable = keepers.filter((report) => !twice.includes(report.nodeId) && report.nodeId !== handingId && report.online && isFresh(report, now, maxAgeSeconds));
+  return {
+    reports: new Map(usable.map((report) => [report.nodeId, report])),
+    notes: twice.map((nodeId) => `two keeper reports for node ${nodeId}; both were dropped, so it counts as offline`),
+  };
 }
 
 /**
@@ -229,10 +236,12 @@ export function confirmedHandoffs(
   now: Date,
   maxReportAgeSeconds = keeperReportMaxAgeSeconds,
 ): HandoffDecision {
-  const result: HandoffDecision = { confirmed: [], waiting: [] };
+  const result: HandoffDecision = { confirmed: [], waiting: [], notes: [] };
   const handing = nodeOf(layout, plan.nodeId);
   if (!mayHandOff(handing, plan, decision)) return result;
-  const judgement: Judgement = { layout, handing, plan, reports: reportsByNode(keepers, plan.nodeId, now, maxReportAgeSeconds) };
+  const { reports, notes } = reportsByNode(keepers, plan.nodeId, now, maxReportAgeSeconds);
+  result.notes.push(...notes);
+  const judgement: Judgement = { layout, handing, plan, reports };
   const currentByKey = new Map(current.map((file) => [fileKey(file), file]));
   for (const candidate of candidates) {
     const outcome = decideOne(judgement, { ...candidate, path: normaliseFilePath(candidate.path) }, currentByKey.get(fileKey(candidate)));
