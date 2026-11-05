@@ -6,6 +6,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends jq=1.7.1-6+deb13u4 curl=8.14.1-2+deb13u7 ca-certificates=20250419 util-linux \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=syncthing /bin/syncthing /usr/local/bin/syncthing
-COPY nodes.sh apply-connections.sh handoff.sh connection-profile.jq /usr/local/bin/
-RUN chmod +x /usr/local/bin/nodes.sh /usr/local/bin/apply-connections.sh /usr/local/bin/handoff.sh
+COPY nodes.sh apply-connections.sh handoff.sh handoff-probe.sh connection-profile.jq /usr/local/bin/
+RUN chmod +x /usr/local/bin/nodes.sh /usr/local/bin/apply-connections.sh /usr/local/bin/handoff.sh /usr/local/bin/handoff-probe.sh
 ENTRYPOINT ["/usr/local/bin/nodes.sh"]

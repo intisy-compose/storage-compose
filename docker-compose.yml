@@ -232,16 +232,13 @@ services:
     container_name: storage-nodes
     restart: unless-stopped
     network_mode: "service:gateway"
-    # The hand-off executor's open-file check reads every process's descriptors: the host's PID namespace to
-    # see them, SYS_PTRACE to read another user's (without it 387 of 400 were refused under Docker Desktop).
-    pid: host
-    cap_add:
-      - SYS_PTRACE
     environment:
       ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
       HANDOFF_QUIET_MINUTES: ${HANDOFF_QUIET_MINUTES:-10}
       HANDOFF_TRASH_DAYS: ${HANDOFF_TRASH_DAYS:-7}
+      HANDOFF_OPEN_SNAPSHOT: /handoff-probe/open.txt
     volumes:
+      - handoff-probe:/handoff-probe:ro
       - ./gateway/namespace-address.sh:/namespace-address.sh:ro
       - ./services/syncthing/guard.sh:/guard.sh:ro
       - storage-status:/status
@@ -253,6 +250,32 @@ services:
         restart: true
       mounter:
         condition: service_healthy
+
+  # The hand-off executor's open-file probe: every few seconds it writes which files any process of the host
+  # has open, for handoff.sh to read. Exposure: it sees the host's PID namespace (under Docker Desktop that is
+  # the Docker VM and every container, not Windows or other WSL distros) and holds SYS_PTRACE and
+  # DAC_READ_SEARCH, which let it read any process's descriptors and, through /proc/<pid>/root, any file
+  # those processes can see; without DAC_READ_SEARCH another user's descriptors cannot even be listed
+  # (measured). Everything else is taken away: no other capability, no network, no privilege gain, a
+  # read-only root, and one small volume it writes its snapshot to.
+  handoff-probe:
+    build: images/nodes
+    image: storage-nodes:local
+    container_name: storage-handoff-probe
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/handoff-probe.sh", "/probe"]
+    network_mode: none
+    pid: host
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_PTRACE
+      - DAC_READ_SEARCH
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - handoff-probe:/probe
 
   # The host's one bridge: a private relay (no public pool, no status listener) for peers that share
   # no network with a Docker node. Its key lives in the data repo's gitignored secrets, so the relay id
@@ -317,6 +340,7 @@ x-namespace-listeners:
     "22100": tailnet
 
 x-volume-roles:
+  handoff-probe: rebuilt
   samba-data: rebuilt
   kopia-cache: rebuilt
   storage-status: rebuilt
@@ -324,6 +348,7 @@ x-volume-roles:
   tailscale-socket: rebuilt
 
 volumes:
+  handoff-probe:
   samba-data:
   kopia-cache:
   storage-status:

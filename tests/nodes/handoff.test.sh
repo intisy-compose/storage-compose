@@ -21,6 +21,7 @@ EOF
 fi
 
 handoff=$repo/images/nodes/handoff.sh
+probe=$repo/images/nodes/handoff-probe.sh
 scratch=$(mktemp -d)
 trap 'kill $(jobs -p) 2> /dev/null; rm -rf "$scratch"' EXIT
 passed=0
@@ -66,6 +67,8 @@ case "$method ${request%%\?*}" in
         if grep -Fxq -- "/$file" "$FAKE/ignored/$folder" 2> /dev/null; then
             jq '.local += {ignored: true, invalid: true, size: 0, numBlocks: 0, blocksHash: null}' "$record"
         else cat "$record"; fi ;;
+    "GET /rest/system/connections")
+        cat "$FAKE/connections.json" 2> /dev/null || echo '{"connections": {"KEEPER-DEVICE": {"connected": true}}}' ;;
     "POST /rest/db/scan")
         folder=$(parameter folder)
         path=$(jq -r .path "$FAKE/folders/$folder.json")
@@ -133,7 +136,15 @@ contract() {   # [entry json]...: written ten seconds before $written_now (now) 
         '{schema: 1, nodeId: "a001", writtenAt: $written, apply: true, cluster: false, quietMinutes: 10, entries: $entries, waiting: [], notes: []}' > "$scratch/contract.json"
 }
 
+# The probe's snapshot as of the run's clock, taken in this container, unless a test placed its own.
+fresh_snapshot() {
+    mkdir -p "$scratch/probe"
+    HANDOFF_NOW=${run_now:-$now} bash "$probe" "$scratch/probe" --once
+}
+
 run_handoff() {   # [node id]: runs the executor on the scratch node, its log in $scratch/handoff.out
+    [ -n "${keep_snapshot:-}" ] || fresh_snapshot
+    HANDOFF_OPEN_SNAPSHOT=$scratch/probe/open.txt HANDOFF_SNAPSHOT_WAIT_SECONDS=0 \
     PATH="$scratch/stubs:$PATH" HANDOFF_NOW=${run_now:-$now} HANDOFF_IGNORE_WAIT_SECONDS=${ignore_wait:-2} HANDOFF_CLUSTER_ID=${cluster_id:-c1c1} \
         HANDOFF_OWN_MOUNT_NAMESPACE=${own_namespace:-$(readlink /proc/self/ns/mnt)} FAKE_CONTRACT=$scratch/contract.json \
         bash "$handoff" "${1:-a001}" "$root" http://127.0.0.1:8411 secret-key "$scratch/contract.json" "$scratch/result.json" > "$scratch/handoff.out" 2>&1
@@ -146,6 +157,7 @@ present() { [ -e "$root/Videos/$1" ] && echo yes || echo no; }
 listed() { grep -Fxc -- "/$1" "$root/Videos/.stignore-handoff"; }
 trash_day=$(date -u -d "@$now" +%F)
 in_trash() { [ -f "$root/.storage/handoff-trash/$trash_day/videos/$1" ] && echo yes || echo no; }
+pending_record_attempts() { jq -r .attempts "$root/.storage/handoff-pending.jsonl"; }
 pending_paths() { jq -r .path "$root/.storage/handoff-pending.jsonl" 2> /dev/null | paste -sd ' ' -; }
 trash_kept() { jq -r '[.trash[] | "\(.trash): \(.reason)"] | join("|")' "$scratch/result.json"; }
 destructive_requests() { grep -Eic 'override|revert|DELETE|PUT |PATCH |/rest/system' "$CURL_LOG"; }
@@ -209,7 +221,23 @@ own_namespace=another-container run_handoff
 check "when another container's process has it open, it stays, unlisted" "yes 0 it is open" "$(present clip.mp4) $(listed clip.mp4) $(reason_of clip.mp4)"
 run_handoff
 check "a process of the nodes container itself (its Syncthing) does not hold it" "no moved" "$(present clip.mp4) $(outcome_of clip.mp4)"
+fresh_snapshot
+check "the probe's snapshot names the held file with its mount namespace, under a header of its time" \
+    "at $now 1" "$(head -1 "$scratch/probe/open.txt" | cut -d' ' -f1,2) $(grep -Fxc "$(stat -L -c %d:%i "$root/.storage/handoff-trash/$trash_day/videos/clip.mp4") $(readlink /proc/self/ns/mnt)" "$scratch/probe/open.txt")"
 kill "$holder" 2> /dev/null; wait "$holder" 2> /dev/null
+
+echo "an open-file snapshot that is stale or missing"
+new_node stalesnapshot
+contract "$(entry clip.mp4)"
+fresh_snapshot
+run_now=$((now + 5)) keep_snapshot=1 run_handoff
+check "a snapshot older than the run moves nothing and writes no line" "yes 0 refused" "$(present clip.mp4) $(listed clip.mp4) $(outcome_of clip.mp4)"
+check "with the reason" "whether it is open cannot be told: the open-file snapshot is 5 s older than this run" "$(reason_of clip.mp4)"
+rm -f "$scratch/probe/open.txt"
+keep_snapshot=1 run_handoff
+check "nor does a missing one" "yes 0 whether it is open cannot be told: the open-file snapshot is missing" "$(present clip.mp4) $(listed clip.mp4) $(reason_of clip.mp4)"
+run_handoff
+check "a fresh one lets it go" "no moved" "$(present clip.mp4) $(outcome_of clip.mp4)"
 
 echo "Syncthing that never reports the path ignored"
 new_node never
@@ -249,6 +277,77 @@ check "a moved path's line is never removed, even with a pending record and a fi
 : > "$root/.storage/handoff-pending.jsonl"
 run_now=$((now + 700)) run_handoff
 check "a new file at a handed-off path, not pending and newer than the hand-off, is reported" "unsynced-at-handed-off-path 1" "$(outcome_of clip.mp4) $(listed clip.mp4)"
+
+echo "a run that ended between the rename and the manifest line"
+new_node crashed
+contract "$(entry clip.mp4)"
+FAKE_NEVER_IGNORES=1 run_handoff
+mkdir -p "$root/.storage/handoff-trash/$trash_day/videos"
+mv "$root/Videos/clip.mp4" "$root/.storage/handoff-trash/$trash_day/videos/clip.mp4"
+jq -c --arg trash "$trash_day/videos/clip.mp4" '. + {moving: true, trash: $trash}' "$root/.storage/handoff-pending.jsonl" > "$scratch/p.new" && mv "$scratch/p.new" "$root/.storage/handoff-pending.jsonl"
+contract
+run_handoff
+check "is completed: the manifest line is written, the record goes, the line stays" "moved 1 $trash_day/videos/clip.mp4 1 " \
+    "$(outcome_of clip.mp4) $(listed clip.mp4) $(jq -r .trash "$root/.storage/handoff-trash/manifest.jsonl") $(grep -c . "$root/.storage/handoff-trash/manifest.jsonl") $(pending_paths)"
+
+new_node crashedearly
+contract "$(entry clip.mp4)"
+FAKE_NEVER_IGNORES=1 run_handoff
+jq -c --arg trash "$trash_day/videos/clip.mp4" '. + {moving: true, trash: $trash}' "$root/.storage/handoff-pending.jsonl" > "$scratch/p.new" && mv "$scratch/p.new" "$root/.storage/handoff-pending.jsonl"
+contract
+run_handoff
+check "one that ended before the rename has its mark cleared and is moved as usual" "no yes moved" "$(present clip.mp4) $(in_trash clip.mp4) $(outcome_of clip.mp4)"
+
+new_node crashedunclear
+contract "$(entry clip.mp4)"
+FAKE_NEVER_IGNORES=1 run_handoff
+mkdir -p "$root/.storage/handoff-trash/$trash_day/videos"
+cp -p "$root/Videos/clip.mp4" "$root/.storage/handoff-trash/$trash_day/videos/clip.mp4"
+printf 'changed' >> "$root/Videos/clip.mp4"
+jq -c --arg trash "$trash_day/videos/clip.mp4" '. + {moving: true, trash: $trash}' "$root/.storage/handoff-pending.jsonl" > "$scratch/p.new" && mv "$scratch/p.new" "$root/.storage/handoff-pending.jsonl"
+contract
+run_handoff
+check "a mark that cannot be resolved counts as moved: its line is never removed" "yes 1 ignored-not-moved clip.mp4" "$(present clip.mp4) $(listed clip.mp4) $(outcome_of clip.mp4) $(pending_paths)"
+
+echo "a torn pending file"
+new_node torn
+add_file second.mp4 hello
+contract "$(entry clip.mp4)"
+FAKE_NEVER_IGNORES=1 run_handoff
+printf '{"folderId": "videos", "pa' >> "$root/.storage/handoff-pending.jsonl"
+contract "$(entry second.mp4)"
+run_handoff
+check "its torn line is set aside and the rest still works" "moved moved 1" "$(outcome_of clip.mp4) $(outcome_of second.mp4) $(grep -c 'folderId": "videos", "pa' "$root/.storage/handoff-pending.jsonl.bad")"
+check "and every line of the pending file reads" 0 "$(jq -R 'fromjson? // "bad"' "$root/.storage/handoff-pending.jsonl" | grep -c '"bad"')"
+printf '/clip.mp4' > "$root/Videos/.stignore-handoff"
+add_file third.mp4 hello
+contract "$(entry third.mp4)"
+run_handoff
+check "a list whose last line has no newline gets its own line for the next path" "/clip.mp4 /third.mp4" "$(paste -sd ' ' "$root/Videos/.stignore-handoff")"
+
+echo "a pending path in a folder refused on its turn"
+new_node refusedfolder
+contract "$(entry clip.mp4)"
+FAKE_NEVER_IGNORES=1 run_handoff
+jq '.type = "sendreceive"' "$FAKE/folders/videos.json" > "$FAKE/folders/videos.new" && mv "$FAKE/folders/videos.new" "$FAKE/folders/videos.json"
+contract
+HANDOFF_PENDING_ATTEMPTS=2 run_handoff
+check "counts an attempt" "ignored-not-moved 1" "$(outcome_of clip.mp4) $(pending_record_attempts)"
+HANDOFF_PENDING_ATTEMPTS=2 run_handoff
+check "and is released once they run out" "released 0" "$(outcome_of clip.mp4) $(listed clip.mp4)"
+
+echo "strays are looked at a bounded number per run"
+new_node strays
+printf '/a.mp4\n/b.mp4\n' > "$root/Videos/.stignore-handoff"
+add_file a.mp4 hello
+add_file b.mp4 hello
+contract "$(entry clip.mp4)"
+HANDOFF_STRAY_LIMIT=1 run_handoff
+contract
+first=$(jq -r '[.results[] | select(.outcome == "unsynced-at-handed-off-path") | .path] | join(" ")' "$scratch/result.json")
+HANDOFF_STRAY_LIMIT=1 run_handoff
+second=$(jq -r '[.results[] | select(.outcome == "unsynced-at-handed-off-path") | .path] | join(" ")' "$scratch/result.json")
+check "one per run, the next run going on from there" "a.mp4|b.mp4" "$first|$second"
 
 echo "a file written to after its ignore line"
 new_node late
@@ -414,16 +513,30 @@ echo "the trash keeps what no keeper holds"
 new_node keeperless
 contract "$(entry clip.mp4)"
 run_handoff
-index_entry clip.mp4 5 STICK:1 '[]'
+index_entry clip.mp4 5 STICK:1 '[{"id": "OTHER-DEVICE", "fromTemporary": false}]'
 written_now=$((now + 8 * 86400)) contract
 run_now=$((now + 8 * 86400)) run_handoff
-check "a copy whose version no keeper holds stays, reported" "yes 0 $trash_day/videos/clip.mp4: no keeper holds its version, as this node sees it" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json") $(trash_kept)"
-index_entry clip.mp4 5 STICK:2
+check "a copy only another device holds stays: the purge binds to the recorded keeper" "yes 0 $trash_day/videos/clip.mp4: its keeper does not hold it, as this node sees it" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json") $(trash_kept)"
+check "logged when its reason is new" 1 "$(grep -c "kept $trash_day/videos/clip.mp4 in the trash" "$scratch/handoff.out")"
 run_now=$((now + 8 * 86400)) run_handoff
-check "nor one whose version the network no longer has" "yes $trash_day/videos/clip.mp4: the network no longer has its version" "$(in_trash clip.mp4) $(trash_kept)"
+check "and not again the next run, while the result still lists it once" "0 1" "$(grep -c "kept $trash_day/videos/clip.mp4 in the trash" "$scratch/handoff.out") $(jq '.trash | length' "$scratch/result.json")"
 index_entry clip.mp4 5
+echo '{"connections": {"KEEPER-DEVICE": {"connected": false}}}' > "$FAKE/connections.json"
 run_now=$((now + 8 * 86400)) run_handoff
-check "once a keeper holds it again, it is emptied" "no 1" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+check "nor one whose keeper is not connected now" "yes $trash_day/videos/clip.mp4: its keeper is not connected to this node" "$(in_trash clip.mp4) $(trash_kept)"
+rm -f "$FAKE/connections.json"
+index_entry clip.mp4 5 OTHER:7
+run_now=$((now + 8 * 86400)) run_handoff
+check "nor one whose global version does not descend from the recorded one" "yes $trash_day/videos/clip.mp4: the network no longer has its version or a later one" "$(in_trash clip.mp4) $(trash_kept)"
+jq '.global.deleted = true' "$FAKE/files/videos/$(printf '%s' clip.mp4 | sha256sum | cut -c1-16).json" > "$scratch/d.json"
+index_entry clip.mp4 5
+mv "$scratch/d.json" "$FAKE/files/videos/$(printf '%s' clip.mp4 | sha256sum | cut -c1-16).json"
+run_now=$((now + 8 * 86400)) run_handoff
+check "nor one the network has deleted" "yes $trash_day/videos/clip.mp4: the network has its deletion" "$(in_trash clip.mp4) $(trash_kept)"
+jq -n --arg device "$keeper_device" '{local: {size: 9, version: ["STICK:1", "KEEPER:1"]}, global: {size: 9, version: ["STICK:1", "KEEPER:1"]}, availability: [{id: $device, fromTemporary: false}]}' \
+    > "$FAKE/files/videos/$(printf '%s' clip.mp4 | sha256sum | cut -c1-16).json"
+run_now=$((now + 8 * 86400)) run_handoff
+check "a keeper's later edit, descending from the recorded version, counts as held, so it is emptied" "no 1" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
 
 echo "a manifest line never reaches outside the trash"
 new_node manifest

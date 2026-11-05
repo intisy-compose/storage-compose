@@ -9,7 +9,8 @@
 # removed again only while its file is still there and was never moved (it changed, or the retries
 # ran out), which brings the file back into normal sync. A moved path's line is never removed. Nothing
 # is deleted except what this script moved into the trash, once it is HANDOFF_TRASH_DAYS old and a
-# keeper still holds its version. It never asks Syncthing to override, revert or delete anything.
+# keeper still holds its version. It never asks Syncthing to override, revert or delete anything. Open
+# files are read from the handoff-probe sidecar's snapshot (HANDOFF_OPEN_SNAPSHOT), never from /proc here.
 # Needs bash, jq, curl, flock and GNU coreutils (mv --no-copy, split --filter, basenc).
 set -u
 
@@ -28,6 +29,10 @@ contract_max_age=${HANDOFF_CONTRACT_MAX_AGE_SECONDS:-300}
 contract_max_ahead=60
 ignore_wait=${HANDOFF_IGNORE_WAIT_SECONDS:-60}
 pending_attempts=${HANDOFF_PENDING_ATTEMPTS:-10}
+snapshot_path=${HANDOFF_OPEN_SNAPSHOT:-}
+snapshot_wait=${HANDOFF_SNAPSHOT_WAIT_SECONDS:-15}
+stray_limit=${HANDOFF_STRAY_LIMIT:-1000}
+kept_log_seconds=86400
 cluster_id=${HANDOFF_CLUSTER_ID:-}
 proc_root=${HANDOFF_PROC_ROOT:-/proc}
 handoff_list=.stignore-handoff
@@ -45,6 +50,9 @@ trap 'rm -rf "$work"' EXIT
 : > "$work/trash"
 contract=$work/contract.json
 purged=0
+snapshot_loaded=
+snapshot_problem=
+declare -A open_files=()
 
 record() {   # <folder id> <path> <outcome> <reason> [trash path]
     jq -cn --arg folderId "$1" --arg path "$2" --arg outcome "$3" --arg reason "$4" --arg trash "${5:-}" \
@@ -62,7 +70,7 @@ write_result() {   # [refusal]
         --arg refused "${1:-}" --argjson purged "$purged" --slurpfile results "$work/results" --slurpfile trash "$work/trash" \
         --rawfile notes "$work/notes" \
         '{schema: 1, nodeId: $nodeId, contractWrittenAt: $contractWrittenAt, finishedAt: $finishedAt,
-          refused: (if $refused == "" then null else $refused end), results: $results, trash: $trash,
+          refused: (if $refused == "" then null else $refused end), results: $results, trash: ($trash | unique_by(.trash)),
           notes: ($notes | split("\n") | map(select(. != ""))), purged: $purged}' > "$result.new" \
         && mv -f "$result.new" "$result"
 }
@@ -76,6 +84,14 @@ refuse_whole() {   # <reason>: the run acts on nothing
 api_get() { curl -fsS -m 10 -H "X-API-Key: $key" "$api$1"; }
 api_post() { curl -fsS -m 30 -X POST -H "X-API-Key: $key" "$api$1" > /dev/null; }
 uri() { jq -rn --arg value "$1" '$value | @uri'; }
+
+# Appends one line, first ending a last line that a torn write left without its newline.
+append_line() {   # <file> <line>
+    if [ -s "$1" ] && [ -n "$(tail -c 1 -- "$1")" ]; then printf '\n' >> "$1"; fi
+    printf '%s\n' "$2" >> "$1"
+}
+
+json_lines() { jq -cR 'fromjson? // empty' "$1" 2> /dev/null; }
 field() { jq -r "$2" <<< "$1"; }
 
 # [node] values of the node's own .storage/node.toml, one table level deep, as the joins write it.
@@ -146,23 +162,41 @@ blocks_hash() {   # <file> <size> <block count>
         | cut -d' ' -f1 | tr -d '\n' | tr a-f A-F | basenc --base16 -d | sha256sum | cut -d' ' -f1 | tr a-f A-F | basenc --base16 -d | base64 -w0
 }
 
-# Whether a process outside this container has the file open. The nodes service runs with the host's PID
-# namespace and CAP_SYS_PTRACE; its own processes (the Syncthings, which only read) share this mount
-# namespace and are skipped. A process whose descriptors cannot be read makes the check advisory, noted.
-is_open() {   # <file>
-    local target own process namespace unreadable=0 answer
-    target=$(stat -L -c %d:%i -- "$1") || return 1
+# Reads the probe's snapshot once per run, waiting up to HANDOFF_SNAPSHOT_WAIT_SECONDS for one taken at or
+# after this run's start; an older or missing one leaves `snapshot_problem` set, and nothing moves. The
+# nodes container's own processes (its Syncthings, which only read) share its mount namespace and are left
+# out. Processes the probe could not read make the check advisory, said in the result's notes.
+load_snapshot() {
+    local deadline=$((SECONDS + snapshot_wait)) own header at unreadable key namespace
+    snapshot_loaded=yes
+    [ -n "$snapshot_path" ] || { snapshot_problem="no open-file snapshot is configured"; return; }
     own=${HANDOFF_OWN_MOUNT_NAMESPACE:-$(readlink /proc/self/ns/mnt)}
-    for process in "$proc_root"/[0-9]*; do
-        [ -d "$process/fd" ] || continue
-        namespace=$(readlink "$process/ns/mnt" 2> /dev/null) || { unreadable=$((unreadable + 1)); continue; }
-        [ "$namespace" = "$own" ] && continue
-        answer=$(stat -L -c %d:%i -- "$process"/fd/* 2>&1)
-        grep -Fxq -- "$target" <<< "$answer" && return 0
-        grep -q 'Permission denied' <<< "$answer" && unreadable=$((unreadable + 1))
+    while true; do
+        snapshot_problem="the open-file snapshot is missing"
+        if cp -- "$snapshot_path" "$work/open.txt" 2> /dev/null; then
+            read -r header < "$work/open.txt"
+            at=$(awk '$1 == "at" && $2 ~ /^[0-9]+$/ { print $2 }' <<< "$header")
+            if [ -z "$at" ]; then snapshot_problem="the open-file snapshot cannot be read"
+            elif [ "$at" -lt "$run_start" ]; then snapshot_problem="the open-file snapshot is $((run_start - at)) s older than this run"
+            elif [ "$at" -gt $((run_start + contract_max_ahead + snapshot_wait)) ]; then snapshot_problem="the open-file snapshot was taken ahead of this host's clock"
+            else snapshot_problem=; break; fi
+        fi
+        [ "$SECONDS" -lt "$deadline" ] || return
+        sleep 1
     done
-    [ "$unreadable" -eq 0 ] || note "the open-file check could not read $unreadable processes; the size, modification time, hash and quiet period are the guard"
-    return 1
+    unreadable=$(awk '{ for (i = 1; i < NF; i++) if ($i == "unreadable") print $(i + 1) }' <<< "$header")
+    [ "${unreadable:-0}" -eq 0 ] || note "the open-file probe could not read $unreadable processes; the size, modification time, hash and quiet period are the guard"
+    while read -r key namespace; do
+        [ -n "$key" ] && [ "$namespace" != "$own" ] && open_files[$key]=1
+    done < <(tail -n +2 "$work/open.txt")
+}
+
+is_open() {   # <file>: 0 open, 1 not open, 2 unknown (snapshot_problem says why)
+    [ -n "$snapshot_loaded" ] || load_snapshot
+    [ -z "$snapshot_problem" ] || return 2
+    local key
+    key=$(stat -L -c %d:%i -- "$1") || return 2
+    [ -n "${open_files[$key]:-}" ]
 }
 
 # Why the file on disk does not have the confirmed size and modification time, or nothing; no hash yet.
@@ -220,19 +254,31 @@ folder_difference() {   # <folder path>
     [ -f "$real/$handoff_list" ] && [ ! -L "$real/$handoff_list" ] || echo "the folder has no regular $handoff_list"
 }
 
-is_pending() {   # <folder id> <path>
-    jq -e --arg folder "$1" --arg path "$2" 'select(.folderId == $folder and .path == $path)' "$pending_file" > /dev/null 2>&1
+pending_record() {   # <folder id> <path>
+    json_lines "$pending_file" | jq -c --arg folder "$1" --arg path "$2" 'select(.folderId == $folder and .path == $path)' | head -1
+}
+
+is_pending() { [ -n "$(pending_record "$1" "$2")" ]; }
+
+# Lines of the pending file that are not JSON (a torn write) go to a side file, so the rest still reads.
+quarantine_pending() {
+    local bad
+    bad=$(jq -rR 'select((fromjson? // null) | type != "object")' "$pending_file" 2> /dev/null)
+    [ -n "$bad" ] || return 0
+    printf '%s\n' "$bad" >> "$pending_file.bad"
+    json_lines "$pending_file" > "$pending_file.new" && mv -f -- "$pending_file.new" "$pending_file"
+    note "$(grep -c . <<< "$bad") unreadable lines of the pending file were moved to $(basename -- "$pending_file").bad"
 }
 
 # Written before the ignore line, so a run that dies in between still knows the path is its own.
 pending_add() {   # <entry json>
     is_pending "$folder_id" "$(field "$1" .path)" && return 0
-    jq -cn --argjson entry "$1" --argjson since "$(now)" \
-        '{folderId: $entry.folderId, folderPath: $entry.folderPath, path: $entry.path, entry: $entry, since: $since, attempts: 0}' >> "$pending_file"
+    append_line "$pending_file" "$(jq -cn --argjson entry "$1" --argjson since "$(now)" \
+        '{folderId: $entry.folderId, folderPath: $entry.folderPath, path: $entry.path, entry: $entry, since: $since, attempts: 0}')"
 }
 
 pending_rewrite() {   # <jq filter over one pending line>
-    jq -c --arg folder "$folder_id" --arg path "$current_path" "$1" "$pending_file" > "$pending_file.new" && mv -f -- "$pending_file.new" "$pending_file"
+    json_lines "$pending_file" | jq -c --arg folder "$folder_id" --arg path "$current_path" "$1" > "$pending_file.new" && mv -f -- "$pending_file.new" "$pending_file"
 }
 
 pending_remove() {   # <path>
@@ -241,17 +287,34 @@ pending_remove() {   # <path>
 
 pending_attempt() {   # <path>: counts one more retry and prints how many there were
     current_path=$1 pending_rewrite 'if .folderId == $folder and .path == $path then .attempts += 1 else . end'
-    jq -r --arg folder "$folder_id" --arg path "$1" 'select(.folderId == $folder and .path == $path) | .attempts' "$pending_file"
+    pending_record "$folder_id" "$1" | jq -r '.attempts'
+}
+
+# The intent before the rename: a run that dies between the rename and its manifest line leaves a record
+# that reads as moved, so nothing can release its line.
+pending_moving() {   # <path> <trash relative, or empty to clear>
+    current_path=$1 trash_path=$2 pending_rewrite_moving
+}
+
+pending_rewrite_moving() {
+    json_lines "$pending_file" | jq -c --arg folder "$folder_id" --arg path "$current_path" --arg trash "$trash_path" \
+        'if .folderId == $folder and .path == $path then (if $trash == "" then del(.moving, .trash) else . + {moving: true, trash: $trash} end) else . end' \
+        > "$pending_file.new" && mv -f -- "$pending_file.new" "$pending_file"
 }
 
 was_moved() {   # <folder id> <path>
-    jq -e --arg folder "$1" --arg path "$2" 'select(.folderId == $folder and .path == $path)' "$manifest" > /dev/null 2>&1
+    json_lines "$manifest" | jq -e --arg folder "$1" --arg path "$2" 'select(.folderId == $folder and .path == $path)' > /dev/null 2>&1 && return 0
+    [ "$(pending_record "$1" "$2" | jq -r '.moving // false')" = true ]
 }
 
 # The one way a line leaves .stignore-handoff: the path is this script's pending one, its file is still
 # there, and it was never moved, so removing the line puts a file that is still on the node back into sync.
 release() {   # <path> <reason>
     local path=$1 list=$folder_real/$handoff_list
+    if [ "$(realpath -e -- "$folder_real" 2> /dev/null)" != "$folder_real" ] || ! is_inside "$root_real" "$folder_real" || [ ! -f "$list" ] || [ -L "$list" ]; then
+        record "$folder_id" "$path" ignored-not-moved "$2; its line stays, since its folder is not a plain one inside the node's root"
+        return
+    fi
     if ! is_pending "$folder_id" "$path" || was_moved "$folder_id" "$path" || [ ! -e "$folder_real/$path" ]; then
         record "$folder_id" "$path" ignored-not-moved "$2; its line stays, since its file is not a pending one still on the node"
         return
@@ -277,22 +340,31 @@ move_to_trash() {   # <entry json>
     [ ! -e "$target" ] && [ ! -L "$target" ] || { echo "a file of that name is in the trash already"; return 1; }
     mkdir -p -- "$directory" || { echo "the trash folder cannot be made"; return 1; }
     [ "$(stat -c %d -- "$file")" = "$(stat -c %d -- "$directory")" ] || { echo "the trash is on another filesystem"; return 1; }
-    mv -n --no-copy -T -- "$file" "$target" 2> /dev/null && [ ! -e "$file" ] && [ -f "$target" ] || { echo "it could not be renamed into the trash"; return 1; }
+    pending_moving "$path" "$relative" || { echo "its intent to move could not be recorded"; return 1; }
+    if ! mv -n --no-copy -T -- "$file" "$target" 2> /dev/null || [ -e "$file" ] || [ ! -f "$target" ]; then
+        [ -e "$file" ] && [ ! -e "$target" ] && pending_moving "$path" ""
+        echo "it could not be renamed into the trash"
+        return 1
+    fi
     if [ "$(stat -c %s:%Y -- "$target")" != "$(jq -r '"\(.size):\(.modifiedSeconds)"' <<< "$entry")" ]; then
         if mv -n --no-copy -T -- "$target" "$file" 2> /dev/null && [ -f "$file" ] && [ ! -e "$target" ]; then
+            pending_moving "$path" ""
             echo "it changed while it was moved and was put back"
             return 2
         fi
-        jq -cn --argjson at "$(now)" --arg trash "$relative" --argjson entry "$entry" \
-            '{at: $at, trash: $trash, folderId: $entry.folderId, path: $entry.path, reason: "changed while it was moved and could not be put back"}' >> "$trash_root/unlisted.jsonl"
+        append_line "$trash_root/unlisted.jsonl" "$(jq -cn --argjson at "$(now)" --arg trash "$relative" --argjson entry "$entry" \
+            '{at: $at, trash: $trash, folderId: $entry.folderId, path: $entry.path, reason: "changed while it was moved and could not be put back"}')"
         echo "$relative"
         return 3
     fi
-    jq -cn --argjson movedAt "$(now)" --arg trash "$relative" --argjson entry "$entry" \
-        '{movedAt: $movedAt, trash: $trash, folderId: $entry.folderId, folderPath: $entry.folderPath, path: $entry.path, version: $entry.version,
-          size: $entry.size, modifiedSeconds: $entry.modifiedSeconds, blocksHash: $entry.blocksHash, keeper: $entry.keeper, keeperDevice: $entry.keeperDevice}' \
-        >> "$manifest"
+    record_moved "$entry" "$relative"
     echo "$relative"
+}
+
+record_moved() {   # <entry json> <trash relative>
+    append_line "$manifest" "$(jq -cn --argjson movedAt "$(now)" --arg trash "$2" --argjson entry "$1" \
+        '{movedAt: $movedAt, trash: $trash, folderId: $entry.folderId, folderPath: $entry.folderPath, path: $entry.path, version: $entry.version,
+          size: $entry.size, modifiedSeconds: $entry.modifiedSeconds, blocksHash: $entry.blocksHash, keeper: $entry.keeper, keeperDevice: $entry.keeperDevice}')"
 }
 
 # After Syncthing reports the path ignored: open, hash, rename. Prints nothing; records the outcome.
@@ -300,11 +372,16 @@ finish_path() {   # <entry json>
     local entry=$1 path problem relative status attempts
     path=$(field "$entry" .path)
     problem=$(metadata_difference "$folder_real/$path" "$entry")
-    if [ -z "$problem" ] && is_open "$folder_real/$path"; then
-        attempts=$(pending_attempt "$path")
-        if [ "$attempts" -ge "$pending_attempts" ]; then release "$path" "it was open on $attempts runs"
-        else record "$folder_id" "$path" ignored-not-moved "it is open; it is retried next run"; fi
-        return
+    if [ -z "$problem" ]; then
+        is_open "$folder_real/$path"
+        case $? in
+            0) attempts=$(pending_attempt "$path")
+               if [ "$attempts" -ge "$pending_attempts" ]; then release "$path" "it was open on $attempts runs"
+               else record "$folder_id" "$path" ignored-not-moved "it is open; it is retried next run"; fi
+               return ;;
+            2) record "$folder_id" "$path" ignored-not-moved "whether it is open cannot be told ($snapshot_problem); it is retried next run"
+               return ;;
+        esac
     fi
     [ -z "$problem" ] && problem=$(content_difference "$folder_real/$path" "$entry")
     if [ -n "$problem" ]; then release "$path" "$problem after its ignore was written"; return; fi
@@ -320,6 +397,27 @@ finish_path() {   # <entry json>
     esac
 }
 
+# A record marked `moving` from a run that ended mid-move: the copy in the trash and none at the path means
+# the rename happened, so its manifest line is written now; a file at the path and none in the trash means it
+# did not, so the mark is cleared and the path retried as usual; anything else stays as it is, reported.
+recover_moving() {   # <entry json>
+    local entry=$1 path relative target file
+    path=$(field "$entry" .path)
+    relative=$(pending_record "$folder_id" "$path" | jq -r '.trash // ""')
+    target=$trash_root/$relative
+    file=$folder_real/$path
+    if [ -n "$relative" ] && is_plain_relative "$relative" && is_plain_file "$trash_root" "$relative" && [ ! -e "$file" ] \
+        && [ "$(stat -c %s:%Y -- "$target")" = "$(jq -r '"\(.size):\(.modifiedSeconds)"' <<< "$entry")" ]; then
+        record_moved "$entry" "$relative"
+        pending_remove "$path"
+        record "$folder_id" "$path" moved "a run ended between its rename and its manifest line; the line is written now" "$relative"
+    elif [ -e "$file" ] && { [ -z "$relative" ] || [ ! -e "$target" ]; }; then
+        pending_moving "$path" ""
+    else
+        record "$folder_id" "$path" ignored-not-moved "a run ended while it was moved and neither its path nor its trash copy is as recorded; it is left as it is"
+    fi
+}
+
 contract_age_problem() {
     local written age
     written=$(date -d "$(jq -r '.writtenAt // ""' "$contract")" +%s 2> /dev/null) || { echo "the contract has no time it was written"; return; }
@@ -332,6 +430,11 @@ contract_age_problem() {
 retry_check() {   # <entry json>: prints `wait` to poll it, `finish` when it is ignored, or nothing when it was settled here
     local entry=$1 path problem attempts
     path=$(field "$entry" .path)
+    if [ "$(pending_record "$folder_id" "$path" | jq -r '.moving // false')" = true ]; then
+        recover_moving "$entry"
+        [ "$(pending_record "$folder_id" "$path" | jq -r '.moving // false')" = true ] && return
+        is_pending "$folder_id" "$path" || return
+    fi
     if [ ! -e "$folder_real/$path" ] && [ ! -L "$folder_real/$path" ]; then
         pending_remove "$path"
         record "$folder_id" "$path" refused "it is gone from the node without being moved; its ignore line stays"
@@ -360,13 +463,18 @@ hand_off_folder() {   # <folder id> <folder path>
     local entries=() pending=() entry path problem waiting=() subs= deadline still action attempts
     local -A retrying=()
     mapfile -t entries < <(jq -c --arg folder "$folder_id" '.entries[] | select(.folderId == $folder)' "$contract")
-    mapfile -t pending < <(jq -c --arg folder "$folder_id" 'select(.folderId == $folder) | .entry' "$pending_file" 2> /dev/null)
+    mapfile -t pending < <(json_lines "$pending_file" | jq -c --arg folder "$folder_id" 'select(.folderId == $folder) | .entry')
     problem=$(contract_age_problem)
     [ -n "$problem" ] && problem="$problem by this folder's turn"
     [ -z "$problem" ] && problem=$(folder_difference "$folder_real")
     if [ -n "$problem" ]; then
         for entry in "${entries[@]+"${entries[@]}"}"; do record "$folder_id" "$(field "$entry" .path)" refused "$problem"; done
-        for entry in "${pending[@]+"${pending[@]}"}"; do record "$folder_id" "$(field "$entry" .path)" ignored-not-moved "$problem; it is retried next run"; done
+        for entry in "${pending[@]+"${pending[@]}"}"; do
+            path=$(field "$entry" .path)
+            attempts=$(pending_attempt "$path")
+            if [ "$attempts" -ge "$pending_attempts" ]; then release "$path" "$problem on $attempts runs"
+            else record "$folder_id" "$path" ignored-not-moved "$problem; it is retried next run"; fi
+        done
         return
     fi
     for entry in "${pending[@]+"${pending[@]}"}"; do
@@ -382,10 +490,16 @@ hand_off_folder() {   # <folder id> <folder path>
         if ! is_plain_file "$folder_real" "$path"; then record "$folder_id" "$path" refused "it is not a regular file inside the folder, or a link is on its way"; continue; fi
         problem=$(index_difference "$entry" false)
         [ -z "$problem" ] && problem=$(metadata_difference "$folder_real/$path" "$entry")
-        [ -z "$problem" ] && is_open "$folder_real/$path" && problem="it is open"
+        if [ -z "$problem" ]; then
+            is_open "$folder_real/$path"
+            case $? in
+                0) problem="it is open" ;;
+                2) problem="whether it is open cannot be told: $snapshot_problem" ;;
+            esac
+        fi
         if [ -n "$problem" ]; then record "$folder_id" "$path" refused "$problem"; continue; fi
         pending_add "$entry" || { record "$folder_id" "$path" refused "it could not be recorded as pending"; continue; }
-        has_line "$folder_real/$handoff_list" "/$path" || printf '/%s\n' "$path" >> "$folder_real/$handoff_list"
+        has_line "$folder_real/$handoff_list" "/$path" || append_line "$folder_real/$handoff_list" "/$path"
         subs+="&sub=$(uri "$path")"
         waiting+=("$entry")
     done
@@ -411,36 +525,60 @@ hand_off_folder() {   # <folder id> <folder path>
 }
 
 # A file at a path the list ignores that is not pending and is newer than its hand-off is on this node only.
+# At most HANDOFF_STRAY_LIMIT lines per folder and run, from where the last run stopped, so a long list is
+# covered over several runs.
 report_strays() {
-    local line path modified moved
+    local line path modified moved offset total offsets=$root_real/.storage/handoff-strays.json
+    [ -f "$offsets" ] || echo '{}' > "$offsets"
+    total=$(grep -c '' "$folder_real/$handoff_list")
+    offset=$(jq -r --arg folder "$folder_id" '.[$folder] // 0 | numbers' "$offsets" 2> /dev/null)
+    [ -n "$offset" ] && [ "$offset" -lt "$total" ] || offset=0
+    jq --arg folder "$folder_id" --argjson next "$(( offset + stray_limit < total ? offset + stray_limit : 0 ))" '.[$folder] = $next' "$offsets" > "$offsets.new" 2> /dev/null \
+        && mv -f -- "$offsets.new" "$offsets" || echo '{}' > "$offsets"
     while IFS= read -r line; do
         path=${line#/}
         [ "$line" != "$path" ] && is_plain_relative "$path" && is_plain_file "$folder_real" "$path" || continue
         is_pending "$folder_id" "$path" && continue
         modified=$(stat -c %Y -- "$folder_real/$path")
-        moved=$(jq -r --arg folder "$folder_id" --arg path "$path" 'select(.folderId == $folder and .path == $path) | .movedAt' "$manifest" 2> /dev/null | tail -1)
+        moved=$(json_lines "$manifest" | jq -r --arg folder "$folder_id" --arg path "$path" 'select(.folderId == $folder and .path == $path) | .movedAt' | tail -1)
         if [ -z "$moved" ]; then
             record "$folder_id" "$path" unsynced-at-handed-off-path "a file is at a path the hand-off list ignores, with no record of its hand-off, so it is on this node only"
         elif [ "$modified" -gt "$moved" ]; then
             record "$folder_id" "$path" unsynced-at-handed-off-path "a file newer than its hand-off is at a path the hand-off list ignores, so it is on this node only"
         fi
-    done < "$folder_real/$handoff_list"
+    done < <(sed -n "$((offset + 1)),$((offset + stray_limit))p" "$folder_real/$handoff_list")
 }
 
-# Why a keeper may no longer hold the manifest line's version, as the node's own index sees it, or nothing.
+# Why the recorded keeper may no longer hold the manifest line's version, or nothing. It must be connected to
+# this node now (a keeper last seen hours ago may have lost the file since), be in the path's availability
+# not from a temporary file, and the global version must be the recorded one or descend from it (every
+# counter at least as large), not deleted: a keeper's later edit still holds the content handed off.
 keeper_problem() {   # <manifest line>
-    local line=$1 report
+    local line=$1 report device
     jq -e '.version | arrays | length > 0' <<< "$line" > /dev/null 2>&1 || { echo "no version was recorded with it"; return; }
+    device=$(jq -r '.keeperDevice // "" | strings' <<< "$line")
+    [ -n "$device" ] || { echo "no keeper was recorded with it"; return; }
+    [ -n "${connections+set}" ] || connections=$(api_get /rest/system/connections 2> /dev/null || echo '{}')
+    jq -e --arg device "$device" '.connections[$device].connected == true' <<< "$connections" > /dev/null 2>&1 || { echo "its keeper is not connected to this node"; return; }
     report=$(api_get "/rest/db/file?folder=$(uri "$(field "$line" .folderId)")&file=$(uri "$(field "$line" .path)")") || { echo "its index entry cannot be read"; return; }
-    jq -r --argjson line "$line" '
-        if .global.version != $line.version or .global.deleted then "the network no longer has its version"
-        elif ([.availability[]? | select(.fromTemporary | not)] | length) == 0 then "no keeper holds its version, as this node sees it"
-        else empty end' <<< "$report"
+    jq -r --argjson line "$line" --arg device "$device" '
+        def counters: map(split(":") | {(.[0]): (.[1] | tonumber? // -1)}) | add // {};
+        (.global.version // [] | counters) as $global
+        | if (.global.deleted // false) then "the network has its deletion"
+          elif ([$line.version | counters | to_entries[] | select(($global[.key] // -1) < .value)] | length) > 0 then "the network no longer has its version or a later one"
+          elif ([.availability[]? | select(.id == $device and (.fromTemporary | not))] | length) == 0 then "its keeper does not hold it, as this node sees it"
+          else empty end' <<< "$report"
 }
 
-kept_in_trash() {   # <relative> <manifest line> <reason>
+# The result lists a kept copy once per run; the log says it again only when the reason changes or a day passed.
+kept_in_trash() {   # <relative> <manifest line> <reason>: prints the manifest line to keep
     jq -cn --arg trash "$1" --argjson line "$2" --arg reason "$3" '{trash: $trash, folderId: $line.folderId, path: $line.path, reason: $reason}' >> "$work/trash"
-    log "kept $1 in the trash: $3"
+    if [ "$(jq -r '.keptReason // ""' <<< "$2")" != "$3" ] || [ $(( $(jq -r '.keptAt // 0' <<< "$2") + kept_log_seconds )) -le "$(now)" ]; then
+        log "kept $1 in the trash: $3"
+        jq -c --arg reason "$3" --argjson at "$(now)" '. + {keptReason: $reason, keptAt: $at}' <<< "$2"
+    else
+        printf '%s\n' "$2"
+    fi
 }
 
 # Empties what this script moved into the trash HANDOFF_TRASH_DAYS ago or earlier, by its own manifest: a
@@ -459,20 +597,17 @@ purge_trash() {
         fi
         target=$trash_root/$relative
         if ! is_plain_relative "$relative"; then
-            kept_in_trash "$relative" "$line" "its manifest line points outside the trash"
-            printf '%s\n' "$line" >> "$work/kept"
+            kept_in_trash "$relative" "$line" "its manifest line points outside the trash" >> "$work/kept"
             continue
         fi
         if [ ! -e "$target" ] && [ ! -L "$target" ]; then continue; fi
         if ! is_plain_file "$trash_root" "$relative" || [ "$(stat -c %s:%Y -- "$target")" != "$(jq -r '"\(.size):\(.modifiedSeconds)"' <<< "$line")" ]; then
-            kept_in_trash "$relative" "$line" "it is not the file this script moved there"
-            printf '%s\n' "$line" >> "$work/kept"
+            kept_in_trash "$relative" "$line" "it is not the file this script moved there" >> "$work/kept"
             continue
         fi
         problem=$(keeper_problem "$line")
         if [ -n "$problem" ]; then
-            kept_in_trash "$relative" "$line" "$problem"
-            printf '%s\n' "$line" >> "$work/kept"
+            kept_in_trash "$relative" "$line" "$problem" >> "$work/kept"
             continue
         fi
         rm -f -- "$target" && purged=$((purged + 1))
@@ -503,8 +638,8 @@ contract_problem() {
 # Every folder the run looks at, with its path: the contract's, then the pending and moved paths' own.
 folders_of_run() {
     { jq -c '.entries[] | {folderId, folderPath}' "$contract"
-      jq -c '{folderId, folderPath}' "$pending_file" 2> /dev/null
-      jq -c 'select(.folderPath) | {folderId, folderPath}' "$manifest" 2> /dev/null
+      json_lines "$pending_file" | jq -c '{folderId, folderPath}'
+      json_lines "$manifest" | jq -c 'select(.folderPath) | {folderId, folderPath}' 
     } | jq -rs 'group_by(.folderId) | .[] | "\(.[0].folderId)\t\(.[0].folderPath)"'
 }
 
@@ -520,6 +655,7 @@ main() {
     [ "$(node_value apply)" = true ] || refuse_whole "the node file does not say apply = true"
     [ "$(node_value kind)" != array ] || refuse_whole "an array never hands off"
     [ "$node_id" != "$cluster_id" ] || refuse_whole "the cluster never hands off"
+    run_start=$(now)
     cp -- "$contract_source" "$contract" 2> /dev/null || refuse_whole "the contract cannot be read"
     local problem
     problem=$(contract_problem)
@@ -530,6 +666,7 @@ main() {
     mkdir -p -- "$trash_root" && [ ! -L "$trash_root" ] || refuse_whole "the trash folder cannot be made"
     [ ! -L "$pending_file" ] || refuse_whole "the pending file is a link"
     touch -- "$pending_file" || refuse_whole "the pending file cannot be made"
+    quarantine_pending
     local folder path
     while IFS=$'\t' read -r folder path; do
         [ -n "$folder" ] && hand_off_folder "$folder" "$path"
