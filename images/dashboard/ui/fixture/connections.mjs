@@ -69,5 +69,5 @@ export function nodeOptionsFixture(nodeId) {
 }
 
 export function hostSettingsFixture() {
-  return { name: "finn-pc", tailnetName: "finn-pc.example.ts.net", peerDashboards: [], ntfy: { url: "", topicSet: false }, priorityBands: null, setupRepo: true };
+  return { name: "finn-pc", tailnetName: "finn-pc.example.ts.net", peerDashboards: [], ntfy: { url: "", topicSet: false }, priorityBands: null, priorityBandsFromLayout: false, setupRepo: true };
 }

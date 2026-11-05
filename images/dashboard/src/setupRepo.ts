@@ -1,30 +1,67 @@
 import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { ConnectionProfile, PriorityBand, ProfileRead } from "./api/types.js";
+import { type ConnectionProfile, type NodeAccess, type PriorityBand, type ProfileRead, defaultPriorityBands } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { ProfileError, defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
 import { heldCommitText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseInProgressText, rebaseRefusedText, unpushedText } from "./api/profileText.js";
 import { RequestError } from "./http.js";
 import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
-import { type TomlTable, parseToml } from "./toml.js";
+import { type TomlTable, type TomlValue, parseToml } from "./toml.js";
 
 export interface LayoutFolder {
   relativePath: string;
   id: string;
   priority: number;
+  ignore: string[];
+  versionsDays: number;
 }
+
+/** C-30's `archive` role marks the private cluster. */
+export type DeviceRole = "device" | "archive";
 
 export interface LayoutDevice {
   name: string;
   id: string;
   joined: boolean;
+  role: DeviceRole;
+  root: string;
+  /** A folder's own place on this device, by the folder's layout path. */
+  paths: Record<string, string>;
+}
+
+/** `[nodes.<id>]`: one node's policy, shared by every host through the setup repo. */
+export interface LayoutNode {
+  id: string;
+  name: string;
+  /** The `[devices.<name>]` entry that carries the node's Syncthing identity, root and paths. */
+  device: string;
+  threshold: number;
+  assigned: string[];
+  /** Priorities raised for this node only, by layout path. */
+  pins: Record<string, number>;
+  access: NodeAccess;
+  admitted: boolean;
+  /** False while the node only reports what its plan would change. */
+  apply: boolean;
+  enabled: boolean;
+}
+
+/** A layout entry that cannot be read as written; a blocking one leaves its node out of every plan. */
+export interface LayoutProblem {
+  nodeId: string | null;
+  text: string;
+  blocksNode: boolean;
 }
 
 export interface SetupLayout {
   devices: LayoutDevice[];
   folders: LayoutFolder[];
-  /** The layout's `[bands]` table, highest first; empty while the layered sync sets none. */
+  nodes: LayoutNode[];
+  problems: LayoutProblem[];
+  /** The layout's `[bands]` table, highest first, or the design's bands when it sets none. */
   bands: PriorityBand[];
+  /** Whether `bands` is the layout's own table rather than the design's default. */
+  bandsFromLayout: boolean;
 }
 
 export interface SetupRecordResult {
@@ -54,22 +91,136 @@ function asTable(value: unknown): TomlTable {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as TomlTable) : {};
 }
 
-export function parseLayout(text: string): SetupLayout {
-  const toml = parseToml(text);
-  const devices = Object.entries(asTable(toml.devices)).map(([name, value]) => {
-    const entry = asTable(value);
-    return { name, id: typeof entry.id === "string" ? entry.id : "", joined: entry.joined !== false };
-  });
-  const folders = Object.entries(asTable(toml.folders)).map(([key, value]) => {
-    const entry = asTable(value);
-    const relativePath = normaliseRelativePath(key);
-    const priority = typeof entry.priority === "number" ? entry.priority : (categoryPriority[String(entry.category)] ?? 0);
-    return { relativePath, id: folderId(relativePath), priority };
-  });
-  const bands = Object.entries(asTable(toml.bands))
+function textOf(entry: TomlTable, key: string, fallback = ""): string {
+  const value = entry[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+function numberOf(entry: TomlTable, key: string, fallback: number): number {
+  const value = entry[key];
+  return typeof value === "number" ? value : fallback;
+}
+
+function textsOf(entry: TomlTable, key: string): string[] {
+  const value = entry[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+/** drive-sync's defaults for a device's root and a folder's versions. */
+const defaultDeviceRoot = "/data";
+const defaultVersionsDays = 365;
+
+function parseDevice(name: string, entry: TomlTable): LayoutDevice {
+  const paths = Object.fromEntries(Object.entries(asTable(entry.paths)).flatMap(([key, value]) => (typeof value === "string" ? [[key, value]] : [])));
+  return {
+    name,
+    id: textOf(entry, "id"),
+    joined: entry.joined !== false,
+    role: entry.role === "archive" ? "archive" : "device",
+    root: textOf(entry, "root", defaultDeviceRoot),
+    paths,
+  };
+}
+
+function parseFolder(key: string, entry: TomlTable): LayoutFolder {
+  const relativePath = normaliseRelativePath(key);
+  const priority = typeof entry.priority === "number" ? entry.priority : (categoryPriority[String(entry.category)] ?? 0);
+  return { relativePath, id: folderId(relativePath), priority, ignore: textsOf(entry, "ignore"), versionsDays: numberOf(entry, "versions_days", defaultVersionsDays) };
+}
+
+/** Priorities run from 0 to this. */
+export const highestPriority = 100;
+
+/** The node file's patterns, so a layout entry always names a node a node file can hold. */
+const nodeIdPattern = /^[0-9a-f]{4}$/;
+const nodeNamePattern = /^[a-z0-9][a-z0-9-]*$/;
+
+/** @implNote A pin that is not a number still protects its path, as the highest pin, so a typo never lets the path be handed off; finite, so the API shows it rather than the null JSON makes of Infinity. */
+function parsePins(id: string, table: TomlTable, problems: LayoutProblem[]): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(table).map(([path, value]) => {
+      const relativePath = normaliseRelativePath(path);
+      if (typeof value === "number") return [relativePath, value];
+      problems.push({ nodeId: id, text: `pin ${relativePath} is not a number; it protects the path as the highest pin`, blocksNode: false });
+      return [relativePath, highestPriority];
+    }),
+  );
+}
+
+/** @implNote An assigned entry that is not a path cannot say what it protects, so the node is stopped rather than planned without it. */
+function parseAssigned(id: string, value: TomlValue | undefined, problems: LayoutProblem[]): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    problems.push({ nodeId: id, text: "assigned is not a list of paths", blocksNode: true });
+    return [];
+  }
+  if (value.some((item) => typeof item !== "string")) problems.push({ nodeId: id, text: "assigned holds an entry that is not a path", blocksNode: true });
+  return value.filter((item): item is string => typeof item === "string").map(normaliseRelativePath);
+}
+
+function parseEnabled(id: string, value: TomlValue | undefined, problems: LayoutProblem[]): boolean {
+  if (value === undefined || typeof value === "boolean") return value !== false;
+  problems.push({ nodeId: id, text: "enabled is not true or false", blocksNode: true });
+  return false;
+}
+
+function parseNode(id: string, entry: TomlTable, problems: LayoutProblem[]): LayoutNode {
+  const name = textOf(entry, "name");
+  if (!nodeIdPattern.test(id)) problems.push({ nodeId: id, text: `node ID '${id}' is not 4 lowercase hex digits`, blocksNode: true });
+  else if (!nodeNamePattern.test(name)) problems.push({ nodeId: id, text: `name '${name}' does not match [a-z0-9-]`, blocksNode: true });
+  return {
+    id,
+    name,
+    device: textOf(entry, "device"),
+    threshold: numberOf(entry, "threshold", 0),
+    assigned: parseAssigned(id, entry.assigned, problems),
+    pins: parsePins(id, asTable(entry.pins), problems),
+    access: entry.access === "closed" ? "closed" : "open",
+    admitted: entry.admitted === true,
+    apply: entry.apply === true,
+    enabled: parseEnabled(id, entry.enabled, problems),
+  };
+}
+
+function sharedNameProblems(nodes: LayoutNode[]): LayoutProblem[] {
+  return nodes
+    .filter((node) => node.name !== "" && nodes.some((other) => other !== node && other.name === node.name))
+    .map((node) => ({ nodeId: node.id, text: `name '${node.name}' is used by another node too`, blocksNode: true }));
+}
+
+/** @implNote The cluster is the one node on an archive device; with two, neither is taken for it, since either could be the one that keeps everything. */
+function archiveProblems(devices: LayoutDevice[], nodes: LayoutNode[]): LayoutProblem[] {
+  const onArchive = nodes.filter((node) => devices.find((device) => device.name === node.device)?.role === "archive");
+  if (onArchive.length < 2) return [];
+  const names = onArchive.map((node) => node.id).join(", ");
+  return onArchive.map((node) => ({ nodeId: node.id, text: `more than one node is on an archive device (${names})`, blocksNode: true }));
+}
+
+/** The nodes a blocking layout problem leaves out of every plan. */
+export function blockedNodeIds(layout: SetupLayout): Set<string> {
+  return new Set(layout.problems.filter((problem) => problem.blocksNode && problem.nodeId !== null).map((problem) => problem.nodeId as string));
+}
+
+function parseBands(table: TomlTable): PriorityBand[] {
+  return Object.entries(table)
     .flatMap(([name, from]) => (typeof from === "number" ? [{ name, from }] : []))
     .sort((left, right) => right.from - left.from);
-  return { devices, folders, bands };
+}
+
+export function parseLayout(text: string): SetupLayout {
+  const toml = parseToml(text);
+  const problems: LayoutProblem[] = [];
+  const devices = Object.entries(asTable(toml.devices)).map(([name, value]) => parseDevice(name, asTable(value)));
+  const nodes = Object.entries(asTable(toml.nodes)).map(([id, value]) => parseNode(id, asTable(value), problems));
+  const bands = parseBands(asTable(toml.bands));
+  return {
+    devices,
+    folders: Object.entries(asTable(toml.folders)).map(([key, value]) => parseFolder(key, asTable(value))),
+    nodes,
+    problems: [...problems, ...sharedNameProblems(nodes), ...archiveProblems(devices, nodes)],
+    bands: bands.length ? bands : defaultPriorityBands.map((band) => ({ ...band })),
+    bandsFromLayout: bands.length > 0,
+  };
 }
 
 function tomlString(value: string): string {
