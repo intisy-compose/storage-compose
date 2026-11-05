@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Stands in for docker: appends each call to $FAKE_DOCKER_DIR/calls as "docker ...", with a compose
-# call's --project-directory and --env-file left out, and exits 0.
+# call's --project-directory and --env-file left out, and exits 0, except for the array's tailnet
+# state, which the fake keeps in its state folder:
+#   mounter-running  what `docker inspect` says of storage-mounter's State.Running (default true)
+#   array-state      present: the array's tailscaled.state, which the mounter's test, cat and rm see
+#   rm-exit          the exit of the mounter's rm (default 0)
 set -uo pipefail
 state=${FAKE_DOCKER_DIR:?names the state folder of the fake}
 arguments=()
@@ -11,4 +15,15 @@ while [ $# -gt 0 ]; do
     esac
 done
 printf 'docker %s\n' "${arguments[*]}" >>"$state/calls"
-exit 0
+state_value() { cat "$state/$1" 2>/dev/null || echo "$2"; }
+
+case "${arguments[*]}" in
+    "inspect -f {{.State.Running}} storage-mounter") state_value mounter-running true ;;
+    "compose exec -T mounter test -f "*/.storage/tailscale/tailscaled.state) [ -e "$state/array-state" ] ;;
+    "compose exec -T mounter cat "*/.storage/tailscale/tailscaled.state) cat "$state/array-state" ;;
+    "compose exec -T mounter rm -rf "*/.storage/tailscale)
+        code=$(state_value rm-exit 0)
+        [ "$code" -ne 0 ] || rm -f "$state/array-state"
+        exit "$code" ;;
+    *) exit 0 ;;
+esac
