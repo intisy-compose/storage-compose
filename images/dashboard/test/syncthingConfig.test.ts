@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import { isKeeperManaged, keeperManagedKeys, keeperManagedText } from "../src/api/keeperText.js";
 import { listenAddressProblem } from "../src/api/optionsText.js";
-import type { Versioning } from "../src/api/types.js";
+import { type Versioning, defaultPriorityBands } from "../src/api/types.js";
 import { folderSettings } from "../src/folderIndex.js";
 import { RequestError } from "../src/http.js";
 import { type LocalInstance, type LocalNodeSource, type RemoteInstance, type ResolvedInstance, settingsKeeperOf } from "../src/instanceResolver.js";
@@ -222,8 +222,8 @@ describe("the host's priority bands", () => {
     ]);
   });
 
-  it("are not set while the layout defines none or there is no setup repo", () => {
-    assert.equal(hostSettings(parseLayout(["[folders.Documents]", 'category = "synced"', ""].join("\n"))).priorityBands, null);
+  it("are the design's while the layout defines none, and not set without a setup repo", () => {
+    assert.deepEqual(hostSettings(parseLayout(["[folders.Documents]", 'category = "synced"', ""].join("\n"))).priorityBands, defaultPriorityBands);
     assert.equal(hostSettings(null).priorityBands, null);
   });
 });

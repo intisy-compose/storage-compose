@@ -361,7 +361,7 @@ describe("answering a device that asks to connect", () => {
     return received.filter((entry) => entry.method !== "GET").map((entry) => `${entry.method} ${entry.path}`);
   }
 
-  function recordingSetup(layout: SetupLayout | null = { devices: [], folders: [], bands: [] }) {
+  function recordingSetup(layout: SetupLayout | null = { devices: [], folders: [], nodes: [], bands: [] }) {
     const recorded: [string, string, string | null][] = [];
     const setup: SetupRecorder = {
       layout: async () => layout,
@@ -426,7 +426,7 @@ describe("answering a device that asks to connect", () => {
   });
 
   it("an accepted device is recorded in the setup repo only under a name it takes and no other device holds", async () => {
-    const { recorded, setup } = recordingSetup({ devices: [{ name: "laptop", id: otherStrangerId, joined: true }], folders: [], bands: [] });
+    const { recorded, setup } = recordingSetup({ devices: [{ name: "laptop", id: otherStrangerId, joined: true, role: "device", root: "/data", paths: {} }], folders: [], nodes: [], bands: [] });
     const spaced = await acceptPendingDevice(peer(), strangerId, { name: "Finn's Laptop" }, setup);
     assert.equal(spaced.accepted.setup, `"Finn's Laptop" is not a setup repo device name (a-z, 0-9 and -), so it is recorded on dashboard-test-peer only`);
 
@@ -443,7 +443,7 @@ describe("answering a device that asks to connect", () => {
   });
 
   it("a setup repo that fails does not undo the accept", async () => {
-    const setup: SetupRecorder = { layout: async () => ({ devices: [], folders: [], bands: [] }), record: () => Promise.reject(new Error("EACCES: drive-sync.toml")) };
+    const setup: SetupRecorder = { layout: async () => ({ devices: [], folders: [], nodes: [], bands: [] }), record: () => Promise.reject(new Error("EACCES: drive-sync.toml")) };
     const result = await acceptPendingDevice(peer(), strangerId, { name: "laptop" }, setup);
     assert.equal(result.accepted.device.deviceId, strangerId);
     assert.equal(result.accepted.setup, "not recorded in the setup repo: EACCES: drive-sync.toml");
@@ -451,7 +451,7 @@ describe("answering a device that asks to connect", () => {
 
   it("credentials in the setup repo's remote never reach the answer or Activity", async () => {
     const leaky = "https://finn:ghp_secret@github.com/intisy/setup.git";
-    const answered: SetupRecorder = { layout: async () => ({ devices: [], folders: [], bands: [] }), record: async () => ({ committed: true, pushed: false, message: `committed, not pushed yet: fatal: unable to access '${leaky}/'` }) };
+    const answered: SetupRecorder = { layout: async () => ({ devices: [], folders: [], nodes: [], bands: [] }), record: async () => ({ committed: true, pushed: false, message: `committed, not pushed yet: fatal: unable to access '${leaky}/'` }) };
     const answer = await acceptPendingDevice(peer(), strangerId, { name: "laptop" }, answered);
     configured = configured.filter((device) => device.deviceID !== strangerId);
     pending[strangerId] = laptopOffer();

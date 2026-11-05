@@ -1,6 +1,6 @@
 import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { ConnectionProfile, PriorityBand, ProfileRead } from "./api/types.js";
+import { type ConnectionProfile, type NodeAccess, type PriorityBand, type ProfileRead, defaultPriorityBands } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { ProfileError, defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
 import { heldCommitText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseInProgressText, rebaseRefusedText, unpushedText } from "./api/profileText.js";
@@ -12,18 +12,45 @@ export interface LayoutFolder {
   relativePath: string;
   id: string;
   priority: number;
+  ignore: string[];
+  versionsDays: number;
 }
+
+/** C-30's `archive` role marks the private cluster. */
+export type DeviceRole = "device" | "archive";
 
 export interface LayoutDevice {
   name: string;
   id: string;
   joined: boolean;
+  role: DeviceRole;
+  root: string;
+  /** A folder's own place on this device, by the folder's layout path. */
+  paths: Record<string, string>;
+}
+
+/** `[nodes.<id>]`: one node's policy, shared by every host through the setup repo. */
+export interface LayoutNode {
+  id: string;
+  name: string;
+  /** The `[devices.<name>]` entry that carries the node's Syncthing identity, root and paths. */
+  device: string;
+  threshold: number;
+  assigned: string[];
+  /** Priorities raised for this node only, by layout path. */
+  pins: Record<string, number>;
+  access: NodeAccess;
+  admitted: boolean;
+  /** False while the node only reports what its plan would change. */
+  apply: boolean;
+  enabled: boolean;
 }
 
 export interface SetupLayout {
   devices: LayoutDevice[];
   folders: LayoutFolder[];
-  /** The layout's `[bands]` table, highest first; empty while the layered sync sets none. */
+  nodes: LayoutNode[];
+  /** The layout's `[bands]` table, highest first, or the design's bands when it sets none. */
   bands: PriorityBand[];
 }
 
@@ -54,22 +81,74 @@ function asTable(value: unknown): TomlTable {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as TomlTable) : {};
 }
 
-export function parseLayout(text: string): SetupLayout {
-  const toml = parseToml(text);
-  const devices = Object.entries(asTable(toml.devices)).map(([name, value]) => {
-    const entry = asTable(value);
-    return { name, id: typeof entry.id === "string" ? entry.id : "", joined: entry.joined !== false };
-  });
-  const folders = Object.entries(asTable(toml.folders)).map(([key, value]) => {
-    const entry = asTable(value);
-    const relativePath = normaliseRelativePath(key);
-    const priority = typeof entry.priority === "number" ? entry.priority : (categoryPriority[String(entry.category)] ?? 0);
-    return { relativePath, id: folderId(relativePath), priority };
-  });
-  const bands = Object.entries(asTable(toml.bands))
+function textOf(entry: TomlTable, key: string, fallback = ""): string {
+  const value = entry[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+function numberOf(entry: TomlTable, key: string, fallback: number): number {
+  const value = entry[key];
+  return typeof value === "number" ? value : fallback;
+}
+
+function textsOf(entry: TomlTable, key: string): string[] {
+  const value = entry[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+/** drive-sync's defaults for a device's root and a folder's versions. */
+const defaultDeviceRoot = "/data";
+const defaultVersionsDays = 365;
+
+function parseDevice(name: string, entry: TomlTable): LayoutDevice {
+  const paths = Object.fromEntries(Object.entries(asTable(entry.paths)).flatMap(([key, value]) => (typeof value === "string" ? [[key, value]] : [])));
+  return {
+    name,
+    id: textOf(entry, "id"),
+    joined: entry.joined !== false,
+    role: entry.role === "archive" ? "archive" : "device",
+    root: textOf(entry, "root", defaultDeviceRoot),
+    paths,
+  };
+}
+
+function parseFolder(key: string, entry: TomlTable): LayoutFolder {
+  const relativePath = normaliseRelativePath(key);
+  const priority = typeof entry.priority === "number" ? entry.priority : (categoryPriority[String(entry.category)] ?? 0);
+  return { relativePath, id: folderId(relativePath), priority, ignore: textsOf(entry, "ignore"), versionsDays: numberOf(entry, "versions_days", defaultVersionsDays) };
+}
+
+function parseNode(id: string, entry: TomlTable): LayoutNode {
+  const pins = Object.fromEntries(Object.entries(asTable(entry.pins)).flatMap(([path, value]) => (typeof value === "number" ? [[normaliseRelativePath(path), value]] : [])));
+  return {
+    id,
+    name: textOf(entry, "name"),
+    device: textOf(entry, "device"),
+    threshold: numberOf(entry, "threshold", 0),
+    assigned: textsOf(entry, "assigned").map(normaliseRelativePath),
+    pins,
+    access: entry.access === "closed" ? "closed" : "open",
+    admitted: entry.admitted === true,
+    apply: entry.apply === true,
+    enabled: entry.enabled !== false,
+  };
+}
+
+function parseBands(table: TomlTable): PriorityBand[] {
+  const bands = Object.entries(table)
     .flatMap(([name, from]) => (typeof from === "number" ? [{ name, from }] : []))
     .sort((left, right) => right.from - left.from);
-  return { devices, folders, bands };
+  return bands.length ? bands : defaultPriorityBands.map((band) => ({ ...band }));
+}
+
+export function parseLayout(text: string): SetupLayout {
+  const toml = parseToml(text);
+  return {
+    devices: Object.entries(asTable(toml.devices)).map(([name, value]) => parseDevice(name, asTable(value))),
+    folders: Object.entries(asTable(toml.folders)).map(([key, value]) => parseFolder(key, asTable(value))),
+    nodes: Object.entries(asTable(toml.nodes)).map(([id, value]) => parseNode(id, asTable(value))),
+    bands: parseBands(asTable(toml.bands)),
+  };
 }
 
 function tomlString(value: string): string {

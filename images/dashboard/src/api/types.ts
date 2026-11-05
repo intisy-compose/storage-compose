@@ -835,6 +835,17 @@ export interface PriorityBand {
   from: number;
 }
 
+/** The design's bands, which a layout without `[bands]` takes. */
+export const defaultPriorityBands: PriorityBand[] = [
+  { name: "essential", from: 80 },
+  { name: "working", from: 50 },
+  { name: "archive", from: 1 },
+  { name: "local", from: 0 },
+];
+
+/** An open node is readable on any computer; a closed one only on a host of the network, which holds its key. */
+export type NodeAccess = "open" | "closed";
+
 /** `GET /api/settings`: this host's identity and the settings config.env gives its dashboard. */
 export interface HostSettings {
   name: string;
@@ -843,7 +854,7 @@ export interface HostSettings {
   peerDashboards: string[];
   /** Whether a topic is set, never the topic: anyone who knows it can read the notifications. */
   ntfy: { url: string; topicSet: boolean };
-  /** The layout's bands, highest first; null while the setup repo's layout defines none. */
+  /** The layout's bands, highest first, or the design's when it sets none; null without a layout. */
   priorityBands: PriorityBand[] | null;
   setupRepo: boolean;
 }
