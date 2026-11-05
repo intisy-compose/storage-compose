@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { type HandoffCandidate, type KeeperReport, type LocalFile, confirmedHandoffs, handoffCandidates, handoffQuietMinutes } from "../src/handoffPlan.js";
+import { type HandoffCandidate, type KeeperFileEntry, type KeeperReport, type LocalFile, confirmedHandoffs, handoffCandidates, handoffQuietMinutes, keeperReportMaxAgeSeconds } from "../src/handoffPlan.js";
 import { type NodePlan, nodePlan } from "../src/nodePlan.js";
 import { type SetupLayout, parseLayout } from "../src/setupRepo.js";
+import { type SpaceDecision, effectiveThreshold } from "../src/spacePlan.js";
 
 const layoutText = `
 [devices.stick]
@@ -51,40 +52,50 @@ admitted  = true
 const layout = parseLayout(layoutText);
 const now = new Date("2026-11-05T12:00:00Z");
 const anHourAgo = "2026-11-05T11:00:00Z";
+const fits: SpaceDecision = { state: "fits", threshold: 80, neededBytes: 0, availableBytes: 1, handoffAllowed: true };
 
 function file(path: string, overrides: Partial<LocalFile> = {}): LocalFile {
-  return { folderId: "videos", path, version: ["STICK:3"], size: 1200, blocksHash: "hash-a", modified: anHourAgo, ...overrides };
+  return { folderId: "videos", path, type: "FILE_INFO_TYPE_FILE", version: ["STICK:3"], size: 1200, blocksHash: "hash-a", modified: anHourAgo, ...overrides };
 }
 
-function planOf(source: SetupLayout = layout): NodePlan {
-  return nodePlan(source, "b001", new Set(["Videos", "Work"])) as NodePlan;
+function planOf(source: SetupLayout = layout, threshold?: number): NodePlan {
+  return nodePlan(source, "b001", new Set(["Videos", "Work"]), threshold) as NodePlan;
 }
 
-function candidatesOf(files: LocalFile[], source: SetupLayout = layout): HandoffCandidate[] {
-  return handoffCandidates(source, planOf(source), files, now);
+function candidatesOf(files: LocalFile[], source: SetupLayout = layout, decision: SpaceDecision = fits): HandoffCandidate[] {
+  return handoffCandidates(source, planOf(source), files, decision, now);
 }
 
-function keeper(nodeId: string, entry: Partial<KeeperReport["folders"][string]["files"][string]> = {}, overrides: Partial<KeeperReport> = {}): KeeperReport {
+function keeper(nodeId: string, entry: Partial<KeeperFileEntry> = {}, overrides: Partial<KeeperReport> = {}): KeeperReport {
   return {
     nodeId,
     online: true,
     state: "ok",
-    folders: { videos: { completion: 100, files: { "clip.mp4": { version: ["STICK:3"], size: 1200, blocksHash: "hash-a", deleted: false, ignored: false, invalid: false, ...entry } } } },
+    observedAt: "2026-11-05T11:59:30Z",
+    effectiveThreshold: 0,
+    folders: { videos: { completion: 100, files: { "clip.mp4": { type: "FILE_INFO_TYPE_FILE", version: ["STICK:3"], size: 1200, blocksHash: "hash-a", deleted: false, ignored: false, invalid: false, ...entry } } } },
     ...overrides,
   };
 }
 
 const clip = file("clip.mp4");
 
-function decide(keepers: KeeperReport[], current: LocalFile[] = [clip], source: SetupLayout = layout) {
-  return confirmedHandoffs(source, "b001", candidatesOf([clip], source), current, keepers);
+function decide(keepers: KeeperReport[], current: LocalFile[] = [clip], source: SetupLayout = layout, decision: SpaceDecision = fits) {
+  return confirmedHandoffs(source, planOf(source), [clip], current, keepers, decision, now);
+}
+
+function reasonOf(keepers: KeeperReport[]) {
+  return decide(keepers).waiting[0]?.reason;
 }
 
 describe("hand-off candidates", () => {
   it("are the files of a folder the node holds below its threshold", () => {
-    const candidates = candidatesOf([clip, file("notes.txt", { folderId: "work" })]);
+    assert.deepEqual(candidatesOf([clip, file("notes.txt", { folderId: "work" })]), [clip]);
+  });
 
-    assert.deepEqual(candidates, [clip]);
+  it("read a path with backslashes as one with slashes", () => {
+    assert.deepEqual(candidatesOf([file("sub\\clip.mp4")]).map((candidate) => candidate.path), ["sub/clip.mp4"]);
+    assert.deepEqual(candidatesOf([file("Mine\\b.mp4")]), []);
   });
 
   it("wait while a file changed within the quiet period", () => {
@@ -98,28 +109,59 @@ describe("hand-off candidates", () => {
     assert.equal(candidatesOf([file("Mine-not/c.mp4")]).length, 1);
   });
 
-  it("are none on a node whose apply is not set", () => {
+  it("never include a file without a finite size, a block hash or a version", () => {
+    assert.deepEqual(candidatesOf([file("a", { size: Number.NaN }), file("b", { blocksHash: "" }), file("c", { version: [] })]), []);
+  });
+
+  it("are none on a node whose apply is not set, that is not enabled, or whose space decision allows none", () => {
     const reporting = parseLayout(layoutText.replace("apply     = true", "apply     = false"));
+    const disabled = parseLayout(layoutText.replace("apply     = true", "apply     = true\nenabled   = false"));
+    const stopped: SpaceDecision = { ...fits, state: "stopped", handoffAllowed: false };
 
     assert.deepEqual(candidatesOf([clip], reporting), []);
     assert.deepEqual(decide([keeper("c1c1")], [clip], reporting), { confirmed: [], waiting: [] });
+    assert.deepEqual(candidatesOf([clip], disabled), []);
+    assert.deepEqual(decide([keeper("c1c1")], [clip], disabled), { confirmed: [], waiting: [] });
+    assert.deepEqual(candidatesOf([clip], layout, stopped), []);
+    assert.deepEqual(decide([keeper("c1c1")], [clip], layout, stopped), { confirmed: [], waiting: [] });
+  });
+
+  it("are none from a stopped space decision turned into a plan", () => {
+    const committed = planOf();
+    const decision = effectiveThreshold(committed, { work: { globalBytes: 100, localBytes: 0 }, videos: { globalBytes: 100, localBytes: 100 } }, { totalBytes: 100, freeBytes: 0 });
+    assert.equal(decision.state, "stopped");
+    const plan = planOf(layout, decision.threshold);
+
+    assert.deepEqual(handoffCandidates(layout, plan, [clip], decision, now), []);
+    assert.deepEqual(confirmedHandoffs(layout, plan, [clip], [clip], [keeper("c1c1")], decision, now), { confirmed: [], waiting: [] });
   });
 });
 
 describe("a confirmed hand-off", () => {
-  it("needs a keeper reporting the same version, size and block hash", () => {
+  it("needs a keeper reporting the same type, version, size and block hash", () => {
     assert.deepEqual(decide([keeper("c1c1")]).confirmed, [{ ...clip, keeper: "c1c1" }]);
-    assert.equal(decide([keeper("c1c1", { blocksHash: "hash-b" })]).waiting[0].reason, "not-confirmed");
-    assert.equal(decide([keeper("c1c1", { size: 1199 })]).waiting[0].reason, "not-confirmed");
-    assert.equal(decide([keeper("c1c1", { version: ["STICK:2"] })]).waiting[0].reason, "not-confirmed");
+    assert.equal(reasonOf([keeper("c1c1", { blocksHash: "hash-b" })]), "not-confirmed");
+    assert.equal(reasonOf([keeper("c1c1", { size: 1199 })]), "not-confirmed");
+    assert.equal(reasonOf([keeper("c1c1", { version: ["STICK:2"] })]), "not-confirmed");
+    assert.equal(reasonOf([keeper("c1c1", { type: "FILE_INFO_TYPE_SYMLINK" })]), "not-confirmed");
     assert.equal(decide([keeper("c1c1", { deleted: true })]).confirmed.length, 0);
   });
 
-  it("needs the keeper complete in the folder", () => {
-    const busy = keeper("c1c1");
-    busy.folders.videos.completion = 99.5;
+  it("refuses a null or empty block hash and a size that is not finite", () => {
+    assert.equal(reasonOf([keeper("c1c1", { blocksHash: null })]), "not-confirmed");
+    assert.equal(reasonOf([keeper("c1c1", { blocksHash: "" })]), "not-confirmed");
+    assert.equal(reasonOf([keeper("c1c1", { size: Number.POSITIVE_INFINITY })]), "not-confirmed");
+    const hashless = { ...clip, blocksHash: "" };
+    assert.equal(confirmedHandoffs(layout, planOf(), [hashless], [hashless], [keeper("c1c1", { blocksHash: "" })], fits, now).confirmed.length, 0);
+  });
 
-    assert.equal(decide([busy]).waiting[0].reason, "not-confirmed");
+  it("needs the keeper complete in the folder, and refuses a missing or NaN completion", () => {
+    for (const completion of [99.5, undefined, Number.NaN]) {
+      const report = keeper("c1c1");
+      report.folders.videos.completion = completion as number;
+
+      assert.equal(reasonOf([report]), "not-confirmed", String(completion));
+    }
   });
 
   it("does not count a node whose policy does not keep the folder", () => {
@@ -127,29 +169,56 @@ describe("a confirmed hand-off", () => {
 
     assert.deepEqual(decision.confirmed, []);
     assert.equal(decision.waiting[0].reason, "keeper-offline", "the cluster keeps it and has not reported");
-    assert.equal(confirmedHandoffs(layout, "b001", [clip], [clip], [keeper("c1c1", {}, { effectiveThreshold: 40 })]).waiting[0].reason, "no-keeper");
+    assert.equal(reasonOf([keeper("c1c1", {}, { effectiveThreshold: 40 })]), "no-keeper");
   });
 
-  it("does not count a degraded, stopped or frozen keeper", () => {
+  it("never takes a reported threshold below the committed one", () => {
+    const raised = parseLayout(layoutText.replace("threshold = 0\nadmitted  = true", "threshold = 40\nadmitted  = true"));
+
+    assert.equal(decide([keeper("c1c1", {}, { effectiveThreshold: 0 })], [clip], raised).waiting[0].reason, "no-keeper");
+  });
+
+  it("does not count a degraded, stopped or frozen keeper, or one not enabled", () => {
     for (const state of ["degraded", "stopped", "frozen"] as const) {
       assert.deepEqual(decide([keeper("c1c1", {}, { state })]).confirmed, [], state);
     }
-    const disabled = parseLayout(`${layoutText}\n`.replace('threshold = 0\nadmitted  = true', 'threshold = 0\nadmitted  = true\nenabled   = false'));
+    const disabled = parseLayout(layoutText.replace("threshold = 0\nadmitted  = true", "threshold = 0\nadmitted  = true\nenabled   = false"));
     assert.deepEqual(decide([keeper("c1c1")], [clip], disabled).confirmed, []);
   });
 
-  it("waits while every keeper is offline", () => {
-    const decision = decide([keeper("c1c1", {}, { online: false })]);
+  it("does not count a keeper on the handing node's own device", () => {
+    const sameDevice = parseLayout(layoutText.replace('device    = "array"', 'device    = "stick"'));
+
+    assert.equal(decide([keeper("c1c1")], [clip], sameDevice).confirmed.length, 0);
+  });
+
+  it("waits while every keeper is offline or its report is older than two minutes", () => {
+    assert.equal(keeperReportMaxAgeSeconds, 120);
+    assert.deepEqual(decide([keeper("c1c1", {}, { online: false })]).waiting, [{ ...clip, reason: "keeper-offline" }]);
+    assert.equal(reasonOf([keeper("c1c1", {}, { observedAt: "2026-11-05T11:57:59Z" })]), "keeper-offline");
+    assert.equal(reasonOf([keeper("c1c1", {}, { observedAt: "not a time" })]), "keeper-offline");
+    assert.equal(decide([keeper("c1c1", {}, { observedAt: "2026-11-05T11:58:00Z" })]).confirmed.length, 1);
+  });
+
+  it("refuses two reports for one node", () => {
+    assert.throws(() => decide([keeper("c1c1"), keeper("c1c1", { blocksHash: "hash-b" })]), /two keeper reports for node c1c1/);
+  });
+
+  it("re-checks every candidate against the plan and the node's pins and assigned paths", () => {
+    const pinned = file("Pinned/a.mp4");
+    const kept = file("notes.txt", { folderId: "work" });
+
+    const decision = confirmedHandoffs(layout, planOf(), [pinned, kept], [pinned, kept], [keeper("c1c1")], fits, now);
 
     assert.deepEqual(decision.confirmed, []);
-    assert.deepEqual(decision.waiting, [{ ...clip, reason: "keeper-offline" }]);
+    assert.deepEqual(decision.waiting.map((entry) => entry.reason), ["held", "held"]);
   });
 
   it("starts over when the file changed after it was confirmed", () => {
     const [candidate] = candidatesOf([clip]);
     const changed = file("clip.mp4", { version: ["STICK:4"], blocksHash: "hash-c" });
 
-    const decision = confirmedHandoffs(layout, "b001", [candidate], [changed], [keeper("c1c1")]);
+    const decision = confirmedHandoffs(layout, planOf(), [candidate], [changed], [keeper("c1c1")], fits, now);
 
     assert.deepEqual(decision.confirmed, []);
     assert.equal(decision.waiting[0].reason, "changed");
