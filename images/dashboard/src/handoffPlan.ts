@@ -82,15 +82,31 @@ export function normaliseFilePath(path: string): string {
   return path.split(/[\\/]+/).filter((segment) => segment !== "").join("/");
 }
 
-function within(ancestor: string, path: string): boolean {
-  const ancestorKey = normaliseFilePath(ancestor).toLowerCase();
-  const key = normaliseFilePath(path).toLowerCase();
+/** How the handing node compares file paths: `true` folds case. */
+type FoldCase = boolean;
+
+function pathKeyOf(path: string, foldCase: FoldCase): string {
+  const normalised = normaliseFilePath(path);
+  return foldCase ? normalised.toLowerCase() : normalised;
+}
+
+/**
+ * Whether the handing node's file system ignores case, as a Windows one does: its device root has a drive letter, the sign drive-sync reads too.
+ * @implNote Pins, assigned paths and the keeper's entry are all matched to the handing node's own files, so they follow its file system: on Linux `Pinned/` and `pinned/` are two directories and a keeper's `CLIP.mp4` is another file than `clip.mp4`.
+ */
+function foldsCase(layout: SetupLayout, node: LayoutNode): FoldCase {
+  return /^[A-Za-z]:/.test(layout.devices.find((device) => device.name === node.device)?.root ?? "");
+}
+
+function within(ancestor: string, path: string, foldCase: FoldCase): boolean {
+  const ancestorKey = pathKeyOf(ancestor, foldCase);
+  const key = pathKeyOf(path, foldCase);
   return ancestorKey === "" || ancestorKey === "." || key === ancestorKey || key.startsWith(`${ancestorKey}/`);
 }
 
 /** Pinned or assigned anywhere above or at the path, which keeps the file on the node whatever the folder's type. */
-function isHeldByPolicy(node: LayoutNode, layoutPath: string): boolean {
-  return [...node.assigned, ...Object.keys(node.pins)].some((path) => within(path, layoutPath));
+function isHeldByPolicy(node: LayoutNode, layoutPath: string, foldCase: FoldCase): boolean {
+  return [...node.assigned, ...Object.keys(node.pins)].some((path) => within(path, layoutPath, foldCase));
 }
 
 function isSettled(file: LocalFile, now: Date, quietMinutes: number): boolean {
@@ -115,9 +131,9 @@ function mayHandOff(node: LayoutNode | null, plan: NodePlan, decision: SpaceDeci
 }
 
 /** The folder that hands the file off, unless policy holds the file on the node. */
-function handingFolder(node: LayoutNode, plan: NodePlan, file: LocalFile): PlannedFolder | null {
+function handingFolder(node: LayoutNode, plan: NodePlan, file: LocalFile, foldCase: FoldCase): PlannedFolder | null {
   const folder = plan.folders.find((entry) => entry.id === file.folderId && entry.handsOff);
-  if (!folder || isHeldByPolicy(node, `${folder.relativePath}/${file.path}`)) return null;
+  if (!folder || isHeldByPolicy(node, `${folder.relativePath}/${file.path}`, foldCase)) return null;
   return folder;
 }
 
@@ -128,9 +144,10 @@ function handingFolder(node: LayoutNode, plan: NodePlan, file: LocalFile): Plann
 export function handoffCandidates(layout: SetupLayout, plan: NodePlan, files: LocalFile[], decision: SpaceDecision, now: Date, quietMinutes = handoffQuietMinutes): HandoffCandidate[] {
   const node = nodeOf(layout, plan.nodeId);
   if (!mayHandOff(node, plan, decision)) return [];
+  const foldCase = foldsCase(layout, node);
   return files
     .map((file) => ({ ...file, path: normaliseFilePath(file.path) }))
-    .filter((file) => isComparable(file) && isSettled(file, now, quietMinutes) && handingFolder(node, plan, file) !== null);
+    .filter((file) => isComparable(file) && isSettled(file, now, quietMinutes) && handingFolder(node, plan, file, foldCase) !== null);
 }
 
 function sameVersion(left: string[], right: string[]): boolean {
@@ -146,12 +163,23 @@ function isFresh(report: KeeperReport, now: Date, maxAgeSeconds: number): boolea
   return Number.isFinite(observed) && Math.abs(now.getTime() - observed) <= maxAgeSeconds * 1000;
 }
 
-function entryAt(folder: KeeperFolderReport, path: string): KeeperFileEntry | undefined {
-  return Object.entries(folder.files).find(([key]) => normaliseFilePath(key) === path)?.[1];
+/** A keeper folder's entries by path key, built once per folder report. */
+type EntryIndex = (folder: KeeperFolderReport, path: string) => KeeperFileEntry | undefined;
+
+function entryIndex(foldCase: FoldCase): EntryIndex {
+  const built = new WeakMap<KeeperFolderReport, Map<string, KeeperFileEntry>>();
+  return (folder, path) => {
+    let entries = built.get(folder);
+    if (!entries) {
+      entries = new Map(Object.entries(folder.files).map(([key, entry]) => [pathKeyOf(key, foldCase), entry]));
+      built.set(folder, entries);
+    }
+    return entries.get(pathKeyOf(path, foldCase));
+  };
 }
 
 /** @implNote Syncthing checks every block's SHA-256 as it writes, so a keeper's own entry at the same type, version, size and block hash is the checksum check without reading the file again (call 4). */
-function confirms(report: KeeperReport, candidate: HandoffCandidate): boolean {
+function confirms(report: KeeperReport, candidate: HandoffCandidate, entryAt: EntryIndex): boolean {
   if (report.state !== "ok") return false;
   const folder = report.folders[candidate.folderId];
   if (!folder || !(folder.completion >= 100)) return false;
@@ -185,16 +213,18 @@ interface Judgement {
   handing: LayoutNode;
   plan: NodePlan;
   reports: Map<string, KeeperReport>;
+  foldCase: FoldCase;
+  entryAt: EntryIndex;
 }
 
 function decideOne(judgement: Judgement, candidate: HandoffCandidate, current: LocalFile | undefined): ConfirmedHandoff | WaitingHandoff {
-  if (handingFolder(judgement.handing, judgement.plan, candidate) === null) return { ...candidate, reason: "held" };
+  if (handingFolder(judgement.handing, judgement.plan, candidate, judgement.foldCase) === null) return { ...candidate, reason: "held" };
   if (!isUnchanged(candidate, current)) return { ...candidate, reason: "changed" };
   const keepers = keepersOf(judgement.layout, judgement.handing, candidate.folderId, judgement.reports);
   if (keepers.length === 0) return { ...candidate, reason: "no-keeper" };
   const keeper = keepers.find((node) => {
     const report = judgement.reports.get(node.id);
-    return report !== undefined && confirms(report, candidate);
+    return report !== undefined && confirms(report, candidate, judgement.entryAt);
   });
   if (keeper) return { ...candidate, keeper: keeper.id };
   const anyOnline = keepers.some((node) => judgement.reports.has(node.id));
@@ -241,7 +271,8 @@ export function confirmedHandoffs(
   if (!mayHandOff(handing, plan, decision)) return result;
   const { reports, notes } = reportsByNode(keepers, plan.nodeId, now, maxReportAgeSeconds);
   result.notes.push(...notes);
-  const judgement: Judgement = { layout, handing, plan, reports };
+  const foldCase = foldsCase(layout, handing);
+  const judgement: Judgement = { layout, handing, plan, reports, foldCase, entryAt: entryIndex(foldCase) };
   const currentByKey = new Map(current.map((file) => [fileKey(file), file]));
   for (const candidate of candidates) {
     const outcome = decideOne(judgement, { ...candidate, path: normaliseFilePath(candidate.path) }, currentByKey.get(fileKey(candidate)));

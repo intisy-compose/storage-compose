@@ -145,6 +145,26 @@ describe("hand-off candidates", () => {
   });
 });
 
+describe("the case of a path", () => {
+  const windowsStick = parseLayout(layoutText.replace('root = "/media/stick"', "root = 'E:\\'"));
+
+  it("matters on a node with a Linux root, for pins and for the keeper's entry", () => {
+    assert.equal(candidatesOf([file("pinned/a.mp4")]).length, 1, "pinned/ is not Pinned/ on Linux");
+    const upper = keeper("c1c1");
+    upper.folders.videos.files = { "CLIP.mp4": upper.folders.videos.files["clip.mp4"] };
+
+    assert.equal(reasonOf([upper]), "not-confirmed");
+  });
+
+  it("does not matter on a node with a drive letter, for pins and for the keeper's entry", () => {
+    assert.deepEqual(candidatesOf([file("pinned/a.mp4")], windowsStick), []);
+    const upper = keeper("c1c1");
+    upper.folders.videos.files = { "CLIP.mp4": upper.folders.videos.files["clip.mp4"] };
+
+    assert.deepEqual(decide([upper], [clip], windowsStick).confirmed, [{ ...clip, keeper: "c1c1" }]);
+  });
+});
+
 describe("a confirmed hand-off", () => {
   it("needs a keeper reporting the same type, version, size and block hash", () => {
     assert.deepEqual(decide([keeper("c1c1")]).confirmed, [{ ...clip, keeper: "c1c1" }]);
