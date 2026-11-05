@@ -62,7 +62,7 @@ function options(overrides: Partial<ReconcileOptions> = {}): ReconcileOptions {
 const configured = ["documents", "documents-old"];
 
 function decision(state: SpaceDecision["state"], threshold: number): SpaceDecision {
-  return { state, threshold, neededBytes: 0, availableBytes: 0, handoffAllowed: state === "fits" || state === "raised" };
+  return { state, threshold, neededBytes: 0, availableBytes: 0, handoffAllowed: state === "fits" || state === "raised", pullAllowed: state === "fits" || state === "raised" };
 }
 
 describe("reconciling a node with its plan", () => {

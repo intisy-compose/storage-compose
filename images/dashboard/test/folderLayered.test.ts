@@ -96,7 +96,7 @@ describe("Activity for hand-offs and space", () => {
     const publisher: HandoffPublisher = {
       publish: async () => 0,
       clear: async () => {},
-      last: () => ({ contract, space: space && { ...space, handoffAllowed: true } }),
+      last: () => ({ contract, space: space && { ...space, handoffAllowed: true, pullAllowed: true } }),
       result: async () => result(),
     };
     const round = new LayoutRound({ layout: async () => nodeLayout, instances: async () => [instance], handoffFiles: { ensure: async () => null }, handoffs: publisher, record: (_nodeId, _folderId, text) => recorded.push(text), readBackDelaysMs: [] });

@@ -431,8 +431,8 @@ export const syncthingHandoffReads: HandoffReads = {
   },
   completion: async (instance, folderId) => (await callSyncthing(instance, (client) => client.request<{ completion: number }>("GET", `/db/completion?${query(folderId)}`))).completion,
   sizes: async (instance, folderId) => {
-    const status = await callSyncthing(instance, (client) => client.request<{ globalBytes: number; localBytes: number }>("GET", `/db/status?${query(folderId)}`));
-    return { globalBytes: status.globalBytes, localBytes: status.localBytes };
+    const status = await callSyncthing(instance, (client) => client.request<{ globalBytes: number; localBytes: number; needBytes?: number }>("GET", `/db/status?${query(folderId)}`));
+    return { globalBytes: status.globalBytes, localBytes: status.localBytes, needBytes: status.needBytes };
   },
   space: nodeSpace,
   keeperState: keeperStateOf,

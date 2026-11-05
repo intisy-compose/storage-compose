@@ -52,7 +52,7 @@ admitted  = true
 const layout = parseLayout(layoutText);
 const now = new Date("2026-11-05T12:00:00Z");
 const anHourAgo = "2026-11-05T11:00:00Z";
-const fits: SpaceDecision = { state: "fits", threshold: 80, neededBytes: 0, availableBytes: 1, handoffAllowed: true };
+const fits: SpaceDecision = { state: "fits", threshold: 80, neededBytes: 0, availableBytes: 1, handoffAllowed: true, pullAllowed: true };
 
 function file(path: string, overrides: Partial<LocalFile> = {}): LocalFile {
   return { folderId: "videos", path, type: "FILE_INFO_TYPE_FILE", version: ["STICK:3"], size: 1200, blocksHash: "hash-a", modified: anHourAgo, ...overrides };

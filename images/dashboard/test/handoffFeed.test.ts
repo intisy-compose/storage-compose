@@ -237,7 +237,7 @@ describe("the hand-off contract", () => {
   });
 
   it("holds everything while the round's space decision is stopped or unknown, or the node is not enabled", async () => {
-    const decided = (state: "stopped" | "unknown") => ({ decision: { state, threshold: 80, neededBytes: 1, availableBytes: 0, handoffAllowed: false } });
+    const decided = (state: "stopped" | "unknown") => ({ decision: { state, threshold: 80, neededBytes: 1, availableBytes: 0, handoffAllowed: false, pullAllowed: false } });
     const cases: [string, HandoffInput, RegExp][] = [
       ["stopped", inputFor(parseLayout(layoutText()), network(), "b001", { decided: decided("stopped") }), /space decision is stopped/],
       ["unknown", inputFor(parseLayout(layoutText()), network(), "b001", { decided: decided("unknown") }), /space decision is unknown/],
@@ -253,7 +253,7 @@ describe("the hand-off contract", () => {
 
   it("decides with the round's decision when it allows hand-offs, without reading the space again", async () => {
     const reads = network({ stick: { space: null } });
-    const contract = await decideHandoffContract(inputFor(parseLayout(layoutText()), reads, "b001", { decided: { decision: { state: "fits", threshold: 80, neededBytes: 0, availableBytes: 1, handoffAllowed: true } } }));
+    const contract = await decideHandoffContract(inputFor(parseLayout(layoutText()), reads, "b001", { decided: { decision: { state: "fits", threshold: 80, neededBytes: 0, availableBytes: 1, handoffAllowed: true, pullAllowed: true } } }));
 
     assert.equal(contract.apply, true);
     assert.equal(contract.entries.length, 1);
@@ -274,7 +274,7 @@ describe("the hand-off contract", () => {
   });
 
   it("takes each keeper's state and threshold from its own space decision this round", async () => {
-    const decision = (state: SpaceDecision["state"], threshold: number): SpaceDecision => ({ state, threshold, neededBytes: 0, availableBytes: 0, handoffAllowed: state === "fits" || state === "raised" });
+    const decision = (state: SpaceDecision["state"], threshold: number): SpaceDecision => ({ state, threshold, neededBytes: 0, availableBytes: 0, handoffAllowed: state === "fits" || state === "raised", pullAllowed: state === "fits" || state === "raised" });
     const withKeeper = (space: SpaceDecision | null) => inputFor(parseLayout(layoutText()), network(), "b001", { keeperSpace: (nodeId) => (nodeId === "a002" ? space : null) });
 
     assert.equal((await decideHandoffContract(withKeeper(decision("fits", 20)))).entries.length, 1);

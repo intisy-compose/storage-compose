@@ -274,6 +274,29 @@ describe("the space of each node of this host, every round", () => {
       else assert.equal(type, undefined, "a raise to 80 plans Old send-only, as it is");
     }
   });
+
+  it("lets a node that holds everything raise once a keeper of this host holds all of what the raise drops", async () => {
+    const completions: Record<string, number> = {};
+    const holdingAll: SpaceReads = {
+      space: async () => ({ totalBytes: 1000, freeBytes: 50 }),
+      sizes: async () => ({ globalBytes: 100, localBytes: 100, needBytes: 0 }),
+      completion: async (instance, folderId) => (instance.nodeId === "a002" ? (completions[folderId] ?? 0) : 0),
+    };
+    const run = async () => {
+      const syncthing = nodeAtTwenty();
+      await roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(syncthing), instanceOf(new FakeSyncthing(), "a002")], [], { space: holdingAll, pauses: memoryLayeredPauses() }).run();
+      return syncthing;
+    };
+
+    await run();
+    assert.equal(layeredStateOf("a001")?.space?.state, "stopped", "nothing a keeper holds, so a raise frees nothing sure to leave");
+
+    completions["documents-old"] = 100;
+    const syncthing = await run();
+    assert.deepEqual(layeredStateOf("a001")?.space, { state: "raised", threshold: 80, neededBytes: 100, availableBytes: 250 });
+    assert.equal(folderOf(syncthing, "documents-old").type, "sendonly", "the raise turns Old send-only, so it can hand off");
+    assert.ok(syncthing.folders.every((folder) => folder.paused === false));
+  });
 });
 
 function disabled(text: string): string {

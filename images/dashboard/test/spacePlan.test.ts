@@ -52,7 +52,7 @@ describe("the space a node's threshold needs", () => {
   it("keeps the threshold when everything at it fits", () => {
     const result = effectiveThreshold(plan, sizes, space(1000, 900));
 
-    assert.deepEqual(result, { state: "fits", threshold: 50, neededBytes: 400, availableBytes: 900, handoffAllowed: true });
+    assert.deepEqual(result, { state: "fits", threshold: 50, neededBytes: 400, availableBytes: 900, handoffAllowed: true, pullAllowed: true });
   });
 
   it("raises one priority value at a time, the lowest first", () => {
@@ -72,13 +72,13 @@ describe("the space a node's threshold needs", () => {
   it("stops when even the top value does not fit, at the committed threshold and with no hand-off", () => {
     const result = effectiveThreshold(plan, sizes, space(220, 220));
 
-    assert.deepEqual(result, { state: "stopped", threshold: 50, neededBytes: 200, availableBytes: 220, handoffAllowed: false });
+    assert.deepEqual(result, { state: "stopped", threshold: 50, neededBytes: 200, availableBytes: 220, handoffAllowed: false, pullAllowed: false });
   });
 
   it("is back at the threshold once it fits again", () => {
     assert.equal(effectiveThreshold(plan, sizes, space(220, 220)).state, "stopped");
 
-    assert.deepEqual(effectiveThreshold(plan, sizes, space(2200, 2200)), { state: "fits", threshold: 50, neededBytes: 400, availableBytes: 2200, handoffAllowed: true });
+    assert.deepEqual(effectiveThreshold(plan, sizes, space(2200, 2200)), { state: "fits", threshold: 50, neededBytes: 400, availableBytes: 2200, handoffAllowed: true, pullAllowed: true });
   });
 
   it("counts what the node holds of a kept folder as space it already has", () => {
@@ -88,15 +88,26 @@ describe("the space a node's threshold needs", () => {
     assert.equal(effectiveThreshold(plan, holding, space(450, 300)).availableBytes, 300 + 100);
   });
 
-  it("counts a hand-off folder's bytes as freed only for confirmed hand-offs", () => {
+  it("counts a hand-off folder's bytes as freed only for what a keeper already holds of it", () => {
     assert.equal(effectiveThreshold(plan, sizes, space(450, 300)).threshold, 90);
     assert.equal(effectiveThreshold(plan, sizes, space(450, 300), { old: 100 }).threshold, 80);
+  });
+
+  it("lets a node that holds everything raise once keepers hold what the raise drops, and pull nothing on the strength of it", () => {
+    const holdingAll: FolderSizes = Object.fromEntries(Object.entries(sizes).map(([id, size]) => [id, { ...size, localBytes: 100 }]));
+    const stopped = effectiveThreshold(plan, holdingAll, space(1000, 50));
+    assert.equal(stopped.state, "stopped", "with nothing a keeper holds, a raise frees nothing that is sure to leave");
+
+    const raised = effectiveThreshold(plan, holdingAll, space(1000, 50), { notes: 100 });
+    assert.deepEqual(raised, { state: "raised", threshold: 80, neededBytes: 300, availableBytes: 450, handoffAllowed: true, pullAllowed: false });
+    assert.equal(effectiveThreshold(plan, holdingAll, space(1000, 50), { notes: 10_000 }).availableBytes, 450, "never more than the node holds there");
+    assert.equal(effectiveThreshold(plan, holdingAll, space(1000, 500), { notes: 100 }).pullAllowed, true, "once it fits on what is on it now");
   });
 
   it("is unknown while a kept folder has no size, which never fits and allows no hand-off", () => {
     const { kept: _, ...withoutKept } = sizes;
 
-    assert.deepEqual(effectiveThreshold(plan, withoutKept, space(10_000, 10_000)), { state: "unknown", threshold: 50, neededBytes: 300, availableBytes: 10_000, handoffAllowed: false });
+    assert.deepEqual(effectiveThreshold(plan, withoutKept, space(10_000, 10_000)), { state: "unknown", threshold: 50, neededBytes: 300, availableBytes: 10_000, handoffAllowed: false, pullAllowed: false });
     const { old: __, ...withoutOld } = sizes;
     assert.equal(effectiveThreshold(plan, withoutOld, space(10_000, 10_000)).state, "fits", "Old is not kept, so its size decides nothing");
   });
@@ -132,7 +143,7 @@ admitted = true
     const cluster = nodePlan(network, "c1c1", new Set()) as NodePlan;
     const clusterSizes: FolderSizes = { low: { globalBytes: 100, localBytes: 0 }, high: { globalBytes: 100, localBytes: 0 }, "a001-own": { globalBytes: 100, localBytes: 0 } };
 
-    assert.deepEqual(effectiveThreshold(cluster, clusterSizes, space(10_000, 10_000)), { state: "fits", threshold: 0, neededBytes: 300, availableBytes: 10_000, handoffAllowed: true });
+    assert.deepEqual(effectiveThreshold(cluster, clusterSizes, space(10_000, 10_000)), { state: "fits", threshold: 0, neededBytes: 300, availableBytes: 10_000, handoffAllowed: true, pullAllowed: true });
     assert.equal(effectiveThreshold(cluster, clusterSizes, space(300, 300)).neededBytes, 300, "the priority 0 folder of pc counts too");
   });
 
@@ -165,8 +176,8 @@ admitted  = true
     const cluster = nodePlan(network, "c1c1", new Set()) as NodePlan;
     const clusterSizes: FolderSizes = { low: { globalBytes: 100, localBytes: 0 }, high: { globalBytes: 100, localBytes: 0 } };
 
-    assert.deepEqual(effectiveThreshold(cluster, clusterSizes, space(1000, 1000)), { state: "fits", threshold: 50, neededBytes: 200, availableBytes: 1000, handoffAllowed: true });
-    assert.deepEqual(effectiveThreshold(cluster, clusterSizes, space(210, 210)), { state: "full", threshold: 50, neededBytes: 200, availableBytes: 210, handoffAllowed: false }, "a raise would relieve nothing, so it is full");
+    assert.deepEqual(effectiveThreshold(cluster, clusterSizes, space(1000, 1000)), { state: "fits", threshold: 50, neededBytes: 200, availableBytes: 1000, handoffAllowed: true, pullAllowed: true });
+    assert.deepEqual(effectiveThreshold(cluster, clusterSizes, space(210, 210)), { state: "full", threshold: 50, neededBytes: 200, availableBytes: 210, handoffAllowed: false, pullAllowed: false }, "a raise would relieve nothing, so it is full");
     assert.equal(effectiveThreshold(cluster, { high: clusterSizes.high }, space(1000, 1000)).state, "unknown", "Low has no size, and the cluster keeps it");
   });
 });
@@ -183,6 +194,7 @@ describe("whether a folder may turn send-receive", () => {
     assert.equal(spaceAllowsPull(effectiveThreshold(plan, sizes, space(220, 220)), plan), false, "stopped");
     assert.equal(spaceAllowsPull(effectiveThreshold(plan, {}, space(1000, 900)), plan), false, "unknown");
     assert.equal(spaceAllowsPull(null, plan), false, "no decision at all");
+    assert.equal(spaceAllowsPull({ ...fits, pullAllowed: false }, plan), false, "a fit that counts bytes still waiting to leave");
   });
 });
 

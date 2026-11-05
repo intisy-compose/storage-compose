@@ -8,18 +8,20 @@ import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstan
 import { layeredStateOf, recordLayered } from "./layeredDrift.js";
 import { type LayeredPauses, fileLayeredPauses } from "./layeredPauses.js";
 import { type Notification, queueNotification } from "./notifyOutbox.js";
-import { type NodePlan, handoffIgnoreFile, nodePlan } from "./nodePlan.js";
+import { type NodePlan, handoffIgnoreFile, keepsFolder, nodePlan } from "./nodePlan.js";
 import { type HandoffFiles, type NodeReconcile, carriedLayoutPaths, reconcileNode } from "./reconcileNode.js";
 import { nodeVolumesDirectory, statusDirectory, storageRoot } from "./settings.js";
 import { type LayoutNode, type SetupLayout, blockedNodeIds, readCommittedLayout, readLayout } from "./setupRepo.js";
 import { followLayout, nodeFilePath, withdrawApply } from "./nodeFile.js";
-import { type FolderSize, type FolderSizes, type NodeSpace, type SpaceDecision, effectiveThreshold } from "./spacePlan.js";
+import { type FolderSize, type FolderSizes, type NodeSpace, type ReleasableBytes, type SpaceDecision, effectiveThreshold } from "./spacePlan.js";
 import type { SyncthingFolderConfig } from "./syncthing.js";
 
 /** What a space decision reads of a node: its disk, and each planned folder's size as its own Syncthing counts it. */
 export interface SpaceReads {
   space(instance: LocalInstance): Promise<NodeSpace | null>;
   sizes(instance: LocalInstance, folderId: string): Promise<FolderSize>;
+  /** A keeper's own completion of a folder; without it nothing a raise drops counts as freed. */
+  completion?(instance: LocalInstance, folderId: string): Promise<number>;
 }
 
 export interface LayoutRoundDependencies {
@@ -103,7 +105,7 @@ export class LayoutRound {
     if (layout) {
       const gated = withCommittedApply(layout, committed);
       const prepared = new Map<string, Prepared>();
-      for (const instance of instances) prepared.set(instance.nodeId, await this.prepare(gated, instance));
+      for (const instance of instances) prepared.set(instance.nodeId, await this.prepare(gated, instance, instances));
       const spaces = new Map([...prepared].flatMap(([nodeId, entry]) => (entry.kind === "planned" ? [[nodeId, entry.decision] as const] : [])));
       for (const instance of instances) {
         const state = await this.nodeState(gated, instance, instances, prepared.get(instance.nodeId) as Prepared, spaces);
@@ -210,21 +212,40 @@ export class LayoutRound {
    * The space decision for the node's plan at its committed threshold; null when its disk cannot be read.
    * @implNote A folder whose size cannot be read has none, which makes a folder the node keeps `unknown`.
    */
-  private async decide(instance: LocalInstance, plan: NodePlan): Promise<SpaceDecision | null> {
+  private async decide(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], plan: NodePlan): Promise<SpaceDecision | null> {
     const reads = this.dependencies.space;
     if (!reads) return null;
     const space = await reads.space(instance).catch(() => null);
     if (!space) return null;
     const sizes: FolderSizes = {};
+    const releasable: ReleasableBytes = {};
     for (const folder of plan.folders) {
       const size = await reads.sizes(instance, folder.id).catch(() => null);
-      if (size && Number.isFinite(size.globalBytes) && Number.isFinite(size.localBytes)) sizes[folder.id] = size;
+      if (!size || !Number.isFinite(size.globalBytes) || !Number.isFinite(size.localBytes)) continue;
+      sizes[folder.id] = size;
+      if (!folder.local && folder.keptBy !== "assigned" && (await this.keeperHolds(layout, instance, instances, folder.id))) releasable[folder.id] = heldInSync(size);
     }
-    return effectiveThreshold(plan, sizes, space);
+    return effectiveThreshold(plan, sizes, space, releasable);
+  }
+
+  /**
+   * Whether another node of this host on another device keeps the folder and its own Syncthing has all of it, so what the node holds in
+   * sync there could leave it once each file is confirmed.
+   */
+  private async keeperHolds(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], folderId: string): Promise<boolean> {
+    const completion = this.dependencies.space?.completion;
+    const own = layout.nodes.find((node) => node.id === instance.nodeId);
+    if (!completion || !own) return false;
+    for (const keeper of instances) {
+      const node = layout.nodes.find((entry) => entry.id === keeper.nodeId);
+      if (!node || node.id === own.id || node.device === own.device || !node.enabled || !keepsFolder(layout, node.id, folderId)) continue;
+      if (((await completion(keeper, folderId).catch(() => 0)) ?? 0) >= 100) return true;
+    }
+    return false;
   }
 
   /** @implNote Every node of the host is planned and decided before any is reconciled, so each hand-off sees the space decision of every keeper of this round. */
-  private async prepare(layout: SetupLayout, instance: LocalInstance): Promise<Prepared> {
+  private async prepare(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[]): Promise<Prepared> {
     const node = layout.nodes.find((entry) => entry.id === instance.nodeId);
     if (!node) return { kind: "unlisted" };
     if (!node.admitted) return { kind: "unadmitted", node };
@@ -234,7 +255,7 @@ export class LayoutRound {
       const plan = nodePlan(layout, node.id, localFolders);
       if (!plan) return { kind: "unlisted" };
       if (plan.problems.length) return { kind: "blocked", node, problems: plan.problems };
-      return { kind: "planned", node, localFolders, plan, decision: await this.decide(instance, plan) };
+      return { kind: "planned", node, localFolders, plan, decision: await this.decide(layout, instance, instances, plan) };
     } catch (error) {
       return { kind: "failed", node, error };
     }
@@ -319,6 +340,15 @@ export class LayoutRound {
     const last = layeredStateOf(instance.nodeId);
     return { ...(last ?? state), mode: state.mode, threshold: state.threshold, failed: reasonOf(error), checkedAt: state.checkedAt };
   }
+}
+
+/**
+ * What the node holds of a folder at the global version: the global bytes it does not need, never more than it holds; nothing while its
+ * need is not known.
+ */
+function heldInSync(size: FolderSize): number {
+  if (size.needBytes === undefined || !Number.isFinite(size.needBytes)) return 0;
+  return Math.max(0, Math.min(size.localBytes, size.globalBytes - size.needBytes));
 }
 
 /** Why the node's folders are held paused, or null: it is not enabled, or even its top priority does not fit with 10% free. */
