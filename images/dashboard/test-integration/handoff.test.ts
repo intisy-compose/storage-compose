@@ -19,6 +19,7 @@ const run = promisify(execFile);
 const root = "/var/syncthing/folders";
 const folder = "archive";
 const executorScript = fileURLToPath(new URL("../../../../images/nodes/handoff.sh", import.meta.url));
+const probeScript = fileURLToPath(new URL("../../../../images/nodes/handoff-probe.sh", import.meta.url));
 const executorImage = "storage-nodes-tests:local";
 const executorDockerfile = `FROM debian:trixie-slim
 RUN apt-get update \\
@@ -140,13 +141,17 @@ async function seed(name: string, content: string, minutesAgo = 20): Promise<voi
   }
 }
 
-/** The executor in a container that shares the stick's volume and network, as the nodes service shares its node's, and sees no other process. */
+/**
+ * The executor in a container that shares the stick's volume and network, as the nodes service shares its node's, with the open-file probe
+ * beside it in the same container, which sees no other container's processes.
+ */
 async function runExecutor(environment: Record<string, string> = {}): Promise<ExecutorResult> {
-  const variables = Object.entries({ HANDOFF_IGNORE_WAIT_SECONDS: "30", ...environment }).flatMap(([name, value]) => ["-e", `${name}=${value}`]);
+  const variables = Object.entries({ HANDOFF_IGNORE_WAIT_SECONDS: "30", HANDOFF_OPEN_SNAPSHOT: "/tmp/probe/open.txt", HANDOFF_PROBE_INTERVAL_SECONDS: "1", ...environment }).flatMap(([name, value]) => ["-e", `${name}=${value}`]);
   await run("docker", [
     "run", "--rm", "--network", `container:${peers.stick.container}`, "--volumes-from", peers.stick.container,
-    "-u", "1000:1000", "-v", `${scratch}:/handoff`, "-v", `${executorScript}:/handoff.sh:ro`, ...variables, executorImage,
-    "bash", "/handoff.sh", "e001", root, "http://127.0.0.1:8384", peers.stick.apiKey, "/handoff/e001.json", "/handoff/e001.result.json",
+    "-u", "1000:1000", "-v", `${scratch}:/handoff`, "-v", `${executorScript}:/handoff.sh:ro`, "-v", `${probeScript}:/handoff-probe.sh:ro`, ...variables, executorImage,
+    "bash", "-c", 'mkdir -p /tmp/probe && { bash /handoff-probe.sh /tmp/probe & } && bash /handoff.sh "$@"', "executor",
+    "e001", root, "http://127.0.0.1:8384", peers.stick.apiKey, "/handoff/e001.json", "/handoff/e001.result.json",
   ], { env: { ...process.env, MSYS_NO_PATHCONV: "1" } });
   return JSON.parse(readFileSync(join(scratch, "e001.result.json"), "utf8")) as ExecutorResult;
 }
@@ -326,5 +331,5 @@ test("with every keeper offline, nothing leaves the stick and nothing leaves the
   const purge = await runExecutor({ HANDOFF_NOW: String(at) }) as ExecutorResult & { trash: { trash: string; reason: string }[] };
   assert.equal(purge.purged, 0);
   assert.equal(await inTrash(pendingTrash), true, "a copy no reachable keeper holds stays past its 7 days");
-  assert.match(purge.trash.find((entry) => entry.trash === pendingTrash)?.reason ?? "", /no keeper holds its version/);
+  assert.match(purge.trash.find((entry) => entry.trash === pendingTrash)?.reason ?? "", /its keeper is not connected to this node/);
 });
