@@ -5,6 +5,8 @@ param(
 $ErrorActionPreference = 'Continue'
 
 $composeFile = Join-Path $PSScriptRoot 'compose.yml'
+$seedScript = Join-Path $PSScriptRoot 'seed-config.sh'
+$image = 'ghcr.io/syncthing/syncthing:2.1.6'
 $containers = 'layered-test-stick', 'layered-test-keeper', 'layered-test-other'
 
 function Get-LeftoverContainers {
@@ -12,8 +14,14 @@ function Get-LeftoverContainers {
 }
 
 function Start-Peers {
-    docker compose -f $composeFile up -d
-    if ($LASTEXITCODE -ne 0) { throw 'docker compose up failed' }
+    docker compose -f $composeFile create
+    if ($LASTEXITCODE -ne 0) { throw 'docker compose create failed' }
+    foreach ($container in $containers) {
+        docker run --rm --network none --volumes-from $container -v "${seedScript}:/seed-config.sh:ro" --entrypoint sh $image /seed-config.sh
+        if ($LASTEXITCODE -ne 0) { throw "seeding the config of $container failed" }
+    }
+    docker compose -f $composeFile start
+    if ($LASTEXITCODE -ne 0) { throw 'docker compose start failed' }
 }
 
 function Stop-Peers {

@@ -5,7 +5,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:ui": "tsc -p ui/tsconfig.json && node ui/build.mjs",
-    "test:integration": "tsc -p tsconfig.integration.json && node --test --test-concurrency=1 .integration-build/test-integration/*.test.js",
+    "test:integration": "tsc -p tsconfig.integration.json && cd .integration-build/test-integration && node --test --test-concurrency=1",
     "fixture": "node ui/fixture/server.mjs"
   },
   "devDependencies": {

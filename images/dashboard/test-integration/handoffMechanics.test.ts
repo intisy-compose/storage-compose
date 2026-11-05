@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import {
   type FileReport, type FolderMember, type Peer, type Peers,
-  appendLine, completion, fileExists, fileReport, folderState, pauseDevice, readFile, removeFile,
+  appendLine, completion, fileExists, fileReport, folderState, overrideChanges, pauseDevice, readFile, removeFile,
   resumeDevice, scan, setIgnores, shareFolder, startPeers, stopPeers, waitUntil, writeFile,
 } from "./peers.js";
 
@@ -81,6 +81,9 @@ test("a path in .stignore-handoff is ignored in the local index after a rescan",
   const ignored = await ignoreOnStick(folder, "doc.txt");
   report("stick db/file after the ignore", ignored);
   assert.equal(ignored.local.ignored, true);
+  assert.ok(!ignored.local.blocksHash, "an ignored entry carries no block hash, so the feed records it before the ignore");
+  assert.equal(ignored.local.size, 0);
+  assert.equal(ignored.local.localFlags, 2);
   assert.equal(await fileExists(peers.stick, folder, "doc.txt"), true);
   assert.equal(await fileExists(peers.keeper, folder, handoffIgnores), false, "the ignore list never syncs");
 });
@@ -117,6 +120,7 @@ test("the keeper's db/file shows the handing node's version, size and block hash
   report("keeper completion of its own folder", keeperCompletion);
   report("stick's view of the keeper's completion", await completion(peers.stick, folder, peers.keeper));
   assert.ok(kept.local.blocksHash, "the keeper reports a block hash");
+  assert.ok(handing.local.version.length > 0, "the handing node reports a version");
   assert.deepEqual(kept.local.version, handing.local.version);
   assert.equal(kept.local.size, handing.local.size);
   assert.equal(kept.local.size, 300_000);
@@ -142,23 +146,31 @@ test("a receive-only keeper keeps a send-only node's deletion only with ignoreDe
   assert.deepEqual(outcomes, { "receive-only": false, "receive-only-ignore-delete": true });
 });
 
-test("dropping the ignore entry after the file is gone does not pull it into a send-only folder", async () => {
-  const folder = "prune";
+/** Hands a file off, removes it from the stick, then drops its ignore entry: the state a pruned entry leaves. */
+async function prunedHandoff(folder: string): Promise<void> {
   await handoffFolder(folder);
   await handOver(folder, "doc.txt", "kept elsewhere");
   await ignoreOnStick(folder, "doc.txt");
   await removeFile(peers.stick, folder, "doc.txt");
   await scan(peers.stick, folder);
+  const beforePrune = await completion(peers.stick, folder);
+  report("stick completion while the entry is present", beforePrune);
+  assert.equal(beforePrune.needItems, 0, "with the entry present the stick needs nothing");
   await writeFile(peers.stick, folder, handoffIgnores, "");
   await scan(peers.stick, folder);
   await settle(folder, [peers.keeper, peers.other], "after-prune.txt");
-  await new Promise((resolve) => setTimeout(resolve, 10_000));
-  await scan(peers.stick, folder);
+}
+
+test("dropping the ignore entry after the file is gone does not pull it into a send-only folder", async () => {
+  const folder = "prune";
+  await prunedHandoff(folder);
+  await waitUntil(async () => (await completion(peers.stick, folder)).needItems === 1, "the pruned path needed on the stick");
   const onStick = await fileReport(peers.stick, folder, "doc.txt");
   const stickCompletion = await completion(peers.stick, folder);
   report("stick db/file after the prune", onStick);
   report("stick completion after the prune", stickCompletion);
-  assert.equal(await fileExists(peers.stick, folder, "doc.txt"), false);
+  assert.equal(await fileExists(peers.stick, folder, "doc.txt"), false,
+    "the path is needed, so there was something to pull, and it is still not there");
   for (const keeper of [peers.keeper, peers.other]) {
     const kept = await fileReport(keeper, folder, "doc.txt");
     report(`${keeper.name} db/file after the prune`, kept);
@@ -167,4 +179,18 @@ test("dropping the ignore entry after the file is gone does not pull it into a s
   }
   assert.deepEqual(onStick.local.version, [], "the stick's deletion carries no version, so it never wins");
   assert.equal(stickCompletion.needItems, 1, "the pruned path stays out of sync on the stick");
+});
+
+test("measured, not required: Override changes on a send-only folder after a pruned entry", async () => {
+  const folder = "prune-override";
+  await prunedHandoff(folder);
+  await waitUntil(async () => (await completion(peers.stick, folder)).needItems === 1, "the pruned path needed on the stick");
+  await overrideChanges(peers.stick, folder);
+  await settle(folder, [peers.keeper, peers.other], "after-override.txt");
+  report("stick db/file after the override", await fileReport(peers.stick, folder, "doc.txt"));
+  report("stick completion after the override", await completion(peers.stick, folder));
+  for (const keeper of [peers.keeper, peers.other]) {
+    report(`${keeper.name} db/file after the override`, await fileReport(keeper, folder, "doc.txt"));
+    report(`${keeper.name} still holds the file after the override`, await fileExists(keeper, folder, "doc.txt"));
+  }
 });

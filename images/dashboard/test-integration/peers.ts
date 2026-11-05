@@ -6,6 +6,8 @@ import type { FolderType } from "../src/api/types.js";
 const run = promisify(execFile);
 const composeFile = fileURLToPath(new URL("../../../../tests/layered/compose.yml", import.meta.url));
 const compose = ["compose", "-f", composeFile];
+const seedScript = fileURLToPath(new URL("../../../../tests/layered/seed-config.sh", import.meta.url));
+const syncthingImage = "ghcr.io/syncthing/syncthing:2.1.6";
 const folderRoot = "/var/syncthing/folders";
 const syncthingUser = "1000:1000";
 const defaultTimeoutMs = 60_000;
@@ -40,7 +42,6 @@ export interface Completion {
   remoteState?: string;
 }
 
-/** One side of `/rest/db/file`; Syncthing sends more fields, which the spike records as they come. */
 export interface IndexEntry {
   name: string;
   size: number;
@@ -117,17 +118,33 @@ async function deviceIdOf(peer: Omit<Peer, "deviceId">): Promise<string> {
   return deviceId;
 }
 
-/** Discovery, relays and NAT off: the peers find each other only by their addresses on the `layered-test` network. */
-async function isolate(peer: Peer): Promise<void> {
-  await request(peer, "PATCH", "/rest/config/options", {
-    globalAnnounceEnabled: false,
-    localAnnounceEnabled: false,
-    relaysEnabled: false,
-    natEnabled: false,
-    urAccepted: -1,
-    crashReportingEnabled: false,
-    autoUpgradeIntervalH: 0,
-  });
+const isolatedOptions = {
+  listenAddresses: ["tcp://0.0.0.0:22000"],
+  globalAnnounceEnabled: false,
+  localAnnounceEnabled: false,
+  relaysEnabled: false,
+  natEnabled: false,
+  urAccepted: -1,
+  crashReportingEnabled: false,
+  autoUpgradeIntervalH: 0,
+};
+
+/** @implNote `tests/layered/seed-config.sh` sets these before the first start; this only proves the seed took. */
+async function assertIsolated(peer: Peer): Promise<void> {
+  const options = await request<Record<string, unknown>>(peer, "GET", "/rest/config/options");
+  for (const [option, expected] of Object.entries(isolatedOptions)) {
+    if (JSON.stringify(options[option]) !== JSON.stringify(expected)) {
+      throw new Error(`${peer.name} has ${option} = ${JSON.stringify(options[option])}, expected ${JSON.stringify(expected)}`);
+    }
+  }
+}
+
+/** Keys and an isolated config written into the created container's volume, with no network, before Syncthing first runs. */
+async function seedConfig(name: PeerName): Promise<void> {
+  await docker([
+    "run", "--rm", "--network", "none", "--volumes-from", peerFor(name).container,
+    "-v", `${seedScript}:/seed-config.sh:ro`, "--entrypoint", "sh", syncthingImage, "/seed-config.sh",
+  ]);
 }
 
 async function introduce(peer: Peer, remote: Peer): Promise<void> {
@@ -150,13 +167,15 @@ export async function stopPeers(): Promise<void> {
 /** Starts the three peers from nothing (a leftover run is removed first) and connects each to both others. */
 export async function startPeers(): Promise<Peers> {
   await stopPeers();
-  await docker([...compose, "up", "-d"]);
+  await docker([...compose, "create"]);
   const names: PeerName[] = ["stick", "keeper", "other"];
+  for (const name of names) await seedConfig(name);
+  await docker([...compose, "start"]);
   const started = await Promise.all(names.map(async (name) => {
     const peer = peerFor(name);
     return { ...peer, deviceId: await deviceIdOf(peer) };
   }));
-  for (const peer of started) await isolate(peer);
+  for (const peer of started) await assertIsolated(peer);
   for (const peer of started) {
     for (const remote of started.filter((candidate) => candidate !== peer)) await introduce(peer, remote);
   }
@@ -213,6 +232,10 @@ export async function fileReport(peer: Peer, folder: string, file: string): Prom
   return request<FileReport>(peer, "GET", `/rest/db/file?folder=${encodeURIComponent(folder)}&file=${encodeURIComponent(file)}`);
 }
 
+export async function overrideChanges(peer: Peer, folder: string): Promise<void> {
+  await request(peer, "POST", `/rest/db/override?folder=${encodeURIComponent(folder)}`);
+}
+
 export async function setIgnores(peer: Peer, folder: string, lines: string[]): Promise<void> {
   await request(peer, "POST", `/rest/db/ignores?folder=${encodeURIComponent(folder)}`, { ignore: lines });
 }
@@ -244,6 +267,7 @@ export async function fileExists(peer: Peer, folder: string, relative: string): 
 
 export async function pauseDevice(peer: Peer, remote: Peer): Promise<void> {
   await request(peer, "PATCH", `/rest/config/devices/${remote.deviceId}`, { paused: true });
+  await waitUntil(async () => !(await connectedDevices(peer)).includes(remote.deviceId), `${peer.name} disconnected from ${remote.name}`);
 }
 
 export async function resumeDevice(peer: Peer, remote: Peer): Promise<void> {

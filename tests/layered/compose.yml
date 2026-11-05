@@ -1,3 +1,4 @@
+# Start only through run.ps1 or test-integration/peers.ts: they seed each config.xml (seed-config.sh) before the first start.
 name: storage-layered-test
 
 x-peer: &peer
