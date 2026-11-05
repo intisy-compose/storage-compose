@@ -186,6 +186,20 @@ admission stays committed but unpushed, so the dashboard never pushes a hand com
 pull, and under Applied a `connections.toml` that does not parse, with the profile still applied in
 its place; saving the form writes a valid profile over it.
 
+## Layered sync: space, stop and rejoin
+
+Each node in the layout's `[nodes.<id>]` keeps 10 % of itself free. Every layout round decides each node's space: it fits at its
+threshold, its threshold is raised so what it keeps fits (the folders the raise drops turn send-only and hand off to a keeper),
+or it does not fit even at its top priority and is stopped. A folder turns send-receive only while the node fits on what is on it
+now. A stopped node has every folder paused and hands nothing off; it resumes once a round decides it fits and may pull again. Only
+the pauses the layered sync made are resumed, never one a person or an array's freeze made, and the node page can resume them by
+hand. The cluster cannot raise: when it does not fit it confirms no new hand-off and says so in Attention and through ntfy.
+
+**`enabled = false` together with `apply = true` now pauses every folder of the node**, and committing `enabled = true` again
+lets it rejoin; any host may commit `enabled` alone, from the node's page. A node that only reports (`apply = false`) is paused by
+nothing. While a node is held (stopped, or its space unknown) its hand-off contract holds every move; its trash still empties
+once due, except from a paused folder, whose index cannot be read until it resumes.
+
 ## drive-sync
 
 `tools/drive-sync` applies the device list in `data/drive-sync.toml` to a device's own Syncthing:
