@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open, realpath, stat } from "node:fs/promises";
+import { lstat, open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { LayeredChange, LayeredState } from "./api/types.js";
 import { recordDashboardActivity } from "./eventFeed.js";
@@ -28,12 +28,12 @@ function reasonOf(error: unknown): string {
 
 function driftOf(result: NodeReconcile): LayeredChange[] {
   return result.folders.flatMap((folder) =>
-    folder.changes.map((change) => ({ folderId: folder.folderId, label: folder.label, field: change.field, text: change.text, written: folder.written.includes(change.field), held: folder.written.includes(change.field) ? null : folder.held })),
+    folder.changes.map((change) => ({ folderId: folder.folderId, label: folder.label, field: change.field, text: change.text, written: change.written, held: change.written ? null : (change.held ?? folder.held ?? folder.failed) })),
   );
 }
 
 function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: string): LayeredState {
-  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], pendingHandoffs: null, problems: [], failed: null, checkedAt };
+  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt };
 }
 
 /**
@@ -74,7 +74,7 @@ export class LayoutRound {
         onWritten: (folderId, text) => this.dependencies.record(instance.nodeId, folderId, text),
         readBackDelaysMs: this.dependencies.readBackDelaysMs ?? defaultReadBackDelaysMs,
       });
-      return { ...state, effectiveThreshold: plan.appliedThreshold, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices };
+      return { ...state, effectiveThreshold: plan.appliedThreshold, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map((entry) => `${entry.label}: ${entry.lines.join(" ")}`), failed: result.failed.length ? result.failed.join("; ") : null };
     } catch (error) {
       const last = layeredStateOf(instance.nodeId);
       return { ...(last ?? state), mode: state.mode, threshold: state.threshold, failed: reasonOf(error), checkedAt };
@@ -87,26 +87,47 @@ function isInside(root: string, path: string): boolean {
   return between === "" || (!between.startsWith("..") && !isAbsolute(between));
 }
 
+async function realOrNull(path: string): Promise<string | null> {
+  try {
+    return await realpath(path);
+  } catch {
+    return null;
+  }
+}
+
+/** Why the folder's path is no place this host may create the list in, or null; `real` is its path with every link resolved. */
+async function placeProblem(roots: readonly string[], ownRoot: string | null, path: string): Promise<{ problem: string } | { real: string }> {
+  if (!ownRoot) return { problem: "the node has no root known to this host" };
+  const realRoot = await realOrNull(resolve(ownRoot));
+  if (!realRoot || !isInside(resolve(ownRoot), resolve(path))) return { problem: "the folder is not under the node's own root" };
+  const mounted = (await Promise.all(roots.map((root) => realOrNull(resolve(root))))).filter((root): root is string => root !== null);
+  if (!mounted.some((root) => isInside(root, realRoot))) return { problem: "this host does not mount the node's files" };
+  const real = await realOrNull(resolve(path));
+  if (!real || !isInside(realRoot, real)) return { problem: "the folder does not exist under the node's root" };
+  if (!(await stat(real)).isDirectory()) return { problem: "the folder's path is not a directory" };
+  return { real };
+}
+
 /**
  * The hand-off list created where this host mounts the node's files at the path its Syncthing uses: the arrays under the storage root and
- * the nodes service's volumes, both mounted into the dashboard as into the nodes' containers.
- * @implNote `O_EXCL` never truncates a list that exists, and refuses to follow a link in its place. A Windows node's files are the host agent's
- * to reach, so its include waits for it.
+ * the nodes service's volumes, both mounted into the dashboard as into the nodes' containers. The folder must lie under the node's own root.
+ * @implNote `O_EXCL` never truncates a list that exists and never follows a link in its place; what is there already counts only as a
+ * regular file, so a link or a directory of that name is held. A Windows node's files are the host agent's to reach, so its include waits for it.
  */
 export function mountedHandoffFiles(roots: readonly string[]): HandoffFiles {
   return {
     ensure: async (instance, folder) => {
-      if (instance.os !== "linux") return false;
-      const path = resolve(folder.path);
-      if (!roots.some((root) => isInside(resolve(root), path))) return false;
+      if (instance.os !== "linux") return "the host agent creates it on a Windows node";
+      const place = await placeProblem(roots, instance.root, folder.path);
+      if ("problem" in place) return place.problem;
+      const listPath = join(place.real, handoffIgnoreFile);
       try {
-        const real = await realpath(path);
-        if (!roots.some((root) => isInside(resolve(root), real)) || !(await stat(real)).isDirectory()) return false;
-        const handle = await open(join(real, handoffIgnoreFile), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o644);
+        const handle = await open(listPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o644);
         await handle.close();
-        return true;
+        return null;
       } catch (error) {
-        return (error as NodeJS.ErrnoException).code === "EEXIST";
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") return `it could not be created: ${reasonOf(error)}`;
+        return (await lstat(listPath)).isFile() ? null : `a ${handoffIgnoreFile} that is not a regular file is in the way`;
       }
     },
   };

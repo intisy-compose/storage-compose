@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -64,7 +64,7 @@ function roundOf(layout: () => SetupLayout | null, instances: LocalInstance[], r
   return new LayoutRound({
     layout: async () => layout(),
     instances: async () => instances,
-    handoffFiles: { ensure: async () => true },
+    handoffFiles: { ensure: async () => null },
     record: (nodeId, folderId, text) => recorded.push({ nodeId, folderId, text }),
     readBackDelaysMs: [],
     now: () => new Date("2026-11-05T12:00:00.000Z"),
@@ -105,12 +105,12 @@ describe("reconciling this host's nodes on every pull", () => {
     assert.equal(folderOf(syncthing, "documents-old").type, "sendonly");
     const state = layeredStateOf("a001");
     assert.equal(state?.mode, "apply");
-    assert.ok(state?.drift.every((change) => change.written));
-    assert.deepEqual(recorded.map((entry) => `${entry.nodeId} ${entry.folderId}`), ["a001 documents-old", "a001 documents-old"]);
+    assert.deepEqual(state?.drift.map((change) => `${change.field} ${change.written} ${change.held}`), ["type true null", "versioning false would replace the folder's versioning"]);
+    assert.deepEqual(recorded.map((entry) => `${entry.nodeId} ${entry.folderId}`), ["a001 documents-old"]);
     assert.match(recorded[0].text, /laptop-data: layered sync changed folder Documents\/Old: type send and receive to send only/);
 
     await layoutRound.run();
-    assert.deepEqual(layeredStateOf("a001")?.drift, [], "the next round finds the node on its plan");
+    assert.deepEqual(layeredStateOf("a001")?.drift.map((change) => change.field), ["versioning"], "the next round finds only the held change");
   });
 
   it("still reconciles when the connection round fails", async () => {
@@ -130,7 +130,8 @@ describe("reconciling this host's nodes on every pull", () => {
     assert.deepEqual(syncthing.writes(), []);
     const state = layeredStateOf("a001");
     assert.ok(state?.drift.length);
-    for (const change of state?.drift ?? []) assert.match(change.held ?? "", /type the folder ID documents-old/);
+    assert.match(state?.drift.find((change) => change.field === "type")?.held ?? "", /type the folder ID documents-old/);
+    assert.ok(state?.drift.every((change) => !change.written));
   });
 
   it("names the node whose Syncthing does not answer, and keeps the drift it last found", async () => {
@@ -182,33 +183,55 @@ describe("reconciling this host's nodes on every pull", () => {
 describe("the hand-off list on a node's files this host mounts", () => {
   const scratch = mkdtempSync(join(tmpdir(), "handoff-files-"));
   after(() => rmSync(scratch, { recursive: true, force: true }));
-  const files = mountedHandoffFiles([join(scratch, "mounted")]);
-  const linux = instanceOf(new FakeSyncthing());
+  const mounted = join(scratch, "mounted");
+  const ownRoot = join(mounted, "a001");
+  const files = mountedHandoffFiles([mounted]);
+  const linux = { ...instanceOf(new FakeSyncthing()), root: ownRoot };
 
-  it("creates an empty list in a folder under a mounted root", async () => {
-    const folder = join(scratch, "mounted", "Documents");
+  function folderIn(...parts: string[]): string {
+    const folder = join(...parts);
     mkdirSync(folder, { recursive: true });
+    return folder;
+  }
 
-    assert.equal(await files.ensure(linux, { id: "documents", path: folder }), true);
+  it("creates an empty list in a folder under the node's own root", async () => {
+    const folder = folderIn(ownRoot, "Documents");
+
+    assert.equal(await files.ensure(linux, { id: "documents", path: folder }), null);
 
     assert.equal(readFileSync(join(folder, ".stignore-handoff"), "utf8"), "");
   });
 
   it("leaves a list that exists as it is", async () => {
-    const folder = join(scratch, "mounted", "Kept");
-    mkdirSync(folder, { recursive: true });
+    const folder = folderIn(ownRoot, "Kept");
     writeFileSync(join(folder, ".stignore-handoff"), "/clip.mp4\n");
 
-    assert.equal(await files.ensure(linux, { id: "kept", path: folder }), true);
+    assert.equal(await files.ensure(linux, { id: "kept", path: folder }), null);
 
     assert.equal(readFileSync(join(folder, ".stignore-handoff"), "utf8"), "/clip.mp4\n");
   });
 
-  it("refuses a folder outside the mounted roots, one that does not exist and a Windows node's", async () => {
-    mkdirSync(join(scratch, "elsewhere"), { recursive: true });
-    assert.equal(await files.ensure(linux, { id: "x", path: join(scratch, "elsewhere") }), false);
-    assert.equal(await files.ensure(linux, { id: "x", path: join(scratch, "mounted", "..", "elsewhere") }), false);
-    assert.equal(await files.ensure(linux, { id: "x", path: join(scratch, "mounted", "Missing") }), false);
-    assert.equal(await files.ensure({ ...linux, os: "windows" }, { id: "x", path: join(scratch, "mounted", "Documents") }), false);
+  it("holds a link or a directory in the list's place", async () => {
+    const linked = folderIn(ownRoot, "Linked");
+    symlinkSync(folderIn(scratch, "target"), join(linked, ".stignore-handoff"), "junction");
+    const directory = folderIn(ownRoot, "Directory");
+    mkdirSync(join(directory, ".stignore-handoff"));
+
+    assert.match((await files.ensure(linux, { id: "linked", path: linked })) ?? "", /not a regular file/);
+    assert.ok(await files.ensure(linux, { id: "directory", path: directory }));
+    assert.ok(statSync(join(directory, ".stignore-handoff")).isDirectory());
+  });
+
+  it("refuses a folder under another node's root, outside the mounts, missing, or a Windows node's", async () => {
+    const otherNode = folderIn(mounted, "b002", "Documents");
+    const elsewhere = folderIn(scratch, "elsewhere");
+
+    assert.equal(await files.ensure(linux, { id: "x", path: otherNode }), "the folder is not under the node's own root");
+    assert.equal(await files.ensure(linux, { id: "x", path: join(ownRoot, "..", "b002", "Documents") }), "the folder is not under the node's own root");
+    assert.equal(await files.ensure({ ...linux, root: elsewhere }, { id: "x", path: elsewhere }), "this host does not mount the node's files");
+    assert.equal(await files.ensure(linux, { id: "x", path: join(ownRoot, "Missing") }), "the folder does not exist under the node's root");
+    assert.equal(await files.ensure({ ...linux, root: null }, { id: "x", path: folderIn(ownRoot, "Documents") }), "the node has no root known to this host");
+    assert.equal(await files.ensure({ ...linux, os: "windows" }, { id: "x", path: folderIn(ownRoot, "Documents") }), "the host agent creates it on a Windows node");
+    assert.equal(existsSync(join(otherNode, ".stignore-handoff")), false);
   });
 });

@@ -343,11 +343,13 @@ export interface LayeredState {
   unplanned: string[];
   /** Devices a planned folder is shared with that the node does not know yet. */
   unknownDevices: string[];
+  /** The node's own ignore lines outside the layered sync block, per folder (`<label>: <lines>`); they are kept, never drift. */
+  nodeOnlyIgnores: string[];
   /** Null while no hand-off decision is made for the node. */
   pendingHandoffs: number | null;
   /** The layout's problems with the node, which leave it unplanned. */
   problems: string[];
-  /** Why the last round could not read or change the node; its drift is then the last one found. */
+  /** Why the last round could not read the node (its drift is then the last one found), or which folders' writes failed. */
   failed: string | null;
   checkedAt: string;
 }

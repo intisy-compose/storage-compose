@@ -9,7 +9,7 @@ function modeText(state: LayeredState): string {
 }
 
 function changeLine(state: LayeredState, change: LayeredChange): HTMLElement {
-  const status = change.written ? "changed" : state.mode === "report" ? "would change" : change.held ? `waits: ${change.held}` : "not changed yet";
+  const status = change.written ? "changed" : change.held ? `held: ${change.held}` : state.mode === "report" ? "would change" : "not changed yet";
   return element("li", {}, element("strong", {}, change.label), `: ${change.text} `, element("small", { className: change.held ? "tone-text-warn" : "muted" }, `(${status})`));
 }
 
@@ -27,6 +27,7 @@ export function layeredSection(node: StorageNode): HTMLElement | null {
     ...listRow("Not on the node", state.missing),
     ...listRow("Outside the plan", state.unplanned),
     ...listRow("Unknown devices", state.unknownDevices),
+    ...listRow("Node-only ignore lines, kept", state.nodeOnlyIgnores ?? []),
     ["Checked", formatAge(state.checkedAt)],
   ];
   return section(

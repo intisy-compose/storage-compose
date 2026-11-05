@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { LocalInstance } from "../src/instanceResolver.js";
 import { type NodePlan, handoffIgnoreLines, nodePlan } from "../src/nodePlan.js";
-import { type HandoffFiles, type ReconcileOptions, carriedLayoutPaths, layoutDeviceIds, reconcileNode } from "../src/reconcileNode.js";
+import { type HandoffFiles, type ReconcileOptions, carriedLayoutPaths, ignoreBlockBegin, ignoreBlockEnd, layoutDeviceIds, managedIgnoreLines, reconcileNode } from "../src/reconcileNode.js";
+import { saveIgnores } from "../src/routes/folderIgnores.js";
 import { parseLayout } from "../src/setupRepo.js";
 import { type FakeSyncthing, type SyncthingObject, clientOf, folderOf, keeperId, onPlan, ownId, phoneId, versioningOf } from "./fakeFolderSyncthing.js";
 
@@ -50,7 +51,7 @@ function planOf(configured: string[], threshold = 50): NodePlan {
   return plan;
 }
 
-const presentHandoffFiles: HandoffFiles = { ensure: async () => true };
+const presentHandoffFiles: HandoffFiles = { ensure: async () => null };
 
 function options(overrides: Partial<ReconcileOptions> = {}): ReconcileOptions {
   return { apply: true, layout, handoffFiles: presentHandoffFiles, readBackDelaysMs: [], ...overrides };
@@ -77,7 +78,7 @@ describe("reconciling a node with its plan", () => {
     syncthing.ignores.set("documents", []);
     let ensured = 0;
 
-    const result = await reconcileNode(instanceOf(syncthing), plan, options({ apply: false, handoffFiles: { ensure: async () => ++ensured > 0 } }));
+    const result = await reconcileNode(instanceOf(syncthing), plan, options({ apply: false, handoffFiles: { ensure: async () => (++ensured, null) } }));
 
     assert.equal(result.mode, "report");
     assert.deepEqual(syncthing.writes(), []);
@@ -137,19 +138,61 @@ describe("reconciling a node with its plan", () => {
     assert.equal(syncthing.writes().filter((sent) => sent.path.includes("documents-old"))[0], first);
   });
 
-  it("makes a folder at or above the threshold send-receive, its ignores and versioning first", async () => {
+  it("holds a folder turning send-receive until the space rule, and writes its ignores and versioning", async () => {
     const below = planOf(configured);
     const syncthing = onPlan(below);
     const above = planOf(configured, 20);
     syncthing.ignores.set("documents-old", []);
 
-    await reconcileNode(instanceOf(syncthing), above, options());
+    const result = await reconcileNode(instanceOf(syncthing), above, options());
+
+    assert.equal(folderOf(syncthing, "documents-old").type, "sendonly");
+    const old = result.folders.find((folder) => folder.folderId === "documents-old");
+    const type = old?.changes.find((change) => change.field === "type");
+    assert.equal(type?.written, false);
+    assert.equal(type?.held, "turning send-receive waits for the space rule");
+    assert.deepEqual(old?.written.sort(), ["ignores", "versioning"]);
+  });
+
+  it("holds the type-up in report mode too, and while the ignores are held", async () => {
+    const syncthing = onPlan(planOf(configured));
+    syncthing.ignores.set("documents-old", []);
+    const above = planOf(configured, 20);
+
+    const reported = await reconcileNode(instanceOf(syncthing), above, options({ apply: false }));
+    const applied = await reconcileNode(instanceOf(syncthing), above, options({ handoffFiles: { ensure: async () => "not mounted" } }));
+
+    for (const result of [reported, applied]) {
+      const type = result.folders.find((folder) => folder.folderId === "documents-old")?.changes.find((change) => change.field === "type");
+      assert.equal(type?.held, "turning send-receive waits for the space rule");
+    }
+    assert.equal(folderOf(syncthing, "documents-old").type, "sendonly");
+  });
+
+  for (const type of ["receiveonly", "receiveencrypted"]) {
+    it(`never changes a ${type} folder's type`, async () => {
+      const plan = planOf(configured);
+      const syncthing = onPlan(plan);
+      folderOf(syncthing, "documents").type = type;
+
+      const result = await reconcileNode(instanceOf(syncthing), plan, options());
+
+      assert.equal(folderOf(syncthing, "documents").type, type);
+      const change = result.folders.find((folder) => folder.folderId === "documents")?.changes.find((entry) => entry.field === "type");
+      assert.match(change?.held ?? "", /^type receive (only|encrypted) is not changed here$/);
+      assert.ok(!syncthing.writes().some((sent) => (sent.body as SyncthingObject | undefined)?.type !== undefined));
+    });
+  }
+
+  it("never makes the cluster send-only", async () => {
+    const plan = planOf(configured);
+    const syncthing = onPlan(plan);
+    folderOf(syncthing, "documents-old").type = "sendreceive";
+
+    const result = await reconcileNode(instanceOf(syncthing), { ...plan, cluster: true }, options());
 
     assert.equal(folderOf(syncthing, "documents-old").type, "sendreceive");
-    const sent = syncthing.writes().filter((entry) => entry.path.includes("documents-old")).map((entry) => (entry.method === "POST" ? "ignores" : Object.keys(entry.body as object)[0]));
-    assert.equal(sent.at(-1), "type");
-    assert.ok(sent.indexOf("versioning") < sent.indexOf("type"));
-    assert.ok(sent.indexOf("ignores") < sent.indexOf("type"));
+    assert.equal(result.folders[0]?.changes.find((change) => change.field === "type")?.held, "the cluster is never made send-only");
   });
 
   it("shares only with devices the node knows and stops sharing only with layout devices", async () => {
@@ -175,17 +218,48 @@ describe("reconciling a node with its plan", () => {
     assert.deepEqual((folderOf(syncthing, "documents").devices as SyncthingObject[]).map((entry) => entry.deviceID), [ownId]);
   });
 
-  it("writes the ignores as the plan has them, the hand-off lines first", async () => {
+  it("puts the plan's lines in a block above the node's own lines, which stay in order", async () => {
     const plan = planOf(configured);
     const syncthing = onPlan(plan);
-    syncthing.ignores.set("documents", ["/local-only"]);
+    syncthing.ignores.set("documents", ["/local-only", "!/Old", "(?d).DS_Store"]);
 
-    await reconcileNode(instanceOf(syncthing), plan, options());
+    const result = await reconcileNode(instanceOf(syncthing), plan, options());
 
-    const lines = syncthing.ignores.get("documents");
-    assert.deepEqual(lines, plan.folders.find((folder) => folder.id === "documents")?.ignores);
-    assert.deepEqual(lines?.slice(0, 2), handoffIgnoreLines);
-    assert.ok(lines?.includes("/Old"));
+    const planned = plan.folders.find((folder) => folder.id === "documents")?.ignores ?? [];
+    assert.deepEqual(syncthing.ignores.get("documents"), [ignoreBlockBegin, ...planned, ignoreBlockEnd, "/local-only", "!/Old", "(?d).DS_Store"]);
+    assert.deepEqual(planned.slice(0, 2), handoffIgnoreLines);
+    assert.ok(planned.includes("/Old"));
+    assert.deepEqual(result.nodeOnlyIgnores, [{ folderId: "documents", label: "Documents", lines: ["/local-only", "!/Old", "(?d).DS_Store"] }]);
+  });
+
+  it("changes only lines inside its block and never reports the node's own lines as drift", async () => {
+    const plan = planOf(configured);
+    const syncthing = onPlan(plan);
+    const planned = plan.folders.find((folder) => folder.id === "documents")?.ignores ?? [];
+    syncthing.ignores.set("documents", ["/before", ...managedIgnoreLines([...planned, "/stale"]), "/after"]);
+
+    const result = await reconcileNode(instanceOf(syncthing), plan, options());
+
+    assert.deepEqual(syncthing.ignores.get("documents"), [...managedIgnoreLines(planned), "/before", "/after"]);
+    assert.equal(result.folders.find((folder) => folder.folderId === "documents")?.changes[0]?.text, "ignore patterns: remove /stale");
+
+    syncthing.sent = [];
+    syncthing.ignores.set("documents", [...managedIgnoreLines(planned), "/after", "/more"]);
+    const again = await reconcileNode(instanceOf(syncthing), plan, options());
+    assert.deepEqual(again.folders, []);
+    assert.deepEqual(syncthing.writes(), []);
+  });
+
+  it("keeps a line saved through the ignores route outside the block on the next pull", async () => {
+    const plan = planOf(configured);
+    const syncthing = onPlan(plan);
+    const opened = [...(syncthing.ignores.get("documents") ?? [])];
+    await saveIgnores(instanceOf(syncthing), "documents", { lines: [...opened, "/edited-by-hand"], opened }, []);
+
+    const result = await reconcileNode(instanceOf(syncthing), plan, options());
+
+    assert.deepEqual(result.folders, []);
+    assert.deepEqual(syncthing.ignores.get("documents"), [...opened, "/edited-by-hand"]);
   });
 
   it("creates an empty .stignore-handoff after the list is ignored and before the #include is written", async () => {
@@ -196,7 +270,7 @@ describe("reconciling a node with its plan", () => {
     const handoffFiles: HandoffFiles = {
       ensure: async (_instance, folder) => {
         seenAtEnsure.push([...(syncthing.ignores.get(folder.id) ?? [])]);
-        return true;
+        return null;
       },
     };
 
@@ -205,7 +279,7 @@ describe("reconciling a node with its plan", () => {
     assert.equal(seenAtEnsure.length, 1);
     assert.ok(!seenAtEnsure[0].includes(handoffIgnoreLines[0]), "no #include before the file exists");
     assert.ok(seenAtEnsure[0].includes(handoffIgnoreLines[1]), "the list is ignored before it is created");
-    assert.deepEqual(syncthing.ignores.get("documents"), plan.folders.find((folder) => folder.id === "documents")?.ignores);
+    assert.deepEqual(syncthing.ignores.get("documents"), managedIgnoreLines(plan.folders.find((folder) => folder.id === "documents")?.ignores ?? []));
   });
 
   it("holds the #include while the hand-off list cannot be created, and writes the folder's other changes", async () => {
@@ -214,13 +288,13 @@ describe("reconciling a node with its plan", () => {
     syncthing.ignores.set("documents", []);
     folderOf(syncthing, "documents").versioning = versioningOf(null);
 
-    const result = await reconcileNode(instanceOf(syncthing), plan, options({ handoffFiles: { ensure: async () => false } }));
+    const result = await reconcileNode(instanceOf(syncthing), plan, options({ handoffFiles: { ensure: async () => "this host does not mount the node's files" } }));
 
     const lines = syncthing.ignores.get("documents") ?? [];
     assert.ok(!lines.includes(handoffIgnoreLines[0]));
     assert.ok(lines.includes(handoffIgnoreLines[1]));
     const documents = result.folders.find((folder) => folder.folderId === "documents");
-    assert.match(documents?.held ?? "", /\.stignore-handoff/);
+    assert.match(documents?.changes.find((change) => change.field === "ignores")?.held ?? "", /\.stignore-handoff is not in place on laptop-data \(this host does not mount the node's files\)/);
     assert.deepEqual(documents?.written, ["versioning"]);
     assert.ok(lines.includes("/Old"), "the child entry is ignored while the include waits");
   });
@@ -228,10 +302,10 @@ describe("reconciling a node with its plan", () => {
   it("does not ask for the hand-off list when the #include is already in place", async () => {
     const plan = planOf(configured);
     const syncthing = onPlan(plan);
-    syncthing.ignores.set("documents", [...handoffIgnoreLines]);
+    syncthing.ignores.set("documents", managedIgnoreLines([...handoffIgnoreLines]));
     let ensured = 0;
 
-    await reconcileNode(instanceOf(syncthing), plan, options({ handoffFiles: { ensure: async () => ++ensured > 0 } }));
+    await reconcileNode(instanceOf(syncthing), plan, options({ handoffFiles: { ensure: async () => (++ensured, null) } }));
 
     assert.equal(ensured, 0);
   });
@@ -299,6 +373,100 @@ describe("reconciling a node with its plan", () => {
     syncthing.answers = false;
 
     await assert.rejects(reconcileNode(instanceOf(syncthing), plan, options()), (error: Error & { status?: number }) => error.status === 503 && /laptop-data/.test(error.message));
+  });
+});
+
+describe("never shortening or replacing a folder's versioning", () => {
+  const cases: { name: string; documents: SyncthingObject; old?: SyncthingObject; held: string | null }[] = [
+    { name: "a staggered one with a longer maxAge", documents: versioningOf(400), held: "would shorten how long versions are kept" },
+    { name: "one that keeps versions forever (maxAge 0)", documents: versioningOf(0), held: "would shorten how long versions are kept" },
+    { name: "a staggered one without a maxAge", documents: { ...versioningOf(null), type: "staggered" }, held: "would replace the folder's versioning" },
+    { name: "another type", documents: { type: "simple", params: { keep: "5" }, cleanupIntervalS: 3600, fsPath: "", fsType: "basic" }, held: "would replace the folder's versioning" },
+  ];
+  for (const entry of cases) {
+    it(`holds ${entry.name}`, async () => {
+      const plan = planOf(configured);
+      const syncthing = onPlan(plan);
+      folderOf(syncthing, "documents").versioning = structuredClone(entry.documents);
+
+      const result = await reconcileNode(instanceOf(syncthing), plan, options());
+
+      assert.deepEqual(folderOf(syncthing, "documents").versioning, entry.documents);
+      assert.equal(result.folders[0]?.changes.find((change) => change.field === "versioning")?.held, entry.held);
+      assert.deepEqual(syncthing.writes(), []);
+    });
+  }
+
+  it("never clears the versioning of a folder its plan sends only", async () => {
+    const plan = planOf(configured);
+    const syncthing = onPlan(plan);
+    folderOf(syncthing, "documents-old").versioning = versioningOf(365);
+
+    const result = await reconcileNode(instanceOf(syncthing), plan, options());
+
+    assert.deepEqual(folderOf(syncthing, "documents-old").versioning, versioningOf(365));
+    assert.equal(result.folders[0]?.changes[0]?.held, "would replace the folder's versioning");
+  });
+
+  it("raises a staggered maxAge the plan keeps longer", async () => {
+    const plan = planOf(configured);
+    const syncthing = onPlan(plan);
+    folderOf(syncthing, "documents").versioning = versioningOf(30);
+
+    await reconcileNode(instanceOf(syncthing), plan, options());
+
+    assert.deepEqual(folderOf(syncthing, "documents").versioning, versioningOf(365));
+  });
+});
+
+describe("sharing a folder", () => {
+  it("never shares with a node whose access is closed", async () => {
+    const closed = parseLayout(layoutText.replace('name      = "keeper-data"', 'name      = "keeper-data"\naccess    = "closed"'));
+    const plan = nodePlan(closed, "a001", carriedLayoutPaths(closed, "a001", new Set(configured)));
+    assert.ok(plan);
+    const syncthing = onPlan(plan);
+    folderOf(syncthing, "documents").devices = [{ deviceID: ownId }];
+
+    const result = await reconcileNode(instanceOf(syncthing), plan, options({ layout: closed }));
+
+    assert.deepEqual((folderOf(syncthing, "documents").devices as SyncthingObject[]).map((entry) => entry.deviceID), [ownId]);
+    const sharing = result.folders[0]?.changes.find((change) => change.field === "sharing");
+    assert.match(sharing?.held ?? "", /access is closed, so nothing is shared with it until its encryption exists/);
+    assert.deepEqual(syncthing.writes(), []);
+  });
+
+  it("writes the device list over a fresh read, so a device shared meanwhile stays shared", async () => {
+    const plan = planOf(configured);
+    const syncthing = onPlan(plan);
+    folderOf(syncthing, "documents").devices = [{ deviceID: ownId }];
+    let listed = false;
+    syncthing.onRequest = (method, path) => {
+      if (method === "GET" && path === "/config/folders") listed = true;
+      else if (listed) {
+        listed = false;
+        (folderOf(syncthing, "documents").devices as SyncthingObject[]).push({ deviceID: phoneId });
+      }
+    };
+
+    await reconcileNode(instanceOf(syncthing), plan, options());
+
+    assert.deepEqual((folderOf(syncthing, "documents").devices as SyncthingObject[]).map((entry) => entry.deviceID).sort(), [keeperId, ownId, phoneId].sort());
+  });
+});
+
+describe("a folder whose writes fail", () => {
+  it("is listed in failed while the other folders are reconciled, its drift still shown", async () => {
+    const plan = planOf(configured);
+    const syncthing = onPlan(plan);
+    folderOf(syncthing, "documents").versioning = versioningOf(null);
+    folderOf(syncthing, "documents-old").type = "sendreceive";
+    syncthing.failing = { path: /^\/config\/folders\/documents$/, error: new Error("refused") };
+
+    const result = await reconcileNode(instanceOf(syncthing), plan, options());
+
+    assert.deepEqual(result.failed, ["Documents: refused"]);
+    assert.equal(result.folders.find((folder) => folder.folderId === "documents")?.changes.length, 1);
+    assert.equal(folderOf(syncthing, "documents-old").type, "sendonly");
   });
 });
 

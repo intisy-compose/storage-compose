@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import type { NodePlan } from "../src/nodePlan.js";
+import { managedIgnoreLines } from "../src/reconcileNode.js";
 import { type SyncthingClient, SyncthingUnavailable } from "../src/syncthing.js";
 
 export const ownId = "LAPTOP-ID";
@@ -27,9 +28,15 @@ export class FakeSyncthing {
   folders: SyncthingObject[] = [];
   ignores = new Map<string, string[]>();
   devices: SyncthingObject[] = [{ deviceID: ownId }, { deviceID: keeperId }, { deviceID: phoneId }];
+  /** Runs before each request is answered, as another writer could change the node between two requests. */
+  onRequest: ((method: string, path: string) => void) | null = null;
+  /** Requests whose path matches fail with this error. */
+  failing: { path: RegExp; error: Error } | null = null;
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (!this.answers) throw new SyncthingUnavailable(`${method} ${path}: connection refused`);
+    this.onRequest?.(method, path);
+    if (method !== "GET" && this.failing?.path.test(path)) throw this.failing.error;
     if (method !== "GET") this.sent.push({ method, path, body });
     if (method === "GET" && path === "/system/status") return { myID: ownId } as T;
     if (method === "GET" && path === "/config/folders") return structuredClone(this.folders) as T;
@@ -94,7 +101,7 @@ export function onPlan(plan: NodePlan): FakeSyncthing {
       devices: folder.devices.map((deviceID) => ({ deviceID, introducedBy: "", encryptionPassword: "" })),
       versioning: versioningOf(folder.versioning?.maxAgeDays ?? null),
     });
-    syncthing.ignores.set(folder.id, [...folder.ignores]);
+    syncthing.ignores.set(folder.id, managedIgnoreLines(folder.ignores));
   }
   return syncthing;
 }
