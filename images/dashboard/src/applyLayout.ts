@@ -3,6 +3,7 @@ import { lstat, open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { LayeredChange, LayeredState } from "./api/types.js";
 import { recordDashboardActivity } from "./eventFeed.js";
+import { type HandoffPublisher, handoffPublisher } from "./handoffFeed.js";
 import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances } from "./instanceResolver.js";
 import { layeredStateOf, recordLayered } from "./layeredDrift.js";
 import { handoffIgnoreFile, nodePlan } from "./nodePlan.js";
@@ -16,6 +17,8 @@ export interface LayoutRoundDependencies {
   layout: () => Promise<SetupLayout | null>;
   instances: () => Promise<LocalInstance[]>;
   handoffFiles: HandoffFiles;
+  /** Writes each node's hand-off contract; a round without one writes none. */
+  handoffs?: HandoffPublisher;
   /** Enters one written change in Activity. */
   record: (nodeId: string, folderId: string, text: string) => void;
   readBackDelaysMs?: readonly number[];
@@ -43,9 +46,10 @@ function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: st
 }
 
 /**
- * Each round brings this host's nodes to their layered plans from the shared layout, or only reports how they differ.
- * @implNote The plan is made at the committed threshold and no hand-off is decided yet, so `effectiveThreshold` is the committed one and
- * `pendingHandoffs` null. A round never confirms for an array, so an array's changes always wait for the folder ID typed.
+ * Each round brings this host's nodes to their layered plans from the shared layout, or only reports how they differ, and writes each
+ * node's hand-off contract, an empty one whenever the node cannot be planned, so an executor never acts on an older round's list.
+ * @implNote The plan is made at the committed threshold, so `effectiveThreshold` is the committed one. A round never confirms for an
+ * array, so an array's changes always wait for the folder ID typed.
  */
 export class LayoutRound {
   constructor(private readonly dependencies: LayoutRoundDependencies) {}
@@ -54,23 +58,47 @@ export class LayoutRound {
     const layout = await this.dependencies.layout();
     const states = new Map<string, LayeredState>();
     if (layout) {
-      for (const instance of await this.dependencies.instances()) {
-        const state = await this.nodeState(layout, instance);
+      const instances = await this.dependencies.instances();
+      for (const instance of instances) {
+        const state = await this.nodeState(layout, instance, instances);
         if (state) states.set(instance.nodeId, state);
       }
     }
     recordLayered(states);
   }
 
-  private async nodeState(layout: SetupLayout, instance: LocalInstance): Promise<LayeredState | null> {
+  private async clearHandoffs(instance: LocalInstance, apply: boolean): Promise<void> {
+    await this.dependencies.handoffs?.clear(instance.nodeId, instance, apply).catch((error) => console.error(`layered sync: no hand-off contract written for ${instance.nodeId}: ${reasonOf(error)}`));
+  }
+
+  private async publishHandoffs(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], localFolders: ReadonlySet<string>): Promise<number | null> {
+    const publisher = this.dependencies.handoffs;
+    if (!publisher) return null;
+    try {
+      return await publisher.publish({ layout, nodeId: instance.nodeId, localFolders, instance, instances });
+    } catch (error) {
+      console.error(`layered sync: no hand-off contract written for ${instance.nodeId}: ${reasonOf(error)}`);
+      return null;
+    }
+  }
+
+  private async nodeState(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[]): Promise<LayeredState | null> {
     const node = layout.nodes.find((entry) => entry.id === instance.nodeId);
-    if (!node) return null;
+    if (!node) {
+      await this.clearHandoffs(instance, false);
+      return null;
+    }
     const checkedAt = (this.dependencies.now?.() ?? new Date()).toISOString();
     const state = emptyState(node.apply ? "apply" : "report", node.threshold, checkedAt);
-    if (!node.admitted) return { ...state, problems: [`${node.name} is not admitted yet`] };
+    if (!node.admitted) {
+      await this.clearHandoffs(instance, node.apply);
+      return { ...state, problems: [`${node.name} is not admitted yet`] };
+    }
     try {
       const configured = (await callSyncthing(instance, (client) => client.folders())) ?? [];
-      const plan = nodePlan(layout, node.id, carriedLayoutPaths(layout, node.id, new Set(configured.map((folder: SyncthingFolderConfig) => folder.id))));
+      const localFolders = carriedLayoutPaths(layout, node.id, new Set(configured.map((folder: SyncthingFolderConfig) => folder.id)));
+      const plan = nodePlan(layout, node.id, localFolders);
+      if (!plan || plan.problems.length) await this.clearHandoffs(instance, node.apply);
       if (!plan) return null;
       if (plan.problems.length) return { ...state, problems: plan.problems };
       const result = await reconcileNode(instance, plan, {
@@ -80,8 +108,10 @@ export class LayoutRound {
         onWritten: (folderId, text) => this.dependencies.record(instance.nodeId, folderId, text),
         readBackDelaysMs: this.dependencies.readBackDelaysMs ?? defaultReadBackDelaysMs,
       });
-      return { ...state, effectiveThreshold: plan.appliedThreshold, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
+      const pendingHandoffs = await this.publishHandoffs(layout, instance, instances, localFolders);
+      return { ...state, effectiveThreshold: plan.appliedThreshold, pendingHandoffs, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
     } catch (error) {
+      await this.clearHandoffs(instance, node.apply);
       const last = layeredStateOf(instance.nodeId);
       return { ...(last ?? state), mode: state.mode, threshold: state.threshold, failed: reasonOf(error), checkedAt };
     }
@@ -155,5 +185,6 @@ export const layoutRound = new LayoutRound({
   layout: () => readLayout(),
   instances: () => localInstances(),
   handoffFiles: mountedHandoffFiles([storageRoot, nodeVolumesDirectory]),
+  handoffs: handoffPublisher(),
   record: (nodeId, folderId, text) => recordDashboardActivity(nodeId, folderId, text),
 });
