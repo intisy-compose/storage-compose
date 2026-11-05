@@ -15,7 +15,7 @@ function isHandoffQuiet(copy: FolderCopy): boolean {
 
 /**
  * How one copy stands; a higher rank is worse.
- * @implNote An idle hand-off folder needing no more items than its hand-off list holds reads as fine: an ignore line whose file left the node
+ * @implNote An idle hand-off folder needing no more items than its hand-off list holds is no fault, shown in the info tone while it needs any: an ignore line whose file left the node
  * can leave it short for good (section 4b), which is no fault. Any more is shown as out of sync.
  */
 export function copyCondition(copy: FolderCopy): FolderCondition {
@@ -24,7 +24,10 @@ export function copyCondition(copy: FolderCopy): FolderCondition {
   if (copy.errors > 0) return { rank: 6, tone: "bad", label: plural(copy.errors, "failed item") };
   if (copy.state === "unknown") return { rank: 5, tone: "muted", label: "not answering" };
   if (copy.state === "paused") return { rank: 4, tone: "warn", label: "paused" };
-  if (isHandoffQuiet(copy)) return { rank: 0, tone: "ok", label: "sends only, hands off" };
+  if (isHandoffQuiet(copy)) {
+    const needed = copy.needTotalItems ?? copy.needItems ?? 0;
+    return needed ? { rank: 0, tone: "accent", label: `sends only, hands off; ${plural(needed, "ignored item")} not fetched` } : { rank: 0, tone: "ok", label: "sends only, hands off" };
+  }
   if (completion < 1) return { rank: 3, tone: "accent", label: `${copy.state}, ${formatPercent(completion)}` };
   if (copy.state !== "idle") return { rank: 1, tone: "accent", label: copy.state };
   return { rank: 0, tone: "ok", label: "up to date" };

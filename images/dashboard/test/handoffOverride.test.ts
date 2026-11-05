@@ -95,7 +95,8 @@ describe("Override changes on a hand-off folder", () => {
   });
 
   it("an idle hand-off folder needing no more items than its hand-off list holds is no fault; one needing more is out of sync", () => {
-    assert.deepEqual(copyCondition(copyOf("videos", { handoff: true, handoffEntries: 1, needTotalItems: 1, completion: 52 })), { rank: 0, tone: "ok", label: "sends only, hands off" });
+    assert.deepEqual(copyCondition(copyOf("videos", { handoff: true, handoffEntries: 1, needTotalItems: 1, completion: 52 })), { rank: 0, tone: "accent", label: "sends only, hands off; 1 ignored item not fetched" });
+    assert.deepEqual(copyCondition(copyOf("videos", { handoff: true, handoffEntries: 1, needTotalItems: 0 })), { rank: 0, tone: "ok", label: "sends only, hands off" });
     assert.notEqual(copyCondition(copyOf("videos", { handoff: true, handoffEntries: 1, needTotalItems: 2, completion: 52 })).tone, "ok");
     assert.notEqual(copyCondition(copyOf("videos", { handoff: true, needTotalItems: 1, completion: 52 })).tone, "ok", "a list that could not be counted holds nothing");
     assert.notEqual(copyCondition(copyOf("videos", { completion: 52 })).tone, "ok");
