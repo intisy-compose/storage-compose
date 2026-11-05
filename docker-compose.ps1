@@ -19,6 +19,7 @@ $smartctlPackage = "winget install --id smartmontools.smartmontools --version 7.
 . (Join-Path $PSScriptRoot "windows\agent-files.ps1")
 . (Join-Path $PSScriptRoot "windows\nodes.ps1")
 . (Join-Path $PSScriptRoot "windows\agent-install.ps1")
+. (Join-Path $PSScriptRoot "gateway\tailnet-node.ps1")
 $composeProject = "storage-compose"
 $attachRequestFile = Join-Path $PSScriptRoot $attachRequestFileName
 $attachStateFile = Join-Path $PSScriptRoot $attachStateFileName
@@ -429,6 +430,59 @@ function Stop-Array {
 }
 
 <#
+.SYNOPSIS
+How the stack is deleted: its node leaves the tailnet, its tailnet state goes from the array, then
+everything stops as in down, so a later up joins fresh. Removing the folder is the human's step.
+.NOTES
+The node key lives on the array, which only the running mounter has mounted and down unmounts, so
+unlike the other stacks the node is removed before the down: tailscale is stopped first so the node
+is quiet, then the state is read and removed through the mounter. Once started, the down always runs.
+#>
+function Invoke-Delete {
+    $running = docker inspect -f "{{.State.Running}}" storage-mounter 2>$null
+    if ($running -ne "true") {
+        Write-Err "The node identity is on the array, which is not mounted; run '.\docker-compose.ps1 up' first, then delete."
+        exit 1
+    }
+    $tailnetFolder = "/mnt/storage/$(Get-ConfigValue "ARRAY_PREFIX" "storage")-data1/.storage/tailscale"
+    $nodeName = Get-ConfigValue "STORAGE_HOST" (Get-ConfigValue "TS_HOSTNAME" "storage")
+    Write-Step "Stopping the tailnet node..."
+    docker compose @composeArgs stop tailscale
+    $removed = Remove-ArrayTailnetIdentity $tailnetFolder $nodeName
+    Stop-Array
+    if (-not $removed) { exit 1 }
+    Write-OK "Deleted. The volumes stay in Docker; remove this folder to finish."
+}
+
+<#
+.SYNOPSIS
+Removes the node the array's tailscaled.state identifies, then that state, through the mounter.
+$false when the node may still be in the tailnet, which keeps the state so delete can run again.
+#>
+function Remove-ArrayTailnetIdentity([string]$TailnetFolder, [string]$NodeName) {
+    docker compose @composeArgs exec -T mounter test -f "$TailnetFolder/tailscaled.state"
+    if ($LASTEXITCODE -ne 0) {
+        Write-OK "No node identity on the array, so no node is removed from the tailnet."
+        return $true
+    }
+    $state = (docker compose @composeArgs exec -T mounter cat "$TailnetFolder/tailscaled.state") -join "`n"
+    $nodeId = Get-TailnetNodeId $state
+    if (-not $nodeId) {
+        Write-Err "The array's tailscaled.state names no node, so none is removed and the state is kept."
+        Write-Err "  Remove $NodeName on the Machines page, $TailnetMachinesPage."
+        return $false
+    }
+    if ((Remove-TailnetNode $nodeId $NodeName $configFile) -eq "failed") {
+        Write-Err "The array's tailnet state is kept, so delete can run again."
+        return $false
+    }
+    docker compose @composeArgs exec -T mounter rm -rf $TailnetFolder
+    if ($LASTEXITCODE -ne 0) { Write-Err "Could not remove $TailnetFolder from the array."; return $false }
+    Write-OK "Removed the tailnet state from the array; the next up joins the tailnet fresh."
+    return $true
+}
+
+<#
 .NOTES
 Runs in a one-off SnapRAID container while the stack is down, with the drives passed through but
 never mounted; on success ARRAY_PREFIX becomes the array's id, so the stack finds its state on
@@ -538,6 +592,7 @@ $commands = @{
     "init-config" = "Create config.env, name this host and generate the notification topic"
     "up"          = "Install or repair the host agent (admin shell), pass the drives through to WSL (or attach the enclosures with usbipd), mount and lock the array, join the tailnet, start the stack (default)"
     "down"        = "Stop the stack, release the lock, unmount and release the drives from WSL (or give the enclosures back), remove the host agent or hand it back to the joined nodes in joined mode (admin shell)"
+    "delete"      = "With the array mounted: remove the stack's node from the tailnet (with TS_API_TOKEN) and its tailnet state from the array, then down; for a stack being removed"
     "attach"      = "[disk number]  list the USB disks, or pass a blank one through to WSL as a replacement drive"
     "restart"     = "down, then up"
     "status"      = "Show the containers and their health"
@@ -558,6 +613,7 @@ switch ($Command.ToLower()) {
     "init-config" { Initialize-Config; break }
     "up"      { Start-Array; break }
     "down"    { Stop-Array; break }
+    "delete"  { Assert-Config; Invoke-Delete; break }
     "restart" { Stop-Array; Start-Array; break }
     "status"  { docker compose @composeArgs ps -a; break }
     "logs"    { docker compose @composeArgs logs -f @forwarded; break }
