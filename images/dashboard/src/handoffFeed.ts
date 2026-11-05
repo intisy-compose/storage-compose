@@ -267,6 +267,14 @@ async function plannedForSpace(input: HandoffInput, plan: NodePlan): Promise<{ p
   return raised ? { plan: raised, decision } : { note: "the node has no plan at the raised threshold", decision };
 }
 
+/**
+ * A contract that holds everything: not in apply mode, so the executor refuses it whole and not even a pending path moves or the trash
+ * empties (a stop holds everything and hands nothing off).
+ */
+function held(contract: HandoffContract, note: string): HandoffContract {
+  return { ...contract, apply: false, notes: [`hand-offs are held: ${note}`] };
+}
+
 /** A round's contract with the space decision it rests on, null when none was made. */
 export interface HandoffRound {
   contract: HandoffContract;
@@ -287,12 +295,13 @@ export async function decideHandoffRound(input: HandoffInput): Promise<HandoffRo
   const node = input.layout.nodes.find((entry) => entry.id === input.nodeId);
   const plan = node ? nodePlan(input.layout, input.nodeId, input.localFolders) : null;
   const contract = emptyContract(input.nodeId, node?.apply ?? false, plan?.cluster ?? false, input.now(), quietMinutes);
-  if (!node || !plan || !node.apply || !node.enabled || plan.cluster || plan.problems.length || !plan.admitted) return { contract, space: null };
+  if (!node || !plan || !node.apply || plan.cluster || plan.problems.length || !plan.admitted) return { contract, space: null };
+  if (!node.enabled) return { contract: held(contract, `${node.name} is not enabled`), space: input.decided?.decision ?? null };
   let space: SpaceDecision | null = null;
   try {
     const placed = await plannedForSpace(input, plan);
     space = placed.decision;
-    if ("note" in placed) return { contract: { ...contract, notes: [placed.note] }, space };
+    if ("note" in placed) return { contract: held(contract, placed.note), space };
     const handing = placed.plan.folders.filter((folder) => folder.handsOff);
     const own = await ownRecords(input, handing, quietMinutes);
     const candidates = handoffCandidates(input.layout, placed.plan, own.files, placed.decision, input.now(), quietMinutes);

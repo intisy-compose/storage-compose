@@ -55,11 +55,16 @@ function outcomeGroupWarnings(node: StorageNode, outcomes: HandoffOutcome[], kin
   );
 }
 
+/** The executor refusing a contract the dashboard held on purpose (a stop, an unknown space) is no fault: the hold is said by its note. */
+function isHeldRefusal(state: LayeredState, refused: string): boolean {
+  return state.handoff?.apply === false && refused === "the contract is not in apply mode";
+}
+
 function resultWarnings(node: StorageNode, state: LayeredState): Warning[] {
   const result = state.handoff?.result;
   if (!result) return [];
   const warnings: Warning[] = [];
-  if (result.refused && state.mode === "apply") warnings.push(warning({ id: `handoff-refused:${node.id}`, level: "warning", kind: "handoff-refused", text: `${node.name}: the hand-off executor refused the whole contract: ${result.refused}`, nodeId: node.id }));
+  if (result.refused && state.mode === "apply" && !isHeldRefusal(state, result.refused)) warnings.push(warning({ id: `handoff-refused:${node.id}`, level: "warning", kind: "handoff-refused", text: `${node.name}: the hand-off executor refused the whole contract: ${result.refused}`, nodeId: node.id }));
   const refused = result.results.filter((outcome) => outcome.outcome === "refused" && !isTooLarge(outcome) && !snapshotProblem.test(outcome.reason));
   warnings.push(...outcomeGroupWarnings(node, refused, "handoff-refused", (count, label, first) => `${node.name}: the hand-off of ${count} in ${label} was refused (${first.path}: ${first.reason})`));
   const pending = result.results.filter((outcome) => outcome.outcome === "ignored-not-moved" && !snapshotProblem.test(outcome.reason));
@@ -97,12 +102,21 @@ function contractWarnings(node: StorageNode, state: LayeredState, now: number): 
     const twice = /two keeper reports/.test(note);
     warnings.push(warning({ id: `handoff-note:${node.id}:${note}`, level: twice ? "warning" : "info", kind: "handoff-note", text: twice ? `${node.name}: ${note}; two hosts may be running the same node` : `${node.name}: ${note}`, nodeId: node.id }));
   }
-  const space = handoff.space;
-  if (space?.state === "stopped")
-    warnings.push(warning({ id: `space-stopped:${node.id}`, level: "warning", kind: "space-stopped", text: `${node.name} does not fit even at its top priority: it needs ${space.neededBytes} bytes and has ${space.availableBytes}; nothing is handed off`, nodeId: node.id }));
-  if (space?.state === "raised")
-    warnings.push(warning({ id: `space-raised:${node.id}`, level: "info", kind: "space-raised", text: `${node.name} is short of space: its threshold is raised from ${state.threshold} to ${space.threshold} until what it keeps fits with 10% free`, nodeId: node.id }));
   return warnings;
+}
+
+/** The round's space decision, made in report mode too: a stop pauses the node only once it acts. */
+function spaceWarnings(node: StorageNode, state: LayeredState): Warning[] {
+  const space = state.space;
+  if (space?.state === "stopped") {
+    const outcome = state.mode === "apply" ? "its folders are paused and nothing is handed off until it fits with 10% free" : "once it acts, its folders are paused until it fits";
+    return [warning({ id: `space-stopped:${node.id}`, level: state.mode === "apply" ? "warning" : "info", kind: "space-stopped", text: `${node.name} does not fit even at its top priority: it needs ${space.neededBytes} bytes and has ${space.availableBytes}; ${outcome}`, nodeId: node.id })];
+  }
+  if (space?.state === "raised")
+    return [warning({ id: `space-raised:${node.id}`, level: "info", kind: "space-raised", text: `${node.name} is short of space: its threshold is raised from ${state.threshold} to ${space.threshold} until what it keeps fits with 10% free`, nodeId: node.id })];
+  if (space?.state === "full")
+    return [warning({ id: `space-full:${node.id}`, level: "warning", kind: "space-full", text: `${node.name}, the cluster, does not fit with 10% free: it needs ${space.neededBytes} bytes and has ${space.availableBytes}; it confirms no new hand-off until it does, so files wait on the nodes that hand off to it`, nodeId: node.id })];
+  return [];
 }
 
 function planWarnings(node: StorageNode, state: LayeredState): Warning[] {
@@ -129,7 +143,7 @@ function planWarnings(node: StorageNode, state: LayeredState): Warning[] {
 export function layeredWarnings(node: StorageNode, now = Date.now()): Warning[] {
   const state = node.layered;
   if (!state) return [];
-  return [...planWarnings(node, state), ...contractWarnings(node, state, now), ...resultWarnings(node, state)];
+  return [...planWarnings(node, state), ...spaceWarnings(node, state), ...contractWarnings(node, state, now), ...resultWarnings(node, state)];
 }
 
 /** The setup repo's pull or push problem, a commit of this host the others do not have yet among them. */

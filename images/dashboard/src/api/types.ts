@@ -409,6 +409,8 @@ export interface HandoffResult {
 
 export interface LayeredHandoff {
   writtenAt: string;
+  /** False when the contract holds everything: the node only reports, is stopped, or its space is not known. */
+  apply: boolean;
   /** The files the contract names for the executor. */
   entries: number;
   waiting: HandoffWaitingView[];
@@ -444,6 +446,7 @@ export type WarningKind =
   | "handoff-probe"
   | "space-stopped"
   | "space-raised"
+  | "space-full"
   | "layout-drift"
   | "layout-held"
   | "layout-problem"

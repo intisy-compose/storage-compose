@@ -228,11 +228,34 @@ describe("the hand-off contract", () => {
     assert.deepEqual(contract.entries, []);
   });
 
-  it("hands nothing off while the node's space is unknown", async () => {
+  it("holds everything while the node's space cannot be read: the contract is not in apply mode, so not even a pending path moves", async () => {
     const contract = await decideHandoffContract(inputFor(parseLayout(layoutText()), network({ stick: { space: null } })));
 
-    assert.deepEqual(contract.entries, []);
-    assert.match(contract.notes.join(" "), /space/);
+    assert.deepEqual([contract.apply, contract.entries], [false, []]);
+    assert.match(contract.notes.join(" "), /space cannot be read/);
+  });
+
+  it("holds everything while the round's space decision is stopped or unknown, or the node is not enabled", async () => {
+    const decided = (state: "stopped" | "unknown") => ({ decision: { state, threshold: 80, neededBytes: 1, availableBytes: 0, handoffAllowed: false } });
+    const cases: [string, HandoffInput, RegExp][] = [
+      ["stopped", inputFor(parseLayout(layoutText()), network(), "b001", { decided: decided("stopped") }), /space decision is stopped/],
+      ["unknown", inputFor(parseLayout(layoutText()), network(), "b001", { decided: decided("unknown") }), /space decision is unknown/],
+      ["no decision", inputFor(parseLayout(layoutText()), network(), "b001", { decided: { decision: null } }), /space cannot be read/],
+      ["disabled", inputFor(parseLayout(layoutText().replace("apply     = true", "apply     = true\nenabled   = false")), network()), /stick is not enabled/],
+    ];
+    for (const [name, input, note] of cases) {
+      const contract = await decideHandoffContract(input);
+      assert.deepEqual([contract.apply, contract.entries, contract.waiting], [false, [], []], name);
+      assert.match(contract.notes.join(" "), note, name);
+    }
+  });
+
+  it("decides with the round's decision when it allows hand-offs, without reading the space again", async () => {
+    const reads = network({ stick: { space: null } });
+    const contract = await decideHandoffContract(inputFor(parseLayout(layoutText()), reads, "b001", { decided: { decision: { state: "fits", threshold: 80, neededBytes: 0, availableBytes: 1, handoffAllowed: true } } }));
+
+    assert.equal(contract.apply, true);
+    assert.equal(contract.entries.length, 1);
   });
 
   it("waits for a keeper whose Syncthing does not answer", async () => {

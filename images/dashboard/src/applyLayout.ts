@@ -168,7 +168,7 @@ export class LayoutRound {
     if (!publisher || !last) return null;
     const result = publisher.result ? await publisher.result(instance).catch(() => null) : null;
     const space = last.space ? { state: last.space.state, threshold: last.space.threshold, neededBytes: last.space.neededBytes, availableBytes: last.space.availableBytes } : null;
-    return { writtenAt: last.contract.writtenAt, entries: last.contract.entries.length, waiting: this.sinceOf(instance.nodeId, last.contract.waiting, checkedAt), notes: [...last.contract.notes], space, result };
+    return { writtenAt: last.contract.writtenAt, apply: last.contract.apply, entries: last.contract.entries.length, waiting: this.sinceOf(instance.nodeId, last.contract.waiting, checkedAt), notes: [...last.contract.notes], space, result };
   }
 
   private async clearHandoffs(instance: LocalInstance, apply: boolean): Promise<void> {
