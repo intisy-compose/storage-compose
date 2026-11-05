@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { FolderType } from "../src/api/types.js";
@@ -94,6 +94,18 @@ export async function waitUntil(condition: () => Promise<boolean>, what: string,
 async function docker(args: string[]): Promise<string> {
   const { stdout } = await run("docker", args, { maxBuffer: 16 * 1024 * 1024 });
   return stdout;
+}
+
+/** Content goes through stdin: a large file as an argument exceeds the Windows command line limit. */
+function dockerWithInput(args: string[], input: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("docker", args, { stdio: ["pipe", "ignore", "pipe"] });
+    let errorText = "";
+    child.stderr.on("data", (chunk: Buffer) => { errorText += chunk.toString(); });
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`docker ${args.join(" ")}: exit ${code} ${errorText}`))));
+    child.stdin.end(input);
+  });
 }
 
 async function deviceIdOf(peer: Omit<Peer, "deviceId">): Promise<string> {
@@ -210,7 +222,8 @@ async function inPeer(peer: Peer, script: string, ...args: string[]): Promise<st
 }
 
 export async function writeFile(peer: Peer, folder: string, relative: string, content: string): Promise<void> {
-  await inPeer(peer, 'mkdir -p "$(dirname "$1")" && printf %s "$2" > "$1"', `${folderPath(folder)}/${relative}`, content);
+  const script = 'mkdir -p "$(dirname "$1")" && cat > "$1"';
+  await dockerWithInput(["exec", "-i", "-u", syncthingUser, peer.container, "sh", "-c", script, "sh", `${folderPath(folder)}/${relative}`], content);
 }
 
 export async function appendLine(peer: Peer, folder: string, relative: string, line: string): Promise<void> {
