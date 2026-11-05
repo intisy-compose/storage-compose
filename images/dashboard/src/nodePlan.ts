@@ -35,6 +35,8 @@ export interface PlannedFolder {
 export interface NodePlan {
   nodeId: string;
   admitted: boolean;
+  /** The threshold the layout commits for the node, before any raise for space. */
+  threshold: number;
   folders: PlannedFolder[];
   /** Layout paths below the threshold that the node holds nothing in, so it does not share them. */
   notShared: string[];
@@ -251,7 +253,7 @@ export function nodePlan(layout: SetupLayout, nodeId: string, localFolders: Read
   const node = layout.nodes.find((entry) => entry.id === nodeId);
   if (!node) return null;
   const network: Network = { layout, folders: layout.folders.filter((folder) => folder.relativePath !== topDirectoryPath), cluster: clusterOf(layout) };
-  const plan: NodePlan = { nodeId, admitted: node.admitted, folders: [], notShared: [], unplaced: unplacedPaths(network.folders, node) };
+  const plan: NodePlan = { nodeId, admitted: node.admitted, threshold: node.threshold, folders: [], notShared: [], unplaced: unplacedPaths(network.folders, node) };
   if (!node.admitted) return plan;
   const device = deviceOf(layout, node);
   for (const folder of network.folders) {
