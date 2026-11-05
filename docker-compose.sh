@@ -13,6 +13,9 @@ config_file="$here/config.env"
 example_file="$here/config.env.example"
 compose=(docker compose --project-directory "$here" --env-file "$config_file")
 
+# shellcheck source=gateway/tailnet-node.sh
+. "$here/gateway/tailnet-node.sh"
+
 step() { printf '\033[36m%s\033[0m\n' "$*"; }
 ok()   { printf '  \033[32m%s\033[0m\n' "$*"; }
 fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
@@ -127,6 +130,48 @@ start_array() {
 
 stop_array() { step "Stopping everything and unmounting..."; "${compose[@]}" down; }
 
+# remove_array_tailnet_identity FOLDER NAME: removes the node the array's tailscaled.state in FOLDER
+# identifies, then that state, through the mounter. Fails when the node may still be in the tailnet,
+# which keeps the state so delete can run again.
+remove_array_tailnet_identity() {
+    local folder=$1 name=$2 node_id result=0
+    if ! "${compose[@]}" exec -T mounter test -f "$folder/tailscaled.state"; then
+        ok "No node identity on the array, so no node is removed from the tailnet."
+        return 0
+    fi
+    node_id=$("${compose[@]}" exec -T mounter cat "$folder/tailscaled.state" | tailnet_node_id) || node_id=""
+    if [ -z "$node_id" ]; then
+        printf '\033[31m%s\033[0m\n' "The array's tailscaled.state names no node, so none is removed and the state is kept." \
+            "  Remove $name on the Machines page, $tailnet_machines_page." >&2
+        return 1
+    fi
+    remove_tailnet_node "$node_id" "$name" "$config_file" || result=$?
+    if [ "$result" -eq 1 ]; then
+        printf '\033[31m%s\033[0m\n' "The array's tailnet state is kept, so delete can run again." >&2
+        return 1
+    fi
+    "${compose[@]}" exec -T mounter rm -rf "$folder" || { printf '\033[31m%s\033[0m\n' "Could not remove $folder from the array." >&2; return 1; }
+    ok "Removed the tailnet state from the array; the next up joins the tailnet fresh."
+}
+
+# invoke_delete: how the stack is deleted: its node leaves the tailnet, its tailnet state goes from the
+# array, then everything stops as in down, so a later up joins fresh. The node key lives on the array,
+# which only the running mounter has mounted and down unmounts, so unlike the other stacks the node is
+# removed before the down: tailscale stops first so the node is quiet. Once started, the down always runs.
+invoke_delete() {
+    local folder name removed=true
+    [ "$(docker inspect -f '{{.State.Running}}' storage-mounter 2>/dev/null)" = true ] ||
+        fail "The node identity is on the array, which is not mounted; run './docker-compose.sh up' first, then delete."
+    folder="/mnt/storage/$(config_value ARRAY_PREFIX storage)-data1/.storage/tailscale"
+    name=$(config_value STORAGE_HOST "$(config_value TS_HOSTNAME storage)")
+    step "Stopping the tailnet node..."
+    "${compose[@]}" stop tailscale || true
+    remove_array_tailnet_identity "$folder" "$name" || removed=false
+    stop_array
+    $removed || exit 1
+    ok "Deleted. The volumes stay in Docker; remove this folder to finish."
+}
+
 # Runs in a one-off SnapRAID container while the stack is down; on success ARRAY_PREFIX becomes the
 # array's id, so the stack finds its state on <id>-data1.
 migrate_labels() {
@@ -194,10 +239,11 @@ data_command() {
 
 usage() {
     cat <<'EOF'
-Usage: ./docker-compose.sh [accept-smart|credentials|data|down|drives|init-config|kopia-user|logs|migrate-labels|restart|scrub|snapraid|status|sync|up|url]
+Usage: ./docker-compose.sh [accept-smart|credentials|data|delete|down|drives|init-config|kopia-user|logs|migrate-labels|restart|scrub|snapraid|status|sync|up|url]
   init-config  Create config.env, name this host and generate the notification topic
   up           Mount and lock the array, join the tailnet, start the stack (default)
   down         Stop the stack, release the lock and unmount
+  delete       With the array mounted: remove the stack's node from the tailnet (with TS_API_TOKEN) and its tailnet state from the array, then down; for a stack being removed
   restart      down, then up
   status       Show the containers and their health
   logs         [service]  follow logs, e.g. logs mounter
@@ -222,6 +268,7 @@ case "$command" in
     init-config) init_config ;;
     up)          start_array ;;
     down)        stop_array ;;
+    delete)      assert_config; invoke_delete ;;
     restart)     stop_array; start_array ;;
     status)      "${compose[@]}" ps -a ;;
     logs)        "${compose[@]}" logs -f "$@" ;;

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # bash -c scripts take their values as arguments
 # The Linux CLI's tests: each case copies the CLI into a scratch stack and runs it against a fake
 # docker, git, hostname and lsblk first on PATH, so nothing on the host is touched and no drive is
 # mounted. Run it from a worktree or CI, never the live stack folder. Plain bash: an `ok` or `FAIL`
@@ -20,8 +21,9 @@ status=0
 
 new_stack() {
     rm -rf "$stack" "$state"
-    mkdir -p "$stack/data" "$state"
+    mkdir -p "$stack/data" "$stack/gateway" "$state"
     cp "$repository/docker-compose.sh" "$repository/docker-compose.ps1" "$repository/config.env.example" "$stack/"
+    cp "$repository/gateway/tailnet-node.sh" "$stack/gateway/"
     chmod +x "$stack/docker-compose.sh"
     : >"$state/calls"
     write_config
@@ -82,7 +84,7 @@ finish
 
 begin "the usage lists every dispatched command"
 run_cli help
-for command in accept-smart credentials data down drives init-config kopia-user logs migrate-labels restart scrub \
+for command in accept-smart credentials data delete down drives init-config kopia-user logs migrate-labels restart scrub \
     snapraid status sync up url; do
     check "'$command' in the usage" said "  $command "
 done
@@ -219,6 +221,113 @@ begin "data with an unknown subcommand shows the usage"
 run_cli data bogus
 check "exits 1" status_is 1
 check "shows the usage" said "Usage: ./docker-compose.sh ["
+finish
+
+## delete
+
+api_token=tskey-api-k123-SECRET456
+
+# delete_ready: an array whose tailscaled.state names nOURS123CNTRL, in a tailnet that also has another
+# node of the same name, and a TS_API_TOKEN in config.env.
+delete_ready() {
+    local current profiles
+    current=$(printf 'profile-ab12' | base64 | tr -d '\n')
+    profiles=$(printf '{"ab12":{"ID":"ab12","Key":"profile-ab12","NodeID":"nOURS123CNTRL"}}' | base64 | tr -d '\n')
+    printf '{"_current-profile":"%s","_profiles":"%s"}\n' "$current" "$profiles" >"$state/array-state"
+    printf '%s\n' "nOURS123CNTRL storage" "nOTHER45CNTRL storage" >"$state/tailnet-devices"
+    echo "TS_API_TOKEN=$api_token" >>"$stack/config.env"
+}
+
+device_left() { grep -q "^$1 " "$state/tailnet-devices"; }
+
+# called_before FIRST SECOND: the first call matching FIRST comes before the first matching SECOND.
+called_before() {
+    local first second
+    first=$(grep -nE -- "$1" "$state/calls" | head -n 1 | cut -d: -f1)
+    second=$(grep -nE -- "$2" "$state/calls" | head -n 1 | cut -d: -f1)
+    [ -n "$first" ] && [ -n "$second" ] && [ "$first" -lt "$second" ]
+}
+
+begin "delete stops tailscale, removes the node by its ID and the array's state, then downs"
+delete_ready
+run_cli delete
+check "exits 0" status_is 0
+check "tailscale stops first" called_before "^docker compose stop tailscale$" "^curl https://api.tailscale.com/"
+check "reads the state on the array of ARRAY_PREFIX" called "^docker compose exec -T mounter cat /mnt/storage/storage-data1/.storage/tailscale/tailscaled.state$"
+check "removes our node by its ID" called "^curl https://api.tailscale.com/api/v2/device/nOURS123CNTRL Authorization: Bearer $api_token$"
+check "our node is gone" bash -c '! grep -q "^nOURS123CNTRL " "$1"' _ "$state/tailnet-devices"
+check "says so, by STORAGE_HOST" said "Removed storage.example.ts.net from the tailnet."
+check "the state goes from the array" called "^docker compose exec -T mounter rm -rf /mnt/storage/storage-data1/.storage/tailscale$"
+check "then the down" called_before "mounter rm -rf" "^docker compose down$"
+check "says it is deleted" said "Deleted. The volumes stay in Docker; remove this folder to finish."
+finish
+
+begin "delete leaves a node of the same name alone"
+delete_ready
+run_cli delete
+check "the other storage stays" device_left nOTHER45CNTRL
+check "one API call" [ "$(grep -c "^curl https://api.tailscale.com/" "$state/calls")" -eq 1 ]
+finish
+
+begin "delete never puts the token on a command line or in its output"
+delete_ready
+run_cli delete
+check "no credential on argv" not_called "CREDENTIAL ON ARGV"
+check "the fake would catch one" bash -c 'FAKE_DOCKER_DIR="$1" "$2/curl" -H "Authorization: Bearer x" https://api.tailscale.com/api/v2/device/n1 </dev/null >/dev/null; [ $? -eq 99 ]' _ "$state" "$fakes"
+check "the token is not in the output" not_said "$api_token"
+finish
+
+begin "delete without TS_API_TOKEN prints the manual step and clears the state"
+delete_ready
+sed -i '/^TS_API_TOKEN=/d' "$stack/config.env"
+run_cli delete
+check "exits 0" status_is 0
+check "no API call" not_called "^curl "
+check "names the Machines page and the node" said "Remove storage.example.ts.net (node ID nOURS123CNTRL) on the Machines page: https://login.tailscale.com/admin/machines"
+check "the state goes" called "mounter rm -rf "
+check "still downs" called "^docker compose down$"
+finish
+
+begin "an API error keeps the array's state, still downs and fails"
+delete_ready
+echo 500 >"$state/tailnet-status"
+run_cli delete
+check "exits 1" status_is 1
+check "names the status" said "The Tailscale API answered HTTP 500, so storage.example.ts.net was not removed."
+check "says the state is kept" said "The array's tailnet state is kept, so delete can run again."
+check "no rm" not_called "mounter rm -rf"
+check "still downs" called "^docker compose down$"
+check "never says deleted" not_said "Deleted."
+finish
+
+begin "a state that names no node removes nothing and still downs"
+delete_ready
+echo '{}' >"$state/array-state"
+run_cli delete
+check "exits 1" status_is 1
+check "no API call" not_called "^curl "
+check "no rm" not_called "mounter rm -rf"
+check "still downs" called "^docker compose down$"
+finish
+
+begin "no state on the array calls no API and still downs"
+delete_ready
+rm "$state/array-state"
+run_cli delete
+check "exits 0" status_is 0
+check "says so" said "No node identity on the array, so no node is removed from the tailnet."
+check "no API call" not_called "^curl "
+check "still downs" called "^docker compose down$"
+finish
+
+begin "delete with the array not mounted refuses and touches nothing"
+delete_ready
+echo false >"$state/mounter-running"
+run_cli delete
+check "exits 1" status_is 1
+check "says to run up first" said "The node identity is on the array, which is not mounted; run './docker-compose.sh up' first, then delete."
+check "no compose call" not_called "^docker compose"
+check "no API call" not_called "^curl "
 finish
 
 if [ "$failures" -gt 0 ]; then
