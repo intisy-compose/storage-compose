@@ -232,6 +232,11 @@ services:
     container_name: storage-nodes
     restart: unless-stopped
     network_mode: "service:gateway"
+    # The hand-off executor's open-file check reads every process's descriptors: the host's PID namespace to
+    # see them, SYS_PTRACE to read another user's (without it 387 of 400 were refused under Docker Desktop).
+    pid: host
+    cap_add:
+      - SYS_PTRACE
     environment:
       ARRAY_PREFIX: ${ARRAY_PREFIX:-storage}
       HANDOFF_QUIET_MINUTES: ${HANDOFF_QUIET_MINUTES:-10}

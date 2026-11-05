@@ -17,7 +17,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends jq=1.7.1-6+deb13u4 curl=8.14.1-2+deb13u7 \
     && rm -rf /var/lib/apt/lists/*
 EOF
-    exec docker run --rm --network none -v "$native_repo:/repo:ro" storage-nodes-tests:local bash /repo/tests/nodes/handoff.test.sh
+    exec docker run --rm --network none --tmpfs /mnt/node --tmpfs /mnt/node/Videos -v "$native_repo:/repo:ro" storage-nodes-tests:local bash /repo/tests/nodes/handoff.test.sh
 fi
 
 handoff=$repo/images/nodes/handoff.sh
@@ -52,6 +52,7 @@ while [ $# -gt 0 ]; do
 done
 request=${url#http://127.0.0.1:8411}
 echo "$method $request" >> "$CURL_LOG"
+if [ -n "${FAKE_REPLACE_CONTRACT:-}" ] && [ ! -e "$FAKE/replaced" ]; then cp "$FAKE_REPLACE_CONTRACT" "$FAKE_CONTRACT"; touch "$FAKE/replaced"; fi
 decode() { printf '%b' "${1//%/\\x}"; }
 parameter() { local value; value=$(sed -n "s/.*[?&]$1=\([^&]*\).*/\1/p" <<< "$request"); decode "$value"; }
 key_of() { printf '%s' "$1" | sha256sum | cut -c1-16; }
@@ -78,10 +79,23 @@ esac
 EOF
 chmod +x "$scratch/stubs/curl"
 
+# mv as the executor sees it: MV_GROW appends to a file just renamed into the trash, as a writer still
+# holding it would, and MV_FAIL_BACK makes the rename out of the trash fail.
+cat > "$scratch/stubs/mv" << 'EOF'
+#!/bin/bash
+source=${@: -2:1} target=${@: -1}
+case $source in */handoff-trash/*) [ -n "${MV_FAIL_BACK:-}" ] && exit 1 ;; esac
+/usr/bin/mv "$@" || exit
+case $target in */handoff-trash/*) [ -n "${MV_GROW:-}" ] && printf ' grown' >> "$target" && touch -d "@$MV_GROW" "$target" ;; esac
+exit 0
+EOF
+chmod +x "$scratch/stubs/mv"
+
 # A scratch drive node a001 with one send-only folder `videos` at <root>/Videos and `clip.mp4` in it.
-new_node() {   # <name>: sets root
-    root=$scratch/$1
-    rm -rf "$root" "$FAKE"
+new_node() {   # <name> [root]: sets root
+    root=${2:-$scratch/$1}
+    rm -rf "$FAKE"
+    if [ -n "${2:-}" ]; then rm -rf "${root:?}"/Videos/* "${root:?}"/Videos/.st* "$root/.storage"; else rm -rf "$root"; fi
     mkdir -p "$root/.storage" "$root/Videos" "$FAKE/folders" "$FAKE/files/videos" "$FAKE/ignored"
     printf '[node]\nid = "a001"\nname = "stick"\nkind = "drive"\nthreshold = 50\napply = true\n' > "$root/.storage/node.toml"
     printf '// layered sync begin\n#include .stignore-handoff\n/.stignore-handoff\n// layered sync end\n' > "$root/Videos/.stignore"
@@ -120,7 +134,8 @@ contract() {   # [entry json]...: written ten seconds before $written_now (now) 
 }
 
 run_handoff() {   # [node id]: runs the executor on the scratch node, its log in $scratch/handoff.out
-    PATH="$scratch/stubs:$PATH" HANDOFF_NOW=${run_now:-$now} HANDOFF_IGNORE_WAIT_SECONDS=2 HANDOFF_CLUSTER_ID=${cluster_id:-c1c1} \
+    PATH="$scratch/stubs:$PATH" HANDOFF_NOW=${run_now:-$now} HANDOFF_IGNORE_WAIT_SECONDS=${ignore_wait:-2} HANDOFF_CLUSTER_ID=${cluster_id:-c1c1} \
+        HANDOFF_OWN_MOUNT_NAMESPACE=${own_namespace:-$(readlink /proc/self/ns/mnt)} FAKE_CONTRACT=$scratch/contract.json \
         bash "$handoff" "${1:-a001}" "$root" http://127.0.0.1:8411 secret-key "$scratch/contract.json" "$scratch/result.json" > "$scratch/handoff.out" 2>&1
 }
 
@@ -131,6 +146,8 @@ present() { [ -e "$root/Videos/$1" ] && echo yes || echo no; }
 listed() { grep -Fxc -- "/$1" "$root/Videos/.stignore-handoff"; }
 trash_day=$(date -u -d "@$now" +%F)
 in_trash() { [ -f "$root/.storage/handoff-trash/$trash_day/videos/$1" ] && echo yes || echo no; }
+pending_paths() { jq -r .path "$root/.storage/handoff-pending.jsonl" 2> /dev/null | paste -sd ' ' -; }
+trash_kept() { jq -r '[.trash[] | "\(.trash): \(.reason)"] | join("|")' "$scratch/result.json"; }
 destructive_requests() { grep -Eic 'override|revert|DELETE|PUT |PATCH |/rest/system' "$CURL_LOG"; }
 
 echo "a confirmed file"
@@ -158,11 +175,14 @@ add_file fresh.mp4 hello
 touch -d "@$((now - 60))" "$root/Videos/fresh.mp4"
 contract "$(entry grown.mp4)" "$(entry touched.mp4)" "$(entry rewritten.mp4)" "$(jq -c --argjson modified "$((now - 60))" '.modifiedSeconds = $modified' <<< "$(entry fresh.mp4)")" "$(entry clip.mp4)"
 run_handoff
-for name in grown.mp4 touched.mp4 rewritten.mp4 fresh.mp4; do
+for name in grown.mp4 touched.mp4 fresh.mp4; do
     check "$name stays, unlisted" "yes 0 refused" "$(present "$name") $(listed "$name") $(outcome_of "$name")"
 done
-check "the reasons name the difference" "its size is 14, not the confirmed 5|it was modified at $((now - 1800)), not at the confirmed $((now - 3600))|its content is not the confirmed content|it changed within the last 10 minutes" \
-    "$(reason_of grown.mp4)|$(reason_of touched.mp4)|$(reason_of rewritten.mp4)|$(reason_of fresh.mp4)"
+check "the reasons name the difference" "its size is 14, not the confirmed 5|it was modified at $((now - 1800)), not at the confirmed $((now - 3600))|it changed within the last 10 minutes" \
+    "$(reason_of grown.mp4)|$(reason_of touched.mp4)|$(reason_of fresh.mp4)"
+check "content hashed only once ignored: a different one is released again, its line removed" "yes 0 released" "$(present rewritten.mp4) $(listed rewritten.mp4) $(outcome_of rewritten.mp4)"
+check "with the reason" "its content is not the confirmed content after its ignore was written; its ignore line was removed, so it syncs again" "$(reason_of rewritten.mp4)"
+check "and a rescan of its path" 1 "$(grep -c '^POST /rest/db/scan?folder=videos&sub=rewritten.mp4$' "$CURL_LOG")"
 check "the confirmed one beside them is still moved" "no moved" "$(present clip.mp4) $(outcome_of clip.mp4)"
 
 echo "the node's own index must show the confirmed version held by the keeper"
@@ -185,22 +205,88 @@ new_node open
 holder=$!
 sleep 0.5
 contract "$(entry clip.mp4)"
+own_namespace=another-container run_handoff
+check "when another container's process has it open, it stays, unlisted" "yes 0 it is open" "$(present clip.mp4) $(listed clip.mp4) $(reason_of clip.mp4)"
 run_handoff
-check "it stays, unlisted" "yes 0 it is open" "$(present clip.mp4) $(listed clip.mp4) $(reason_of clip.mp4)"
+check "a process of the nodes container itself (its Syncthing) does not hold it" "no moved" "$(present clip.mp4) $(outcome_of clip.mp4)"
 kill "$holder" 2> /dev/null; wait "$holder" 2> /dev/null
 
 echo "Syncthing that never reports the path ignored"
 new_node never
 contract "$(entry clip.mp4)"
 FAKE_NEVER_IGNORES=1 run_handoff
-check "the file stays and its line is kept" "yes 1 ignored-not-moved" "$(present clip.mp4) $(listed clip.mp4) $(outcome_of clip.mp4)"
+check "the file stays, its line is kept and it is pending" "yes 1 ignored-not-moved clip.mp4" "$(present clip.mp4) $(listed clip.mp4) $(outcome_of clip.mp4) $(pending_paths)"
+contract
+run_handoff
+check "the next run retries it from the pending record, without a contract entry, and moves it" "no yes 1 moved " "$(present clip.mp4) $(in_trash clip.mp4) $(listed clip.mp4) $(outcome_of clip.mp4) $(pending_paths)"
+
+new_node abandoned
+contract "$(entry clip.mp4)"
+FAKE_NEVER_IGNORES=1 run_handoff
+contract
+FAKE_NEVER_IGNORES=1 HANDOFF_PENDING_ATTEMPTS=2 run_handoff
+check "a retry counts" "yes 1 ignored-not-moved" "$(present clip.mp4) $(listed clip.mp4) $(outcome_of clip.mp4)"
+FAKE_NEVER_IGNORES=1 HANDOFF_PENDING_ATTEMPTS=2 run_handoff
+check "and once they run out, the line of the file still there is removed and it syncs again" "yes 0 released " "$(present clip.mp4) $(listed clip.mp4) $(outcome_of clip.mp4) $(pending_paths)"
+
+new_node retrychanged
+contract "$(entry clip.mp4)"
+FAKE_NEVER_IGNORES=1 run_handoff
+printf 'hello again' > "$root/Videos/clip.mp4"
+contract
+run_handoff
+check "a pending file changed before its retry is released so its edits reach the keepers" "yes 0 released " "$(present clip.mp4) $(listed clip.mp4) $(outcome_of clip.mp4) $(pending_paths)"
+
+new_node movedline
+contract "$(entry clip.mp4)"
+run_handoff
+add_file clip.mp4 "new content"
+touch -d "@$((now + 60))" "$root/Videos/clip.mp4"
+jq -cn --arg path "$root/Videos" --argjson entry "$(entry clip.mp4)" '{folderId: "videos", folderPath: $path, path: "clip.mp4", entry: $entry, since: 0, attempts: 0}' > "$root/.storage/handoff-pending.jsonl"
+written_now=$((now + 700)) contract
+run_now=$((now + 700)) run_handoff
+check "a moved path's line is never removed, even with a pending record and a file there again" "1 ignored-not-moved" "$(listed clip.mp4) $(jq -r '[.results[] | select(.path == "clip.mp4") | .outcome][0]' "$scratch/result.json")"
+: > "$root/.storage/handoff-pending.jsonl"
+run_now=$((now + 700)) run_handoff
+check "a new file at a handed-off path, not pending and newer than the hand-off, is reported" "unsynced-at-handed-off-path 1" "$(outcome_of clip.mp4) $(listed clip.mp4)"
 
 echo "a file written to after its ignore line"
 new_node late
 contract "$(entry clip.mp4)"
 FAKE_WRITE_ON_SCAN=clip.mp4 run_handoff
-check "stays on the node, and its line is kept" "yes 1 ignored-not-moved" "$(present clip.mp4) $(listed clip.mp4) $(outcome_of clip.mp4)"
-check "with what was found" "its size is 29, not the confirmed 5 after its ignore was written; it stays on the node" "$(reason_of clip.mp4)"
+check "stays on the node, and its line is removed again so the edit reaches the keepers" "yes 0 released " "$(present clip.mp4) $(listed clip.mp4) $(outcome_of clip.mp4) $(pending_paths)"
+check "with what was found" "its size is 29, not the confirmed 5 after its ignore was written; its ignore line was removed, so it syncs again" "$(reason_of clip.mp4)"
+
+echo "a file that changes while it is renamed"
+new_node putback
+contract "$(entry clip.mp4)"
+MV_GROW=$((now - 3600)) run_handoff
+check "is put back and released" "yes no 0 released" "$(present clip.mp4) $(in_trash clip.mp4) $(listed clip.mp4) $(outcome_of clip.mp4)"
+new_node stuck
+contract "$(entry clip.mp4)"
+MV_GROW=$((now - 3600)) MV_FAIL_BACK=1 run_handoff
+check "and when it cannot be put back it is reported in the trash, outside the manifest" "no yes in-trash-unlisted $trash_day/videos/clip.mp4" "$(present clip.mp4) $(in_trash clip.mp4) $(outcome_of clip.mp4) $(jq -r '.results[0].trash' "$scratch/result.json")"
+check "in its own record, every run" "$trash_day/videos/clip.mp4 1" "$(jq -r .trash "$root/.storage/handoff-trash/unlisted.jsonl") $(jq '.trash | length' "$scratch/result.json")"
+written_now=$((now + 8 * 86400)) contract
+run_now=$((now + 8 * 86400)) run_handoff
+check "and never emptied" "yes 0" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+
+echo "a trash on another filesystem"
+new_node otherfs /mnt/node
+check "the folder is its own filesystem here" yes "$([ "$(stat -c %d /mnt/node)" != "$(stat -c %d /mnt/node/Videos)" ] && echo yes)"
+contract "$(entry clip.mp4)"
+run_handoff
+check "is never copied to: the file stays, pending" "yes no ignored-not-moved clip.mp4" "$(present clip.mp4) $(in_trash clip.mp4) $(outcome_of clip.mp4) $(pending_paths)"
+check "with the reason" "the trash is on another filesystem; it is retried next run" "$(reason_of clip.mp4)"
+
+echo "a contract replaced while the run goes on"
+new_node replaced
+add_file other.mp4 hello
+contract "$(entry other.mp4)"
+cp "$scratch/contract.json" "$scratch/replacement.json"
+contract "$(entry clip.mp4)"
+FAKE_REPLACE_CONTRACT=$scratch/replacement.json run_handoff
+check "the run acts on the copy it checked, never the new file" "no yes moved " "$(present clip.mp4) $(present other.mp4) $(outcome_of clip.mp4) $(outcome_of other.mp4)"
 
 echo "a node that vanished"
 new_node vanished
@@ -219,10 +305,11 @@ ln -s "$scratch/outside/secret.mp4" "$root/Videos/link.mp4"
 index_entry linked/secret.mp4 5
 index_entry link.mp4 5
 index_entry ../outside/secret.mp4 5
-contract "$(entry linked/secret.mp4)" "$(entry link.mp4)" "$(entry ../../outside/secret.mp4)" "$(entry 'star*.mp4')"
+add_file 'trail.mp4 ' hello
+contract "$(entry linked/secret.mp4)" "$(entry link.mp4)" "$(entry ../../outside/secret.mp4)" "$(entry 'star*.mp4')" "$(entry 'trail.mp4 ')" "$(entry ' lead/x.mp4')"
 run_handoff
-check "a linked directory, a linked file, a .. path and a glob are refused" "refused refused refused refused" \
-    "$(outcome_of linked/secret.mp4) $(outcome_of link.mp4) $(outcome_of ../../outside/secret.mp4) $(outcome_of 'star*.mp4')"
+check "a linked directory, a linked file, a .. path, a glob and a segment with outer whitespace are refused" "refused refused refused refused refused refused" \
+    "$(outcome_of linked/secret.mp4) $(outcome_of link.mp4) $(outcome_of ../../outside/secret.mp4) $(outcome_of 'star*.mp4') $(outcome_of 'trail.mp4 ') $(outcome_of ' lead/x.mp4')"
 check "the outside file is where it was and nothing was listed" "yes 0" "$([ -f "$scratch/outside/secret.mp4" ] && echo yes) $(grep -c . "$root/Videos/.stignore-handoff")"
 
 new_node folders
@@ -322,6 +409,34 @@ check "but never a file it did not move there, nor one changed since" "yes yes y
 check "and keeps the changed file in its manifest" "$trash_day/videos/second.mp4" "$(jq -r .trash "$trash/manifest.jsonl")"
 HANDOFF_TRASH_DAYS=7 run_now=$((now + 8 * 86400)) run_handoff
 check "a second purge deletes nothing more" "0 yes" "$(jq .purged "$scratch/result.json") $([ -f "$trash/foreign.txt" ] && echo yes)"
+
+echo "the trash keeps what no keeper holds"
+new_node keeperless
+contract "$(entry clip.mp4)"
+run_handoff
+index_entry clip.mp4 5 STICK:1 '[]'
+written_now=$((now + 8 * 86400)) contract
+run_now=$((now + 8 * 86400)) run_handoff
+check "a copy whose version no keeper holds stays, reported" "yes 0 $trash_day/videos/clip.mp4: no keeper holds its version, as this node sees it" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json") $(trash_kept)"
+index_entry clip.mp4 5 STICK:2
+run_now=$((now + 8 * 86400)) run_handoff
+check "nor one whose version the network no longer has" "yes $trash_day/videos/clip.mp4: the network no longer has its version" "$(in_trash clip.mp4) $(trash_kept)"
+index_entry clip.mp4 5
+run_now=$((now + 8 * 86400)) run_handoff
+check "once a keeper holds it again, it is emptied" "no 1" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+
+echo "a manifest line never reaches outside the trash"
+new_node manifest
+mkdir -p "$scratch/beyond" "$root/.storage/handoff-trash"
+printf hello > "$scratch/beyond/secret.mp4"
+touch -d "@$((now - 3600))" "$scratch/beyond/secret.mp4"
+ln -s "$scratch/beyond" "$root/.storage/handoff-trash/linked"
+{ jq -cn --argjson modified "$((now - 3600))" '{movedAt: 0, trash: "../../Videos/clip.mp4", folderId: "videos", path: "clip.mp4", version: ["STICK:1"], size: 5, modifiedSeconds: $modified}'
+  jq -cn --argjson modified "$((now - 3600))" '{movedAt: 0, trash: "linked/secret.mp4", folderId: "videos", path: "clip.mp4", version: ["STICK:1"], size: 5, modifiedSeconds: $modified}'
+} > "$root/.storage/handoff-trash/manifest.jsonl"
+contract
+run_handoff
+check "neither a .. line nor one through a link deletes anything" "yes yes 0 2" "$(present clip.mp4) $([ -f "$scratch/beyond/secret.mp4" ] && echo yes) $(jq .purged "$scratch/result.json") $(jq '.trash | length' "$scratch/result.json")"
 
 echo "never prunes, never deletes on other devices"
 new_node prune
