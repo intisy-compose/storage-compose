@@ -35,11 +35,14 @@ export interface MissingFolder {
   path: string;
 }
 
-/** Ignore lines of the node's own, outside the managed block, which the reconciler keeps as they are. */
+/** Ignore lines of the node's own, as the reconciler tells them from the plan's. */
 export interface NodeOnlyIgnores {
   folderId: string;
   label: string;
+  /** Outside the managed block: kept as they are. */
   lines: string[];
+  /** Inside the managed block but not the plan's: the block is owned, so the next write replaces them. */
+  inBlock: string[];
 }
 
 export interface NodeReconcile {
@@ -130,19 +133,23 @@ export function carriedLayoutPaths(layout: SetupLayout, nodeId: string, configur
 }
 
 /**
- * A `.stignore` with the managed block first, then the node's own lines in their order.
+ * A `.stignore` with the managed block first, then the node's own lines in their order. Every line inside the block is owned by the
+ * reconciler and replaced whole by the plan's; a line a person wants kept belongs below the end marker.
  * @implNote First, because Syncthing applies the first pattern that matches: a node's `!` line below can never bring back a child entry or a handed-off path.
  */
 export function managedIgnoreLines(block: readonly string[], outside: readonly string[] = []): string[] {
   return [ignoreBlockBegin, ...block, ignoreBlockEnd, ...outside];
 }
 
-/** A stray marker without its partner is dropped, as it would otherwise be taken for a block the next time. */
+/**
+ * The managed block and the node's own lines.
+ * @implNote A block is only one whose begin marker is the file's first line, ended by the first end marker after it; a line equal to a marker
+ * anywhere else is the node's own and kept, so no comment of a person's is ever taken for the block or removed.
+ */
 function splitIgnores(lines: readonly string[]): IgnoreFile {
-  const begin = lines.indexOf(ignoreBlockBegin);
-  const end = begin < 0 ? -1 : lines.indexOf(ignoreBlockEnd, begin + 1);
-  if (begin < 0 || end < 0) return { block: null, outside: lines.filter((line) => line !== ignoreBlockBegin && line !== ignoreBlockEnd) };
-  return { block: lines.slice(begin + 1, end), outside: [...lines.slice(0, begin), ...lines.slice(end + 1)] };
+  const end = lines[0] === ignoreBlockBegin ? lines.indexOf(ignoreBlockEnd, 1) : -1;
+  if (end < 0) return { block: null, outside: [...lines] };
+  return { block: lines.slice(1, end), outside: lines.slice(end + 1) };
 }
 
 const secondsPerDay = 86400;
@@ -282,6 +289,7 @@ function ignoresDiff(planned: PlannedFolder, current: CurrentFolder): { ignores:
 function versioningDiff(planned: PlannedFolder, current: CurrentFolder): { versioning: SyncthingObject | null; changes: FieldChange[] } {
   const from = current.settings.versioning;
   if (versioningSummary(from) === plannedSummary(planned.versioning)) return { versioning: null, changes: [] };
+  if (!planned.versioning) return { versioning: null, changes: [] };
   const held = versioningHeld(from, planned.versioning);
   const text = `versioning ${versioningWords(versioningSummary(from))} to ${versioningWords(plannedSummary(planned.versioning))}`;
   return { versioning: held || !planned.versioning ? null : wantedVersioning(from, planned.versioning), changes: [change("versioning", text, held)] };
@@ -345,17 +353,29 @@ async function writeIgnores(writer: Writer, folderId: string, lines: string[]): 
  * @implNote Syncthing stops a folder whose `#include` names a missing file, so the list is first ignored, then created, then included:
  * created before it is ignored, a scan could send it to every keeper as an ordinary file.
  */
+async function freshIgnores(writer: Writer, folderId: string): Promise<IgnoreFile> {
+  return splitIgnores(await readIgnoreLines(writer.instance, folderId));
+}
+
+function hasBlock(file: IgnoreFile, block: readonly string[]): boolean {
+  return file.block !== null && isSameLines(file.block, block);
+}
+
+/** @implNote Each write goes over a fresh read, so a line the node or a person added below the block since the diff is kept. */
 async function applyIgnores(writer: Writer, work: FolderWork, block: string[]): Promise<string | null> {
   const [include] = handoffIgnoreLines;
-  const { block: currentBlock, outside } = work.current.ignores ?? { block: null, outside: [] };
-  if (block.includes(include) && !(currentBlock ?? []).includes(include)) {
-    const withoutInclude = managedIgnoreLines(block.filter((line) => line !== include), outside);
-    const currentLines = currentBlock === null ? outside : managedIgnoreLines(currentBlock, outside);
-    if (!isSameLines(currentLines, withoutInclude)) await writeIgnores(writer, work.planned.id, withoutInclude);
-    const problem = await writer.options.handoffFiles.ensure(writer.instance, { id: work.planned.id, path: work.current.settings.path });
+  const folderId = work.planned.id;
+  let file = await freshIgnores(writer, folderId);
+  if (hasBlock(file, block)) return null;
+  if (block.includes(include) && !(file.block ?? []).includes(include)) {
+    const withoutInclude = block.filter((line) => line !== include);
+    if (!hasBlock(file, withoutInclude)) await writeIgnores(writer, folderId, managedIgnoreLines(withoutInclude, file.outside));
+    const problem = await writer.options.handoffFiles.ensure(writer.instance, { id: folderId, path: work.current.settings.path });
     if (problem) return `${handoffIgnoreFile} is not in place on ${writer.instance.name} (${problem}), so its #include waits`;
+    file = await freshIgnores(writer, folderId);
+    if (hasBlock(file, block)) return null;
   }
-  await writeIgnores(writer, work.planned.id, managedIgnoreLines(block, outside));
+  await writeIgnores(writer, folderId, managedIgnoreLines(block, file.outside));
   return null;
 }
 
@@ -363,7 +383,11 @@ function deviceSet(settings: SyncthingFolderSettings): string {
   return JSON.stringify([...new Set(settings.devices.map((entry) => entry.deviceID))].sort());
 }
 
-/** @implNote The list is read again just before it is written, so a device shared meanwhile by someone else stays shared. */
+/**
+ * @implNote The list is read again just before it is written, so a device shared meanwhile by someone else stays shared. Syncthing's REST
+ * API has no compare-and-set, so this read-modify-write is the best it allows; a change landing in the milliseconds between the read and
+ * the PATCH is still overwritten.
+ */
 async function applySharing(writer: Writer, folderId: string, sharing: Sharing): Promise<void> {
   const fresh = await readFolder(writer.instance, folderId);
   const effective = effectiveSharing(fresh.devices, { share: sharing.share.map((deviceId) => ({ deviceId })), unshare: sharing.unshare });
@@ -448,7 +472,8 @@ export async function reconcileNode(instance: LocalInstance, plan: NodePlan, opt
     }
     const ignores = settings.type === "receiveencrypted" ? null : splitIgnores(await readIgnoreLines(instance, planned.id));
     const ownLines = (ignores?.outside ?? []).filter((line) => line.trim());
-    if (ownLines.length) result.nodeOnlyIgnores.push({ folderId: planned.id, label: planned.label, lines: ownLines });
+    const inBlock = (ignores?.block ?? []).filter((line) => line.trim() && !planned.ignores.includes(line));
+    if (ownLines.length || inBlock.length) result.nodeOnlyIgnores.push({ folderId: planned.id, label: planned.label, lines: ownLines, inBlock });
     const diff = diffOf(planned, { settings, ignores }, context);
     for (const deviceId of diff.unknown) unknownDevices.add(deviceId);
     if (diff.changes.length) works.push({ work: diff.work, reconcile: { folderId: planned.id, label: planned.label, changes: diff.changes, written: [], held: null, failed: null } });

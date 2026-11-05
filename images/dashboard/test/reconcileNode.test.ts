@@ -229,25 +229,93 @@ describe("reconciling a node with its plan", () => {
     assert.deepEqual(syncthing.ignores.get("documents"), [ignoreBlockBegin, ...planned, ignoreBlockEnd, "/local-only", "!/Old", "(?d).DS_Store"]);
     assert.deepEqual(planned.slice(0, 2), handoffIgnoreLines);
     assert.ok(planned.includes("/Old"));
-    assert.deepEqual(result.nodeOnlyIgnores, [{ folderId: "documents", label: "Documents", lines: ["/local-only", "!/Old", "(?d).DS_Store"] }]);
+    assert.deepEqual(result.nodeOnlyIgnores, [{ folderId: "documents", label: "Documents", lines: ["/local-only", "!/Old", "(?d).DS_Store"], inBlock: [] }]);
   });
 
   it("changes only lines inside its block and never reports the node's own lines as drift", async () => {
     const plan = planOf(configured);
     const syncthing = onPlan(plan);
     const planned = plan.folders.find((folder) => folder.id === "documents")?.ignores ?? [];
-    syncthing.ignores.set("documents", ["/before", ...managedIgnoreLines([...planned, "/stale"]), "/after"]);
+    syncthing.ignores.set("documents", [...managedIgnoreLines([...planned, "/stale"]), "/after"]);
 
     const result = await reconcileNode(instanceOf(syncthing), plan, options());
 
-    assert.deepEqual(syncthing.ignores.get("documents"), [...managedIgnoreLines(planned), "/before", "/after"]);
+    assert.deepEqual(syncthing.ignores.get("documents"), [...managedIgnoreLines(planned), "/after"]);
     assert.equal(result.folders.find((folder) => folder.folderId === "documents")?.changes[0]?.text, "ignore patterns: remove /stale");
+    assert.deepEqual(result.nodeOnlyIgnores.find((entry) => entry.folderId === "documents"), { folderId: "documents", label: "Documents", lines: ["/after"], inBlock: ["/stale"] });
 
     syncthing.sent = [];
     syncthing.ignores.set("documents", [...managedIgnoreLines(planned), "/after", "/more"]);
     const again = await reconcileNode(instanceOf(syncthing), plan, options());
     assert.deepEqual(again.folders, []);
     assert.deepEqual(syncthing.writes(), []);
+  });
+
+  it("takes a block only from the file's first line, and keeps a node line that looks like a marker", async () => {
+    const plan = planOf(configured);
+    const syncthing = onPlan(plan);
+    const planned = plan.folders.find((folder) => folder.id === "documents")?.ignores ?? [];
+    const lookalike = ["/before", ignoreBlockBegin, "/mine", ignoreBlockEnd, "/after"];
+    syncthing.ignores.set("documents", lookalike);
+
+    await reconcileNode(instanceOf(syncthing), plan, options());
+
+    assert.deepEqual(syncthing.ignores.get("documents"), managedIgnoreLines(planned, lookalike));
+
+    syncthing.sent = [];
+    const again = await reconcileNode(instanceOf(syncthing), plan, options());
+    assert.deepEqual(again.folders, [], "the node's marker-like lines below the block are never taken for it");
+    assert.deepEqual(syncthing.writes(), []);
+  });
+
+  it("reads begin, begin, end, end as a block holding one stray marker, and keeps the second end", async () => {
+    const plan = planOf(configured);
+    const syncthing = onPlan(plan);
+    const planned = plan.folders.find((folder) => folder.id === "documents")?.ignores ?? [];
+    syncthing.ignores.set("documents", [ignoreBlockBegin, ignoreBlockBegin, ignoreBlockEnd, ignoreBlockEnd]);
+
+    const result = await reconcileNode(instanceOf(syncthing), plan, options());
+
+    assert.deepEqual(syncthing.ignores.get("documents"), managedIgnoreLines(planned, [ignoreBlockEnd]));
+    assert.deepEqual(result.nodeOnlyIgnores.find((entry) => entry.folderId === "documents")?.inBlock, [ignoreBlockBegin]);
+    const again = await reconcileNode(instanceOf(syncthing), plan, options());
+    assert.deepEqual(again.folders, []);
+  });
+
+  it("writes each ignore change over a fresh read, keeping lines added below the block meanwhile", async () => {
+    const plan = planOf(configured);
+    const syncthing = onPlan(plan);
+    syncthing.ignores.set("documents", ["/mine"]);
+    let reads = 0;
+    syncthing.onRequest = (method, path) => {
+      if (method === "GET" && path === "/db/ignores?folder=documents" && ++reads === 2) syncthing.ignores.get("documents")?.push("/added-before-the-write");
+    };
+    const handoffFiles: HandoffFiles = {
+      ensure: async () => {
+        syncthing.ignores.get("documents")?.push("/added-while-the-list-was-made");
+        return null;
+      },
+    };
+
+    await reconcileNode(instanceOf(syncthing), plan, options({ handoffFiles }));
+
+    const planned = plan.folders.find((folder) => folder.id === "documents")?.ignores ?? [];
+    assert.deepEqual(syncthing.ignores.get("documents"), managedIgnoreLines(planned, ["/mine", "/added-before-the-write", "/added-while-the-list-was-made"]));
+  });
+
+  it("skips the write when the block is already the plan's on the fresh read", async () => {
+    const plan = planOf(configured);
+    const syncthing = onPlan(plan);
+    const planned = plan.folders.find((folder) => folder.id === "documents")?.ignores ?? [];
+    syncthing.ignores.set("documents", ["/mine"]);
+    let reads = 0;
+    syncthing.onRequest = (method, path) => {
+      if (method === "GET" && path === "/db/ignores?folder=documents" && ++reads === 2) syncthing.ignores.set("documents", managedIgnoreLines(planned, ["/mine"]));
+    };
+
+    await reconcileNode(instanceOf(syncthing), plan, options());
+
+    assert.deepEqual(syncthing.writes().filter((sent) => sent.path.startsWith("/db/ignores")), []);
   });
 
   it("keeps a line saved through the ignores route outside the block on the next pull", async () => {
@@ -397,7 +465,7 @@ describe("never shortening or replacing a folder's versioning", () => {
     });
   }
 
-  it("never clears the versioning of a folder its plan sends only", async () => {
+  it("never clears the versioning of a folder its plan sends only, nor reports it", async () => {
     const plan = planOf(configured);
     const syncthing = onPlan(plan);
     folderOf(syncthing, "documents-old").versioning = versioningOf(365);
@@ -405,7 +473,7 @@ describe("never shortening or replacing a folder's versioning", () => {
     const result = await reconcileNode(instanceOf(syncthing), plan, options());
 
     assert.deepEqual(folderOf(syncthing, "documents-old").versioning, versioningOf(365));
-    assert.equal(result.folders[0]?.changes[0]?.held, "would replace the folder's versioning");
+    assert.deepEqual(result.folders, []);
   });
 
   it("raises a staggered maxAge the plan keeps longer", async () => {

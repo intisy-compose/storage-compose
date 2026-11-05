@@ -32,6 +32,12 @@ function driftOf(result: NodeReconcile): LayeredChange[] {
   );
 }
 
+function nodeOnlyText(entry: NodeReconcile["nodeOnlyIgnores"][number]): string {
+  const kept = entry.lines.length ? [`kept ${entry.lines.join(" ")}`] : [];
+  const replaced = entry.inBlock.length ? [`replaced in the block ${entry.inBlock.join(" ")}`] : [];
+  return `${entry.label}: ${[...kept, ...replaced].join("; ")}`;
+}
+
 function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: string): LayeredState {
   return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt };
 }
@@ -74,7 +80,7 @@ export class LayoutRound {
         onWritten: (folderId, text) => this.dependencies.record(instance.nodeId, folderId, text),
         readBackDelaysMs: this.dependencies.readBackDelaysMs ?? defaultReadBackDelaysMs,
       });
-      return { ...state, effectiveThreshold: plan.appliedThreshold, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map((entry) => `${entry.label}: ${entry.lines.join(" ")}`), failed: result.failed.length ? result.failed.join("; ") : null };
+      return { ...state, effectiveThreshold: plan.appliedThreshold, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
     } catch (error) {
       const last = layeredStateOf(instance.nodeId);
       return { ...(last ?? state), mode: state.mode, threshold: state.threshold, failed: reasonOf(error), checkedAt };

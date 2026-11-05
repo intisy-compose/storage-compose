@@ -86,7 +86,7 @@ describe("reconciling this host's nodes on every pull", () => {
     assert.equal(state.threshold, 50);
     assert.equal(state.effectiveThreshold, 50);
     assert.equal(state.pendingHandoffs, null);
-    assert.deepEqual(state.drift.map((change) => `${change.folderId} ${change.field} ${change.written}`), ["documents-old type false", "documents-old versioning false"]);
+    assert.deepEqual(state.drift.map((change) => `${change.folderId} ${change.field} ${change.written}`), ["documents-old type false"]);
     assert.equal(state.failed, null);
     assert.equal(state.checkedAt, "2026-11-05T12:00:00.000Z");
     assert.deepEqual(syncthing.writes(), []);
@@ -105,12 +105,12 @@ describe("reconciling this host's nodes on every pull", () => {
     assert.equal(folderOf(syncthing, "documents-old").type, "sendonly");
     const state = layeredStateOf("a001");
     assert.equal(state?.mode, "apply");
-    assert.deepEqual(state?.drift.map((change) => `${change.field} ${change.written} ${change.held}`), ["type true null", "versioning false would replace the folder's versioning"]);
+    assert.deepEqual(state?.drift.map((change) => `${change.field} ${change.written} ${change.held}`), ["type true null"]);
     assert.deepEqual(recorded.map((entry) => `${entry.nodeId} ${entry.folderId}`), ["a001 documents-old"]);
     assert.match(recorded[0].text, /laptop-data: layered sync changed folder Documents\/Old: type send and receive to send only/);
 
     await layoutRound.run();
-    assert.deepEqual(layeredStateOf("a001")?.drift.map((change) => change.field), ["versioning"], "the next round finds only the held change");
+    assert.deepEqual(layeredStateOf("a001")?.drift, [], "the next round finds the node on its plan");
   });
 
   it("still reconciles when the connection round fails", async () => {
@@ -144,7 +144,7 @@ describe("reconciling this host's nodes on every pull", () => {
 
     const state = layeredStateOf("a001");
     assert.match(state?.failed ?? "", /laptop-data/);
-    assert.equal(state?.drift.length, 2);
+    assert.equal(state?.drift.length, 1);
   });
 
   it("has no state for a node the layout does not list, nor without a layout", async () => {

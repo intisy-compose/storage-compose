@@ -27,7 +27,7 @@ export function layeredSection(node: StorageNode): HTMLElement | null {
     ...listRow("Not on the node", state.missing),
     ...listRow("Outside the plan", state.unplanned),
     ...listRow("Unknown devices", state.unknownDevices),
-    ...listRow("Node-only ignore lines, kept", state.nodeOnlyIgnores ?? []),
+    ...listRow("Node-only ignore lines", state.nodeOnlyIgnores ?? []),
     ["Checked", formatAge(state.checkedAt)],
   ];
   return section(

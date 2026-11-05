@@ -343,7 +343,7 @@ export interface LayeredState {
   unplanned: string[];
   /** Devices a planned folder is shared with that the node does not know yet. */
   unknownDevices: string[];
-  /** The node's own ignore lines outside the layered sync block, per folder (`<label>: <lines>`); they are kept, never drift. */
+  /** The node's own ignore lines per folder: those below the layered sync block are kept and never drift, those inside it are replaced. */
   nodeOnlyIgnores: string[];
   /** Null while no hand-off decision is made for the node. */
   pendingHandoffs: number | null;
