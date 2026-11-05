@@ -6,9 +6,11 @@ import { recordDashboardActivity } from "./eventFeed.js";
 import { type HandoffPublisher, type HandoffWaiting, handoffPublisher, syncthingHandoffReads } from "./handoffFeed.js";
 import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances } from "./instanceResolver.js";
 import { layeredStateOf, recordLayered } from "./layeredDrift.js";
+import { type LayeredPauses, fileLayeredPauses } from "./layeredPauses.js";
+import { type Notification, queueNotification } from "./notifyOutbox.js";
 import { type NodePlan, handoffIgnoreFile, nodePlan } from "./nodePlan.js";
 import { type HandoffFiles, type NodeReconcile, carriedLayoutPaths, reconcileNode } from "./reconcileNode.js";
-import { nodeVolumesDirectory, storageRoot } from "./settings.js";
+import { nodeVolumesDirectory, statusDirectory, storageRoot } from "./settings.js";
 import { type LayoutNode, type SetupLayout, blockedNodeIds, readCommittedLayout, readLayout } from "./setupRepo.js";
 import { followLayout, nodeFilePath, withdrawApply } from "./nodeFile.js";
 import { type FolderSize, type FolderSizes, type NodeSpace, type SpaceDecision, effectiveThreshold } from "./spacePlan.js";
@@ -33,6 +35,10 @@ export interface LayoutRoundDependencies {
   committedLayout?: () => Promise<CommittedLayout | null>;
   /** Each node's disk and folder sizes for its space decision; a round without them decides nothing, which holds every type-up and hand-off. */
   space?: SpaceReads;
+  /** The folders the layered sync paused; a round without it writes no pause or resume. */
+  pauses?: LayeredPauses;
+  /** Sends a notification through the mounter's outbox; a round without it sends none. */
+  notify?: (notification: Notification) => Promise<void>;
   /** Enters one written change in Activity. */
   record: (nodeId: string, folderId: string | null, text: string) => void;
   readBackDelaysMs?: readonly number[];
@@ -255,21 +261,38 @@ export class LayoutRound {
     }
     if (prepared.kind === "failed") return this.failedState(instance, node, state, prepared.error);
     const { decision, localFolders } = prepared;
+    const stopped = stopReason(node, decision);
     try {
-      const plan = decision?.state === "raised" ? (nodePlan(layout, node.id, localFolders, decision.threshold) ?? prepared.plan) : prepared.plan;
+      const raised = decision?.state === "raised" ? (nodePlan(layout, node.id, localFolders, decision.threshold) ?? prepared.plan) : prepared.plan;
+      const plan = stopped ? withFoldersPaused(prepared.plan) : raised;
       const result = await reconcileNode(instance, plan, {
         apply: node.apply,
         layout,
         space: decision,
+        stopped,
+        pauses: this.dependencies.pauses,
         handoffFiles: this.dependencies.handoffFiles,
         onWritten: (folderId, text) => this.dependencies.record(instance.nodeId, folderId, text),
         readBackDelaysMs: this.dependencies.readBackDelaysMs ?? defaultReadBackDelaysMs,
       });
       const pendingHandoffs = await this.publishHandoffs(layout, instance, instances, localFolders, decision, spaces);
-      return { ...state, effectiveThreshold: plan.appliedThreshold, space: spaceView(decision), pendingHandoffs, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
+      await this.notifyPauses(instance, result, stopped);
+      return { ...state, effectiveThreshold: plan.appliedThreshold, space: spaceView(decision), stopped, pendingHandoffs, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
     } catch (error) {
       return this.failedState(instance, node, state, error);
     }
+  }
+
+  /** One notification for a round that paused the node's folders, and one for a round that resumed them. */
+  private async notifyPauses(instance: LocalInstance, result: NodeReconcile, stopped: string | null): Promise<void> {
+    const notify = this.dependencies.notify;
+    const written = result.folders.filter((folder) => folder.written.includes("paused"));
+    if (!notify || !written.length) return;
+    const count = `${written.length} ${written.length === 1 ? "folder" : "folders"}`;
+    const notification: Notification = stopped
+      ? { priority: 4, tags: "warning", title: `${instance.name} stopped`, message: `${stopped}: ${count} paused, so it pulls nothing and hands nothing off. It resumes once it fits with 10% free, or when enabled = true is committed again.` }
+      : { priority: 3, tags: "white_check_mark", title: `${instance.name} resumed`, message: `${count} resumed: it syncs again and sends what it gathered while stopped.` };
+    await notify(notification).catch((error) => console.error(`layered sync: no notification queued for ${instance.name}: ${reasonOf(error)}`));
   }
 
   private async failedState(instance: LocalInstance, node: LayoutNode, state: LayeredState, error: unknown): Promise<LayeredState> {
@@ -277,6 +300,17 @@ export class LayoutRound {
     const last = layeredStateOf(instance.nodeId);
     return { ...(last ?? state), mode: state.mode, threshold: state.threshold, failed: reasonOf(error), checkedAt: state.checkedAt };
   }
+}
+
+/** Why the node's folders are held paused, or null: it is not enabled, or even its top priority does not fit with 10% free. */
+export function stopReason(node: LayoutNode, decision: SpaceDecision | null): string | null {
+  if (!node.enabled) return `${node.name} is not enabled`;
+  return decision?.state === "stopped" ? `${node.name} does not fit even at its top priority` : null;
+}
+
+/** @implNote A stop keeps the plan at the committed threshold, so nothing but the pause differs from what the node had. */
+function withFoldersPaused(plan: NodePlan): NodePlan {
+  return { ...plan, folders: plan.folders.map((folder) => ({ ...folder, paused: true })) };
 }
 
 function isInside(root: string, path: string): boolean {
@@ -342,21 +376,33 @@ export type NodeFileAction = { kind: "follow"; policy: LayoutNode } | { kind: "w
  * What a node file is brought to: the committed policy with `apply = true` only for a listed, admitted, unblocked, enabled node whose
  * committed and pushed layout says `apply = true`; on any doubt only its `apply` line is taken out (the session's ruling).
  */
-export function nodeFileAction(committed: CommittedLayout | null, nodeId: string): NodeFileAction {
+export function nodeFileAction(committed: CommittedLayout | null, nodeId: string, options: { enabledRequired: boolean } = { enabledRequired: true }): NodeFileAction {
   if (!committed) return { kind: "withdraw", reason: "no committed layout can be read" };
   const node = committed.layout.nodes.find((entry) => entry.id === nodeId);
   if (!node) return { kind: "withdraw", reason: "the layout does not list it" };
   if (!node.admitted) return { kind: "withdraw", reason: "it is not admitted" };
   if (blockedNodeIds(committed.layout).has(nodeId)) return { kind: "withdraw", reason: "the layout blocks it" };
-  if (!node.enabled) return { kind: "withdraw", reason: "it is not enabled" };
+  if (options.enabledRequired && !node.enabled) return { kind: "withdraw", reason: "it is not enabled" };
   if (!node.apply) return { kind: "withdraw", reason: "the committed layout does not say apply = true" };
   if (!committed.pushed) return { kind: "withdraw", reason: "the commit that says apply = true is not on the upstream yet" };
   return { kind: "follow", policy: node };
 }
 
-/** The working tree's layout with each node's `apply` as `nodeFileAction` lets it act, so a dirty or unpushed `apply = true` only reports. */
+/**
+ * The working tree's layout with each node's `apply` as the committed layout lets it act, so a dirty or unpushed `apply = true` only
+ * reports, and `enabled` true only while the committed layout says so too.
+ * @implNote Unlike its node file, a node that is not enabled still applies, since its pause is the one change it makes: stopping is the
+ * safe direction on any doubt, and rejoining waits for a committed `enabled = true`.
+ */
 export function withCommittedApply(layout: SetupLayout, committed: CommittedLayout | null): SetupLayout {
-  return { ...layout, nodes: layout.nodes.map((node) => ({ ...node, apply: nodeFileAction(committed, node.id).kind === "follow" })) };
+  return {
+    ...layout,
+    nodes: layout.nodes.map((node) => {
+      const committedNode = committed?.layout.nodes.find((entry) => entry.id === node.id);
+      const enabled = node.enabled && (committedNode?.enabled ?? false);
+      return { ...node, enabled, apply: nodeFileAction(committed, node.id, { enabledRequired: false }).kind === "follow" };
+    }),
+  };
 }
 
 /** Brings a node file to the committed policy, or takes its `apply` line out; each answers whether it wrote. */
@@ -409,5 +455,7 @@ export const layoutRound = new LayoutRound({
   nodeFiles: mountedNodeFiles([storageRoot, nodeVolumesDirectory]),
   committedLayout: () => readCommittedLayout(),
   space: syncthingHandoffReads,
+  pauses: fileLayeredPauses(`${statusDirectory}/layered/paused.json`),
+  notify: (notification) => queueNotification(`${statusDirectory}/outbox`, notification),
   record: (nodeId, folderId, text) => recordDashboardActivity(nodeId, folderId, text),
 });

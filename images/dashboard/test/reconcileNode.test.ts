@@ -6,6 +6,7 @@ import { type HandoffFiles, type ReconcileOptions, carriedLayoutPaths, ignoreBlo
 import { saveIgnores } from "../src/routes/folderIgnores.js";
 import { parseLayout } from "../src/setupRepo.js";
 import type { SpaceDecision } from "../src/spacePlan.js";
+import { memoryLayeredPauses } from "../src/layeredPauses.js";
 import { type FakeSyncthing, type SyncthingObject, clientOf, folderOf, keeperId, onPlan, ownId, phoneId, versioningOf } from "./fakeFolderSyncthing.js";
 
 const layoutText = `
@@ -582,5 +583,65 @@ describe("what a node carries", () => {
 
   it("lists the layout's device IDs", () => {
     assert.deepEqual([...layoutDeviceIds(layout)].sort(), [keeperId, ownId]);
+  });
+});
+
+function pausedPlan(plan: NodePlan): NodePlan {
+  return { ...plan, folders: plan.folders.map((folder) => ({ ...folder, paused: true })) };
+}
+
+describe("pausing a stopped node and resuming it", () => {
+  const stopped = "laptop-data does not fit even at its top priority";
+
+  it("pauses every folder first, records the pause, and holds every other change", async () => {
+    const syncthing = onPlan(planOf(configured));
+    const pauses = memoryLayeredPauses();
+
+    const result = await reconcileNode(instanceOf(syncthing), pausedPlan(planOf(configured, 20)), options({ space: decision("stopped", 20), stopped, pauses }));
+
+    for (const id of configured) assert.equal(folderOf(syncthing, id).paused, true, id);
+    assert.deepEqual(pauses.marks, { a001: ["documents", "documents-old"] });
+    assert.deepEqual(syncthing.writes().map((sent) => JSON.stringify(sent.body)), ['{"paused":true}', '{"paused":true}'], "nothing but the pause is written");
+    const type = result.folders.find((folder) => folder.folderId === "documents-old")?.changes.find((change) => change.field === "type");
+    assert.deepEqual([type?.written, type?.held], [false, stopped]);
+    assert.equal(folderOf(syncthing, "documents-old").type, "sendonly");
+  });
+
+  it("resumes only the folders it paused: one paused by anyone else stays paused and is no drift", async () => {
+    const syncthing = onPlan(planOf(configured));
+    for (const id of configured) folderOf(syncthing, id).paused = true;
+    const pauses = memoryLayeredPauses({ a001: ["documents"] });
+
+    const result = await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses }));
+
+    assert.equal(folderOf(syncthing, "documents").paused, false);
+    assert.equal(folderOf(syncthing, "documents-old").paused, true);
+    assert.deepEqual(pauses.marks, {});
+    assert.deepEqual(result.folders.map((folder) => `${folder.folderId} ${folder.changes.map((change) => change.field).join(",")}`), ["documents paused"]);
+  });
+
+  it("resumes after the other changes and before a type-up", async () => {
+    const syncthing = onPlan(planOf(configured));
+    syncthing.ignores.set("documents-old", []);
+    folderOf(syncthing, "documents-old").paused = true;
+    const pauses = memoryLayeredPauses({ a001: ["documents-old"] });
+
+    await reconcileNode(instanceOf(syncthing), planOf(configured, 20), options({ space: decision("fits", 20), pauses }));
+
+    const bodies = syncthing.writes().filter((sent) => sent.path === "/config/folders/documents-old").map((sent) => JSON.stringify(sent.body));
+    assert.deepEqual(bodies.slice(-2), ['{"paused":false}', '{"type":"sendreceive"}']);
+  });
+
+  it("writes no pause without a record of its pauses, and nothing in report mode", async () => {
+    const unrecorded = onPlan(planOf(configured));
+    const held = await reconcileNode(instanceOf(unrecorded), pausedPlan(planOf(configured)), options({ stopped }));
+    assert.equal(held.folders[0].changes[0].held, "this host keeps no record of the folders it pauses");
+    assert.deepEqual(unrecorded.writes(), []);
+
+    const reporting = onPlan(planOf(configured));
+    const pauses = memoryLayeredPauses();
+    const reported = await reconcileNode(instanceOf(reporting), pausedPlan(planOf(configured)), options({ apply: false, stopped, pauses }));
+    assert.equal(reported.folders[0].changes[0].text, `pause the folder: ${stopped}`);
+    assert.deepEqual([reporting.writes(), pauses.marks], [[], {}]);
   });
 });

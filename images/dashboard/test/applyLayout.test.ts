@@ -11,6 +11,8 @@ import { nodePlan } from "../src/nodePlan.js";
 import { carriedLayoutPaths } from "../src/reconcileNode.js";
 import { type SetupLayout, parseLayout } from "../src/setupRepo.js";
 import type { FolderSize } from "../src/spacePlan.js";
+import { memoryLayeredPauses } from "../src/layeredPauses.js";
+import type { Notification } from "../src/notifyOutbox.js";
 import { FakeSyncthing, clientOf, folderOf, onPlan } from "./fakeFolderSyncthing.js";
 
 function layoutText(apply: boolean, threshold = 50): string {
@@ -271,6 +273,71 @@ describe("the space of each node of this host, every round", () => {
       if (state !== "raised") assert.match(type?.held ?? "", held, name);
       else assert.equal(type, undefined, "a raise to 80 plans Old send-only, as it is");
     }
+  });
+});
+
+function disabled(text: string): string {
+  return text.replace(/(apply {5}= (true|false))/, "$1\nenabled   = false");
+}
+
+describe("stopping a node and rejoining", () => {
+  it("a node that does not fit even at its top priority is paused, notified once, and resumed once it fits", async () => {
+    const syncthing = nodeAtTwenty();
+    const pauses = memoryLayeredPauses();
+    const notified: Notification[] = [];
+    const notify = async (notification: Notification) => void notified.push(notification);
+    let space = spaceOf(110, 10);
+    const round = roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(syncthing)], [], { space: { space: (instance) => space.space(instance), sizes: (instance, id) => space.sizes(instance, id) }, pauses, notify });
+
+    await round.run();
+
+    assert.equal(layeredStateOf("a001")?.space?.state, "stopped");
+    assert.equal(layeredStateOf("a001")?.stopped, "laptop-data does not fit even at its top priority");
+    assert.deepEqual(syncthing.folders.map((folder) => `${folder.id} ${folder.type} ${folder.paused}`), ["documents sendreceive true", "documents-old sendreceive true"], "paused, every type as it was");
+    assert.deepEqual(notified.map((entry) => `${entry.priority} ${entry.title}`), ["4 laptop-data stopped"]);
+    assert.match(notified[0].message, /2 folders paused, so it pulls nothing and hands nothing off/);
+
+    await round.run();
+    assert.equal(notified.length, 1, "a stop is notified once");
+
+    space = spaceOf(1000, 800);
+    await round.run();
+
+    assert.deepEqual(syncthing.folders.map((folder) => `${folder.id} ${folder.paused}`), ["documents false", "documents-old false"]);
+    assert.equal(layeredStateOf("a001")?.stopped, null);
+    assert.deepEqual(notified.map((entry) => entry.title), ["laptop-data stopped", "laptop-data resumed"]);
+    assert.deepEqual(pauses.marks, {});
+  });
+
+  it("a node the layout disables is paused although apply holds its node file, and enabled = true committed again resumes it", async () => {
+    const syncthing = nodeAtTwenty();
+    const pauses = memoryLayeredPauses();
+    let working = disabled(layoutText(true, 20));
+    let committed = working;
+    const round = roundOf(() => parseLayout(working), [instanceOf(syncthing)], [], { committedLayout: async () => ({ layout: parseLayout(committed), pushed: true }), space: spaceOf(1000, 800), pauses });
+
+    await round.run();
+    assert.equal(layeredStateOf("a001")?.mode, "apply");
+    assert.equal(layeredStateOf("a001")?.stopped, "laptop-data is not enabled");
+    assert.ok(syncthing.folders.every((folder) => folder.paused === true));
+
+    working = layoutText(true, 20);
+    await round.run();
+    assert.ok(syncthing.folders.every((folder) => folder.paused === true), "enabled only in the working tree resumes nothing");
+
+    committed = working;
+    await round.run();
+    assert.ok(syncthing.folders.every((folder) => folder.paused === false));
+    assert.equal(layeredStateOf("a001")?.stopped, null);
+  });
+
+  it("a node that only reports is shown stopped and paused by nothing", async () => {
+    const syncthing = nodeAtTwenty();
+    await roundOf(() => parseLayout(disabled(layoutText(false, 20))), [instanceOf(syncthing)], [], { space: spaceOf(1000, 800), pauses: memoryLayeredPauses() }).run();
+
+    assert.equal(layeredStateOf("a001")?.stopped, "laptop-data is not enabled");
+    assert.ok(layeredStateOf("a001")?.drift.some((change) => change.field === "paused" && !change.written));
+    assert.deepEqual(syncthing.writes(), []);
   });
 });
 
