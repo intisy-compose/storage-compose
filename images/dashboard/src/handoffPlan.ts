@@ -44,7 +44,10 @@ export interface KeeperReport {
   nodeId: string;
   online: boolean;
   state: KeeperState;
-  /** When this host read the report, ISO 8601. */
+  /**
+   * When the deciding host read the keeper, ISO 8601, stamped by that host from its own clock as the read returns.
+   * @implNote Never a value carried over from a peer, whose clock may differ, and never a relayed report stamped on arrival, which would hide how old the peer's copy was: a report read only through a peer would need an age in seconds measured there, which this field does not carry.
+   */
   observedAt: string;
   /** The keeper's threshold after any raise for space; never below its committed one. */
   effectiveThreshold: number;
