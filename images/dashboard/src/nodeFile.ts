@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { NodeAccess } from "./api/types.js";
 import type { LayoutNode } from "./setupRepo.js";
@@ -108,16 +109,81 @@ export function nodeFileFromLayout(file: NodeFile, policy: LayoutNode): NodeFile
   return { ...file, node: policy.apply && policy.admitted ? { ...node, apply: true } : node };
 }
 
+/** An array's node file describes its membership on every member, so nothing here ever rewrites one. */
+function isArrayFile(file: NodeFile): boolean {
+  return file.node.kind === "array" || file.array !== undefined;
+}
+
+/** Why the node file at `path` may not be rewritten in place: a link at `.storage` or at the file, or no regular file there. */
+async function placeProblem(path: string): Promise<string | null> {
+  const directory = await lstat(dirname(path)).catch(() => null);
+  if (!directory?.isDirectory()) return `${dirname(path)} is not a plain directory`;
+  const target = await lstat(path).catch(() => null);
+  if (!target?.isFile()) return `${path} is not a regular file`;
+  return null;
+}
+
+/**
+ * Replaces the node file through a temporary file opened with `O_EXCL` and `O_NOFOLLOW`, synced, renamed over it, and the directory synced.
+ * @implNote A temporary file left by an earlier crash is removed first only when it is a regular file; a link in its place refuses the write.
+ */
+async function replaceNodeFile(path: string, text: string): Promise<void> {
+  const temporary = `${path}.new`;
+  const left = await lstat(temporary).catch(() => null);
+  if (left && !left.isFile()) throw new Error(`${temporary} is not a regular file, so the node file is not rewritten`);
+  if (left) await unlink(temporary);
+  const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o644);
+  try {
+    await handle.writeFile(text);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(temporary, path);
+  const directory = await open(dirname(path), "r").catch(() => null);
+  await directory?.sync().catch(() => undefined);
+  await directory?.close();
+}
+
 /**
  * Rewrites the node file at `path` with the layout's policy for it, and reports whether it wrote.
- * @implNote A missing or unreadable file, or one of another node, is left alone: the node file is the node's identity, which only a join creates.
+ * @implNote A missing or unreadable file, one of another node, an array's, or one reached through a link is left alone: the node file is the
+ * node's identity, which only a join creates.
  */
 export async function followLayout(path: string, policy: LayoutNode): Promise<boolean> {
+  if (await placeProblem(path)) return false;
   const file = await readNodeFile(path);
-  if (file === null || file.node.id !== policy.id) return false;
+  if (file === null || file.node.id !== policy.id || isArrayFile(file)) return false;
   const followed = nodeFileFromLayout(file, policy);
   if (formatNodeFile(followed) === formatNodeFile(file)) return false;
-  await writeNodeFile(path, followed);
+  await replaceNodeFile(path, formatNodeFile(followed));
+  return true;
+}
+
+/** The node file's text without any `apply` line in its `[node]` table, every other line as it was. */
+export function withoutApply(text: string): string {
+  let inNode = false;
+  return text
+    .split(/(?<=\n)/)
+    .filter((line) => {
+      if (/^\s*\[/.test(line)) inNode = /^\s*\[node\]\s*(#.*)?$/.test(line.replace(/\r?\n$/, ""));
+      return !(inNode && /^\s*apply\s*=/.test(line));
+    })
+    .join("");
+}
+
+/**
+ * Takes the `apply` line out of the node file at `path`, whatever its value, and reports whether it did; nothing else of the file changes.
+ * @implNote The executors read `apply = true` with any quoting, so any `apply` line is taken out; an array's file, a link and a file without the line are left alone.
+ */
+export async function withdrawApply(path: string): Promise<boolean> {
+  if (await placeProblem(path)) return false;
+  const file = await readNodeFile(path);
+  if (file === null || isArrayFile(file)) return false;
+  const text = await readFile(path, "utf8");
+  const withdrawn = withoutApply(text);
+  if (withdrawn === text) return false;
+  await replaceNodeFile(path, withdrawn);
   return true;
 }
 

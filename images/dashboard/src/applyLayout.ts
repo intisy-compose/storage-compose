@@ -9,8 +9,8 @@ import { layeredStateOf, recordLayered } from "./layeredDrift.js";
 import { handoffIgnoreFile, nodePlan } from "./nodePlan.js";
 import { type HandoffFiles, type NodeReconcile, carriedLayoutPaths, reconcileNode } from "./reconcileNode.js";
 import { nodeVolumesDirectory, storageRoot } from "./settings.js";
-import { type LayoutNode, type SetupLayout, blockedNodeIds, readLayout } from "./setupRepo.js";
-import { followLayout, nodeFilePath } from "./nodeFile.js";
+import { type LayoutNode, type SetupLayout, blockedNodeIds, readCommittedLayout, readLayout } from "./setupRepo.js";
+import { followLayout, nodeFilePath, withdrawApply } from "./nodeFile.js";
 import type { SyncthingFolderConfig } from "./syncthing.js";
 
 export interface LayoutRoundDependencies {
@@ -21,7 +21,9 @@ export interface LayoutRoundDependencies {
   /** Writes each node's hand-off contract; a round without one writes none. */
   handoffs?: HandoffPublisher;
   /** Brings the node's own `.storage/node.toml` to its layout policy; true when it wrote. A round without one leaves node files alone. */
-  nodeFiles?: (instance: LocalInstance, policy: LayoutNode) => Promise<boolean>;
+  nodeFiles?: NodeFiles;
+  /** The layout as `HEAD` commits it, and whether that commit is on the upstream; null on any doubt. A round without one only withdraws. */
+  committedLayout?: () => Promise<CommittedLayout | null>;
   /** Enters one written change in Activity. */
   record: (nodeId: string, folderId: string | null, text: string) => void;
   readBackDelaysMs?: readonly number[];
@@ -60,6 +62,7 @@ export class LayoutRound {
   async run(): Promise<void> {
     const layout = await this.dependencies.layout();
     const states = new Map<string, LayeredState>();
+    if (this.dependencies.nodeFiles) await this.followNodeFiles(await this.dependencies.instances());
     if (layout) {
       const instances = await this.dependencies.instances();
       for (const instance of instances) {
@@ -143,17 +146,22 @@ export class LayoutRound {
   }
 
   /**
-   * The node file follows the layout's policy, `apply` only for an admitted node the layout does not block, so the executors' own check of
-   * the node file turns true only after the layout commits it, and false again the round it is taken back.
+   * Every node file this host keeps follows the committed layout: fully, `apply = true` included, only for a node `nodeFileAction` lets act;
+   * otherwise only its `apply` line is taken out, the layout unreadable or missing included.
    */
-  private async followNodeFile(layout: SetupLayout, instance: LocalInstance, node: LayoutNode): Promise<void> {
-    const follow = this.dependencies.nodeFiles;
-    if (!follow) return;
-    const policy = { ...node, apply: node.apply && node.admitted && !blockedNodeIds(layout).has(node.id) };
-    try {
-      if (await follow(instance, policy)) this.dependencies.record(instance.nodeId, null, `${instance.name}: node file follows the layout, threshold ${policy.threshold}, apply ${policy.apply ? "on" : "off"}`);
-    } catch (error) {
-      console.error(`layered sync: ${instance.name}'s node file does not follow the layout: ${reasonOf(error)}`);
+  private async followNodeFiles(instances: LocalInstance[]): Promise<void> {
+    const files = this.dependencies.nodeFiles as NodeFiles;
+    const committed = await (this.dependencies.committedLayout?.() ?? Promise.resolve(null)).catch(() => null);
+    for (const instance of instances) {
+      const action = nodeFileAction(committed, instance.nodeId);
+      try {
+        const wrote = action.kind === "follow" ? await files.follow(instance, action.policy) : await files.withdraw(instance);
+        if (!wrote) continue;
+        const text = action.kind === "follow" ? `${instance.name}: node file follows the layout, threshold ${action.policy.threshold}, apply on` : `${instance.name}: apply taken out of its node file: ${action.reason}`;
+        this.dependencies.record(instance.nodeId, null, text);
+      } catch (error) {
+        console.error(`layered sync: ${instance.name}'s node file does not follow the layout: ${reasonOf(error)}`);
+      }
     }
   }
 
@@ -163,7 +171,6 @@ export class LayoutRound {
       await this.clearHandoffs(instance, false);
       return null;
     }
-    await this.followNodeFile(layout, instance, node);
     const checkedAt = (this.dependencies.now?.() ?? new Date()).toISOString();
     const state = emptyState(node.apply ? "apply" : "report", node.threshold, checkedAt);
     if (!node.admitted) {
@@ -245,18 +252,57 @@ export function mountedHandoffFiles(roots: readonly string[]): HandoffFiles {
   };
 }
 
+/** The layout `HEAD` commits, and whether that commit is on the upstream, so every host has it. */
+export interface CommittedLayout {
+  layout: SetupLayout;
+  pushed: boolean;
+}
+
+export type NodeFileAction = { kind: "follow"; policy: LayoutNode } | { kind: "withdraw"; reason: string };
+
 /**
- * The node files this host may bring to the layout: a Linux drive or folder node whose root lies where this host mounts the nodes' files.
- * @implNote An array's node file is on every member and describes the membership, so it is never followed; a Windows node's is the host
- * agent's to write (phase 6), so it waits, and with it every Windows node's hand-off.
+ * What a node file is brought to: the committed policy with `apply = true` only for a listed, admitted, unblocked, enabled node whose
+ * committed and pushed layout says `apply = true`; on any doubt only its `apply` line is taken out (the session's ruling).
  */
-export function mountedNodeFiles(roots: readonly string[]): (instance: LocalInstance, policy: LayoutNode) => Promise<boolean> {
-  return async (instance, policy) => {
-    if (instance.os !== "linux" || instance.source === "array" || !instance.root) return false;
+export function nodeFileAction(committed: CommittedLayout | null, nodeId: string): NodeFileAction {
+  if (!committed) return { kind: "withdraw", reason: "no committed layout can be read" };
+  const node = committed.layout.nodes.find((entry) => entry.id === nodeId);
+  if (!node) return { kind: "withdraw", reason: "the layout does not list it" };
+  if (!node.admitted) return { kind: "withdraw", reason: "it is not admitted" };
+  if (blockedNodeIds(committed.layout).has(nodeId)) return { kind: "withdraw", reason: "the layout blocks it" };
+  if (!node.enabled) return { kind: "withdraw", reason: "it is not enabled" };
+  if (!node.apply) return { kind: "withdraw", reason: "the committed layout does not say apply = true" };
+  if (!committed.pushed) return { kind: "withdraw", reason: "the commit that says apply = true is not on the upstream yet" };
+  return { kind: "follow", policy: node };
+}
+
+/** Brings a node file to the committed policy, or takes its `apply` line out; each answers whether it wrote. */
+export interface NodeFiles {
+  follow(instance: LocalInstance, policy: LayoutNode): Promise<boolean>;
+  withdraw(instance: LocalInstance): Promise<boolean>;
+}
+
+/**
+ * The node files this host may write: a Linux drive or folder node whose root lies where this host mounts the nodes' files.
+ * @implNote An array's node file describes its membership and `followLayout` and `withdrawApply` never rewrite one; a Windows node's is the
+ * host agent's to write (phase 6), so it waits, and with it every Windows node's hand-off.
+ */
+export function mountedNodeFiles(roots: readonly string[]): NodeFiles {
+  const pathOf = async (instance: LocalInstance): Promise<string | null> => {
+    if (instance.os !== "linux" || instance.source === "array" || !instance.root) return null;
     const root = await realOrNull(resolve(instance.root));
     const mounted = (await Promise.all(roots.map((entry) => realOrNull(resolve(entry))))).filter((entry): entry is string => entry !== null);
-    if (!root || !mounted.some((entry) => isInside(entry, root))) return false;
-    return followLayout(nodeFilePath(root), policy);
+    return root && mounted.some((entry) => isInside(entry, root)) ? nodeFilePath(root) : null;
+  };
+  return {
+    follow: async (instance, policy) => {
+      const path = await pathOf(instance);
+      return path ? followLayout(path, policy) : false;
+    },
+    withdraw: async (instance) => {
+      const path = await pathOf(instance);
+      return path ? withdrawApply(path) : false;
+    },
   };
 }
 
@@ -278,5 +324,6 @@ export const layoutRound = new LayoutRound({
   handoffFiles: mountedHandoffFiles([storageRoot, nodeVolumesDirectory]),
   handoffs: handoffPublisher(),
   nodeFiles: mountedNodeFiles([storageRoot, nodeVolumesDirectory]),
+  committedLayout: () => readCommittedLayout(),
   record: (nodeId, folderId, text) => recordDashboardActivity(nodeId, folderId, text),
 });

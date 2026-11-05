@@ -688,3 +688,25 @@ async function saveLayoutNow(before: string, after: string, message: string, rep
   if (isRejectedPush(push.output)) return refuseAfterUndo(repository, before, savedCommit, new LayoutConflict(), setupLayoutPath);
   return { committed: true, pushed: false, message: `committed, not pushed yet: ${lastLine(push.output, "git push failed")}; it is pushed once the remote answers` };
 }
+
+/**
+ * The layout as `HEAD` commits it, and whether the last commit of it is on the upstream; null without a setup repo, during a rebase, or
+ * when `HEAD` holds no layout that parses, so a node file's `apply` turns on only from a layout every host has (the session's ruling).
+ */
+export function readCommittedLayout(repository = setupRepoDirectory): Promise<{ layout: SetupLayout; pushed: boolean } | null> {
+  if (!repository) return Promise.resolve(null);
+  return serializeGit(repository, async () => {
+    if (await rebaseInProgress(repository)) return null;
+    const shown = await runCommand("git", ["-C", repository, "show", `HEAD:${setupLayoutPath}`], 60_000);
+    if (shown.exitCode !== 0) return null;
+    let layout: SetupLayout;
+    try {
+      layout = parseLayout(shown.stdout);
+    } catch {
+      return null;
+    }
+    const last = await gitIn(repository, "log", "-1", "--format=%H", "HEAD", "--", setupLayoutPath);
+    const pushed = last.ok && last.output !== "" && (await gitIn(repository, "merge-base", "--is-ancestor", last.output, "@{upstream}")).ok;
+    return { layout, pushed };
+  });
+}
