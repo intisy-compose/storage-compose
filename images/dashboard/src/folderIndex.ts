@@ -5,7 +5,7 @@ import { conflictIndexes } from "./conflicts.js";
 import { RequestError } from "./http.js";
 import type { SetupLayout } from "./setupRepo.js";
 import { type HandoffCounts, folderLayered } from "./folderLayered.js";
-import { withHandoffFlags } from "./handoffFolders.js";
+import { handoffEntryCount, withHandoffFlags } from "./handoffFolders.js";
 import { type NodeOs, placeFolders } from "./treePaths.js";
 import { type SyncthingClient, type SyncthingDeviceConfig, SyncthingError, type PendingFolders, type SyncthingFolderSettings, SyncthingUnavailable, instanceFolders } from "./syncthing.js";
 
@@ -84,6 +84,16 @@ async function readInstance(instance: FolderInstance): Promise<InstanceFolders> 
   }
 }
 
+/** Each copy of this host with `handoff` from its node's plan, and a hand-off copy with how many entries its hand-off list holds. */
+async function markHandoffCopies(instances: FolderInstance[], reads: InstanceFolders[], layout: SetupLayout | null): Promise<InstanceFolders[]> {
+  return Promise.all(
+    reads.map(async (read, index) => {
+      const copies = await Promise.all(withHandoffFlags(read.copies, layout).map(async (copy) => (copy.handoff ? { ...copy, handoffEntries: (await handoffEntryCount(instances[index].client, copy.id)) ?? 0 } : copy)));
+      return { ...read, copies };
+    }),
+  );
+}
+
 function emptySummary(id: string, label: string): FolderSummary {
   return { id, label, priority: null, prioritySource: "none", copies: [], offers: [] };
 }
@@ -107,7 +117,7 @@ function mergeSummaries(local: Pick<InstanceFolders, "copies" | "offers">[], rem
     return existing;
   };
   for (const { copies, offers } of local) {
-    for (const copy of withHandoffFlags(copies, layout)) summaryFor(copy.id, copy.label).copies.push(copy);
+    for (const copy of copies) summaryFor(copy.id, copy.label).copies.push(copy);
     for (const offer of offers) summaryFor(offer.folderId, offer.label).offers.push(offer);
   }
   for (const peer of remote) {
@@ -138,7 +148,8 @@ function nodeErrors(instances: FolderInstance[], reads: InstanceFolders[], error
 
 export async function foldersResponse(scope: "all" | "local", sources: FolderIndexSources): Promise<FoldersResponse> {
   const instances = await sources.localInstances();
-  const [local, remote, layout] = await Promise.all([Promise.all(instances.map(readInstance)), scope === "all" ? sources.peerFolders() : Promise.resolve([]), sources.layout()]);
+  const [read, remote, layout] = await Promise.all([Promise.all(instances.map(readInstance)), scope === "all" ? sources.peerFolders() : Promise.resolve([]), sources.layout()]);
+  const local = await markHandoffCopies(instances, read, layout);
   return {
     folders: mergeSummaries(local, remote, layout, sources.handoffCounts),
     unreadable: nodeErrors(instances, local, (read) => read.foldersError),
@@ -206,11 +217,12 @@ async function localSettings(folderId: string, instances: FolderInstance[], copi
 
 export async function folderDetail(folderId: string, scope: "all" | "local", sources: FolderIndexSources): Promise<FolderDetailResponse> {
   const instances = await sources.localInstances();
-  const [local, remote, layout] = await Promise.all([
+  const [read, remote, layout] = await Promise.all([
     Promise.all(instances.map(readInstance)),
     scope === "all" ? sources.peerFolderDetails(folderId) : Promise.resolve([]),
     sources.layout(),
   ]);
+  const local = await markHandoffCopies(instances, read, layout);
   const onlyThisFolder = local.map(({ copies, offers }) => ({ copies: copies.filter((copy) => copy.id === folderId), offers: offers.filter((offer) => offer.folderId === folderId) }));
   const [summary] = mergeSummaries(onlyThisFolder, remote.map((detail) => detail.summary).filter((peer) => peer.id === folderId), layout, sources.handoffCounts);
   if (!summary) throw new RequestError(404, `no folder ${folderId}`);

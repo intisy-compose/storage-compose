@@ -115,7 +115,8 @@ export function saveAdmissionFixture(nodeId, body) {
   const entry = waiting.find((candidate) => candidate.nodeId === nodeId);
   if (!entry) return refuse(404, `no node ${nodeId} on this host`);
   const accepted = body.answer === "accept";
-  layout.nodes.push({ id: nodeId, name: entry.name, device: accepted ? entry.name : "", threshold: entry.threshold, assigned: [], pins: {}, access: "open", admitted: accepted, apply: false, enabled: true, refused: accepted ? null : new Date().toISOString() });
+  if (accepted && !Number.isInteger(body.threshold)) return refuse(400, "an admission names the threshold the node is admitted at");
+  layout.nodes.push({ id: nodeId, name: entry.name, device: accepted ? entry.name : "", threshold: accepted ? body.threshold : entry.threshold, assigned: [], pins: {}, access: "open", admitted: accepted, apply: false, enabled: true, refused: accepted ? null : new Date().toISOString() });
   return { status: 200, body: { saved: { committed: true, pushed: true, message: "committed and pushed to the setup repo" } } };
 }
 
@@ -168,3 +169,6 @@ export function folderLayeredFixture(folderId) {
 }
 
 export const handoffCopies = { "17aa": ["pictures"] };
+
+/** How many entries each hand-off copy's list holds. */
+export const handoffEntries = { "17aa": { pictures: 1 } };

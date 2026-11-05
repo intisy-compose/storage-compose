@@ -94,8 +94,10 @@ describe("Override changes on a hand-off folder", () => {
     assert.equal(await isHandoffFolder(instance(null), "documents", layout), true);
   });
 
-  it("an idle hand-off folder one item short is no fault", () => {
-    assert.deepEqual(copyCondition(copyOf("videos", { handoff: true, completion: 52 })), { rank: 0, tone: "ok", label: "sends only, hands off" });
+  it("an idle hand-off folder needing no more items than its hand-off list holds is no fault; one needing more is out of sync", () => {
+    assert.deepEqual(copyCondition(copyOf("videos", { handoff: true, handoffEntries: 1, needTotalItems: 1, completion: 52 })), { rank: 0, tone: "ok", label: "sends only, hands off" });
+    assert.notEqual(copyCondition(copyOf("videos", { handoff: true, handoffEntries: 1, needTotalItems: 2, completion: 52 })).tone, "ok");
+    assert.notEqual(copyCondition(copyOf("videos", { handoff: true, needTotalItems: 1, completion: 52 })).tone, "ok", "a list that could not be counted holds nothing");
     assert.notEqual(copyCondition(copyOf("videos", { completion: 52 })).tone, "ok");
     assert.equal(copyCondition(copyOf("videos", { handoff: true, errors: 2 })).tone, "bad");
   });

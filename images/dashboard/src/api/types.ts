@@ -616,6 +616,8 @@ export interface FolderCopy extends NodeFolder {
   paused: boolean;
   /** A hand-off folder on its node, as the node's host plans it: send-only, what it holds leaves once a keeper confirms it; absent from an older dashboard. */
   handoff?: boolean;
+  /** On a hand-off copy, the entries of its hand-off list: that many needed items are the ignored ones, no fault. */
+  handoffEntries?: number;
 }
 
 /** A folder another device offers a node that the node has not accepted. */
