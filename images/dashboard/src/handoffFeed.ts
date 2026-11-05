@@ -291,7 +291,7 @@ async function plannedForSpace(input: HandoffInput, plan: NodePlan): Promise<{ p
 /**
  * A contract that holds every move: not in apply mode, so not even a pending path moves; only the trash may still empty (`trashOnly`).
  */
-function held(contract: HandoffContract, note: string): HandoffContract {
+export function held(contract: HandoffContract, note: string): HandoffContract {
   return { ...contract, apply: false, trashOnly: true, notes: [`hand-offs are held: ${note}`] };
 }
 
@@ -315,8 +315,8 @@ export async function decideHandoffRound(input: HandoffInput): Promise<HandoffRo
   const node = input.layout.nodes.find((entry) => entry.id === input.nodeId);
   const plan = node ? nodePlan(input.layout, input.nodeId, input.localFolders) : null;
   const contract = emptyContract(input.nodeId, node?.apply ?? false, plan?.cluster ?? false, input.now(), quietMinutes);
+  if (node?.apply && !node.enabled && !plan?.cluster) return { contract: held(contract, `${node.name} is not enabled`), space: input.decided?.decision ?? null };
   if (!node || !plan || !node.apply || plan.cluster || plan.problems.length || !plan.admitted) return { contract, space: null };
-  if (!node.enabled) return { contract: held(contract, `${node.name} is not enabled`), space: input.decided?.decision ?? null };
   let space: SpaceDecision | null = null;
   try {
     const placed = await plannedForSpace(input, plan);
@@ -466,8 +466,11 @@ export interface HandoffPublisher {
   last?(nodeId: string): HandoffRound | null;
   /** The node's executor's last result, null while it wrote none that can be read. */
   result?(instance: LocalInstance): Promise<HandoffResult | null>;
-  /** The empty contract, for a round that could not plan the node, so no older one stays for its executor. */
-  clear(nodeId: string, instance: LocalInstance, apply: boolean): Promise<void>;
+  /**
+   * The empty contract, for a round that could not plan the node, so no older one stays for its executor; with `held`, the trash-only
+   * contract that holds every move, for a node that is not enabled.
+   */
+  clear(nodeId: string, instance: LocalInstance, apply: boolean, held?: string | null): Promise<void>;
 }
 
 const published = new Map<string, HandoffContract>();
@@ -500,6 +503,9 @@ export function handoffPublisher(
       return contract ? { contract, space: publishedSpace.get(nodeId) ?? null } : null;
     },
     result: (instance) => readHandoffResult(handoffResultFile(directoryOf(instance), instance.nodeId)),
-    clear: (nodeId, instance, apply) => write(instance, emptyContract(nodeId, apply, false, now(), quietMinutes), null),
+    clear: (nodeId, instance, apply, reason) => {
+      const empty = emptyContract(nodeId, apply, false, now(), quietMinutes);
+      return write(instance, reason ? held(empty, reason) : empty, null);
+    },
   };
 }

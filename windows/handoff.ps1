@@ -721,9 +721,18 @@ function Test-IsTrashOnlyContract($Contract) {
     return $Contract.PSObject.Properties["trashOnly"] -and $Contract.trashOnly -eq $true -and @($Contract.entries).Count -eq 0 -and $null -ne $Contract.entries
 }
 
+<#
+.NOTES
+Only the copies the run kept for their age alone: one kept for a reason (no keeper holds it, it changed)
+does not leave by itself, so it frees nothing the dashboard may count on.
+#>
 function Get-HandoffTrashBytes($Run) {
+    $held = @($Run.trash | ForEach-Object { "$($_.trash)" })
     $total = [int64]0
-    foreach ($record in @(Read-HandoffLines $Run.manifest)) { if ($record.PSObject.Properties["size"] -and $record.size -is [ValueType]) { $total += [int64]$record.size } }
+    foreach ($record in @(Read-HandoffLines $Run.manifest)) {
+        if ($held -ccontains "$($record.trash)") { continue }
+        if ($record.PSObject.Properties["size"] -and $record.size -is [ValueType]) { $total += [int64]$record.size }
+    }
     return $total
 }
 
@@ -776,10 +785,10 @@ function Invoke-LockedHandoff($Instance, [string]$ContractPath, [string]$ResultP
     $nodeId = $Instance.nodeId
     $contract = Read-HandoffContract $ContractPath
     if ((Get-HandoffNodeValue $RootFull "id") -cne $nodeId) { return Write-HandoffResult $ResultPath $nodeId $contract "the node file is not node $nodeId's" @() @() 0 }
-    if ((Get-HandoffNodeValue $RootFull "apply") -ne $true) { return Write-HandoffResult $ResultPath $nodeId $contract "the node file does not say apply = true" @() @() 0 }
     if ((Get-HandoffNodeValue $RootFull "kind") -eq "array") { return Write-HandoffResult $ResultPath $nodeId $contract "an array never hands off" @() @() 0 }
     $problem = Get-HandoffContractProblem $contract $nodeId
     if ($problem) { return Write-HandoffResult $ResultPath $nodeId $contract $problem @() @() 0 }
+    if ($contract.apply -eq $true -and (Get-HandoffNodeValue $RootFull "apply") -ne $true) { return Write-HandoffResult $ResultPath $nodeId $contract "the node file does not say apply = true" @() @() 0 }
     $trashRoot = Join-Path $RootFull ".storage\handoff-trash"
     New-Item -ItemType Directory -Force -Path $trashRoot | Out-Null
     if (Test-IsReparsePoint $trashRoot) { return Write-HandoffResult $ResultPath $nodeId $contract "the trash folder is a link" @() @() 0 }

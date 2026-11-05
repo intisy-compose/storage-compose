@@ -190,8 +190,10 @@ export class LayoutRound {
     return { writtenAt: last.contract.writtenAt, apply: last.contract.apply, entries: last.contract.entries.length, waiting: this.sinceOf(instance.nodeId, last.contract.waiting, checkedAt), notes: [...last.contract.notes], space, result };
   }
 
-  private async clearHandoffs(instance: LocalInstance, apply: boolean): Promise<void> {
-    await this.dependencies.handoffs?.clear(instance.nodeId, instance, apply).catch((error) => console.error(`layered sync: no hand-off contract written for ${instance.nodeId}: ${reasonOf(error)}`));
+  /** @implNote A node that applies but is not enabled gets the trash-only contract whatever stopped the round, never an applying one. */
+  private async clearHandoffs(instance: LocalInstance, node: LayoutNode | null): Promise<void> {
+    const reason = node?.apply && !node.enabled ? `${node.name} is not enabled` : null;
+    await this.dependencies.handoffs?.clear(instance.nodeId, instance, node?.apply ?? false, reason).catch((error) => console.error(`layered sync: no hand-off contract written for ${instance.nodeId}: ${reasonOf(error)}`));
   }
 
   private async publishHandoffs(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], localFolders: ReadonlySet<string>, decision: SpaceDecision | null, spaces: ReadonlyMap<string, SpaceDecision | null>): Promise<number | null> {
@@ -316,18 +318,18 @@ export class LayoutRound {
    */
   private async nodeState(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], prepared: Prepared, spaces: ReadonlyMap<string, SpaceDecision | null>): Promise<LayeredState | null> {
     if (prepared.kind === "unlisted") {
-      await this.clearHandoffs(instance, false);
+      await this.clearHandoffs(instance, null);
       return null;
     }
     const node = prepared.node;
     const checkedAt = (this.dependencies.now?.() ?? new Date()).toISOString();
     const state = { ...emptyState(node.apply ? "apply" : "report", node.threshold, checkedAt), pausedByStop: pausedIds(prepared.marks) };
     if (prepared.kind === "unadmitted") {
-      await this.clearHandoffs(instance, node.apply);
+      await this.clearHandoffs(instance, node);
       return { ...state, problems: [`${node.name} is not admitted yet`] };
     }
     if (prepared.kind === "blocked") {
-      await this.clearHandoffs(instance, node.apply);
+      await this.clearHandoffs(instance, node);
       return { ...state, problems: prepared.problems };
     }
     if (prepared.kind === "failed") return this.failedState(instance, node, state, prepared.error);
@@ -405,7 +407,7 @@ export class LayoutRound {
   }
 
   private async failedState(instance: LocalInstance, node: LayoutNode, state: LayeredState, error: unknown): Promise<LayeredState> {
-    await this.clearHandoffs(instance, node.apply);
+    await this.clearHandoffs(instance, node);
     const last = layeredStateOf(instance.nodeId);
     return { ...(last ?? state), mode: state.mode, threshold: state.threshold, pausedByStop: state.pausedByStop, failed: reasonOf(error), checkedAt: state.checkedAt };
   }
@@ -532,15 +534,17 @@ export interface CommittedLayout {
 export type NodeFileAction = { kind: "follow"; policy: LayoutNode } | { kind: "withdraw"; reason: string };
 
 /**
- * What a node file is brought to: the committed policy with `apply = true` only for a listed, admitted, unblocked node whose
- * committed and pushed layout says `apply = true`, enabled or not, since a stopped node still empties its trash; on any doubt only its `apply` line is taken out.
+ * What a node file is brought to: the committed policy with `apply = true` only for a listed, admitted, unblocked, enabled node whose
+ * committed and pushed layout says `apply = true`; on any doubt only its `apply` line is taken out (the session's ruling). A disabled
+ * node's trash still empties, through its trash-only contract, which no executor checks against the node file.
  */
-export function nodeFileAction(committed: CommittedLayout | null, nodeId: string): NodeFileAction {
+export function nodeFileAction(committed: CommittedLayout | null, nodeId: string, options: { enabledRequired: boolean } = { enabledRequired: true }): NodeFileAction {
   if (!committed) return { kind: "withdraw", reason: "no committed layout can be read" };
   const node = committed.layout.nodes.find((entry) => entry.id === nodeId);
   if (!node) return { kind: "withdraw", reason: "the layout does not list it" };
   if (!node.admitted) return { kind: "withdraw", reason: "it is not admitted" };
   if (blockedNodeIds(committed.layout).has(nodeId)) return { kind: "withdraw", reason: "the layout blocks it" };
+  if (options.enabledRequired && !node.enabled) return { kind: "withdraw", reason: "it is not enabled" };
   if (!node.apply) return { kind: "withdraw", reason: "the committed layout does not say apply = true" };
   if (!committed.pushed) return { kind: "withdraw", reason: "the commit that says apply = true is not on the upstream yet" };
   return { kind: "follow", policy: node };
@@ -549,7 +553,7 @@ export function nodeFileAction(committed: CommittedLayout | null, nodeId: string
 /**
  * The working tree's layout with each node's `apply` as the committed layout lets it act, so a dirty or unpushed `apply = true` only
  * reports, and `enabled` true only while the committed layout says so too.
- * @implNote A node that is not enabled still applies: its pause is the one change it makes, and its held contract lets only its trash empty. Stopping is the
+ * @implNote Unlike its node file, a node that is not enabled still applies: its pause is the one change it makes. Stopping is the
  * safe direction on any doubt, and rejoining waits for a committed `enabled = true`.
  */
 export function withCommittedApply(layout: SetupLayout, committed: CommittedLayout | null): SetupLayout {
@@ -558,7 +562,7 @@ export function withCommittedApply(layout: SetupLayout, committed: CommittedLayo
     nodes: layout.nodes.map((node) => {
       const committedNode = committed?.layout.nodes.find((entry) => entry.id === node.id);
       const enabled = node.enabled && (committedNode?.enabled ?? false);
-      return { ...node, enabled, apply: nodeFileAction(committed, node.id).kind === "follow" };
+      return { ...node, enabled, apply: nodeFileAction(committed, node.id, { enabledRequired: false }).kind === "follow" };
     }),
   };
 }

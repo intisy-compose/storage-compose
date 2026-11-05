@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { type LayoutRoundDependencies, LayoutRound, type SpaceReads, mountedHandoffFiles, pullThenReconcile } from "../src/applyLayout.js";
-import type { HandoffPublisher } from "../src/handoffFeed.js";
+import { type HandoffPublisher, handoffPublisher, readHandoffContract } from "../src/handoffFeed.js";
 import type { LocalInstance } from "../src/instanceResolver.js";
 import { layeredStateOf } from "../src/layeredDrift.js";
 import { type NodePlan, nodePlan } from "../src/nodePlan.js";
@@ -640,6 +640,32 @@ describe("the cluster's notification across a restart", () => {
         await roundOf(() => layout, [instance], [], { space: spaceOf(210, 10), notified: fileNotifiedState(join(directory, "notified.json")), notify: async (entry) => void notified.push(entry) }).run();
       }
       assert.deepEqual(notified.map((entry) => entry.title), ["keeper-data is short of space"]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the contract of a node that is not enabled", () => {
+  it("never applies: trash-only while it acts, also when its round fails; a reporting one once the layout blocks it or does not admit it", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "held-contract-"));
+    try {
+      const silent = nodeAtTwenty();
+      silent.answers = false;
+      const base = disabled(layoutText(true, 20));
+      const cases: [string, string, FakeSyncthing, boolean][] = [
+        ["its round fails", base, silent, true],
+        ["it plans", base, nodeAtTwenty(), true],
+        ["the layout blocks it", base.replace('name      = "laptop-data"', 'name      = "laptop data!"'), nodeAtTwenty(), false],
+        ["it is not admitted", base.replace("threshold = 20\nadmitted  = true", "threshold = 20"), nodeAtTwenty(), false],
+      ];
+      for (const [name, text, syncthing, acting] of cases) {
+        rmSync(join(directory, "a001.json"), { force: true });
+        await roundOf(() => parseLayout(text), [instanceOf(syncthing)], [], { handoffs: handoffPublisher(undefined, () => directory), space: spaceOf(1000, 900), pauses: memoryLayeredPauses() }).run();
+        const contract = await readHandoffContract(join(directory, "a001.json"));
+        assert.deepEqual([contract?.apply, contract?.trashOnly, contract?.entries], [false, acting ? true : undefined, []], name);
+        if (acting) assert.match(contract?.notes.join(" ") ?? "", /hand-offs are held: laptop-data is not enabled/, name);
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

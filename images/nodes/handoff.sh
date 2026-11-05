@@ -653,7 +653,6 @@ main() {
     flock -n 9 || { log "another hand-off run holds the lock; this run does nothing"; exit 0; }
     printf '%s %s\n' "$$" "$(date -u +%FT%TZ)" > "$root_real/.storage/handoff.lock"
     [ "$(node_value id)" = "$node_id" ] || refuse_whole "the node file is not node $node_id's"
-    [ "$(node_value apply)" = true ] || refuse_whole "the node file does not say apply = true"
     [ "$(node_value kind)" != array ] || refuse_whole "an array never hands off"
     [ "$node_id" != "$cluster_id" ] || refuse_whole "the cluster never hands off"
     run_start=$(now)
@@ -661,6 +660,10 @@ main() {
     local problem
     problem=$(contract_problem)
     [ -z "$problem" ] || refuse_whole "$problem"
+    # A held trash-only contract names no file and only empties the trash under its own checks, so it needs no apply in the node file.
+    if jq -e '.apply == true' "$contract" > /dev/null; then
+        [ "$(node_value apply)" = true ] || refuse_whole "the node file does not say apply = true"
+    fi
     trash_root=$root_real/.storage/handoff-trash
     manifest=$trash_root/manifest.jsonl
     pending_file=$root_real/.storage/handoff-pending.jsonl
@@ -678,7 +681,7 @@ main() {
     fi
     purge_trash
     report_unlisted
-    trash_bytes=$(json_lines "$manifest" | jq -s 'map(.size | numbers) | add // 0')
+    trash_bytes=$(json_lines "$manifest" | jq -s --slurpfile kept "$work/trash" '[$kept[].trash] as $held | map(select(.trash as $t | $held | index($t) | not) | .size | numbers) | add // 0')
     write_result
 }
 

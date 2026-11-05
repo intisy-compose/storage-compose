@@ -430,7 +430,7 @@ contract "$(entry clip.mp4)"
 run_handoff
 check "a folder whose .stignore does not include the list is refused and its list left alone" "yes refused 0" "$(present clip.mp4) $(outcome_of clip.mp4) $(grep -c . "$root/Videos/.stignore-handoff")"
 
-echo "apply = false in the node file means nothing at all"
+echo "apply = false in the node file means nothing at all for an applying contract"
 new_node report
 sed -i 's/^apply = true$/apply = false/' "$root/.storage/node.toml"
 contract "$(entry clip.mp4)"
@@ -531,6 +531,24 @@ written_now=$((now + 8 * 86400)) held_contract "$(entry pending.mp4)"
 run_now=$((now + 8 * 86400)) run_handoff
 check "a held contract that names a file is refused whole" "the contract is not in apply mode yes" "$(refusal) $(present pending.mp4)"
 check "and a refused run says nothing of the trash" null "$(jq .trashBytes "$scratch/result.json")"
+
+echo "a trash-only contract needs no apply in the node file"
+new_node heldoff
+contract "$(entry clip.mp4)"
+run_handoff
+add_file second.mp4 hello
+contract "$(entry second.mp4)"
+run_handoff
+check "both copies are in the trash and count as freeing" "yes yes 10" "$(in_trash clip.mp4) $(in_trash second.mp4) $(jq .trashBytes "$scratch/result.json")"
+sed -i '/^apply = /d' "$root/.storage/node.toml"
+index_entry second.mp4 5 STICK:1 '[{"id": "OTHER-DEVICE", "fromTemporary": false}]'
+written_now=$((now + 8 * 86400)) held_contract
+run_now=$((now + 8 * 86400)) run_handoff
+check "it empties what is due under the keeper check, without the node file's apply" "none no 1" "$(refusal) $(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+check "a copy kept for a reason counts as freeing nothing" "yes 0" "$(in_trash second.mp4) $(jq .trashBytes "$scratch/result.json")"
+written_now=$((now + 8 * 86400)) contract
+run_now=$((now + 8 * 86400)) run_handoff
+check "an applying contract still needs the node file's apply" "the node file does not say apply = true" "$(refusal)"
 
 echo "the trash keeps what no keeper holds"
 new_node keeperless

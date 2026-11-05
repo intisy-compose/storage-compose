@@ -622,6 +622,31 @@ Describe "the hand-off executor" {
         (Get-Result).refused | Should Be "the contract is not in apply mode"
     }
 
+    It "empties the trash under a trash-only contract without the node file's apply, and counts only copies kept for their age alone" {
+        New-TestNode "heldoff"
+        Write-Contract @(New-Entry "clip.mp4")
+        Invoke-TestHandoff
+        Add-TestFile "second.mp4" "hello"
+        Write-Contract @(New-Entry "second.mp4")
+        Invoke-TestHandoff
+        (Get-Result).trashBytes | Should Be 10
+        [System.IO.File]::WriteAllText((Join-Path $global:root ".storage\node.toml"), "[node]`nid = `"a001`"`nname = `"stick`"`nkind = `"folder`"`n")
+        Set-IndexEntry "second.mp4" 5 "STICK:1" @([pscustomobject]@{ id = "OTHER-DEVICE"; fromTemporary = $false })
+        $global:handoffTestNow += 8 * 86400
+        $held = [pscustomobject]@{
+            schema = 1; nodeId = "a001"; writtenAt = [DateTimeOffset]::FromUnixTimeSeconds($global:handoffTestNow - 10).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+            apply = $false; trashOnly = $true; cluster = $false; quietMinutes = 10; entries = @(); waiting = @(); notes = @()
+        }
+        [System.IO.File]::WriteAllText($global:contractPath, (ConvertTo-Json -InputObject $held -Depth 10))
+        Invoke-TestHandoff
+        $result = Get-Result
+        "$($null -eq $result.refused) $($result.purged) $($result.trashBytes)" | Should Be "True 1 0"
+
+        Write-Contract @()
+        Invoke-TestHandoff
+        (Get-Result).refused | Should Be "the node file does not say apply = true"
+    }
+
     It "keeps a trash copy until its recorded keeper is connected and holds that version or a later one" {
         New-TestNode "keeperless"
         Write-Contract @(New-Entry "clip.mp4")

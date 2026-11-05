@@ -137,7 +137,7 @@ describe("the layout round brings mounted node files to the committed layout", (
     assert.equal(nodeFile(path), folderNode);
   });
 
-  it("follows only a listed, admitted, unblocked node whose pushed layout says apply = true, enabled or not; withdraws on any doubt", () => {
+  it("follows only a listed, admitted, unblocked, enabled node whose pushed layout says apply = true; withdraws on any doubt", () => {
     const committed = (body: string, pushed = true) => ({ layout: parseLayout(`[devices.pc]\nid = "PC-ID"\n[nodes.a1b2]\nname = "pc"\ndevice = "pc"\nthreshold = 80\n${body}\n`), pushed });
     assert.equal(nodeFileAction(committed("admitted = true\napply = true"), "a1b2").kind, "follow");
     const reasons = [
@@ -155,7 +155,7 @@ describe("the layout round brings mounted node files to the committed layout", (
       "the layout does not list it",
       "it is not admitted",
       "the layout blocks it",
-      "follow",
+      "it is not enabled",
       "the committed layout does not say apply = true",
       "the committed layout does not say apply = true",
       "the commit that says apply = true is not on the upstream yet",
