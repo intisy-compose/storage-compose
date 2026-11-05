@@ -140,11 +140,11 @@ async function seed(name: string, content: string, minutesAgo = 20): Promise<voi
   }
 }
 
-/** The executor in a container that shares the stick's volume, network and processes, as the nodes service shares its node's. */
+/** The executor in a container that shares the stick's volume and network, as the nodes service shares its node's, and sees no other process. */
 async function runExecutor(environment: Record<string, string> = {}): Promise<ExecutorResult> {
   const variables = Object.entries({ HANDOFF_IGNORE_WAIT_SECONDS: "30", ...environment }).flatMap(([name, value]) => ["-e", `${name}=${value}`]);
   await run("docker", [
-    "run", "--rm", "--network", `container:${peers.stick.container}`, "--pid", `container:${peers.stick.container}`, "--volumes-from", peers.stick.container,
+    "run", "--rm", "--network", `container:${peers.stick.container}`, "--volumes-from", peers.stick.container,
     "-u", "1000:1000", "-v", `${scratch}:/handoff`, "-v", `${executorScript}:/handoff.sh:ro`, ...variables, executorImage,
     "bash", "/handoff.sh", "e001", root, "http://127.0.0.1:8384", peers.stick.apiKey, "/handoff/e001.json", "/handoff/e001.result.json",
   ], { env: { ...process.env, MSYS_NO_PATHCONV: "1" } });
@@ -271,7 +271,45 @@ test("the trash empties after its age, and only its own files", async () => {
   assert.equal((await readFile(peers.keeper, "Archive", "old.bin")).length, 300_000, "the keeper's copy is untouched");
 });
 
-test("with every keeper offline, nothing leaves the stick", async () => {
+let pendingTrash = "";
+
+test("a path Syncthing had not reported ignored in time stays pending and is moved on the next run", async () => {
+  await seed("pending.bin", threeBlocks("pending "));
+  await layoutRound(true);
+
+  const first = await runExecutor({ HANDOFF_IGNORE_WAIT_SECONDS: "0" });
+
+  assert.equal(first.results.find((entry) => entry.path === "pending.bin")?.outcome, "ignored-not-moved");
+  assert.ok((await listed()).includes("/pending.bin"));
+  await waitUntil(async () => (await fileReport(peers.stick, folder, "pending.bin")).local.ignored === true, "pending.bin ignored on the stick");
+  await layoutRound(true);
+  const second = await runExecutor();
+
+  const moved = second.results.find((entry) => entry.path === "pending.bin");
+  assert.equal(moved?.outcome, "moved", "retried from the pending record while ignored, the keeper still in its availability");
+  pendingTrash = moved?.trash ?? "";
+  assert.equal(await fileExists(peers.stick, "Archive", "pending.bin"), false);
+});
+
+test("a pending file changed before its retry gets its line removed, and its edit reaches the keepers", async () => {
+  await seed("edited.bin", "the confirmed content");
+  await layoutRound(true);
+  await runExecutor({ HANDOFF_IGNORE_WAIT_SECONDS: "0" });
+  await waitUntil(async () => (await fileReport(peers.stick, folder, "edited.bin")).local.ignored === true, "edited.bin ignored on the stick");
+  await writeFile(peers.stick, "Archive", "edited.bin", "an edit made while it waited");
+  await layoutRound(true);
+
+  const result = await runExecutor();
+
+  assert.equal(result.results.find((entry) => entry.path === "edited.bin")?.outcome, "released");
+  assert.ok(!(await listed()).includes("/edited.bin"), "its line is gone");
+  await waitUntil(async () => (await fileReport(peers.stick, folder, "edited.bin")).local.ignored === false, "edited.bin back in the stick's index");
+  for (const keeper of [peers.keeper, peers.other]) {
+    await waitUntil(async () => (await readFile(keeper, "Archive", "edited.bin")) === "an edit made while it waited", `the edit on ${keeper.name}`);
+  }
+});
+
+test("with every keeper offline, nothing leaves the stick and nothing leaves the trash", async () => {
   await seed("waits.bin", "waits for a keeper");
   await run("docker", ["stop", "--timeout", "5", peers.keeper.container, peers.other.container]);
 
@@ -280,6 +318,13 @@ test("with every keeper offline, nothing leaves the stick", async () => {
   assert.deepEqual(contract.entries, []);
   assert.ok(contract.waiting.some((waiting) => waiting.path === "waits.bin" && waiting.reason === "keeper-offline"));
   const result = await runExecutor();
-  assert.deepEqual(result.results, []);
+  assert.deepEqual(result.results.filter((entry) => entry.outcome !== "unsynced-at-handed-off-path"), []);
   assert.equal(await fileExists(peers.stick, "Archive", "waits.bin"), true);
+
+  const at = Math.floor(Date.now() / 1000) + 8 * 86400;
+  writeFileSync(join(scratch, "e001.json"), JSON.stringify({ schema: 1, nodeId: "e001", writtenAt: new Date(at * 1000).toISOString(), apply: true, cluster: false, quietMinutes: 10, entries: [], waiting: [], notes: [] }));
+  const purge = await runExecutor({ HANDOFF_NOW: String(at) }) as ExecutorResult & { trash: { trash: string; reason: string }[] };
+  assert.equal(purge.purged, 0);
+  assert.equal(await inTrash(pendingTrash), true, "a copy no reachable keeper holds stays past its 7 days");
+  assert.match(purge.trash.find((entry) => entry.trash === pendingTrash)?.reason ?? "", /no keeper holds its version/);
 });
