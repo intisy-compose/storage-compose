@@ -74,8 +74,27 @@ describe("the layout round brings mounted node files to the committed layout", (
     assert.equal(await files.withdraw(instance(path)), false);
   });
 
-  it("withdraw takes out an apply line of any value, quoted included", () => {
-    assert.equal(withoutApply(`[node]\nid = "a1b2"\napply = "true"\n\n[other]\napply = 1\n`), `[node]\nid = "a1b2"\n\n[other]\napply = 1\n`);
+  it("withdraw takes out an apply key of any value, quoted, and dotted at the top level; an inline node table is no line edit", () => {
+    assert.equal(withoutApply(`[node]\nid = "a1b2"\napply = "true"\n"apply" = true\n\n[other]\napply = 1\n`), `[node]\nid = "a1b2"\n\n[other]\napply = 1\n`);
+    assert.equal(withoutApply(`node.apply = true\nnode.id = "a1b2"\n`), `node.id = "a1b2"\n`);
+    assert.equal(withoutApply(`node = { id = "a1b2", apply = true }\n`), null);
+  });
+
+  it("withdraw strips the line from a real node file that does not parse, refuses an inline table, and never goes through a link", async () => {
+    const files = mountedNodeFiles([join(root, "nodes")]);
+    const broken = nodeRoot("broken", `[node]\nid = "a1b2"\napply = true\nname = [unclosed\n`);
+    assert.equal(await files.withdraw(instance(broken)), true);
+    assert.equal(nodeFile(broken), `[node]\nid = "a1b2"\nname = [unclosed\n`);
+    const inline = nodeRoot("inline", `node = { id = "a1b2", apply = true }\n`);
+    await assert.rejects(files.withdraw(instance(inline)), /inline node table/);
+    assert.equal(nodeFile(inline), `node = { id = "a1b2", apply = true }\n`);
+    const linkedFile = nodeRoot("linked-file");
+    const target = join(root, "linked-target.toml");
+    writeFileSync(target, `[node]\nid = "a1b2"\napply = true\n`);
+    rmSync(join(linkedFile, ".storage", "node.toml"));
+    symlinkSync(target, join(linkedFile, ".storage", "node.toml"), "file");
+    assert.equal(await files.withdraw(instance(linkedFile)), false);
+    assert.equal(readFileSync(target, "utf8"), `[node]\nid = "a1b2"\napply = true\n`);
   });
 
   it("leaves a Windows node, an array instance and a root this host does not mount alone", async () => {

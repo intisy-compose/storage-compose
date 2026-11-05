@@ -160,28 +160,49 @@ export async function followLayout(path: string, policy: LayoutNode): Promise<bo
   return true;
 }
 
-/** The node file's text without any `apply` line in its `[node]` table, every other line as it was. */
-export function withoutApply(text: string): string {
-  let inNode = false;
-  return text
-    .split(/(?<=\n)/)
-    .filter((line) => {
-      if (/^\s*\[/.test(line)) inNode = /^\s*\[node\]\s*(#.*)?$/.test(line.replace(/\r?\n$/, ""));
-      return !(inNode && /^\s*apply\s*=/.test(line));
-    })
-    .join("");
+/** An `apply` key of the `[node]` table, bare or quoted, and the same key dotted at the top level. */
+const applyInNode = /^\s*(apply|"apply"|'apply')\s*=/;
+const applyDotted = /^\s*(node|"node"|'node')\s*\.\s*(apply|"apply"|'apply')\s*=/;
+const inlineNode = /^\s*(node|"node"|'node')\s*=\s*\{/;
+
+/**
+ * The node file's text without any `apply` key of its node, every other line as it was: a line in `[node]` and a dotted `node.apply` at
+ * the top level; null when an inline `node = {...}` table holds it, which no line edit can take out safely.
+ */
+export function withoutApply(text: string): string | null {
+  let table: string | null = "";
+  let unsafe = false;
+  const kept = text.split(/(?<=\n)/).filter((line) => {
+    const bare = line.replace(/\r?\n$/, "");
+    if (/^\s*\[/.test(bare)) table = /^\s*\[\s*node\s*\]\s*(#.*)?$/.test(bare) ? "node" : null;
+    if (table === "" && inlineNode.test(bare) && /\bapply\b/.test(bare)) unsafe = true;
+    return !((table === "node" && applyInNode.test(bare)) || (table === "" && applyDotted.test(bare)));
+  });
+  return unsafe ? null : kept.join("");
+}
+
+function looksLikeArray(text: string): boolean {
+  return /^\s*kind\s*=\s*["']?array["']?\s*(#.*)?$/m.test(text) || /^\s*\[\s*array\s*\]/m.test(text);
 }
 
 /**
- * Takes the `apply` line out of the node file at `path`, whatever its value, and reports whether it did; nothing else of the file changes.
- * @implNote The executors read `apply = true` with any quoting, so any `apply` line is taken out; an array's file, a link and a file without the line are left alone.
+ * Takes the node's `apply` key out of the node file at `path`, whatever its value, and reports whether it did; nothing else of the file changes.
+ * @implNote Line based, so a file that does not parse loses its `apply` line too; the executors read `apply = true` with any quoting. An
+ * array's file, a link and a file without the key are left alone; an inline `node = {...}` holding it is reported, since a line edit could
+ * break the table and this parser cannot rewrite one.
  */
 export async function withdrawApply(path: string): Promise<boolean> {
   if (await placeProblem(path)) return false;
-  const file = await readNodeFile(path);
-  if (file === null || isArrayFile(file)) return false;
   const text = await readFile(path, "utf8");
+  let file: NodeFile | null = null;
+  try {
+    file = parseNodeFile(text);
+  } catch {
+    file = null;
+  }
+  if (file ? isArrayFile(file) : looksLikeArray(text)) return false;
   const withdrawn = withoutApply(text);
+  if (withdrawn === null) throw new Error(`${path} holds apply in an inline node table, which is not rewritten here; take it out by hand`);
   if (withdrawn === text) return false;
   await replaceNodeFile(path, withdrawn);
   return true;
