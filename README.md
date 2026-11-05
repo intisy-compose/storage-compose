@@ -245,6 +245,26 @@ On Windows the first `up` runs in an admin shell, because it installs the host a
 ones need it only when the agent must be repaired. On Linux, `./docker-compose.sh` takes the same
 commands and nothing needs installing.
 
+## Deleting the stack
+
+`down` keeps the node in the tailnet, so the next `up` comes back under the same name. To remove the
+stack for good, run `.\docker-compose.ps1 delete` while the stack is up, then remove the folder.
+
+The order differs from the other stacks because the node key lives on the array
+(`<ARRAY_PREFIX>-data1/.storage/tailscale`), which only the running mounter has mounted and `down`
+unmounts. So `delete` refuses unless the mounter runs, and touches nothing then. Otherwise it stops
+the tailscale container so the node is quiet, reads the stable node ID from the array's
+`tailscaled.state` (never the name, so another device named `storage` stays), removes that node
+through the Tailscale API, removes the tailnet state from the array so a later `up` joins fresh, and
+then runs `down` in full. Once it has started, the `down` always runs.
+
+The removal uses `TS_API_TOKEN` from `config.env`: an access token from
+[Settings, Keys](https://login.tailscale.com/admin/settings/keys) of an account that may remove
+devices (Owner, Admin or IT admin). Without one, `delete` prints the node's name and ID to remove on
+the [Machines page](https://login.tailscale.com/admin/machines) and still clears the state. When the
+API refuses or does not answer, the state stays on the array, `delete` still runs `down` and fails,
+and it can run again after the next `up`. Everything else on the array stays.
+
 ## Windows: the host agent
 
 What has to run outside Docker on Windows runs in one Windows service, `storage-compose-agent`. It
