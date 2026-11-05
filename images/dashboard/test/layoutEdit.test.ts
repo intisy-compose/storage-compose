@@ -80,9 +80,40 @@ describe("layout edits in place", () => {
     assert.ok(edit.text.includes("[nodes.a1b2]"));
   });
 
-  it("clearing an entry that also sets ignores is refused, and clearing a path without one changes nothing", () => {
-    assert.throws(() => editFolderPriority(layoutText, "Documents", null), /also sets ignore/);
+  it("clearing removes only the priority key and keeps the entry while it sets anything else, its category included", () => {
+    const documents = editFolderPriority(layoutText, "Documents", null);
+    assert.equal(documents.boundary, null);
+    assert.equal(documents.text, layoutText.replace("priority = 80\n", ""));
+    const github = editFolderPriority(layoutText, "Documents/GitHub", null);
+    assert.deepEqual([github.boundary, github.text], [null, layoutText]);
     assert.equal(editFolderPriority(layoutText, "Pictures", null).text, layoutText);
+  });
+
+  it("an entry kept by a single-quoted key, a dotted key or a subtable of its own stays when its priority is cleared", () => {
+    for (const rest of ["'versions_days' = 3", "ignore.extra = 1"]) {
+      const text = `[folders.Videos]\npriority = 30\n${rest}\n`;
+      assert.deepEqual([editFolderPriority(text, "Videos", null).boundary, editFolderPriority(text, "Videos", null).text], [null, `[folders.Videos]\n${rest}\n`], rest);
+    }
+    const withSubtable = `[folders.Videos]\npriority = 30\n\n[folders.Videos.versions]\ndays = 3\n`;
+    assert.equal(editFolderPriority(withSubtable, "Videos", null).boundary, null);
+    assert.match(editFolderPriority(withSubtable, "Videos", null).text, /\[folders.Videos\]\n\n\[folders.Videos.versions\]/);
+  });
+
+  it("a bracket line inside a multi-line array is no header", () => {
+    const text = `[folders.Videos]\npriority = 30\nignore = [\n  "/a",\n  "[x]",\n]\nversions_days = 5\n`;
+    const edit = editFolderPriority(text, "Videos", 40);
+    assert.equal(edit.text, text.replace("priority = 30", "priority = 40"));
+    assert.deepEqual(parseLayout(edit.text).folders[0].ignore, ["/a", "[x]"]);
+  });
+
+  it("keeps a replaced key's comment, blank lines inside a multi-line string, and the file's line endings", () => {
+    assert.equal(editFolderPriority(`[folders.Videos]\npriority = 30  # films\n`, "Videos", 40).text, `[folders.Videos]\npriority = 40  # films\n`);
+    const multiline = `[folders.Videos]\npriority = 30\nnote = """\none\n\n\n\ntwo"""\n`;
+    assert.equal(editFolderPriority(multiline, "Videos", 40).text, multiline.replace("priority = 30", "priority = 40"));
+    const crlf = "[folders.Videos]\r\npriority = 30\r\n\r\n[folders.Music]\r\npriority = 80\r\n";
+    const created = editFolderPriority(crlf, "Pictures", 10).text;
+    assert.equal(created.replace(/\r\n/g, "").includes("\n"), false, "every line ends as the file's do");
+    assert.equal(parseLayout(created).folders.find((folder) => folder.relativePath === "Pictures")?.priority, 10);
   });
 
   it("the top directory is never a folder boundary", () => {

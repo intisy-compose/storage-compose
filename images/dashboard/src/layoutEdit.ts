@@ -55,26 +55,86 @@ export function tomlString(value: string): string {
   return value.includes("\\") ? `'${value}'` : JSON.stringify(value);
 }
 
-function isHeader(line: string): boolean {
-  return line.trim().startsWith("[");
+/** What a line of the layout is: a table header, the first line of a `key = value`, a line inside a multi-line value, or anything else. */
+type LineKind = "header" | "key" | "inside" | "other";
+
+/** The quote that opens a multi-line string in `text` and is not closed there, or null. */
+function openMultiline(text: string): string | null {
+  for (const quote of ['"""', "'''"]) {
+    const count = text.split(quote).length - 1;
+    if (count % 2 === 1) return quote;
+  }
+  return null;
 }
 
-function sectionAt(lines: string[], start: number): Section {
+/**
+ * Each line's kind, so a `[` inside a multi-line array or string is never taken for a header.
+ * @implNote Brackets are counted outside strings only; a multi-line string runs until its closing triple quote.
+ */
+function lineKinds(lines: readonly string[]): LineKind[] {
+  const kinds: LineKind[] = [];
+  let depth = 0;
+  let multiline: string | null = null;
+  for (const line of lines) {
+    if (multiline) {
+      kinds.push("inside");
+      if (line.includes(multiline)) multiline = null;
+      continue;
+    }
+    if (depth > 0) {
+      kinds.push("inside");
+      depth += bracketDepth(line);
+      continue;
+    }
+    const trimmed = line.trim();
+    if (trimmed.startsWith("[")) {
+      kinds.push("header");
+      continue;
+    }
+    if (lineKey(line) === null) {
+      kinds.push("other");
+      continue;
+    }
+    kinds.push("key");
+    const value = line.slice(line.indexOf("=") + 1);
+    multiline = openMultiline(value);
+    if (!multiline) depth = Math.max(0, bracketDepth(value));
+  }
+  return kinds;
+}
+
+/** The first segment of a line's key (`a` of `"a".b = 1`), unquoted, or null for a line that sets no key. */
+function lineKey(line: string): string | null {
+  const match = /^\s*("(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)(?:\s*\.\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+))*\s*=/.exec(line);
+  if (!match) return null;
+  const first = match[1];
+  if (first.startsWith('"')) return JSON.parse(first) as string;
+  if (first.startsWith("'")) return first.slice(1, -1);
+  return first;
+}
+
+function sectionAt(lines: string[], start: number, kinds: LineKind[] = lineKinds(lines)): Section {
   let end = start + 1;
-  while (end < lines.length && !isHeader(lines[end])) end++;
-  while (end > start + 1 && (lines[end - 1].trim().startsWith("#") || lines[end - 1].trim() === "")) end--;
+  while (end < lines.length && kinds[end] !== "header") end++;
+  while (end > start + 1 && kinds[end - 1] !== "inside" && (lines[end - 1].trim().startsWith("#") || lines[end - 1].trim() === "")) end--;
   return { start, end };
 }
 
-function findSection(lines: string[], matches: (keys: string[]) => boolean): Section | null {
-  const start = lines.findIndex((line) => {
+function headerIndexes(lines: string[], matches: (keys: string[]) => boolean): number[] {
+  const kinds = lineKinds(lines);
+  return lines.flatMap((line, index) => {
+    if (kinds[index] !== "header") return [];
     const keys = headerKeys(line);
-    return keys !== null && matches(keys);
+    return keys !== null && matches(keys) ? [index] : [];
   });
-  return start < 0 ? null : sectionAt(lines, start);
 }
 
-/** Whether a value's text closes on its line: brackets outside strings balance. */
+function findSection(lines: string[], matches: (keys: string[]) => boolean): Section | null {
+  const [start] = headerIndexes(lines, matches);
+  return start === undefined ? null : sectionAt(lines, start);
+}
+
+/** How far brackets outside strings open on this text, a comment left out. */
 function bracketDepth(text: string): number {
   let depth = 0;
   let quote: string | null = null;
@@ -91,26 +151,40 @@ function bracketDepth(text: string): number {
   return depth;
 }
 
-/** The lines `key = ...` spans inside the section, a multi-line array included, or null when the key is not set there. */
+/** A line's comment outside strings, with the spaces before it, or "". */
+function trailingComment(line: string): string {
+  let quote: string | null = null;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index];
+    if (quote) {
+      if (quote === '"' && character === "\\") index++;
+      else if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === "#") return `${line.slice(0, index).match(/\s*$/)?.[0] || " "}${line.slice(index)}`;
+  }
+  return "";
+}
+
+/** The lines `key = ...` spans inside the section, a multi-line value included, or null when the key is not set there. */
 function keyLines(lines: string[], section: Section, key: string): { from: number; to: number } | null {
-  const pattern = new RegExp(`^\\s*(${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|"${key}")\\s*=`);
+  const kinds = lineKinds(lines);
   for (let index = section.start + 1; index < section.end; index++) {
-    if (!pattern.test(lines[index])) continue;
-    let depth = bracketDepth(lines[index].slice(lines[index].indexOf("=") + 1));
+    if (kinds[index] !== "key" || lineKey(lines[index]) !== key) continue;
     let to = index;
-    while (depth > 0 && to + 1 < lines.length) depth += bracketDepth(lines[++to]);
+    while (to + 1 < lines.length && kinds[to + 1] === "inside") to++;
     return { from: index, to };
   }
   return null;
 }
 
-/** Sets or, with null, removes `key` in the section in place, keeping the line's indent and alignment; returns how many lines the section grew by. */
+/** Sets or, with null, removes `key` in the section in place, keeping the line's indent, alignment and trailing comment; returns how many lines the section grew by. */
 function setKey(lines: string[], section: Section, key: string, value: string | null): number {
   const found = keyLines(lines, section, key);
   if (found) {
     const indent = lines[found.from].match(/^\s*/)?.[0] ?? "";
     const alignment = lines[found.from].match(/^\s*\S+(\s*)=/)?.[1] ?? " ";
-    const replacement = value === null ? [] : [`${indent}${key}${alignment}= ${value}`];
+    const comment = trailingComment(lines[found.to]);
+    const replacement = value === null ? [] : [`${indent}${key}${alignment}= ${value}${comment}`];
     lines.splice(found.from, found.to - found.from + 1, ...replacement);
     return replacement.length - (found.to - found.from + 1);
   }
@@ -119,13 +193,10 @@ function setKey(lines: string[], section: Section, key: string, value: string | 
   return 1;
 }
 
-/** The section's own keys, as written. */
+/** The section's own keys, quoted, single-quoted and dotted ones by their first segment. */
 function keysOf(lines: string[], section: Section): string[] {
-  return lines
-    .slice(section.start + 1, section.end)
-    .map((line) => /^\s*("[^"]*"|[A-Za-z0-9_-]+)\s*=/.exec(line)?.[1])
-    .filter((key): key is string => key !== undefined)
-    .map((key) => (key.startsWith('"') ? (JSON.parse(key) as string) : key));
+  const kinds = lineKinds(lines);
+  return lines.slice(section.start + 1, section.end).flatMap((line, offset) => (kinds[section.start + 1 + offset] === "key" ? [lineKey(line) as string] : []));
 }
 
 function removeSection(lines: string[], section: Section): void {
@@ -136,26 +207,33 @@ function removeSection(lines: string[], section: Section): void {
   lines.splice(start, end - start);
 }
 
-/** Inserts a section after `after` (a line index, -1 for the end of the file), with one blank line around it. */
+/** Inserts a section at line `at` (-1 for the end of the file), with one blank line around it. */
 function insertSection(lines: string[], at: number, section: string[]): void {
   let position = at < 0 ? lines.length : at;
   while (position > 0 && lines[position - 1].trim() === "") position--;
   const block = [...(position > 0 ? [""] : []), ...section];
-  if (position < lines.length) block.push("");
+  if (position < lines.length && lines[position].trim() !== "") block.push("");
   lines.splice(position, 0, ...block);
 }
 
 function lastSectionEnd(lines: string[], matches: (keys: string[]) => boolean): number {
-  let end = -1;
-  lines.forEach((line, index) => {
-    const keys = headerKeys(line);
-    if (keys && matches(keys)) end = sectionAt(lines, index).end;
-  });
-  return end;
+  const kinds = lineKinds(lines);
+  const indexes = headerIndexes(lines, matches);
+  return indexes.length ? sectionAt(lines, indexes[indexes.length - 1], kinds).end : -1;
 }
 
-function joined(lines: string[]): string {
-  return lines.join("\n").replace(/\n{3,}/g, "\n\n");
+interface LayoutLines {
+  lines: string[];
+  /** The file's own line ending, kept on every line written back. */
+  eol: string;
+}
+
+function splitLines(text: string): LayoutLines {
+  return { lines: text.split(/\r?\n/), eol: text.includes("\r\n") ? "\r\n" : "\n" };
+}
+
+function joined({ lines, eol }: LayoutLines): string {
+  return lines.join(eol);
 }
 
 /** A priority edit's path as the layout keys it; `..` never names a place inside the tree. */
@@ -180,29 +258,34 @@ export interface PriorityEdit {
   folderId: string;
 }
 
-const priorityKeys = new Set(["priority", "category"]);
-
 function isFolderSection(path: string): (keys: string[]) => boolean {
   return (keys) => keys.length === 2 && keys[0] === "folders" && normaliseRelativePath(keys[1]) === path;
 }
 
+function isFolderSubtable(path: string): (keys: string[]) => boolean {
+  return (keys) => keys.length > 2 && keys[0] === "folders" && normaliseRelativePath(keys[1]) === path;
+}
+
 /**
- * The layout with `path`'s priority set, or with null its entry removed so the path inherits again.
- * @implNote An entry that also sets ignores or versions is not removed by a clear, since that would drop them too; it is refused for a person to edit.
- * C-30's `category` stays beside a `priority` for drive-sync, which reads the same file; the priority wins for the layered sync.
+ * The layout with `path`'s priority set, or with null its `priority` key removed so the path inherits again.
+ * @implNote A clear removes the entry only when nothing else is left in it, no key (C-30's `category` included) and no subtable, so it never
+ * drops a folder's ignores or versions; the entry, and with it the folder boundary, stays otherwise. `category` stays beside a `priority`
+ * for drive-sync, which reads the same file; the priority wins for the layered sync.
  */
 export function editFolderPriority(text: string, rawPath: unknown, priority: number | null): PriorityEdit {
   const path = editablePath(rawPath);
   if (priority !== null) validPriority(priority);
-  const lines = text.split("\n");
+  const layout = splitLines(text);
+  const { lines } = layout;
   const section = findSection(lines, isFolderSection(path));
   const isTop = path === topDirectoryPath;
-  const result = (boundary: BoundaryChange): PriorityEdit => ({ text: joined(lines), path, boundary: isTop ? null : boundary, folderId: folderId(path) });
+  const result = (boundary: BoundaryChange): PriorityEdit => ({ text: joined(layout), path, boundary: isTop ? null : boundary, folderId: folderId(path) });
   if (priority === null) {
     if (!section) return { text, path, boundary: null, folderId: folderId(path) };
-    const others = keysOf(lines, section).filter((key) => !priorityKeys.has(key));
-    if (others.length) throw new RequestError(409, `${path} also sets ${others.join(", ")} in the layout, so its entry is not removed here; edit it in the setup repo`);
-    removeSection(lines, section);
+    setKey(lines, section, "priority", null);
+    const remaining = findSection(lines, isFolderSection(path)) as Section;
+    if (keysOf(lines, remaining).length || headerIndexes(lines, isFolderSubtable(path)).length) return result(null);
+    removeSection(lines, remaining);
     return result("removed");
   }
   if (section) {
@@ -221,6 +304,8 @@ export interface NodePolicyChange {
   apply?: boolean;
   enabled?: boolean;
   admitted?: boolean;
+  /** The `[devices.<name>]` entry the node is on. */
+  device?: string;
   /** When a person refused the node's admission; null takes a refusal back. */
   refused?: string | null;
 }
@@ -256,7 +341,8 @@ function setPins(lines: string[], nodeId: string, pins: Record<string, number>):
  * @implNote Pins are rewritten as the node's `[nodes.<id>.pins]` table, sorted by path, so an inline `pins = {...}` is replaced by it.
  */
 export function editNodePolicy(text: string, nodeId: string, change: NodePolicyChange, create?: NewNodeEntry): string {
-  const lines = text.split("\n");
+  const layout = splitLines(text);
+  const { lines } = layout;
   let section = findSection(lines, isNodeSection(nodeId));
   if (!section) {
     if (!create) throw new RequestError(404, `the layout has no node ${nodeId}`);
@@ -264,6 +350,7 @@ export function editNodePolicy(text: string, nodeId: string, change: NodePolicyC
     section = findSection(lines, isNodeSection(nodeId)) as Section;
   }
   const scalars: [string, string | null | undefined][] = [
+    ["device", change.device === undefined ? undefined : JSON.stringify(change.device)],
     ["threshold", change.threshold === undefined ? undefined : String(change.threshold)],
     ["assigned", change.assigned === undefined ? undefined : arrayText(change.assigned)],
     ["admitted", change.admitted === undefined ? undefined : String(change.admitted)],
@@ -277,7 +364,7 @@ export function editNodePolicy(text: string, nodeId: string, change: NodePolicyC
     section = { start: section.start, end: section.end + grown };
   }
   if (change.pins) setPins(lines, nodeId, change.pins);
-  return joined(lines);
+  return joined(layout);
 }
 
 const bandNamePattern = /^[a-z][a-z0-9-]*$/;
@@ -298,16 +385,17 @@ export function validBands(value: unknown): PriorityBand[] {
 
 /** The layout with its `[bands]` table replaced in place, or added before the folders when it has none. */
 export function editBands(text: string, bands: PriorityBand[]): string {
-  const lines = text.split("\n");
+  const layout = splitLines(text);
+  const { lines } = layout;
   const section = findSection(lines, (keys) => keys.length === 1 && keys[0] === "bands");
   const body = ["[bands]", ...bands.map((band) => `${tomlKey(band.name)} = ${band.from}`)];
   if (section) {
     lines.splice(section.start, section.end - section.start, ...body);
-    return joined(lines);
+    return joined(layout);
   }
-  const firstFolder = lines.findIndex((line) => headerKeys(line)?.[0] === "folders");
-  insertSection(lines, firstFolder, body);
-  return joined(lines);
+  const [firstFolder] = headerIndexes(lines, (keys) => keys[0] === "folders");
+  insertSection(lines, firstFolder ?? -1, body);
+  return joined(layout);
 }
 
 /** Refuses an edit whose result the layout parser does not read back as meant, so nothing unreadable is ever committed. */

@@ -1,4 +1,4 @@
-import { access, readFile, rm, writeFile } from "node:fs/promises";
+import { access, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { type ConnectionProfile, type LayoutSaveResult, type NodeAccess, type PriorityBand, type ProfileRead, defaultPriorityBands } from "./api/types.js";
 import { runCommand } from "./commands.js";
@@ -642,6 +642,12 @@ async function refuseAfterUndo(repository: string, before: string | null, savedC
   throw refusal;
 }
 
+/** Writes `text` beside `path` and renames it over, so a reader never sees half a layout. */
+async function replaceFile(path: string, text: string): Promise<void> {
+  await writeFile(`${path}.new`, text);
+  await rename(`${path}.new`, path);
+}
+
 /** A layout save made from a layout that is no longer the one on disk. */
 export class LayoutChanged extends RequestError {
   constructor() {
@@ -668,6 +674,8 @@ export function saveLayout(edit: (text: string) => string, message: string, base
     if (rebase) throw new RequestError(503, rebaseInProgressText(rebase));
     const before = await readLayoutText(repository);
     if (before === null) throw new RequestError(409, `the setup repo has no ${setupLayoutPath}`);
+    const dirty = await gitIn(repository, "status", "--porcelain", "--", setupLayoutPath);
+    if (!dirty.ok || dirty.output.trim()) throw new RequestError(409, `${setupLayoutPath} has changes in the setup repo that are not committed, so the dashboard does not save over them; commit or drop them there first`);
     if (version(before) !== base) throw new LayoutChanged();
     return saveLayoutNow(before, edit(before), message, repository);
   });
@@ -675,7 +683,7 @@ export function saveLayout(edit: (text: string) => string, message: string, base
 
 async function saveLayoutNow(before: string, after: string, message: string, repository: string): Promise<LayoutSaveResult> {
   if (after === before) return { committed: false, pushed: true, message: "nothing to change" };
-  await writeFile(`${repository}/${setupLayoutPath}`, after);
+  await replaceFile(`${repository}/${setupLayoutPath}`, after);
   await gitIn(repository, "add", setupLayoutPath);
   const commit = await commitAsDashboard(repository, message, setupLayoutPath);
   if (!commit.ok) {
