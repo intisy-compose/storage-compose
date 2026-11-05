@@ -1,386 +1,1228 @@
 {
-  "pc": [
-    {
-      "id": "documents",
-      "label": "Documents",
-      "path": "F:\\Documents",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [
-        "/GitHub",
-        "/Backup",
-        "/Virtual Machines",
-        "/desktop.ini",
-        "/Some Game",
-        "/Some App",
-        "/.history"
-      ],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "documents-github",
-      "label": "Documents/GitHub",
-      "path": "F:\\Documents\\GitHub",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 30,
-      "ignore": [
-        "!/project/scripts/build/**",
-        "!/app/node_modules/**",
-        "(?d)node_modules",
-        "(?d)build",
-        "(?d)__pycache__",
-        "(?d).next"
-      ],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "documents-backup",
-      "label": "Documents/Backup",
-      "path": "F:\\Documents\\Backup",
-      "type": "sendonly",
-      "ignore_delete": false,
-      "versions_days": null,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "pictures",
-      "label": "Pictures",
-      "path": "F:\\Pictures",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "music",
-      "label": "Music",
-      "path": "F:\\Music",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "desktop",
-      "label": "Desktop",
-      "path": "C:\\Users\\someone\\Desktop",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "templates",
-      "label": "Templates",
-      "path": "F:\\Templates",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "public",
-      "label": "Public",
-      "path": "F:\\Public",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "videos",
-      "label": "Videos",
-      "path": "F:\\Videos",
-      "type": "sendonly",
-      "ignore_delete": false,
-      "versions_days": null,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "downloads",
-      "label": "Downloads",
-      "path": "F:\\Downloads",
-      "type": "sendonly",
-      "ignore_delete": false,
-      "versions_days": null,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "program-installers",
-      "label": "Program Installers",
-      "path": "F:\\Program Installers",
-      "type": "sendonly",
-      "ignore_delete": false,
-      "versions_days": null,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "game-server",
-      "label": "Game Server",
-      "path": "F:\\Game Server",
-      "type": "sendonly",
-      "ignore_delete": false,
-      "versions_days": null,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "backup-old",
-      "label": "Backup-Old",
-      "path": "F:\\Backup-Old",
-      "type": "sendonly",
-      "ignore_delete": false,
-      "versions_days": null,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "clips",
-      "label": "Clips",
-      "path": "F:\\Clips",
-      "type": "sendonly",
-      "ignore_delete": false,
-      "versions_days": null,
-      "ignore": [],
-      "devices": [
-        "PC-DEVICE-ID"
-      ]
-    }
-  ],
-  "array": [
-    {
-      "id": "documents",
-      "label": "Documents",
-      "path": "/mnt/storage/pool/Documents",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [
-        "/GitHub",
-        "/Backup",
-        "/Virtual Machines",
-        "/desktop.ini",
-        "/Some Game",
-        "/Some App",
-        "/.history"
-      ],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "documents-github",
-      "label": "Documents/GitHub",
-      "path": "/mnt/storage/pool/Documents/GitHub",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 30,
-      "ignore": [
-        "!/project/scripts/build/**",
-        "!/app/node_modules/**",
-        "(?d)node_modules",
-        "(?d)build",
-        "(?d)__pycache__",
-        "(?d).next"
-      ],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "documents-backup",
-      "label": "Documents/Backup",
-      "path": "/mnt/storage/pool/Documents/Backup",
-      "type": "receiveonly",
-      "ignore_delete": true,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "pictures",
-      "label": "Pictures",
-      "path": "/mnt/storage/pool/Pictures",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "music",
-      "label": "Music",
-      "path": "/mnt/storage/pool/Music",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "desktop",
-      "label": "Desktop",
-      "path": "/mnt/storage/pool/Desktop",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "templates",
-      "label": "Templates",
-      "path": "/mnt/storage/pool/Templates",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "public",
-      "label": "Public",
-      "path": "/mnt/storage/pool/Public",
-      "type": "sendreceive",
-      "ignore_delete": false,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "videos",
-      "label": "Videos",
-      "path": "/mnt/storage/pool/Videos",
-      "type": "receiveonly",
-      "ignore_delete": true,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "downloads",
-      "label": "Downloads",
-      "path": "/mnt/storage/pool/Downloads",
-      "type": "receiveonly",
-      "ignore_delete": true,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "program-installers",
-      "label": "Program Installers",
-      "path": "/mnt/storage/pool/Program Installers",
-      "type": "receiveonly",
-      "ignore_delete": true,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "game-server",
-      "label": "Game Server",
-      "path": "/mnt/storage/pool/Game Server",
-      "type": "receiveonly",
-      "ignore_delete": true,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "backup-old",
-      "label": "Backup-Old",
-      "path": "/mnt/storage/pool/Backup-Old",
-      "type": "receiveonly",
-      "ignore_delete": true,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    },
-    {
-      "id": "clips",
-      "label": "Clips",
-      "path": "/mnt/storage/pool/Clips",
-      "type": "receiveonly",
-      "ignore_delete": true,
-      "versions_days": 365,
-      "ignore": [],
-      "devices": [
-        "ARRAY-ID-AFTER-INSTALL",
-        "PC-DEVICE-ID"
-      ]
-    }
-  ]
+  "today": {
+    "pc": [
+      {
+        "id": "documents",
+        "label": "Documents",
+        "path": "F:\\Documents",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [
+          "/GitHub",
+          "/Backup",
+          "/Virtual Machines",
+          "/desktop.ini",
+          "/Some Game",
+          "/Some App",
+          "/.history"
+        ],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-github",
+        "label": "Documents/GitHub",
+        "path": "F:\\Documents\\GitHub",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 30,
+        "ignore": [
+          "!/project/scripts/build/**",
+          "!/app/node_modules/**",
+          "(?d)node_modules",
+          "(?d)build",
+          "(?d)__pycache__",
+          "(?d).next"
+        ],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-backup",
+        "label": "Documents/Backup",
+        "path": "F:\\Documents\\Backup",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "pictures",
+        "label": "Pictures",
+        "path": "F:\\Pictures",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "music",
+        "label": "Music",
+        "path": "F:\\Music",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "desktop",
+        "label": "Desktop",
+        "path": "C:\\Users\\someone\\Desktop",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "templates",
+        "label": "Templates",
+        "path": "F:\\Templates",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "public",
+        "label": "Public",
+        "path": "F:\\Public",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "videos",
+        "label": "Videos",
+        "path": "F:\\Videos",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "downloads",
+        "label": "Downloads",
+        "path": "F:\\Downloads",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "program-installers",
+        "label": "Program Installers",
+        "path": "F:\\Program Installers",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "game-server",
+        "label": "Game Server",
+        "path": "F:\\Game Server",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "backup-old",
+        "label": "Backup-Old",
+        "path": "F:\\Backup-Old",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "clips",
+        "label": "Clips",
+        "path": "F:\\Clips",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "PC-DEVICE-ID"
+        ]
+      }
+    ],
+    "p53": [
+      {
+        "id": "documents",
+        "label": "Documents",
+        "path": "/data/Documents",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [
+          "/GitHub",
+          "/Backup",
+          "/Virtual Machines",
+          "/desktop.ini",
+          "/Some Game",
+          "/Some App",
+          "/.history"
+        ],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-github",
+        "label": "Documents/GitHub",
+        "path": "/data/Documents/GitHub",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 30,
+        "ignore": [
+          "!/project/scripts/build/**",
+          "!/app/node_modules/**",
+          "(?d)node_modules",
+          "(?d)build",
+          "(?d)__pycache__",
+          "(?d).next"
+        ],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-backup",
+        "label": "Documents/Backup",
+        "path": "/data/Documents/Backup",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "pictures",
+        "label": "Pictures",
+        "path": "/data/Pictures",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "music",
+        "label": "Music",
+        "path": "/data/Music",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "desktop",
+        "label": "Desktop",
+        "path": "/data/Desktop",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "templates",
+        "label": "Templates",
+        "path": "/data/Templates",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "public",
+        "label": "Public",
+        "path": "/data/Public",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "videos",
+        "label": "Videos",
+        "path": "/data/Videos",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "downloads",
+        "label": "Downloads",
+        "path": "/data/Downloads",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "program-installers",
+        "label": "Program Installers",
+        "path": "/data/Program Installers",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "game-server",
+        "label": "Game Server",
+        "path": "/data/Game Server",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "backup-old",
+        "label": "Backup-Old",
+        "path": "/data/Backup-Old",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "clips",
+        "label": "Clips",
+        "path": "/data/Clips",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      }
+    ],
+    "array": [
+      {
+        "id": "documents",
+        "label": "Documents",
+        "path": "/mnt/storage/pool/Documents",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [
+          "/GitHub",
+          "/Backup",
+          "/Virtual Machines",
+          "/desktop.ini",
+          "/Some Game",
+          "/Some App",
+          "/.history"
+        ],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-github",
+        "label": "Documents/GitHub",
+        "path": "/mnt/storage/pool/Documents/GitHub",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 30,
+        "ignore": [
+          "!/project/scripts/build/**",
+          "!/app/node_modules/**",
+          "(?d)node_modules",
+          "(?d)build",
+          "(?d)__pycache__",
+          "(?d).next"
+        ],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-backup",
+        "label": "Documents/Backup",
+        "path": "/mnt/storage/pool/Documents/Backup",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "pictures",
+        "label": "Pictures",
+        "path": "/mnt/storage/pool/Pictures",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "music",
+        "label": "Music",
+        "path": "/mnt/storage/pool/Music",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "desktop",
+        "label": "Desktop",
+        "path": "/mnt/storage/pool/Desktop",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "templates",
+        "label": "Templates",
+        "path": "/mnt/storage/pool/Templates",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "public",
+        "label": "Public",
+        "path": "/mnt/storage/pool/Public",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "videos",
+        "label": "Videos",
+        "path": "/mnt/storage/pool/Videos",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "downloads",
+        "label": "Downloads",
+        "path": "/mnt/storage/pool/Downloads",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "program-installers",
+        "label": "Program Installers",
+        "path": "/mnt/storage/pool/Program Installers",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "game-server",
+        "label": "Game Server",
+        "path": "/mnt/storage/pool/Game Server",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "backup-old",
+        "label": "Backup-Old",
+        "path": "/mnt/storage/pool/Backup-Old",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "clips",
+        "label": "Clips",
+        "path": "/mnt/storage/pool/Clips",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      }
+    ]
+  },
+  "joined": {
+    "pc": [
+      {
+        "id": "documents",
+        "label": "Documents",
+        "path": "F:\\Documents",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [
+          "/GitHub",
+          "/Backup",
+          "/Virtual Machines",
+          "/desktop.ini",
+          "/Some Game",
+          "/Some App",
+          "/.history"
+        ],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-github",
+        "label": "Documents/GitHub",
+        "path": "F:\\Documents\\GitHub",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 30,
+        "ignore": [
+          "!/project/scripts/build/**",
+          "!/app/node_modules/**",
+          "(?d)node_modules",
+          "(?d)build",
+          "(?d)__pycache__",
+          "(?d).next"
+        ],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-backup",
+        "label": "Documents/Backup",
+        "path": "F:\\Documents\\Backup",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "pictures",
+        "label": "Pictures",
+        "path": "F:\\Pictures",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "music",
+        "label": "Music",
+        "path": "F:\\Music",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "desktop",
+        "label": "Desktop",
+        "path": "C:\\Users\\someone\\Desktop",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "templates",
+        "label": "Templates",
+        "path": "F:\\Templates",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "public",
+        "label": "Public",
+        "path": "F:\\Public",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "videos",
+        "label": "Videos",
+        "path": "F:\\Videos",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "downloads",
+        "label": "Downloads",
+        "path": "F:\\Downloads",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "program-installers",
+        "label": "Program Installers",
+        "path": "F:\\Program Installers",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "game-server",
+        "label": "Game Server",
+        "path": "F:\\Game Server",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "backup-old",
+        "label": "Backup-Old",
+        "path": "F:\\Backup-Old",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "clips",
+        "label": "Clips",
+        "path": "F:\\Clips",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      }
+    ],
+    "p53": [
+      {
+        "id": "documents",
+        "label": "Documents",
+        "path": "/data/Documents",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [
+          "/GitHub",
+          "/Backup",
+          "/Virtual Machines",
+          "/desktop.ini",
+          "/Some Game",
+          "/Some App",
+          "/.history"
+        ],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-github",
+        "label": "Documents/GitHub",
+        "path": "/data/Documents/GitHub",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 30,
+        "ignore": [
+          "!/project/scripts/build/**",
+          "!/app/node_modules/**",
+          "(?d)node_modules",
+          "(?d)build",
+          "(?d)__pycache__",
+          "(?d).next"
+        ],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-backup",
+        "label": "Documents/Backup",
+        "path": "/data/Documents/Backup",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "pictures",
+        "label": "Pictures",
+        "path": "/data/Pictures",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "music",
+        "label": "Music",
+        "path": "/data/Music",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "desktop",
+        "label": "Desktop",
+        "path": "/data/Desktop",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "templates",
+        "label": "Templates",
+        "path": "/data/Templates",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "public",
+        "label": "Public",
+        "path": "/data/Public",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "videos",
+        "label": "Videos",
+        "path": "/data/Videos",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "downloads",
+        "label": "Downloads",
+        "path": "/data/Downloads",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "program-installers",
+        "label": "Program Installers",
+        "path": "/data/Program Installers",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "game-server",
+        "label": "Game Server",
+        "path": "/data/Game Server",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "backup-old",
+        "label": "Backup-Old",
+        "path": "/data/Backup-Old",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "clips",
+        "label": "Clips",
+        "path": "/data/Clips",
+        "type": "sendonly",
+        "ignore_delete": false,
+        "versions_days": null,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      }
+    ],
+    "array": [
+      {
+        "id": "documents",
+        "label": "Documents",
+        "path": "/mnt/storage/pool/Documents",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [
+          "/GitHub",
+          "/Backup",
+          "/Virtual Machines",
+          "/desktop.ini",
+          "/Some Game",
+          "/Some App",
+          "/.history"
+        ],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-github",
+        "label": "Documents/GitHub",
+        "path": "/mnt/storage/pool/Documents/GitHub",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 30,
+        "ignore": [
+          "!/project/scripts/build/**",
+          "!/app/node_modules/**",
+          "(?d)node_modules",
+          "(?d)build",
+          "(?d)__pycache__",
+          "(?d).next"
+        ],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "documents-backup",
+        "label": "Documents/Backup",
+        "path": "/mnt/storage/pool/Documents/Backup",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "pictures",
+        "label": "Pictures",
+        "path": "/mnt/storage/pool/Pictures",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "music",
+        "label": "Music",
+        "path": "/mnt/storage/pool/Music",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "desktop",
+        "label": "Desktop",
+        "path": "/mnt/storage/pool/Desktop",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "templates",
+        "label": "Templates",
+        "path": "/mnt/storage/pool/Templates",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "public",
+        "label": "Public",
+        "path": "/mnt/storage/pool/Public",
+        "type": "sendreceive",
+        "ignore_delete": false,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "videos",
+        "label": "Videos",
+        "path": "/mnt/storage/pool/Videos",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "downloads",
+        "label": "Downloads",
+        "path": "/mnt/storage/pool/Downloads",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "program-installers",
+        "label": "Program Installers",
+        "path": "/mnt/storage/pool/Program Installers",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "game-server",
+        "label": "Game Server",
+        "path": "/mnt/storage/pool/Game Server",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "backup-old",
+        "label": "Backup-Old",
+        "path": "/mnt/storage/pool/Backup-Old",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      },
+      {
+        "id": "clips",
+        "label": "Clips",
+        "path": "/mnt/storage/pool/Clips",
+        "type": "receiveonly",
+        "ignore_delete": true,
+        "versions_days": 365,
+        "ignore": [],
+        "devices": [
+          "ARRAY-ID-AFTER-INSTALL",
+          "P53-ID-AFTER-INSTALL",
+          "PC-DEVICE-ID"
+        ]
+      }
+    ]
+  }
 }

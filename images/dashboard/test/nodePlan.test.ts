@@ -246,11 +246,21 @@ interface DriveSyncFolder {
   devices: string[];
 }
 
-/** Today's layout as both tools see it: pc at a threshold between archive (30) and synced (80), the array keeping everything. */
-const goldenNodes = `
+type GoldenDevice = "pc" | "p53" | "array";
+type GoldenPlans = Record<"today" | "joined", Record<GoldenDevice, DriveSyncFolder[]>>;
+
+/** Today's layout as both tools see it: pc and p53 at a threshold between archive (30) and synced (80), the array keeping everything. */
+function goldenNodes(pcThreshold: number): string {
+  return `
 [nodes.a001]
 name      = "pc-data"
 device    = "pc"
+threshold = ${pcThreshold}
+admitted  = true
+
+[nodes.a053]
+name      = "p53-data"
+device    = "p53"
 threshold = 50
 admitted  = true
 
@@ -260,6 +270,25 @@ device    = "array"
 threshold = 0
 admitted  = true
 `;
+}
+
+/** The variant golden.py makes: p53 and the array joined. */
+function joinedText(text: string): string {
+  return text.replaceAll("joined = false", "joined = true").replaceAll("joined     = false", "joined     = true");
+}
+
+/** The fields both tools plan alike everywhere; the array's type, versions and `ignoreDelete` are asserted on their own. */
+function shared(folder: { id: string; label: string; path: string; ignore: string[]; devices: string[] }) {
+  return { id: folder.id, label: folder.label, path: folder.path, ignore: folder.ignore, devices: folder.devices };
+}
+
+function byId<Entry extends { id: string }>(entries: Entry[]): Entry[] {
+  return [...entries].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function sharedFolders(plan: NodePlan): PlannedFolder[] {
+  return byId(plan.folders.filter((entry) => !entry.local));
+}
 
 function asDriveSync(folder: PlannedFolder): DriveSyncFolder {
   return {
@@ -274,39 +303,51 @@ function asDriveSync(folder: PlannedFolder): DriveSyncFolder {
   };
 }
 
-/**
- * drive-sync's plan with the differences the layered sync makes on purpose: the archive keeps nothing
- * by `ignoreDelete` (call 3) and sends too, with the cluster's 90 days (section 5, items 2 and 9).
- */
-function asLayered(folder: DriveSyncFolder, onCluster: boolean): DriveSyncFolder {
-  if (!onCluster) return folder;
-  return { ...folder, type: "sendreceive", ignore_delete: false, versions_days: clusterVersionsDays };
-}
-
 describe("the golden test against drive-sync", async () => {
   const text = await readFile(new URL("drive-sync.toml", fixtures), "utf8");
-  const golden = JSON.parse(await readFile(new URL("drive-sync-plans.json", fixtures), "utf8")) as Record<"pc" | "array", DriveSyncFolder[]>;
-  const today = parseLayout(`${text}\n${goldenNodes}`);
-  const everyFolder = new Set(today.folders.map((entry) => entry.relativePath));
+  const golden = JSON.parse(await readFile(new URL("drive-sync-plans.json", fixtures), "utf8")) as GoldenPlans;
+  const variants = { today: text, joined: joinedText(text) };
 
-  for (const [nodeId, device] of [["a001", "pc"], ["c1c1", "array"]] as const) {
-    it(`plans ${device} as drive-sync does, apart from the layered sync's own changes`, () => {
-      const plan = nodePlan(today, nodeId, everyFolder);
-      assert.ok(plan);
-      const shared = plan.folders.filter((entry) => !entry.local && !entry.id.startsWith(`${nodeId}-`) && !entry.label.startsWith("Nodes/"));
+  for (const [variant, variantText] of Object.entries(variants) as [keyof GoldenPlans, string][]) {
+    for (const pcThreshold of [31, 50, 80]) {
+      const layout = parseLayout(`${variantText}\n${goldenNodes(pcThreshold)}`);
+      const everyFolder = new Set(layout.folders.map((entry) => entry.relativePath));
+      const planFor = (nodeId: string) => nodePlan(layout, nodeId, everyFolder) as NodePlan;
 
-      assert.deepEqual(
-        shared.map(asDriveSync).sort((left, right) => left.id.localeCompare(right.id)),
-        golden[device].map((entry) => asLayered(entry, device === "array")).sort((left, right) => left.id.localeCompare(right.id)),
-      );
-    });
+      it(`plans pc and p53 as drive-sync does (${variant}, pc at ${pcThreshold})`, () => {
+        assert.deepEqual(sharedFolders(planFor("a001")).map(asDriveSync), byId(golden[variant].pc));
+        assert.deepEqual(sharedFolders(planFor("a053")).map(asDriveSync), byId(golden[variant].p53));
+      });
+
+      it(`plans the array's folders, paths, ignores and shares as drive-sync does (${variant}, pc at ${pcThreshold})`, () => {
+        const array = sharedFolders(planFor("c1c1"));
+
+        assert.deepEqual(
+          array.map((folder) => shared({ ...folder, ignore: folder.ignores.filter((line) => !handoffIgnoreLines.includes(line)) })),
+          byId(golden[variant].array).map(shared),
+        );
+      });
+
+      it(`makes every array folder send-receive with 90 days and no ignoreDelete (${variant}, pc at ${pcThreshold})`, () => {
+        const array = new Map(sharedFolders(planFor("c1c1")).map((folder) => [folder.id, folder]));
+
+        for (const theirs of golden[variant].array) {
+          const ours = array.get(theirs.id);
+          assert.ok(ours, theirs.id);
+          assert.equal(ours.type, "sendreceive", theirs.id);
+          assert.deepEqual(ours.versioning, { type: "staggered", maxAgeDays: clusterVersionsDays }, theirs.id);
+          assert.equal("ignoreDelete" in ours, false, theirs.id);
+        }
+        assert.ok(golden[variant].array.some((theirs) => theirs.type === "receiveonly" && theirs.ignore_delete), "drive-sync made the archive receive-only with ignoreDelete");
+      });
+    }
   }
 
   it("adds only the priority 0 entries drive-sync leaves out, for the cluster under Nodes/", () => {
-    const pc = nodePlan(today, "a001", everyFolder);
-    const cluster = nodePlan(today, "c1c1", everyFolder);
+    const layout = parseLayout(`${text}\n${goldenNodes(50)}`);
+    const everyFolder = new Set(layout.folders.map((entry) => entry.relativePath));
 
-    assert.deepEqual(pc?.folders.filter((entry) => entry.local).map((entry) => entry.id), ["a001-documents-virtual-machines", "a001-sites"]);
-    assert.deepEqual(cluster?.folders.filter((entry) => entry.label.startsWith("Nodes/")).map((entry) => entry.id), ["a001-documents-virtual-machines", "a001-sites"]);
+    assert.deepEqual(nodePlan(layout, "a001", everyFolder)?.folders.filter((entry) => entry.local).map((entry) => entry.id), ["a001-documents-virtual-machines", "a001-sites"]);
+    assert.deepEqual(nodePlan(layout, "c1c1", everyFolder)?.folders.filter((entry) => entry.local).map((entry) => entry.id), ["a001-documents-virtual-machines", "a001-sites"]);
   });
 });
