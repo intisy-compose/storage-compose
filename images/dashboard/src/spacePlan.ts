@@ -65,10 +65,10 @@ interface Tried {
  * @implNote What the node holds of a kept folder is already on it; a folder it hands off frees only what a keeper already holds, since
  * anything else may never leave, and never more than the node holds there.
  */
-function tryThreshold(plan: NodePlan, sizes: FolderSizes, space: NodeSpace, releasable: ReleasableBytes, threshold: number): Tried {
+function tryThreshold(plan: NodePlan, sizes: FolderSizes, space: NodeSpace, releasable: ReleasableBytes, freeingBytes: number, threshold: number): Tried {
   let neededBytes = 0;
-  let availableBytes = space.freeBytes;
-  let releasedBytes = 0;
+  let availableBytes = space.freeBytes + freeingBytes;
+  let releasedBytes = freeingBytes;
   for (const folder of plan.folders) {
     if (keptAt(plan, folder, threshold)) {
       neededBytes += sizes[folder.id]?.globalBytes ?? 0;
@@ -90,10 +90,11 @@ function candidateThresholds(plan: NodePlan): number[] {
 }
 
 /**
+ * `freeingBytes` is what the node's hand-off trash holds, which leaves it by itself once due: it counts like a hand-off that has yet to leave.
  * The threshold at which what the node keeps fits with `spaceHeadroom` of it free (call 9), from its plan at the committed threshold.
  * The decision returns to the committed threshold by itself once space allows.
  */
-export function effectiveThreshold(plan: NodePlan, sizes: FolderSizes, space: NodeSpace, releasable: ReleasableBytes = {}): SpaceDecision {
+export function effectiveThreshold(plan: NodePlan, sizes: FolderSizes, space: NodeSpace, releasable: ReleasableBytes = {}, freeingBytes = 0): SpaceDecision {
   if (plan.appliedThreshold !== plan.threshold) throw new Error(`the plan of ${plan.nodeId} was made at threshold ${plan.appliedThreshold}, not at its committed ${plan.threshold}`);
   const reserve = space.totalBytes * spaceHeadroom;
   const decision = (state: SpaceState, tried: Tried, sound: boolean): SpaceDecision => ({
@@ -104,11 +105,11 @@ export function effectiveThreshold(plan: NodePlan, sizes: FolderSizes, space: No
     handoffAllowed: sound,
     pullAllowed: sound && tried.availableBytes - tried.releasedBytes - tried.neededBytes >= reserve,
   });
-  const committed = tryThreshold(plan, sizes, space, releasable, plan.threshold);
+  const committed = tryThreshold(plan, sizes, space, releasable, Math.max(0, freeingBytes), plan.threshold);
   if (plan.folders.some((folder) => keptAt(plan, folder, plan.threshold) && sizes[folder.id] === undefined)) return decision("unknown", committed, false);
   let tried = committed;
   for (const threshold of candidateThresholds(plan)) {
-    tried = tryThreshold(plan, sizes, space, releasable, threshold);
+    tried = tryThreshold(plan, sizes, space, releasable, Math.max(0, freeingBytes), threshold);
     if (tried.availableBytes - tried.neededBytes >= reserve) return decision(threshold === plan.threshold ? "fits" : "raised", tried, true);
   }
   return decision(plan.cluster ? "full" : "stopped", tried, false);

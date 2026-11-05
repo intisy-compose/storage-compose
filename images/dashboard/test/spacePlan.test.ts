@@ -182,6 +182,16 @@ admitted  = true
   });
 });
 
+describe("the hand-off trash", () => {
+  it("counts what it holds as freeing at every threshold, as a hand-off that has yet to leave, so it never lets a folder pull", () => {
+    const holdingAll: FolderSizes = Object.fromEntries(Object.entries(sizes).map(([id, size]) => [id, { ...size, localBytes: id === "old" ? 0 : 100 }]));
+    assert.equal(effectiveThreshold(plan, holdingAll, space(1000, 50)).state, "stopped");
+    const withTrash = effectiveThreshold(plan, holdingAll, space(1000, 50), {}, 100);
+    assert.deepEqual([withTrash.state, withTrash.threshold, withTrash.availableBytes, withTrash.pullAllowed], ["fits", 50, 550, false]);
+    assert.equal(effectiveThreshold(plan, holdingAll, space(1000, 50), {}, -5).state, "stopped", "a negative count is none");
+  });
+});
+
 describe("whether a folder may turn send-receive", () => {
   it("only while the node's space decision fits or is raised, at the threshold the plan was made at", () => {
     const fits = effectiveThreshold(plan, sizes, space(1000, 900));
