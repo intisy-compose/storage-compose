@@ -271,12 +271,12 @@ describe("answering a folder offered to a node", () => {
     assert.deepEqual(writesSent(), ["POST /rest/config/folders"]);
   });
 
-  it("the array form defaults to receive only with versioning", async () => {
+  it("the array form defaults to send and receive with 90 days of staggered versions, the folder ID still typed", async () => {
     const defaults = await acceptFolderDefaults(array(), "documents", offererId, nodes);
 
     assert.equal(defaults.confirmRequired, true);
-    assert.equal(defaults.settings.type, "receiveonly");
-    assert.deepEqual(defaults.settings.versioning, staggered);
+    assert.equal(defaults.settings.type, "sendreceive");
+    assert.deepEqual(defaults.settings.versioning, { type: "staggered", params: { maxAge: "7776000" }, cleanupIntervalS: 3600, fsPath: "" });
     assert.equal(defaults.settings.path, "/mnt/a3f9/pool/Documents");
     assert.equal(defaults.settings.label, "Documents");
     assert.equal(defaults.root, "/mnt/a3f9/pool");

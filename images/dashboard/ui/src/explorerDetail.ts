@@ -5,11 +5,14 @@ import { formatBytes, formatDate } from "./format.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
 import { addableNodes } from "./folderForm.js";
+import { bandOf } from "./folderCondition.js";
+import { priorityEditor } from "./priorityEditor.js";
 import { addFolderLocation, appState } from "./state.js";
 
 type Override = TreeListing["overridesBelow"][number];
 
 export interface FolderRootPriority {
+  path: string;
   info: PriorityInfo;
   overridesBelow: Override[];
 }
@@ -30,7 +33,7 @@ function overridesBelowPath(path: string): Override[] {
 
 export function folderRootPriority(folderId: string): FolderRootPriority | null {
   const entry = loadedEntries().find((candidate) => candidate.folder?.id === folderId);
-  return entry ? { info: entry.priority, overridesBelow: overridesBelowPath(entry.path) } : null;
+  return entry ? { path: entry.path, info: entry.priority, overridesBelow: overridesBelowPath(entry.path) } : null;
 }
 
 function overrideList(overrides: Override[]): HTMLElement | string {
@@ -42,14 +45,17 @@ function overrideList(overrides: Override[]): HTMLElement | string {
   );
 }
 
-export function prioritySection(info: PriorityInfo, overrides: Override[], isTopDirectory = false): HTMLElement {
+/** `path` null for a file, whose priority is its directory's. */
+export function prioritySection(info: PriorityInfo, overrides: Override[], path: string | null, isTopDirectory = false): HTMLElement {
+  const editor = path === null ? null : priorityEditor(path, info);
   return section(
     "Priority",
     keyValueList([
       ["Priority", priorityCell(info, isTopDirectory)],
+      ["Band", bandOf(info.effective, appState.layout?.bands).name],
       ["Overrides below", overrideList(overrides)],
     ]),
-    element("p", { className: "muted small" }, "Changes through the setup repo."),
+    editor ?? element("p", { className: "muted small" }, path === null ? "A file takes its directory's priority." : "Changes through the setup repo."),
   );
 }
 
@@ -82,7 +88,7 @@ function entryDetail(entry: TreeEntry): HTMLElement {
     { className: "detail-inner" },
     element("header", { className: "detail-header" }, closeButton(), element("h2", {}, entry.name), element("p", { className: "detail-status muted" }, entry.kind === "directory" ? "Directory" : "File")),
     section("Where", keyValueList(facts)),
-    prioritySection(entry.priority, entry.kind === "directory" ? overridesBelowPath(entry.path) : []),
+    prioritySection(entry.priority, entry.kind === "directory" ? overridesBelowPath(entry.path) : [], entry.kind === "directory" ? entry.path : null),
     section("On each node", entry.nodes.length ? element("ul", { className: "node-state-list" }, ...entry.nodes.map(nodeStateLine)) : element("p", { className: "muted" }, "No node viewed has it.")),
     section("Held by", entry.availability.length ? element("p", {}, entry.availability.map((device) => device.name).join(", ")) : element("p", { className: "muted" }, "No connected device reports a copy.")),
     entry.kind === "directory" ? addAsFolderLink(entry.path, entry.folder !== null) : null,
@@ -96,7 +102,7 @@ function directoryDetail(listing: TreeListing | null): HTMLElement {
     "div",
     { className: "detail-inner" },
     element("header", { className: "detail-header" }, element("h2", {}, name), element("p", { className: "detail-status muted" }, path ? element("code", {}, path) : "The top directory")),
-    listing ? prioritySection(listing.priority, listing.overridesBelow, !path) : element("p", { className: "muted" }, "Reading the directory…"),
+    listing ? prioritySection(listing.priority, listing.overridesBelow, path, !path) : element("p", { className: "muted" }, "Reading the directory…"),
     path ? addAsFolderLink(path, false) : null,
     element("p", { className: "muted small" }, "Select a row to see each node's state of it; select a row with a folder chip for that folder's copies and settings."),
   );

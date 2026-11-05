@@ -95,3 +95,9 @@ export function strandedText(pairs: readonly (readonly [string, string])[], name
 export function isStrandedRefusal(message: string): boolean {
   return message.endsWith(` ${strandedEnding}`);
 }
+
+/** The 409 of a layout save made from a layout that is no longer the one on disk. */
+export const layoutChangedText = "the layout changed since this page read it; it has been read again, check the change and save again";
+
+/** The 409 of a layout save whose push the remote refused because another host pushed first; nothing of the save remains. */
+export const layoutConflictText = "another host pushed a change to the setup repo first; nothing was saved, read the layout again and save again";

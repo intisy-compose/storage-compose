@@ -261,7 +261,7 @@ test("a layout round reports while apply is off, and applies a pulled change wit
 priority = 30
 `);
   const entered: string[] = [];
-  const round = new LayoutRound({ layout: async () => layout, instances: async () => [stickInstance()], handoffFiles: peerHandoffFiles(peers.stick), record: (_nodeId, folderId, text) => entered.push(`${folderId}: ${text}`), readBackDelaysMs: [] });
+  const round = new LayoutRound({ layout: async () => layout, committedLayout: async () => ({ layout, pushed: true }), instances: async () => [stickInstance()], handoffFiles: peerHandoffFiles(peers.stick), record: (_nodeId, folderId, text) => entered.push(`${folderId}: ${text}`), readBackDelaysMs: [] });
   const before = await request<SyncthingObject>(peers.stick, "GET", "/rest/config");
 
   await round.run();

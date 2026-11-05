@@ -352,6 +352,58 @@ export interface LayeredState {
   /** Why the last round could not read the node (its drift is then the last one found), or which folders' writes failed. */
   failed: string | null;
   checkedAt: string;
+  /** The node's hand-off as this host's last round decided it and its executor last reported it; null while no contract was written. */
+  handoff: LayeredHandoff | null;
+}
+
+/** One file the contract waits with, and since when this host has seen it wait. */
+export interface HandoffWaitingView {
+  folderId: string;
+  path: string;
+  reason: "changed" | "held" | "no-keeper" | "keeper-offline" | "not-confirmed";
+  since: string;
+}
+
+/** One path of an executor run, as `handoff.sh` and `handoff.ps1` write it. */
+export interface HandoffOutcome {
+  folderId: string;
+  path: string;
+  outcome: "moved" | "refused" | "ignored-not-moved" | "released" | "in-trash-unlisted" | "unsynced-at-handed-off-path" | "deferred" | string;
+  reason: string;
+  trash?: string;
+}
+
+/** A copy the hand-off trash keeps past its days, or one outside its manifest, with the reason. */
+export interface HandoffTrashEntry {
+  trash: string;
+  folderId: string;
+  path: string;
+  reason: string;
+}
+
+/** `<node id>.result.json`, the executor's last run. */
+export interface HandoffResult {
+  schema: number;
+  nodeId: string;
+  contractWrittenAt: string;
+  finishedAt: string;
+  /** Why the run acted on nothing at all; null when it went through the contract. */
+  refused: string | null;
+  results: HandoffOutcome[];
+  trash: HandoffTrashEntry[];
+  notes: string[];
+  purged: number;
+}
+
+export interface LayeredHandoff {
+  writtenAt: string;
+  /** The files the contract names for the executor. */
+  entries: number;
+  waiting: HandoffWaitingView[];
+  notes: string[];
+  /** The space decision the contract rests on; null in report mode, where none is made. */
+  space: { state: "fits" | "raised" | "stopped" | "unknown"; threshold: number; neededBytes: number; availableBytes: number } | null;
+  result: HandoffResult | null;
 }
 
 export type ConnectionsState = "on-profile" | "restart-needed" | "not-yet" | "unknown";
@@ -370,6 +422,20 @@ export type WarningKind =
   | "full"
   | "paused"
   | "conflicts"
+  | "handoff-waiting"
+  | "handoff-refused"
+  | "handoff-pending"
+  | "handoff-unsynced"
+  | "handoff-trash"
+  | "handoff-deferred"
+  | "handoff-note"
+  | "handoff-probe"
+  | "space-stopped"
+  | "space-raised"
+  | "layout-drift"
+  | "layout-held"
+  | "layout-problem"
+  | "setup-unpushed"
   | "other";
 
 export interface Warning {
@@ -548,6 +614,10 @@ export interface FolderCopy extends NodeFolder {
   /** Runs on this host, so its actions are offered here. */
   local: boolean;
   paused: boolean;
+  /** A hand-off folder on its node, as the node's host plans it: send-only, what it holds leaves once a keeper confirms it; absent from an older dashboard. */
+  handoff?: boolean;
+  /** On a hand-off copy, the entries of its hand-off list: that many needed items are the ignored ones, no fault. */
+  handoffEntries?: number;
 }
 
 /** A folder another device offers a node that the node has not accepted. */
@@ -645,6 +715,8 @@ export interface RequestsResponse {
   devices: PendingDevice[];
   folders: PendingFolderOffer[];
   joins: JoinEntry[];
+  /** Nodes waiting for admission into the layout; absent from a host on an older dashboard. */
+  admissions?: NodeAdmission[];
   unreadable: { name: string; reason: string; notConnected?: boolean }[];
 }
 
@@ -965,6 +1037,31 @@ export interface FolderSummary {
   prioritySource: "setup-repo" | "none";
   copies: FolderCopy[];
   offers: PendingFolderOffer[];
+  /** How each admitted node of the layout carries the folder; null for a folder the layout does not list. Absent from an older dashboard. */
+  layered?: FolderLayered | null;
+}
+
+/** One admitted node's place for a layout folder. */
+export interface FolderLayeredNode {
+  nodeId: string;
+  nodeName: string;
+  threshold: number;
+  /** Null when the node's plan does not share the folder with it. */
+  type: "sendreceive" | "sendonly" | null;
+  keptBy: "threshold" | "assigned" | "pin" | null;
+  /** The node's own pin of the folder's layout path. */
+  pinned: number | null;
+  why: string;
+  /** Files the node's contract names for its executor in this folder; null where this host writes no contract for the node. */
+  pending: number | null;
+  /** Files the contract waits with in this folder. */
+  waiting: number | null;
+}
+
+export interface FolderLayered {
+  path: string;
+  priority: number;
+  nodes: FolderLayeredNode[];
 }
 
 /** `GET /api/folders`; `?scope=local` leaves the other hosts out, which is what hosts ask each other. */
@@ -1422,4 +1519,124 @@ export interface PeerTable {
   nodes: NodeAddresses[];
   bridges: Bridge[];
   builtAt: string;
+}
+
+/** One node's policy as the layout commits it. */
+export interface LayoutNodeView {
+  id: string;
+  name: string;
+  device: string;
+  threshold: number;
+  assigned: string[];
+  pins: Record<string, number>;
+  access: NodeAccess;
+  admitted: boolean;
+  apply: boolean;
+  enabled: boolean;
+  /** When a person refused the node's admission; null when nobody did. */
+  refused: string | null;
+}
+
+/** `GET /api/layout`: the setup repo's layout as this host last pulled it, with the version a save names as its base. */
+export interface LayoutView {
+  version: string;
+  folders: { path: string; id: string; priority: number }[];
+  nodes: LayoutNodeView[];
+  bands: PriorityBand[];
+  bandsFromLayout: boolean;
+  problems: { nodeId: string | null; text: string }[];
+  pulledAt: string | null;
+  pullProblem: string | null;
+}
+
+/** How a layout save went: `pushed` false is a commit kept on this host, which the pull timer pushes once the remote answers. */
+export interface LayoutSaveResult {
+  committed: boolean;
+  pushed: boolean;
+  message: string;
+}
+
+export interface LayoutSaveAnswer {
+  saved: LayoutSaveResult;
+  layout: LayoutView;
+}
+
+/** What a layout edit changes in one node's plan, in words. */
+export interface NodePlanChangeView {
+  nodeId: string;
+  nodeName: string;
+  changes: string[];
+}
+
+/** `POST /api/priorities/preview` and the body of `PUT /api/priorities`; `priority` null clears the entry so the path inherits again. */
+export interface PriorityEditBody {
+  path: string;
+  priority: number | null;
+  /** The `LayoutView.version` the edit was made from. */
+  base?: string;
+  /** The folder ID, when the edit creates or removes a folder boundary. */
+  confirm?: string;
+}
+
+export interface PriorityPreview {
+  path: string;
+  folderId: string;
+  /** A new or a dropped layout entry, which is a new or a dropped Syncthing folder; null for a change of an existing entry. */
+  boundary: "created" | "removed" | null;
+  nodes: NodePlanChangeView[];
+}
+
+/** `PUT /api/layout/bands`. */
+export interface BandsEditBody {
+  bands: PriorityBand[];
+  base: string;
+}
+
+/** `PUT /api/nodes/<id>/policy`: the fields to change, each optional; `apply` is never among them. */
+export interface NodePolicyBody {
+  base: string;
+  threshold?: number;
+  assigned?: string[];
+  pins?: Record<string, number>;
+  enabled?: boolean;
+}
+
+/** `PUT /api/nodes/<id>/policy/apply`: turning it on takes the node's name typed as `confirm`. */
+export interface NodePolicyApplyBody {
+  base: string;
+  apply: boolean;
+  confirm?: string;
+}
+
+/** `GET /api/nodes/<id>/policy/preview?threshold=`: what the threshold would hand off, folder by folder, and what else it changes in the plan. */
+export interface NodePolicyPreview {
+  nodeId: string;
+  threshold: number;
+  /** The folders that would turn send-only; `keepers` empty means nothing of it can leave the node. */
+  handoffs: { folderId: string; label: string; files: number; bytes: number; keepers: string[] }[];
+  /** What would leave once each file is confirmed, counting only folders with a keeper. */
+  files: number;
+  bytes: number;
+  changes: string[];
+}
+
+/** A node of a host whose node file the layout does not admit: a new drive, folder or stick, one made offline included. */
+export interface NodeAdmission {
+  nodeId: string;
+  name: string;
+  /** Where the host found it: a registry entry, the host agent or an array. */
+  source: string;
+  host: string;
+  /** The node file's threshold, which the admission form suggests. */
+  threshold: number;
+  /** The layout has an entry for it, not admitted yet. */
+  listed: boolean;
+}
+
+/** `PUT /api/nodes/<id>/admission`. */
+export interface NodeAdmissionBody {
+  base: string;
+  answer: "accept" | "refuse";
+  /** The threshold the node is admitted at, confirmed by the person from the node file's suggestion; required to accept. */
+  threshold?: number;
 }

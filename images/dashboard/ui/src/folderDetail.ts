@@ -1,9 +1,9 @@
-import { type ActivityEntry, type FolderCopy, type FolderDetailResponse, type FolderSettings, type FolderSummary, type PendingFolderOffer, changesActivityType, defaultActivityFilters, deviceDisplayName, folderChangesShown, folderTypeTexts, versioningWords } from "./api.js";
+import { type ActivityEntry, type FolderCopy, type FolderDetailResponse, type FolderLayeredNode, type FolderSettings, type FolderSummary, type PendingFolderOffer, changesActivityType, defaultActivityFilters, deviceDisplayName, folderChangesShown, folderTypeTexts, versioningWords } from "./api.js";
 import { button, element, keyValueList, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, plural } from "./format.js";
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
 import { folderActions, orphanedActionResults } from "./folderActions.js";
-import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./folderCondition.js";
+import { bandClass, bandOf, copyCondition, placementText, priorityUnsetText, worstCondition } from "./folderCondition.js";
 import { icon } from "./icons.js";
 import { outOfSyncCount, outOfSyncText } from "./outOfSync.js";
 import { isItemListOpen, itemListPanel, toggleItemList } from "./itemList.js";
@@ -21,7 +21,8 @@ function seconds(value: number): string {
 
 function priorityText(summary: FolderSummary): HTMLElement | string {
   if (summary.priority === null) return priorityUnsetText;
-  return element("span", { className: `priority-text band-${priorityBand(summary.priority)}` }, `${summary.priority}, from the setup repo`);
+  const bands = appState.layout?.bands ?? appState.hostSettings?.priorityBands ?? undefined;
+  return element("span", { className: `priority-text ${bandClass(summary.priority, bands)}` }, `${summary.priority} (${bandOf(summary.priority, bands).name}), from the setup repo`);
 }
 
 function itemsText(copy: FolderCopy): string {
@@ -248,8 +249,26 @@ function detailHeader(summary: FolderSummary): HTMLElement {
 
 /** The explorer's priority of the folder's root when its row is loaded, else the setup repo's number for the folder. */
 function folderPrioritySection(summary: FolderSummary, priority: FolderRootPriority | null): HTMLElement {
-  if (priority) return prioritySection(priority.info, priority.overridesBelow);
+  if (priority) return prioritySection(priority.info, priority.overridesBelow, priority.path);
   return section("Priority", keyValueList([["Priority", priorityText(summary)]]));
+}
+
+/** One node's line: how its plan carries the folder, and what its contract names here. */
+export function layeredNodeText(node: FolderLayeredNode): string {
+  const handoffs = node.pending === null ? "" : `; ${node.pending} to hand off now, ${node.waiting ?? 0} waiting for a keeper`;
+  const pin = node.pinned !== null && node.keptBy !== "pin" ? `; pinned at ${node.pinned}` : "";
+  return `${node.why}${pin}${handoffs}`;
+}
+
+function layeredFolderSection(summary: FolderSummary): HTMLElement | null {
+  const layered = summary.layered;
+  if (!layered) return null;
+  return section(
+    "On each node",
+    layered.nodes.length
+      ? element("ul", { className: "node-state-list" }, ...layered.nodes.map((node) => element("li", {}, element("strong", {}, node.nodeName), ` (threshold ${node.threshold}): ${layeredNodeText(node)}`)))
+      : element("p", { className: "muted" }, "No node of the layout is admitted yet."),
+  );
 }
 
 export function renderFolderDetail(summary: FolderSummary, detail: FolderDetailResponse | null, priority: FolderRootPriority | null): HTMLElement {
@@ -259,6 +278,7 @@ export function renderFolderDetail(summary: FolderSummary, detail: FolderDetailR
     detailHeader(summary),
     section("Folder", keyValueList([["Folder ID", element("code", {}, summary.id)]])),
     folderPrioritySection(summary, priority),
+    layeredFolderSection(summary),
     section(`Copies (${summary.copies.length})`, summary.copies.length ? element("div", { className: "copy-list" }, ...summary.copies.map(copyCard)) : element("p", { className: "muted" }, "No node keeps this folder yet.")),
     summary.offers.length ? section(`Offers not accepted (${summary.offers.length})`, ...summary.offers.map(offerLine)) : null,
     changesSection(summary.id),

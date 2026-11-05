@@ -5,10 +5,13 @@ import { closeItemList, isItemListOpen } from "./itemList.js";
 import { requestRender } from "./renderRequest.js";
 import type { FolderActionState, Notice } from "./state.js";
 
-/** The action a folder of this type offers: revert on receive only, override on send only, none on any other. */
-export function localChangesActionOf(settings: FolderSettings): LocalChangesAction | null {
+/**
+ * The action a folder of this type offers: revert on receive only, override on send only, none on any other.
+ * @implNote Never override on a hand-off folder (`isHandoff`): phase 0 measured it deleting every copy the keepers hold.
+ */
+export function localChangesActionOf(settings: FolderSettings, isHandoff = false): LocalChangesAction | null {
   if (settings.type === localChangesFolderType.revert) return "revert";
-  if (settings.type === localChangesFolderType.override) return "override";
+  if (settings.type === localChangesFolderType.override && !isHandoff) return "override";
   return null;
 }
 

@@ -7,6 +7,7 @@ import { registerForm } from "./forms.js";
 import { formatAge, formatBytes, formatDate, formatDuration, formatRate, usedFraction } from "./format.js";
 import { icon } from "./icons.js";
 import { layeredSection } from "./layeredSection.js";
+import { nodePolicySection } from "./nodePolicyForm.js";
 import { warningBanner } from "./nodesPage.js";
 import { arrayStateLabel, countRoles, isArrayAbsent, isNotConnected, isOffline, shortSyncState, spaceTone, warningsFor } from "./nodeStatus.js";
 import { peersSection } from "./peersSection.js";
@@ -137,7 +138,6 @@ function detailsSection(node: StorageNode): HTMLElement {
     { className: "detail-section node-details" },
     toggle,
     appState.showNodeDetails ? keyValueList(detailRows(node)) : null,
-    appState.showNodeDetails && node.local ? element("p", { className: "muted small" }, "Threshold and assigned directories become editable with the layered sync; they change through the setup repo.") : null,
   );
 }
 
@@ -251,6 +251,7 @@ export function renderNodeDetail(response: NodesResponse, node: StorageNode): HT
     syncthingSection(node),
     peersSection(response, node),
     foldersSection(node),
+    nodePolicySection(node),
     layeredSection(node),
     detailsSection(node),
   );

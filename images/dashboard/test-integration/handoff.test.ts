@@ -111,6 +111,7 @@ function stickFiles(): HandoffFiles {
 async function layoutRound(apply: boolean, instances: Peer[] = [peers.stick, peers.keeper, peers.other]): Promise<HandoffContract> {
   await new LayoutRound({
     layout: async () => layoutOf(apply),
+    committedLayout: async () => ({ layout: layoutOf(apply), pushed: true }),
     instances: async () => instances.map(instanceOf),
     handoffFiles: stickFiles(),
     handoffs: handoffPublisher(reads, () => scratch),

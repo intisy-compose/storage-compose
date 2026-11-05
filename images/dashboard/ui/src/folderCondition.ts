@@ -1,4 +1,4 @@
-import type { FolderCopy, FolderSummary, NodeFolder, StorageNode } from "./api.js";
+import { type FolderCopy, type FolderSummary, type NodeFolder, type PriorityBand, type StorageNode, defaultPriorityBands } from "./api.js";
 import { formatPercent, normaliseCompletion, plural } from "./format.js";
 import type { Tone } from "./nodeStatus.js";
 import type { FolderActionState } from "./state.js";
@@ -9,13 +9,25 @@ export interface FolderCondition {
   label: string;
 }
 
-/** How one copy stands; a higher rank is worse. */
+function isHandoffQuiet(copy: FolderCopy): boolean {
+  return copy.handoff === true && copy.state === "idle" && (copy.needTotalItems ?? copy.needItems ?? 0) <= (copy.handoffEntries ?? 0);
+}
+
+/**
+ * How one copy stands; a higher rank is worse.
+ * @implNote An idle hand-off folder needing no more items than its hand-off list holds is no fault, shown in the info tone while it needs any: an ignore line whose file left the node
+ * can leave it short for good (section 4b), which is no fault. Any more is shown as out of sync.
+ */
 export function copyCondition(copy: FolderCopy): FolderCondition {
   const completion = normaliseCompletion(copy.completion);
   if (copy.state.includes("error")) return { rank: 7, tone: "bad", label: copy.state };
   if (copy.errors > 0) return { rank: 6, tone: "bad", label: plural(copy.errors, "failed item") };
   if (copy.state === "unknown") return { rank: 5, tone: "muted", label: "not answering" };
   if (copy.state === "paused") return { rank: 4, tone: "warn", label: "paused" };
+  if (isHandoffQuiet(copy)) {
+    const needed = copy.needTotalItems ?? copy.needItems ?? 0;
+    return needed ? { rank: 0, tone: "accent", label: `sends only, hands off; ${plural(needed, "ignored item")} not fetched` } : { rank: 0, tone: "ok", label: "sends only, hands off" };
+  }
   if (completion < 1) return { rank: 3, tone: "accent", label: `${copy.state}, ${formatPercent(completion)}` };
   if (copy.state !== "idle") return { rank: 1, tone: "accent", label: copy.state };
   return { rank: 0, tone: "ok", label: "up to date" };
@@ -32,11 +44,16 @@ export function placementText(summary: FolderSummary): string {
   return offeredTo.length ? `${kept}, offered to ${offeredTo.join(", ")}` : kept;
 }
 
-/** The layered sync's categories: synced from 80, archive from 30, local below. */
-export function priorityBand(priority: number): "high" | "middle" | "low" {
-  if (priority >= 80) return "high";
-  if (priority >= 30) return "middle";
-  return "low";
+/** The band a priority falls in, the highest that starts at or below it, from the layout's bands or the design's while none is read; `rank` 0 is the highest band. */
+export function bandOf(priority: number, bands: readonly PriorityBand[] = defaultPriorityBands): { name: string; rank: number } {
+  const ordered = [...(bands.length ? bands : defaultPriorityBands)].sort((left, right) => right.from - left.from);
+  const rank = ordered.findIndex((band) => priority >= band.from);
+  return rank < 0 ? { name: ordered[ordered.length - 1].name, rank: ordered.length - 1 } : { name: ordered[rank].name, rank };
+}
+
+/** The colour class of a band: the top three ranks have their own, every lower one the last's. */
+export function bandClass(priority: number, bands?: readonly PriorityBand[]): string {
+  return `band-rank-${Math.min(bandOf(priority, bands).rank, 3)}`;
 }
 
 export const priorityUnsetText = "not set by the layered sync yet";

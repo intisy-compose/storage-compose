@@ -17,6 +17,9 @@ import { folderActionRoutes } from "./routes/folderActions.js";
 import { folderIgnoreRoutes } from "./routes/folderIgnores.js";
 import { folderRoutes } from "./routes/folders.js";
 import { handoffRoutes } from "./routes/handoff.js";
+import { nodeAdmissionRoutes } from "./routes/nodeAdmission.js";
+import { nodePolicyRoutes } from "./routes/nodePolicy.js";
+import { priorityRoutes } from "./routes/priorities.js";
 import { itemRoutes } from "./routes/items.js";
 import { localChangesRoutes } from "./routes/localChanges.js";
 import { nodeFolderRoutes } from "./routes/nodeFolders.js";
@@ -155,6 +158,9 @@ export const dashboardRoutes: AnyRoute[] = [
   ...versionRoutes(),
   ...folderActionRoutes(),
   ...handoffRoutes(),
+  ...priorityRoutes(),
+  ...nodePolicyRoutes(),
+  ...nodeAdmissionRoutes(),
   { pattern: hostWritePattern(/^\/api\/join$/), handle: async () => joinElsewhere() },
 ];
 
