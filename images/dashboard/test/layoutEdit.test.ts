@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { editBands, editFolderPriority, editNodePolicy, headerKeys, layoutVersion, validBands } from "../src/layoutEdit.js";
 import { planChanges } from "../src/layoutPreview.js";
+import { priorityAt } from "../src/priorityTree.js";
 import { parseLayout } from "../src/setupRepo.js";
 
 const layoutText = `# the layout
@@ -80,23 +81,23 @@ describe("layout edits in place", () => {
     assert.ok(edit.text.includes("[nodes.a1b2]"));
   });
 
-  it("clearing removes only the priority key and keeps the entry while it sets anything else, its category included", () => {
-    const documents = editFolderPriority(layoutText, "Documents", null);
-    assert.equal(documents.boundary, null);
-    assert.equal(documents.text, layoutText.replace("priority = 80\n", ""));
-    const github = editFolderPriority(layoutText, "Documents/GitHub", null);
-    assert.deepEqual([github.boundary, github.text], [null, layoutText]);
+  it("clearing an entry that sets anything else is refused, naming it and the priority the entry would be left at", () => {
+    assert.throws(() => editFolderPriority(layoutText, "Documents", null), /^Error: Documents also sets ignore, so clearing its priority would leave its entry at 0, not inherit; remove those from the setup repo first, or set a priority instead$/);
+    assert.throws(() => editFolderPriority(layoutText, "Documents/GitHub", null), /also sets category, so clearing its priority would leave its entry at 80, not inherit/);
     assert.equal(editFolderPriority(layoutText, "Pictures", null).text, layoutText);
   });
 
-  it("an entry kept by a single-quoted key, a dotted key or a subtable of its own stays when its priority is cleared", () => {
-    for (const rest of ["'versions_days' = 3", "ignore.extra = 1"]) {
-      const text = `[folders.Videos]\npriority = 30\n${rest}\n`;
-      assert.deepEqual([editFolderPriority(text, "Videos", null).boundary, editFolderPriority(text, "Videos", null).text], [null, `[folders.Videos]\n${rest}\n`], rest);
-    }
-    const withSubtable = `[folders.Videos]\npriority = 30\n\n[folders.Videos.versions]\ndays = 3\n`;
-    assert.equal(editFolderPriority(withSubtable, "Videos", null).boundary, null);
-    assert.match(editFolderPriority(withSubtable, "Videos", null).text, /\[folders.Videos\]\n\n\[folders.Videos.versions\]/);
+  it("clearing an entry of only a priority removes it, and the path then inherits its parent's", () => {
+    const text = `[folders.Documents]\npriority = 80\n\n[folders."Documents/Taxes"]\npriority = 30\n`;
+    assert.equal(priorityAt(parseLayout(text), "Documents/Taxes").effective, 30);
+    const edit = editFolderPriority(text, "Documents/Taxes", null);
+    assert.equal(edit.boundary, "removed");
+    assert.equal(priorityAt(parseLayout(edit.text), "Documents/Taxes").effective, 80);
+  });
+
+  it("a single-quoted key, a dotted key or a subtable of its own keeps the entry, so clearing is refused", () => {
+    for (const rest of ["'versions_days' = 3", "ignore.extra = 1"]) assert.throws(() => editFolderPriority(`[folders.Videos]\npriority = 30\n${rest}\n`, "Videos", null), /also sets (versions_days|ignore)/, rest);
+    assert.throws(() => editFolderPriority(`[folders.Videos]\npriority = 30\n\n[folders.Videos.versions]\ndays = 3\n`, "Videos", null), /also sets \[folders.Videos.versions\]/);
   });
 
   it("a bracket line inside a multi-line array is no header", () => {

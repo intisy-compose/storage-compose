@@ -62,11 +62,11 @@ function commitMessage(preview: PriorityPreview, priority: number | null): strin
   return priority === null ? `feat(layout): clear the priority of ${preview.path}` : `feat(layout): set the priority of ${preview.path} to ${priority}`;
 }
 
-function readsBack(path: string, priority: number | null, boundary: PriorityPreview["boundary"]) {
+function readsBack(path: string, priority: number | null) {
   return (layout: ReturnType<typeof parseLayout>) => {
     const entry = layout.folders.find((folder) => folder.relativePath === normaliseRelativePath(path));
     if (priority !== null) return entry?.priority === priority;
-    return boundary === "removed" ? entry === undefined : true;
+    return entry === undefined;
   };
 }
 
@@ -127,7 +127,7 @@ export function priorityRoutes(sources: LayoutRouteSources = liveSources): AnyRo
         if (preview.boundary && body?.confirm !== preview.folderId) throw new RequestError(409, boundaryRefusal(preview));
         const edit = (text: string) => {
           const edited = editFolderPriority(text, preview.path, priority);
-          return checkedLayout(edited.text, readsBack(preview.path, priority, edited.boundary), `${preview.path} at ${priority ?? "its inherited priority"}`);
+          return checkedLayout(edited.text, readsBack(preview.path, priority), `${preview.path} at ${priority ?? "its inherited priority"}`);
         };
         const saved = await pullAfterConflict(sources.repository, saveLayout(edit, commitMessage(preview, priority), base, layoutVersion, sources.repository));
         const answer: LayoutSaveAnswer = { saved, layout: layoutViewOf(await layoutTextOf(sources.repository), sources.repository) };

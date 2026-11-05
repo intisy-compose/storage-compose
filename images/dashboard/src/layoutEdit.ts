@@ -267,9 +267,9 @@ function isFolderSubtable(path: string): (keys: string[]) => boolean {
 }
 
 /**
- * The layout with `path`'s priority set, or with null its `priority` key removed so the path inherits again.
- * @implNote A clear removes the entry only when nothing else is left in it, no key (C-30's `category` included) and no subtable, so it never
- * drops a folder's ignores or versions; the entry, and with it the folder boundary, stays otherwise. `category` stays beside a `priority`
+ * The layout with `path`'s priority set, or with null its entry removed so the path inherits again.
+ * @implNote A clear is refused while the entry sets anything else, a key (C-30's `category` included) or a subtable: the entry would stay a
+ * folder boundary at another priority rather than inherit, and removing it would drop what it sets. `category` stays beside a `priority`
  * for drive-sync, which reads the same file; the priority wins for the layered sync.
  */
 export function editFolderPriority(text: string, rawPath: unknown, priority: number | null): PriorityEdit {
@@ -282,10 +282,13 @@ export function editFolderPriority(text: string, rawPath: unknown, priority: num
   const result = (boundary: BoundaryChange): PriorityEdit => ({ text: joined(layout), path, boundary: isTop ? null : boundary, folderId: folderId(path) });
   if (priority === null) {
     if (!section) return { text, path, boundary: null, folderId: folderId(path) };
-    setKey(lines, section, "priority", null);
-    const remaining = findSection(lines, isFolderSection(path)) as Section;
-    if (keysOf(lines, remaining).length || headerIndexes(lines, isFolderSubtable(path)).length) return result(null);
-    removeSection(lines, remaining);
+    const others = [...keysOf(lines, section).filter((key) => key !== "priority"), ...headerIndexes(lines, isFolderSubtable(path)).map((index) => lines[index].trim())];
+    if (others.length) {
+      setKey(lines, section, "priority", null);
+      const standing = parseLayout(joined(layout)).folders.find((folder) => folder.relativePath === path)?.priority ?? 0;
+      throw new RequestError(409, `${path} also sets ${others.join(", ")}, so clearing its priority would leave its entry at ${standing}, not inherit; remove those from the setup repo first, or set a priority instead`);
+    }
+    removeSection(lines, section);
     return result("removed");
   }
   if (section) {
