@@ -10,7 +10,8 @@ import { registryWarnings, statusRegistryEntries, syncthingEndpoint } from "./in
 import { bridgesByAddress, connectionsStateOf, isOnUntrustedNetworks } from "./connectionsDrift.js";
 import { layeredStateOf } from "./layeredDrift.js";
 import { layeredWarnings, setupWarnings } from "./layeredAttention.js";
-import { pullStateOf } from "./setupRepo.js";
+import { type SetupLayout, pullStateOf, readLayout } from "./setupRepo.js";
+import { isOfferHeldByLayout } from "./layoutOffers.js";
 import { type JoinRecords, joinedNodeId } from "./join.js";
 import { arrayMembers, isSerialMismatch, mountSources } from "./members.js";
 import { type LocalNodeSource, localNodeRules } from "./nodeSource.js";
@@ -18,7 +19,7 @@ import { parityState } from "./parity.js";
 import { attentionSettings, hostName, peerDashboards, poolPath, registryDirectory, setupRepoDirectory } from "./settings.js";
 import { deviceSeenStore, localDeviceIds, recordDevices, rememberable, rememberedLocalNodes } from "./seenStore.js";
 import { ScopedShare, SharedRead } from "./sharedRead.js";
-import { type InstanceView, classifyConnections, instanceView, peerSync } from "./syncthing.js";
+import { type InstanceView, type PendingFolders, classifyConnections, instanceView, peerSync } from "./syncthing.js";
 import { fetchTailnetJson } from "./tailnet.js";
 import { readdir, statfs } from "node:fs/promises";
 
@@ -132,10 +133,15 @@ function withConflictCounts(node: StorageNode): StorageNode {
 }
 
 /** What a node's own Syncthing and its space say needs a person. */
-function nodeWarnings(node: StorageNode, view: InstanceView | null): Warning[] {
+function nodeWarnings(node: StorageNode, view: InstanceView | null, layout: SetupLayout | null): Warning[] {
   const warnings = [...folderErrorWarnings(node), ...conflictWarnings(node), ...fullWarnings(node, attentionSettings), ...pausedWarnings(node), ...layeredWarnings(node)];
-  if (view) warnings.push(...systemErrorWarnings(node, view.systemErrors, view.secrets), ...pendingWarnings(node, view.pendingDevices, view.pendingFolders));
+  if (view) warnings.push(...systemErrorWarnings(node, view.systemErrors, view.secrets), ...pendingWarnings(node, view.pendingDevices, requestedFolders(node.id, view.pendingFolders, layout)));
   return warnings;
+}
+
+/** The pending folders that are requests: an offer that is only keepers sharing a layout folder with a sender is not one. */
+function requestedFolders(nodeId: string, pending: PendingFolders, layout: SetupLayout | null): PendingFolders {
+  return Object.fromEntries(Object.entries(pending).filter(([folderId]) => !isOfferHeldByLayout(layout, nodeId, folderId)));
 }
 
 /**
@@ -153,6 +159,7 @@ async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes
     listedArrayIds(),
     readdir(registryDirectory).then(() => true, () => false),
   ]);
+  const layout = await readLayout().catch(() => null);
   const entries = [...statusEntries.map((entry) => ({ entry, source: "registry" as const })), ...agentEntries(heartbeat).map((entry) => ({ entry, source: "host-agent" as const }))];
   unread.allArrays = listed === null;
   unread.nodes = !registryListed;
@@ -166,7 +173,7 @@ async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes
     if (view) views.push(view);
     const node = withConflictCounts(await arrayNode(status, devices, sources, view));
     nodes.push(node);
-    warnings.push(...arrayWarnings(status, node), ...nodeWarnings(node, view));
+    warnings.push(...arrayWarnings(status, node), ...nodeWarnings(node, view, layout));
   }
   for (const { entry, source } of entries) {
     if (entry.remember === false) ephemeral.add(entry.id);
@@ -175,7 +182,7 @@ async function localNodes(warnings: Warning[], views: InstanceView[], agentNodes
     if (view) views.push(view);
     const node = withConflictCounts(registryNode(entry, source, view));
     nodes.push(node);
-    warnings.push(...nodeWarnings(node, view));
+    warnings.push(...nodeWarnings(node, view, layout));
     if (!entry.present) warnings.push(warning({ id: `absent:${entry.id}`, level: "info", kind: "offline", text: `${entry.name} is not attached to this host`, nodeId: entry.id }));
   }
   for (const agentNode of heartbeat?.nodes ?? []) if (agentNode.syncthing?.deviceId) agentNodes.set(agentNode.syncthing.deviceId, agentNode.id);

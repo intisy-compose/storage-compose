@@ -309,7 +309,7 @@ async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Pro
   if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm(), loadAddDevice(nodesLoaded), loadLayout()]);
   if (appState.page === "folders") await Promise.all([loadFolders(nodesLoaded), loadLayout()]);
   if (appState.page === "activity") await (appState.activityTab === "log" ? nodesLoaded.then(loadNodeLog) : loadActivity());
-  if (appState.page === "requests") await loadRequests();
+  if (appState.page === "requests") await Promise.all([loadRequests(), loadLayout()]);
   if (appState.page === "settings") await loadSettings(nodesLoaded);
 }
 

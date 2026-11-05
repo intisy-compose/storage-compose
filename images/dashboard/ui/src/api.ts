@@ -102,6 +102,7 @@ export type {
   LayoutSaveAnswer,
   LayoutView,
   NodePlanChangeView,
+  NodeAdmission,
   NodePolicyPreview,
   PriorityPreview,
   RemoteState,
@@ -152,7 +153,7 @@ export type {
 } from "../../src/api/types.js";
 import type { LocalChangesAction } from "../../src/api/localChangesText.js";
 import { requestRefresh } from "./renderRequest.js";
-import type { BandsEditBody, LayoutSaveAnswer, LayoutSaveResult, LayoutView, NodePolicyApplyBody, NodePolicyBody, NodePolicyPreview, PriorityPreview } from "../../src/api/types.js";
+import type { BandsEditBody, NodeAdmissionBody, LayoutSaveAnswer, LayoutSaveResult, LayoutView, NodePolicyApplyBody, NodePolicyBody, NodePolicyPreview, PriorityPreview } from "../../src/api/types.js";
 import type { AdvancedConfig, AdvancedTarget, ConnectionProfile, DefaultIgnores, DeviceDefaults, FolderDefaults, GeneralEditResponse, GeneralSettingsChange, IgnoredLists, NodeRestartState, PeerTable, ProfileRead, ProfileSaveBody, RestartAnswer, RestartBody } from "../../src/api/types.js";
 import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, DebugChange, DebugFacilities, NodeErrors, NodeLog, AddedDevice, ArrayAction, ArrayActionBody, ConflictsPage, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, RestoredVersions, RestoreVersionsBody, TreeListing, VersionsPage } from "../../src/api/types.js";
 import { type ActivityFilters, activityRequestQuery, defaultActivityFilters, folderChangesShown } from "../../src/api/activityFilters.js";
@@ -666,4 +667,8 @@ export function setNodeApply(nodeId: string, body: NodePolicyApplyBody): Promise
 
 export function saveBands(body: BandsEditBody): Promise<SaveResult<LayoutSaveAnswer>> {
   return sendWrite("api/layout/bands", "PUT", body);
+}
+
+export function answerAdmission(nodeId: string, body: NodeAdmissionBody): Promise<SaveResult<{ saved: LayoutSaveResult }>> {
+  return sendWrite(`api/nodes/${encodeURIComponent(nodeId)}/admission`, "PUT", body);
 }

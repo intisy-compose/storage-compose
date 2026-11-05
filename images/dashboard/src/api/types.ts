@@ -711,6 +711,8 @@ export interface RequestsResponse {
   devices: PendingDevice[];
   folders: PendingFolderOffer[];
   joins: JoinEntry[];
+  /** Nodes waiting for admission into the layout; absent from a host on an older dashboard. */
+  admissions?: NodeAdmission[];
   unreadable: { name: string; reason: string; notConnected?: boolean }[];
 }
 
@@ -1587,4 +1589,22 @@ export interface NodePolicyPreview {
   files: number;
   bytes: number;
   changes: string[];
+}
+
+/** A node of a host whose node file the layout does not admit: a new drive, folder or stick, one made offline included. */
+export interface NodeAdmission {
+  nodeId: string;
+  name: string;
+  /** Where the host found it: a registry entry, the host agent or an array. */
+  source: string;
+  host: string;
+  threshold: number;
+  /** The layout has an entry for it, not admitted yet. */
+  listed: boolean;
+}
+
+/** `PUT /api/nodes/<id>/admission`. */
+export interface NodeAdmissionBody {
+  base: string;
+  answer: "accept" | "refuse";
 }
