@@ -1,4 +1,4 @@
-import type { FolderCopy, FolderSummary, NodeFolder, StorageNode } from "./api.js";
+import { type FolderCopy, type FolderSummary, type NodeFolder, type PriorityBand, type StorageNode, defaultPriorityBands } from "./api.js";
 import { formatPercent, normaliseCompletion, plural } from "./format.js";
 import type { Tone } from "./nodeStatus.js";
 import type { FolderActionState } from "./state.js";
@@ -32,11 +32,16 @@ export function placementText(summary: FolderSummary): string {
   return offeredTo.length ? `${kept}, offered to ${offeredTo.join(", ")}` : kept;
 }
 
-/** The layered sync's categories: synced from 80, archive from 30, local below. */
-export function priorityBand(priority: number): "high" | "middle" | "low" {
-  if (priority >= 80) return "high";
-  if (priority >= 30) return "middle";
-  return "low";
+/** The band a priority falls in, the highest that starts at or below it, from the layout's bands or the design's while none is read; `rank` 0 is the highest band. */
+export function bandOf(priority: number, bands: readonly PriorityBand[] = defaultPriorityBands): { name: string; rank: number } {
+  const ordered = [...(bands.length ? bands : defaultPriorityBands)].sort((left, right) => right.from - left.from);
+  const rank = ordered.findIndex((band) => priority >= band.from);
+  return rank < 0 ? { name: ordered[ordered.length - 1].name, rank: ordered.length - 1 } : { name: ordered[rank].name, rank };
+}
+
+/** The colour class of a band: the top three ranks have their own, every lower one the last's. */
+export function bandClass(priority: number, bands?: readonly PriorityBand[]): string {
+  return `band-rank-${Math.min(bandOf(priority, bands).rank, 3)}`;
 }
 
 export const priorityUnsetText = "not set by the layered sync yet";

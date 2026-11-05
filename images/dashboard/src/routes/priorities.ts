@@ -1,7 +1,7 @@
-import type { LayoutSaveAnswer, LayoutView, PriorityEditBody, PriorityPreview } from "../api/types.js";
+import type { BandsEditBody, LayoutSaveAnswer, LayoutView, PriorityBand, PriorityEditBody, PriorityPreview } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { callSyncthing, localInstances } from "../instanceResolver.js";
-import { checkedLayout, editFolderPriority, layoutVersion, validPriority } from "../layoutEdit.js";
+import { checkedLayout, editBands, editFolderPriority, layoutVersion, validBands, validPriority } from "../layoutEdit.js";
 import { type ConfiguredFolders, planChanges } from "../layoutPreview.js";
 import { cachedOtherHostNodes } from "../nodes.js";
 import { type AnyRoute, hostWritePattern } from "../routeTypes.js";
@@ -90,6 +90,10 @@ async function liveConfigured(): Promise<ConfiguredFolders> {
   return (nodeId) => known.get(nodeId) ?? new Set();
 }
 
+function bandsWords(bands: PriorityBand[]): string {
+  return bands.map((band) => `${band.name} from ${band.from}`).join(", ");
+}
+
 const liveSources: LayoutRouteSources = { repository: setupRepoDirectory, configured: liveConfigured };
 
 /**
@@ -122,6 +126,19 @@ export function priorityRoutes(sources: LayoutRouteSources = liveSources): AnyRo
         if (preview.boundary && body?.confirm !== preview.folderId) throw new RequestError(409, boundaryRefusal(preview));
         const edit = (text: string) => checkedLayout(editFolderPriority(text, preview.path, priority).text, readsBack(preview.path, priority), `${preview.path} at ${priority ?? "its inherited priority"}`);
         const saved = await pullAfterConflict(sources.repository, saveLayout(edit, commitMessage(preview, priority), base, layoutVersion, sources.repository));
+        const answer: LayoutSaveAnswer = { saved, layout: layoutViewOf(await layoutTextOf(sources.repository), sources.repository) };
+        sendJson(response, 200, answer);
+      },
+    },
+    {
+      method: "PUT",
+      pattern: hostWritePattern(/^\/api\/layout\/bands$/),
+      handle: async ({ request, response }) => {
+        const body = (await readBody(request)) as Partial<BandsEditBody> | null;
+        const base = requireBase(body);
+        const bands = validBands(body?.bands);
+        const edit = (text: string) => checkedLayout(editBands(text, bands), (layout) => layout.bandsFromLayout && JSON.stringify(layout.bands) === JSON.stringify(bands), "the bands");
+        const saved = await pullAfterConflict(sources.repository, saveLayout(edit, `feat(layout): set the priority bands to ${bandsWords(bands)}`, base, layoutVersion, sources.repository));
         const answer: LayoutSaveAnswer = { saved, layout: layoutViewOf(await layoutTextOf(sources.repository), sources.repository) };
         sendJson(response, 200, answer);
       },

@@ -602,8 +602,10 @@ a.button { display: inline-block; text-decoration: none; color: inherit; }
 .node-state-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .node-state { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
 .node-state small { color: var(--text-faint); font-size: 12px; }
-.priority-text.band-high { color: var(--ok); }
-.priority-text.band-middle { color: var(--accent); }
+.priority-text.band-rank-0 { color: var(--ok); }
+.priority-text.band-rank-1 { color: var(--accent); }
+.priority-text.band-rank-2 { color: var(--text-muted); }
+.priority-text.band-rank-3 { color: var(--text-faint); }
 .copy-list { display: flex; flex-direction: column; gap: 12px; }
 .copy-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; }
 .copy-card h4 { margin: 0 0 8px; font-size: 14px; }

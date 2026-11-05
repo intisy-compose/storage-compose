@@ -3,7 +3,7 @@ import { button, element, keyValueList, section } from "./dom.js";
 import { formatBytes, formatDate, formatDuration, plural } from "./format.js";
 import { type FolderRootPriority, prioritySection } from "./explorerDetail.js";
 import { folderActions, orphanedActionResults } from "./folderActions.js";
-import { copyCondition, placementText, priorityBand, priorityUnsetText, worstCondition } from "./folderCondition.js";
+import { bandClass, bandOf, copyCondition, placementText, priorityUnsetText, worstCondition } from "./folderCondition.js";
 import { icon } from "./icons.js";
 import { outOfSyncCount, outOfSyncText } from "./outOfSync.js";
 import { isItemListOpen, itemListPanel, toggleItemList } from "./itemList.js";
@@ -21,7 +21,8 @@ function seconds(value: number): string {
 
 function priorityText(summary: FolderSummary): HTMLElement | string {
   if (summary.priority === null) return priorityUnsetText;
-  return element("span", { className: `priority-text band-${priorityBand(summary.priority)}` }, `${summary.priority}, from the setup repo`);
+  const bands = appState.layout?.bands ?? appState.hostSettings?.priorityBands ?? undefined;
+  return element("span", { className: `priority-text ${bandClass(summary.priority, bands)}` }, `${summary.priority} (${bandOf(summary.priority, bands).name}), from the setup repo`);
 }
 
 function itemsText(copy: FolderCopy): string {

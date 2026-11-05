@@ -5,6 +5,7 @@ import { formatBytes, formatDate } from "./format.js";
 import { icon } from "./icons.js";
 import { requestRender } from "./renderRequest.js";
 import { addableNodes } from "./folderForm.js";
+import { bandOf } from "./folderCondition.js";
 import { priorityEditor } from "./priorityEditor.js";
 import { addFolderLocation, appState } from "./state.js";
 
@@ -51,6 +52,7 @@ export function prioritySection(info: PriorityInfo, overrides: Override[], path:
     "Priority",
     keyValueList([
       ["Priority", priorityCell(info, isTopDirectory)],
+      ["Band", bandOf(info.effective, appState.layout?.bands).name],
       ["Overrides below", overrideList(overrides)],
     ]),
     editor ?? element("p", { className: "muted small" }, path === null ? "A file takes its directory's priority." : "Changes through the setup repo."),
