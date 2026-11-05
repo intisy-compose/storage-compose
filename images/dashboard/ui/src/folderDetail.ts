@@ -248,7 +248,7 @@ function detailHeader(summary: FolderSummary): HTMLElement {
 
 /** The explorer's priority of the folder's root when its row is loaded, else the setup repo's number for the folder. */
 function folderPrioritySection(summary: FolderSummary, priority: FolderRootPriority | null): HTMLElement {
-  if (priority) return prioritySection(priority.info, priority.overridesBelow);
+  if (priority) return prioritySection(priority.info, priority.overridesBelow, priority.path);
   return section("Priority", keyValueList([["Priority", priorityText(summary)]]));
 }
 

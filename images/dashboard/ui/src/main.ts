@@ -1,6 +1,6 @@
 import { activityScrollAnchor, renderActivityPage, restoreActivityScroll } from "./activityPage.js";
 import type { NodesResponse } from "./api.js";
-import { fetchActivity, fetchConnectionProfile, fetchDeviceSettings, fetchDevices, fetchFolderChanges, fetchFolderDetail, fetchHostSettings, fetchNodeOptions, fetchNodes, fetchPeerTable, fetchRequests, fetchRestartState, savedWriteCount } from "./api.js";
+import { fetchActivity, fetchConnectionProfile, fetchDeviceSettings, fetchDevices, fetchFolderChanges, fetchFolderDetail, fetchHostSettings, fetchLayout, fetchNodeOptions, fetchNodes, fetchPeerTable, fetchRequests, fetchRestartState, savedWriteCount } from "./api.js";
 import { renderAttentionPage } from "./attentionPage.js";
 import { renderDeviceDetail } from "./deviceDetail.js";
 import { loadAddDeviceForm, renderAddDeviceForm } from "./addDeviceForm.js";
@@ -257,6 +257,17 @@ async function loadHostSettings(): Promise<void> {
   }
 }
 
+/** @implNote A host without a setup repo answers 404, which leaves the forms read only rather than showing an error. */
+async function loadLayout(): Promise<void> {
+  try {
+    appState.layout = await readAfterSavedWrites(fetchLayout);
+    appState.layoutError = null;
+  } catch (error) {
+    appState.layout = null;
+    appState.layoutError = messageOf(error);
+  }
+}
+
 async function loadConnectionProfile(): Promise<void> {
   try {
     appState.connectionProfile = await readAfterSavedWrites(fetchConnectionProfile);
@@ -290,13 +301,13 @@ async function loadRestartState(nodeId: string): Promise<void> {
 /** @implNote Waits for the nodes, as they say which nodes are this host's. */
 async function loadSettings(nodesLoaded: Promise<void>): Promise<void> {
   const loadNode = (nodeId: string) => Promise.all([loadNodeOptions(nodeId), loadRestartState(nodeId), openIgnoredNodeIds().includes(nodeId) ? loadIgnoredLists(nodeId) : null]);
-  await Promise.all([loadHostSettings(), loadConnectionProfile(), loadPeerTable(), nodesLoaded.then(() => Promise.all(readableLocalNodes().map((node) => loadNode(node.id))))]);
+  await Promise.all([loadHostSettings(), loadLayout(), loadConnectionProfile(), loadPeerTable(), nodesLoaded.then(() => Promise.all(readableLocalNodes().map((node) => loadNode(node.id))))]);
 }
 
 /** The current page's own data besides the nodes every page shows in its menu; `nodesLoaded` settles when a running nodes read does. */
 async function loadPageData(nodesLoaded: Promise<void> = Promise.resolve()): Promise<void> {
-  if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm(), loadAddDevice(nodesLoaded)]);
-  if (appState.page === "folders") await loadFolders(nodesLoaded);
+  if (appState.page === "nodes") await Promise.all([loadDevices(), loadDeviceForm(), loadAddDevice(nodesLoaded), loadLayout()]);
+  if (appState.page === "folders") await Promise.all([loadFolders(nodesLoaded), loadLayout()]);
   if (appState.page === "activity") await (appState.activityTab === "log" ? nodesLoaded.then(loadNodeLog) : loadActivity());
   if (appState.page === "requests") await loadRequests();
   if (appState.page === "settings") await loadSettings(nodesLoaded);

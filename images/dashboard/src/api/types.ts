@@ -1423,3 +1423,74 @@ export interface PeerTable {
   bridges: Bridge[];
   builtAt: string;
 }
+
+/** One node's policy as the layout commits it. */
+export interface LayoutNodeView {
+  id: string;
+  name: string;
+  device: string;
+  threshold: number;
+  assigned: string[];
+  pins: Record<string, number>;
+  access: NodeAccess;
+  admitted: boolean;
+  apply: boolean;
+  enabled: boolean;
+  /** When a person refused the node's admission; null when nobody did. */
+  refused: string | null;
+}
+
+/** `GET /api/layout`: the setup repo's layout as this host last pulled it, with the version a save names as its base. */
+export interface LayoutView {
+  version: string;
+  folders: { path: string; id: string; priority: number }[];
+  nodes: LayoutNodeView[];
+  bands: PriorityBand[];
+  bandsFromLayout: boolean;
+  problems: { nodeId: string | null; text: string }[];
+  pulledAt: string | null;
+  pullProblem: string | null;
+}
+
+/** How a layout save went: `pushed` false is a commit kept on this host, which the pull timer pushes once the remote answers. */
+export interface LayoutSaveResult {
+  committed: boolean;
+  pushed: boolean;
+  message: string;
+}
+
+export interface LayoutSaveAnswer {
+  saved: LayoutSaveResult;
+  layout: LayoutView;
+}
+
+/** What a layout edit changes in one node's plan, in words. */
+export interface NodePlanChangeView {
+  nodeId: string;
+  nodeName: string;
+  changes: string[];
+}
+
+/** `POST /api/priorities/preview` and the body of `PUT /api/priorities`; `priority` null clears the entry so the path inherits again. */
+export interface PriorityEditBody {
+  path: string;
+  priority: number | null;
+  /** The `LayoutView.version` the edit was made from. */
+  base?: string;
+  /** The folder ID, when the edit creates or removes a folder boundary. */
+  confirm?: string;
+}
+
+export interface PriorityPreview {
+  path: string;
+  folderId: string;
+  /** A new or a dropped layout entry, which is a new or a dropped Syncthing folder; null for a change of an existing entry. */
+  boundary: "created" | "removed" | null;
+  nodes: NodePlanChangeView[];
+}
+
+/** `PUT /api/layout/bands`. */
+export interface BandsEditBody {
+  bands: PriorityBand[];
+  base: string;
+}
