@@ -128,18 +128,21 @@ function parseFolder(key: string, entry: TomlTable): LayoutFolder {
   return { relativePath, id: folderId(relativePath), priority, ignore: textsOf(entry, "ignore"), versionsDays: numberOf(entry, "versions_days", defaultVersionsDays) };
 }
 
+/** Priorities run from 0 to this. */
+export const highestPriority = 100;
+
 /** The node file's patterns, so a layout entry always names a node a node file can hold. */
 const nodeIdPattern = /^[0-9a-f]{4}$/;
 const nodeNamePattern = /^[a-z0-9][a-z0-9-]*$/;
 
-/** @implNote A pin that is not a number still protects its path, as the highest pin, so a typo never lets the path be handed off. */
+/** @implNote A pin that is not a number still protects its path, as the highest pin, so a typo never lets the path be handed off; finite, so the API shows it rather than the null JSON makes of Infinity. */
 function parsePins(id: string, table: TomlTable, problems: LayoutProblem[]): Record<string, number> {
   return Object.fromEntries(
     Object.entries(table).map(([path, value]) => {
       const relativePath = normaliseRelativePath(path);
       if (typeof value === "number") return [relativePath, value];
       problems.push({ nodeId: id, text: `pin ${relativePath} is not a number; it protects the path as the highest pin`, blocksNode: false });
-      return [relativePath, Number.POSITIVE_INFINITY];
+      return [relativePath, highestPriority];
     }),
   );
 }

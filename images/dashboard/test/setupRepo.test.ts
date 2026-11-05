@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { defaultPriorityBands } from "../src/api/types.js";
-import { parseLayout } from "../src/setupRepo.js";
+import { highestPriority, parseLayout } from "../src/setupRepo.js";
 
 const nodesText = `
 [devices.pc]
@@ -135,10 +135,12 @@ describe("a malformed node policy", () => {
     return parseLayout(text).problems;
   }
 
-  it("keeps a pin with a value that is not a number, protecting like an infinite pin, and reports it", () => {
+  it("keeps a pin with a value that is not a number at the highest priority, and reports it", () => {
     const layout = parseLayout(`[nodes.a3f9]\nname = "pc"\n[nodes.a3f9.pins]\n"Videos/Clips" = "high"\nMusic = 60\n`);
 
-    assert.deepEqual(layout.nodes[0].pins, { "Videos/Clips": Number.POSITIVE_INFINITY, Music: 60 });
+    assert.deepEqual(layout.nodes[0].pins, { "Videos/Clips": highestPriority, Music: 60 });
+    assert.equal(highestPriority, 100);
+    assert.equal(JSON.parse(JSON.stringify(layout.nodes[0])).pins["Videos/Clips"], 100, "the API shows the pin, never null");
     assert.deepEqual(layout.problems, [{ nodeId: "a3f9", text: "pin Videos/Clips is not a number; it protects the path as the highest pin", blocksNode: false }]);
   });
 
