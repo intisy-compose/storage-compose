@@ -32,6 +32,23 @@ async function policyTarget(sources: NodePolicySources, nodeSegment: string): Pr
   return { instance, text, node };
 }
 
+/**
+ * The node behind a change of `enabled` alone, on any host: the layout lists it, wherever it runs.
+ * @implNote Stopping and rejoining read no Syncthing: the node's own host pauses or resumes it on its next round once the commit is pushed.
+ */
+async function enabledTarget(sources: NodePolicySources, nodeSegment: string): Promise<{ instance: { nodeId: string; name: string }; text: string; node: LayoutNode }> {
+  const nodeId = decodedSegment(nodeSegment, "node ID");
+  const text = await layoutTextOf(sources.repository);
+  const node = parseLayout(text).nodes.find((entry) => entry.id === nodeId);
+  if (!node) throw new RequestError(404, `the layout does not list node ${nodeId}; admit it in Requests first`);
+  return { instance: { nodeId: node.id, name: node.name }, text, node };
+}
+
+/** Whether the change is `enabled` and nothing else, which any host may commit for any node. */
+export function isEnabledOnly(change: NodePolicyChange): boolean {
+  return Object.keys(change).length === 1 && change.enabled !== undefined;
+}
+
 function asObject(body: unknown): Record<string, unknown> {
   if (typeof body !== "object" || body === null || Array.isArray(body)) throw new RequestError(400, "the body is not an object");
   return body as Record<string, unknown>;
@@ -86,7 +103,7 @@ function readsBackPolicy(nodeId: string, change: NodePolicyChange) {
   };
 }
 
-async function saveChange(sources: NodePolicySources, target: { instance: LocalInstance; node: LayoutNode }, change: NodePolicyChange, base: string, words: string): Promise<{ saved: Awaited<ReturnType<typeof saveLayout>>; note: WriteNote }> {
+async function saveChange(sources: NodePolicySources, target: { instance: { nodeId: string; name: string }; node: LayoutNode }, change: NodePolicyChange, base: string, words: string): Promise<{ saved: Awaited<ReturnType<typeof saveLayout>>; note: WriteNote }> {
   const edit = (text: string) => checkedLayout(editNodePolicy(text, target.node.id, change), readsBackPolicy(target.node.id, change), `${target.node.name}'s policy`);
   const saved = await pullAfterConflict(sources.repository, saveLayout(edit, `feat(layout): ${words} for ${target.node.name}`, base, layoutVersion, sources.repository));
   return { saved, note: { nodeId: target.instance.nodeId, nodeName: target.instance.name, folderId: null, text: `${target.instance.name}: layout policy ${words}; ${saved.message}` } };
@@ -152,7 +169,10 @@ const liveSources: NodePolicySources = {
   },
 };
 
-/** A node's layered policy in the layout, edited from its node detail: threshold, assigned, pins and enabled, and apply on its own. */
+/**
+ * A node's layered policy in the layout, edited from its node detail: threshold, assigned, pins and enabled on its own host, apply on its
+ * own; `enabled` alone, which stops a node or lets it rejoin, from any host.
+ */
 export function nodePolicyRoutes(sources: NodePolicySources = liveSources): AnyRoute[] {
   return [
     {
@@ -171,7 +191,7 @@ export function nodePolicyRoutes(sources: NodePolicySources = liveSources): AnyR
         const body = await readBody(request);
         const change = policyChange(body);
         const base = requireBase(body as { base?: unknown });
-        const target = await policyTarget(sources, nodeSegment);
+        const target = isEnabledOnly(change) ? await enabledTarget(sources, nodeSegment) : await policyTarget(sources, nodeSegment);
         const { saved, note } = await saveChange(sources, target, change, base, changeText(target.node, change));
         sendJson(response, 200, { saved });
         return saved.committed ? note : { nothingWritten: true };

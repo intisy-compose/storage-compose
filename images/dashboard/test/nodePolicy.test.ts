@@ -280,6 +280,22 @@ admitted = true
     assert.equal(git(repos.remote, "rev-parse", "main"), head);
   });
 
+  it("enabled alone is committed from any host, for a node this host does not run, so a node can be stopped and let rejoin from anywhere", async () => {
+    const stop = await askRoutes(routes(), "PUT", "/api/nodes/5784/policy", { base: version(), enabled: false });
+    assert.equal(stop.status, 200);
+    assert.equal(parseLayout(remoteLayout()).nodes.find((entry) => entry.id === "5784")?.enabled, false);
+    assert.equal(git(repos.remote, "log", "-1", "--format=%s", "main"), "feat(layout): disabled for private-array");
+
+    const rejoin = await askRoutes(routes(), "PUT", "/api/nodes/5784/policy", { base: version(), enabled: true });
+    assert.equal(rejoin.status, 200);
+    assert.equal(parseLayout(remoteLayout()).nodes.find((entry) => entry.id === "5784")?.enabled, true);
+
+    const head = git(repos.remote, "rev-parse", "main");
+    assert.equal((await askRoutes(routes(), "PUT", "/api/nodes/5784/policy", { base: version(), enabled: false, threshold: 10 })).status, 404, "with any other field it is the node's own host's edit");
+    assert.equal((await askRoutes(routes(), "PUT", "/api/nodes/c3d4/policy", { base: version(), enabled: false })).status, 404, "a node the layout does not list");
+    assert.equal(git(repos.remote, "rev-parse", "main"), head);
+  });
+
   it("apply is never changed with the other fields", async () => {
     const answer = await askRoutes(routes(), "PUT", "/api/nodes/a1b2/policy", { base: version(), threshold: 70, apply: true });
     assert.equal(answer.status, 400);

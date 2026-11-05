@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { formatBytes } from "../ui/src/format.js";
-import { isApplyConfirmed, pinsText, raiseLines, typedPaths, typedPins } from "../ui/src/nodePolicyForm.js";
+import { enabledText, isApplyConfirmed, pinsText, raiseLines, typedPaths, typedPins } from "../ui/src/nodePolicyForm.js";
 
 describe("the node policy form", () => {
   it("pins are written and read as path = priority per line", () => {
@@ -35,6 +35,11 @@ describe("the node policy form", () => {
       "Nothing leaves before a keeper confirms each file, and only while the node acts on its plan.",
     ]);
     assert.deepEqual(raiseLines({ nodeId: "a1b2", threshold: 60, files: 0, bytes: 0, handoffs: [], changes: [] }), ["At 60 nothing more turns send-only, so nothing more is handed off."]);
+  });
+
+  it("stopping and rejoining say what they do before the click", () => {
+    assert.match(enabledText({ name: "p53", enabled: true }), /^p53 is enabled\. Stopping it pauses its folders on its own host and hands nothing off/);
+    assert.match(enabledText({ name: "p53", enabled: false }), /Rejoining resumes them, and what it gathered meanwhile syncs\.$/);
   });
 
   it("apply is confirmed only by the node's name typed exactly", () => {
