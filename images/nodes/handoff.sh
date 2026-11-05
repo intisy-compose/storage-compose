@@ -68,10 +68,11 @@ write_result() {   # [refusal]
     [ -f "$contract" ] && written_at=$(jq -r '.writtenAt? // "" | strings' "$contract" 2> /dev/null)
     jq -n --arg nodeId "$node_id" --arg contractWrittenAt "$written_at" --arg finishedAt "$(date -u -d "@$(now)" +%FT%TZ)" \
         --arg refused "${1:-}" --argjson purged "$purged" --slurpfile results "$work/results" --slurpfile trash "$work/trash" \
-        --rawfile notes "$work/notes" \
+        --rawfile notes "$work/notes" --argjson trashBytes "${trash_bytes:-null}" \
         '{schema: 1, nodeId: $nodeId, contractWrittenAt: $contractWrittenAt, finishedAt: $finishedAt,
           refused: (if $refused == "" then null else $refused end), results: $results, trash: ($trash | unique_by(.trash)),
-          notes: ($notes | split("\n") | map(select(. != ""))), purged: $purged}' > "$result.new" \
+          notes: ($notes | split("\n") | map(select(. != ""))), purged: $purged}
+          + (if $trashBytes == null then {} else {trashBytes: $trashBytes} end)' > "$result.new" \
         && mv -f "$result.new" "$result"
 }
 
@@ -630,7 +631,7 @@ contract_problem() {
     jq -e '.schema == 1' "$contract" > /dev/null || { echo "the contract is not schema 1"; return; }
     jq -e --arg id "$node_id" '.nodeId == $id' "$contract" > /dev/null || { echo "the contract names another node"; return; }
     jq -e '.cluster == false' "$contract" > /dev/null || { echo "the contract is the cluster's, which never hands off"; return; }
-    jq -e '.apply == true' "$contract" > /dev/null || { echo "the contract is not in apply mode"; return; }
+    jq -e '.apply == true or (.trashOnly == true and .entries == [])' "$contract" > /dev/null || { echo "the contract is not in apply mode"; return; }
     jq -e '.entries | type == "array"' "$contract" > /dev/null || { echo "the contract has no list of entries"; return; }
     contract_age_problem
 }
@@ -666,13 +667,18 @@ main() {
     mkdir -p -- "$trash_root" && [ ! -L "$trash_root" ] || refuse_whole "the trash folder cannot be made"
     [ ! -L "$pending_file" ] || refuse_whole "the pending file is a link"
     touch -- "$pending_file" || refuse_whole "the pending file cannot be made"
-    quarantine_pending
-    local folder path
-    while IFS=$'\t' read -r folder path; do
-        [ -n "$folder" ] && hand_off_folder "$folder" "$path"
-    done < <(folders_of_run)
+    if jq -e '.apply == true' "$contract" > /dev/null; then
+        quarantine_pending
+        local folder path
+        while IFS=$'\t' read -r folder path; do
+            [ -n "$folder" ] && hand_off_folder "$folder" "$path"
+        done < <(folders_of_run)
+    else
+        note "the contract holds every hand-off: only the trash is emptied"
+    fi
     purge_trash
     report_unlisted
+    trash_bytes=$(json_lines "$manifest" | jq -s 'map(.size | numbers) | add // 0')
     write_result
 }
 

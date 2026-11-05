@@ -181,7 +181,7 @@ describe("the hand-off contract", () => {
     const reads = network();
     const contract = await decideHandoffContract(inputFor(parseLayout(layoutText(false)), reads));
 
-    assert.equal(contract.apply, false);
+    assert.deepEqual([contract.apply, contract.trashOnly], [false, undefined], "a node that only reports gets no trash-only contract: its executor runs nothing");
     assert.deepEqual(contract.entries, []);
     assert.equal(reads.calls, 0);
   });
@@ -246,7 +246,7 @@ describe("the hand-off contract", () => {
     ];
     for (const [name, input, note] of cases) {
       const contract = await decideHandoffContract(input);
-      assert.deepEqual([contract.apply, contract.entries, contract.waiting], [false, [], []], name);
+      assert.deepEqual([contract.apply, contract.trashOnly, contract.entries, contract.waiting], [false, true, [], []], name);
       assert.match(contract.notes.join(" "), note, name);
     }
   });

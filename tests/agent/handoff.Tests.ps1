@@ -592,6 +592,36 @@ Describe "the hand-off executor" {
         (Get-Result).purged | Should Be 0
     }
 
+    It "empties only the trash under a held contract, moving nothing, and says what the trash still holds" {
+        New-TestNode "held"
+        Write-Contract @(New-Entry "clip.mp4")
+        Invoke-TestHandoff
+        (Get-Result).trashBytes | Should Be 5
+        Add-TestFile "pending.mp4" "hello"
+        $global:fakeNeverIgnores = $true
+        Write-Contract @(New-Entry "pending.mp4")
+        Invoke-TestHandoff
+        $global:fakeNeverIgnores = $false
+        Get-PendingPaths | Should Be "pending.mp4"
+        $moved = $global:handoffTestNow
+
+        $global:handoffTestNow = $moved + 8 * 86400
+        $held = [pscustomobject]@{
+            schema = 1; nodeId = "a001"; writtenAt = [DateTimeOffset]::FromUnixTimeSeconds($global:handoffTestNow - 10).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+            apply = $false; trashOnly = $true; cluster = $false; quietMinutes = 10; entries = @(); waiting = @(); notes = @("hand-offs are held: x")
+        }
+        [System.IO.File]::WriteAllText($global:contractPath, (ConvertTo-Json -InputObject $held -Depth 10))
+        Invoke-TestHandoff
+        $result = Get-Result
+        "$($null -eq $result.refused) $($result.purged) $($result.trashBytes) $(@($result.results).Count) $(Test-Present 'pending.mp4') $(Get-PendingPaths)" | Should Be "True 1 0 0 True pending.mp4"
+        $result.notes[0] | Should Be "the contract holds every hand-off: only the trash is emptied"
+
+        $held.entries = @(New-Entry "pending.mp4")
+        [System.IO.File]::WriteAllText($global:contractPath, (ConvertTo-Json -InputObject $held -Depth 10))
+        Invoke-TestHandoff
+        (Get-Result).refused | Should Be "the contract is not in apply mode"
+    }
+
     It "keeps a trash copy until its recorded keeper is connected and holds that version or a later one" {
         New-TestNode "keeperless"
         Write-Contract @(New-Entry "clip.mp4")

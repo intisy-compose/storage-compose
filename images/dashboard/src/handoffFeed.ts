@@ -71,6 +71,11 @@ export interface HandoffContract {
   entries: HandoffContractEntry[];
   waiting: HandoffWaiting[];
   notes: string[];
+  /**
+   * True on a held contract of a node that applies: the executor moves and ignores nothing, pending paths included, and still empties the
+   * trash under its own keeper check, so a held node can free the space its hand-offs left in the trash.
+   */
+  trashOnly?: boolean;
 }
 
 /** A node's own `/rest/db/file` `local` entry, or a keeper's. */
@@ -284,11 +289,10 @@ async function plannedForSpace(input: HandoffInput, plan: NodePlan): Promise<{ p
 }
 
 /**
- * A contract that holds everything: not in apply mode, so the executor refuses it whole and not even a pending path moves or the trash
- * empties (a stop holds everything and hands nothing off).
+ * A contract that holds every move: not in apply mode, so not even a pending path moves; only the trash may still empty (`trashOnly`).
  */
 function held(contract: HandoffContract, note: string): HandoffContract {
-  return { ...contract, apply: false, notes: [`hand-offs are held: ${note}`] };
+  return { ...contract, apply: false, trashOnly: true, notes: [`hand-offs are held: ${note}`] };
 }
 
 /** A round's contract with the space decision it rests on, null when none was made. */
@@ -431,8 +435,9 @@ export const syncthingHandoffReads: HandoffReads = {
   },
   completion: async (instance, folderId) => (await callSyncthing(instance, (client) => client.request<{ completion: number }>("GET", `/db/completion?${query(folderId)}`))).completion,
   sizes: async (instance, folderId) => {
-    const status = await callSyncthing(instance, (client) => client.request<{ globalBytes: number; localBytes: number; needBytes?: number }>("GET", `/db/status?${query(folderId)}`));
-    return { globalBytes: status.globalBytes, localBytes: status.localBytes, needBytes: status.needBytes };
+    type Status = { globalBytes: number; localBytes: number; needBytes?: number; state?: string; stateChanged?: string; remoteSequence?: Record<string, number> | null };
+    const status = await callSyncthing(instance, (client) => client.request<Status>("GET", `/db/status?${query(folderId)}`));
+    return { globalBytes: status.globalBytes, localBytes: status.localBytes, needBytes: status.needBytes, state: status.state ?? "", stateChanged: status.stateChanged ?? "", remoteSequence: status.remoteSequence ?? null };
   },
   space: nodeSpace,
   keeperState: keeperStateOf,

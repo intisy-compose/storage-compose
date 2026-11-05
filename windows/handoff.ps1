@@ -712,22 +712,38 @@ function Get-HandoffNodeValue($Root, [string]$Name) {
     return $table[$Name]
 }
 
+<#
+.NOTES
+A contract the dashboard holds (a stop, an unknown space) names no file: the run moves and ignores
+nothing, pending paths included, and still empties the trash under its own keeper check.
+#>
+function Test-IsTrashOnlyContract($Contract) {
+    return $Contract.PSObject.Properties["trashOnly"] -and $Contract.trashOnly -eq $true -and @($Contract.entries).Count -eq 0 -and $null -ne $Contract.entries
+}
+
+function Get-HandoffTrashBytes($Run) {
+    $total = [int64]0
+    foreach ($record in @(Read-HandoffLines $Run.manifest)) { if ($record.PSObject.Properties["size"] -and $record.size -is [ValueType]) { $total += [int64]$record.size } }
+    return $total
+}
+
 function Get-HandoffContractProblem($Contract, [string]$NodeId) {
     if (-not $Contract) { return "the contract cannot be read" }
     if ($Contract.schema -ne 1) { return "the contract is not schema 1" }
     if ($Contract.nodeId -cne $NodeId) { return "the contract names another node" }
     if ($Contract.cluster -ne $false) { return "the contract is the cluster's, which never hands off" }
-    if ($Contract.apply -ne $true) { return "the contract is not in apply mode" }
+    if ($Contract.apply -ne $true -and -not (Test-IsTrashOnlyContract $Contract)) { return "the contract is not in apply mode" }
     if ($null -eq $Contract.entries) { return "the contract has no list of entries" }
     return Get-HandoffContractAgeProblem $Contract
 }
 
-function Write-HandoffResult([string]$Path, [string]$NodeId, $Contract, [string]$Refused, [object[]]$Results, [object[]]$Trash, [int]$Purged, [object[]]$Notes = @()) {
+function Write-HandoffResult([string]$Path, [string]$NodeId, $Contract, [string]$Refused, [object[]]$Results, [object[]]$Trash, [int]$Purged, [object[]]$Notes = @(), $TrashBytes = $null) {
     $result = [ordered]@{
         schema = 1; nodeId = $NodeId; contractWrittenAt = $(if ($Contract) { "$($Contract.writtenAt)" } else { "" })
         finishedAt = [DateTimeOffset]::FromUnixTimeSeconds((Get-HandoffNow)).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
         refused = $(if ($Refused) { $Refused } else { $null }); results = @($Results); trash = @($Trash); notes = @($Notes); purged = $Purged
     }
+    if ($null -ne $TrashBytes) { $result["trashBytes"] = $TrashBytes }
     if ($Refused) { Write-WatcherLog "hand-off $NodeId`: nothing handed off: $Refused" }
     Write-JsonFile $Path $result
 }
@@ -772,16 +788,20 @@ function Invoke-LockedHandoff($Instance, [string]$ContractPath, [string]$ResultP
         pendingFile = Join-Path $RootFull ".storage\handoff-pending.jsonl"; deferredFile = Join-Path $RootFull ".storage\handoff-deferred.jsonl"
         deadline = (Get-Date).AddSeconds($handoffRunSeconds); trash = @(); purged = 0; hashed = $false; connections = $null; notes = @()
     }
-    Move-BadPendingLines $run
     $results = @()
-    $folders = Get-HandoffRunFolders $run
-    foreach ($folderId in @($folders.Keys)) {
-        $entries = @($contract.entries | Where-Object { $_.folderId -ceq $folderId })
-        try { $results += Invoke-FolderHandoff $run $Instance $folderId $folders[$folderId] $entries }
-        catch { $results += @($entries | ForEach-Object { New-HandoffResultLine $folderId $_.path "refused" "the executor failed on its folder: $($_.Exception.Message)" }) }
+    if ($contract.apply -eq $true) {
+        Move-BadPendingLines $run
+        $folders = Get-HandoffRunFolders $run
+        foreach ($folderId in @($folders.Keys)) {
+            $entries = @($contract.entries | Where-Object { $_.folderId -ceq $folderId })
+            try { $results += Invoke-FolderHandoff $run $Instance $folderId $folders[$folderId] $entries }
+            catch { $results += @($entries | ForEach-Object { New-HandoffResultLine $folderId $_.path "refused" "the executor failed on its folder: $($_.Exception.Message)" }) }
+        }
+    } else {
+        $run.notes = @($run.notes) + "the contract holds every hand-off: only the trash is emptied"
     }
     try { Clear-HandoffTrash $run $Instance } catch { Write-WatcherLog "hand-off $nodeId`: the trash was not emptied: $_" }
-    Write-HandoffResult $ResultPath $nodeId $contract $null $results (@($run.trash) + @(Get-UnlistedTrash $run)) $run.purged $run.notes
+    Write-HandoffResult $ResultPath $nodeId $contract $null $results (@($run.trash) + @(Get-UnlistedTrash $run)) $run.purged $run.notes (Get-HandoffTrashBytes $run)
 }
 
 <#

@@ -509,6 +509,29 @@ check "and keeps the changed file in its manifest" "$trash_day/videos/second.mp4
 HANDOFF_TRASH_DAYS=7 run_now=$((now + 8 * 86400)) run_handoff
 check "a second purge deletes nothing more" "0 yes" "$(jq .purged "$scratch/result.json") $([ -f "$trash/foreign.txt" ] && echo yes)"
 
+echo "a held contract empties only the trash"
+held_contract() {   # [entry json]...: a contract the dashboard holds (a stop, an unknown space), written ten seconds before $written_now
+    jq -n --arg written "$(date -u -d "@$((${written_now:-$now} - 10))" +%FT%TZ)" --slurpfile entries <(printf '%s\n' "$@") \
+        '{schema: 1, nodeId: "a001", writtenAt: $written, apply: false, trashOnly: true, cluster: false, quietMinutes: 10, entries: $entries, waiting: [], notes: ["hand-offs are held: x"]}' > "$scratch/contract.json"
+}
+new_node held
+contract "$(entry clip.mp4)"
+run_handoff
+check "the copy is in the trash, and the result says what the trash holds" "yes 5" "$(in_trash clip.mp4) $(jq .trashBytes "$scratch/result.json")"
+add_file pending.mp4 hello
+contract "$(entry pending.mp4)"
+FAKE_NEVER_IGNORES=1 run_handoff
+check "a path is left pending" "ignored-not-moved pending.mp4" "$(outcome_of pending.mp4) $(pending_paths)"
+written_now=$((now + 8 * 86400)) held_contract
+run_now=$((now + 8 * 86400)) run_handoff
+check "a held contract is no refusal: the due copy is emptied and the trash holds nothing more" "none no 1 0" "$(refusal) $(in_trash clip.mp4) $(jq .purged "$scratch/result.json") $(jq .trashBytes "$scratch/result.json")"
+check "the pending path is neither moved nor released, and nothing is listed" "yes pending.mp4 0" "$(present pending.mp4) $(pending_paths) $(jq '.results | length' "$scratch/result.json")"
+check "the result says the contract only lets the trash empty" "the contract holds every hand-off: only the trash is emptied" "$(jq -r '.notes[0]' "$scratch/result.json")"
+written_now=$((now + 8 * 86400)) held_contract "$(entry pending.mp4)"
+run_now=$((now + 8 * 86400)) run_handoff
+check "a held contract that names a file is refused whole" "the contract is not in apply mode yes" "$(refusal) $(present pending.mp4)"
+check "and a refused run says nothing of the trash" null "$(jq .trashBytes "$scratch/result.json")"
+
 echo "the trash keeps what no keeper holds"
 new_node keeperless
 contract "$(entry clip.mp4)"
