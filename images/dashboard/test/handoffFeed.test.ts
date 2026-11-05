@@ -23,6 +23,7 @@ import type { LocalInstance } from "../src/instanceResolver.js";
 import { requestHandler } from "../src/routes.js";
 import { handoffRoutes } from "../src/routes/handoff.js";
 import { nodePlan } from "../src/nodePlan.js";
+import type { SpaceDecision } from "../src/spacePlan.js";
 import { type SetupLayout, parseLayout } from "../src/setupRepo.js";
 import type { SyncthingClient } from "../src/syncthing.js";
 
@@ -270,6 +271,18 @@ describe("the hand-off contract", () => {
       const contract = await decideHandoffContract(inputFor(parseLayout(layoutText()), network({ laptop })));
       assert.deepEqual(contract.entries, [], JSON.stringify(laptop));
     }
+  });
+
+  it("takes each keeper's state and threshold from its own space decision this round", async () => {
+    const decision = (state: SpaceDecision["state"], threshold: number): SpaceDecision => ({ state, threshold, neededBytes: 0, availableBytes: 0, handoffAllowed: state === "fits" || state === "raised" });
+    const withKeeper = (space: SpaceDecision | null) => inputFor(parseLayout(layoutText()), network(), "b001", { keeperSpace: (nodeId) => (nodeId === "a002" ? space : null) });
+
+    assert.equal((await decideHandoffContract(withKeeper(decision("fits", 20)))).entries.length, 1);
+    assert.equal((await decideHandoffContract(withKeeper(null))).entries.length, 1, "a keeper whose space is not known still confirms what it already holds");
+    const stopped = await decideHandoffContract(withKeeper(decision("stopped", 20)));
+    assert.deepEqual([stopped.entries, stopped.waiting.map((entry) => entry.reason)], [[], ["not-confirmed"]], "a stopped keeper is paused, so it confirms nothing");
+    const raised = await decideHandoffContract(withKeeper(decision("raised", 50)));
+    assert.deepEqual([raised.entries, raised.waiting.map((entry) => entry.reason)], [[], ["keeper-offline"]], "raised past Videos, the laptop keeps it no more; only the cluster does");
   });
 
   it("waits for a file changed within the quiet period", async () => {

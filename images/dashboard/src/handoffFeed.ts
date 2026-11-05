@@ -113,6 +113,8 @@ export interface HandoffInput {
   batch?: number;
   /** The round's space decision for the node, made once for the reconciler and the contract alike; absent, it is read here. */
   decided?: { decision: SpaceDecision | null };
+  /** Each node's space decision this round; a keeper's own says whether it is full or stopped, and the threshold it keeps at. */
+  keeperSpace?: (nodeId: string) => SpaceDecision | null;
 }
 
 const isoTime = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
@@ -179,6 +181,18 @@ function keeperEntryOf(entry: IndexEntry | null): KeeperFileEntry | null {
 }
 
 /**
+ * A keeper the space rule takes out: the cluster short of its headroom is `full` (the cluster's backpressure), a node that does not fit
+ * even at its top priority is paused and so `stopped`; null leaves the state to its Syncthing and mounter.
+ * @implNote An unknown or unread decision takes nothing out: a confirmation is of bytes the keeper already holds, and only a known
+ * shortage is a reason to stop making it the holder of more files.
+ */
+function keeperSpaceState(space: SpaceDecision | null): KeeperState | null {
+  if (space?.state === "full") return "full";
+  if (space?.state === "stopped") return "stopped";
+  return null;
+}
+
+/**
  * A keeper's report on the candidates of the folders it keeps, read straight from its Syncthing on this host.
  * @implNote `observedAt` is stamped from this host's clock once every read has returned, as `KeeperReport` asks; a keeper of another
  * host is not read at all, since a report relayed through its dashboard would carry no age of its own.
@@ -195,8 +209,10 @@ async function keeperReport(input: HandoffInput, keeper: LocalInstance, node: La
       }
       folders[folderId] = { completion: await input.reads.completion(keeper, folderId), files };
     }
-    const state = await input.reads.keeperState(keeper);
-    return { nodeId: node.id, online: true, state, observedAt: input.now().toISOString(), effectiveThreshold: node.threshold, folders };
+    const space = input.keeperSpace?.(node.id) ?? null;
+    const state = keeperSpaceState(space) ?? (await input.reads.keeperState(keeper));
+    const effectiveThreshold = space?.state === "raised" ? space.threshold : node.threshold;
+    return { nodeId: node.id, online: true, state, observedAt: input.now().toISOString(), effectiveThreshold, folders };
   } catch {
     return null;
   }

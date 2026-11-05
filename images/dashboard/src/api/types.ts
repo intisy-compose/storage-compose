@@ -372,7 +372,7 @@ export interface LayeredSpace {
 export interface HandoffWaitingView {
   folderId: string;
   path: string;
-  reason: "changed" | "held" | "no-keeper" | "keeper-offline" | "not-confirmed";
+  reason: "changed" | "held" | "no-keeper" | "keeper-offline" | "keeper-full" | "not-confirmed";
   since: string;
 }
 

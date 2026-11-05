@@ -6,6 +6,7 @@ export const handoffWaitingHours = 24;
 
 const waitingWords: Record<HandoffWaitingView["reason"], string> = {
   "keeper-offline": "its keeper is offline",
+  "keeper-full": "its keeper, the cluster, is short of space",
   "no-keeper": "no node keeps it",
   "not-confirmed": "no keeper holds this version yet",
   changed: "it changed since it was offered",

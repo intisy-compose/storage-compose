@@ -214,6 +214,18 @@ describe("a confirmed hand-off", () => {
     assert.deepEqual(decide([keeper("c1c1")], [clip], disabled).confirmed, []);
   });
 
+  it("does not count a cluster short of space: the file waits for it as full, and another keeper still confirms", () => {
+    const decision = decide([keeper("c1c1", {}, { state: "full" })]);
+    assert.deepEqual(decision.confirmed, []);
+    assert.equal(decision.waiting[0].reason, "keeper-full");
+
+    const keepingLaptop = parseLayout(layoutText.replace("threshold = 50\nadmitted  = true", "threshold = 20\nadmitted  = true"));
+    const both = decide([keeper("c1c1", {}, { state: "full" }), keeper("a002")], [clip], keepingLaptop);
+    assert.deepEqual(both.confirmed.map((entry) => entry.keeper), ["a002"]);
+    const stillWaiting = decide([keeper("c1c1", {}, { state: "full" }), keeper("a002", { version: ["STICK:2"] })], [clip], keepingLaptop);
+    assert.equal(stillWaiting.waiting[0].reason, "not-confirmed", "a keeper that only lacks the version is no full one");
+  });
+
   it("does not count a keeper on the handing node's own device", () => {
     const sameDevice = parseLayout(layoutText.replace('device    = "array"', 'device    = "stick"'));
 
