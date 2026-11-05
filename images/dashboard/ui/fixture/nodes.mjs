@@ -1,3 +1,4 @@
+import { layeredFixture, layeredWarningsFixture } from "./layout.mjs";
 const terabyte = 1e12;
 const hour = 3_600_000;
 const day = 24 * hour;
@@ -157,7 +158,7 @@ function withNodeDetail(response) {
 function withDetail(node) {
   const instance = node.instance ?? (node.local && node.syncthing ? ownInstance() : null);
   const connections = !node.local ? "unknown" : node.id === "e5d0" ? "not-yet" : "on-profile";
-  return { ...node, instance, connections, peers: node.peers ?? [], folders: node.folders.map(folderDetail) };
+  return { ...node, instance, connections, peers: node.peers ?? [], folders: node.folders.map(folderDetail), layered: layeredFixture(node.id) };
 }
 
 export function nodesFixture(startedAt) {
@@ -173,7 +174,10 @@ export function nodesFixture(startedAt) {
         syncthing: syncthing("e5d0", { inRate: 6.4e6, outRate: 0 }),
         folders: [{ id: "documents", path: "D:\\files\\Documents", type: "sendreceive", state: "syncing", completion: 64, needItems: 918_733, needTotalItems: 918_733, needBytes: 9.6e10 }],
       }),
-      simpleNode("17aa", "finn-pc-disk", "drive", { local: true, host: "finn-pc", space: { size: 2 * terabyte, used: 1.1 * terabyte } }),
+      simpleNode("17aa", "finn-pc-disk", "drive", {
+        local: true, host: "finn-pc", threshold: 50, space: { size: 2 * terabyte, used: 1.1 * terabyte },
+        folders: [{ id: "pictures", path: "D:\\Pictures", type: "sendonly", state: "idle", completion: 52, needItems: 1, needTotalItems: 1 }],
+      }),
       simpleNode("2b90", "p53", "drive", { host: "p53", space: { size: 1 * terabyte, used: 0.35 * terabyte }, syncthing: syncthing("2b90", { addresses: ["tcp://100.64.0.12:22000"] }) }),
       remoteArray(),
       simpleNode("9f31", "second-pc", "drive", {
@@ -198,6 +202,7 @@ export function nodesFixture(startedAt) {
       simpleNode("d3e8", "phone", "folder", { host: "phone", threshold: 90, space: { size: 0.5 * terabyte, used: 0.31 * terabyte }, syncthing: syncthing("d3e8", { version: "v1.29.2" }) }),
     ],
     warnings: [
+      ...layeredWarningsFixture(),
       { id: "array:b71c:data2", at: ago(3 * hour), level: "error", kind: "array", text: "cold-backup: data2 (SAM-0072) is missing", nodeId: "b71c", folderId: null },
       { id: "folder-errors:44c2:documents", at: ago(20 * 60_000), level: "warning", kind: "folder-errors", text: "documents on office-pc: 3 failed items", nodeId: "44c2", folderId: "documents" },
       { id: "full:a3f9:a3f9-data1", at: ago(2 * day), level: "warning", kind: "full", text: "a3f9-data1 in private-array is 92% full", nodeId: "a3f9", folderId: null },

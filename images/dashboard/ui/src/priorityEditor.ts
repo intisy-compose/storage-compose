@@ -108,7 +108,10 @@ export function priorityEditor(path: string, info: PriorityInfo): HTMLElement | 
   input.disabled = draft.busy || draft.pending !== null;
   input.addEventListener("input", () => (draft.value = input.value));
   const typed = typedPriority(draft.value);
-  const saveButton = button(draft.busy ? "Saving…" : "Save", () => typed !== null && void start(path, draft, typed));
+  const saveButton = button(draft.busy ? "Saving…" : "Save", () => {
+    const priority = typedPriority(draft.value);
+    if (priority !== null) void start(path, draft, priority);
+  });
   saveButton.disabled = draft.busy || draft.pending !== null;
   const inherit = info.setHere !== null ? button("Inherit from above", () => void start(path, draft, null), "button ghost") : null;
   if (inherit) inherit.disabled = draft.busy || draft.pending !== null;
