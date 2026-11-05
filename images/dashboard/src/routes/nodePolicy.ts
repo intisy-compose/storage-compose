@@ -6,7 +6,8 @@ import { planChanges } from "../layoutPreview.js";
 import { keepsFolder, nodePlan } from "../nodePlan.js";
 import { carriedLayoutPaths } from "../reconcileNode.js";
 import type { AnyRoute, WriteNote } from "../routeTypes.js";
-import { setupRepoDirectory } from "../settings.js";
+import { type LayeredPauses, fileLayeredPauses } from "../layeredPauses.js";
+import { layeredPausesFile, setupRepoDirectory } from "../settings.js";
 import { type LayoutNode, type SetupLayout, blockedNodeIds, parseLayout, saveLayout } from "../setupRepo.js";
 import { decodedSegment } from "./devices.js";
 import { layoutTextOf, pullAfterConflict, requireBase } from "./priorities.js";
@@ -18,6 +19,8 @@ export interface NodePolicySources {
   configured(instance: LocalInstance): Promise<Set<string>>;
   /** What the node holds of a folder, as its Syncthing counts it. */
   localSize(instance: LocalInstance, folderId: string): Promise<{ files: number; bytes: number }>;
+  /** The folders the layered sync paused, which a person may resume by hand. */
+  pauses?: LayeredPauses;
 }
 
 /**
@@ -159,8 +162,35 @@ function requireApplyConfirmation(node: LayoutNode, layout: SetupLayout, body: N
   if (body.confirm !== node.name) throw new RequestError(400, `type the node's name ${node.name} to let it act on its plan`);
 }
 
+/**
+ * Resumes every folder the layered sync's record names for the node, with its name typed, and forgets each; a folder no longer paused is
+ * only forgotten.
+ * @implNote The way out for a node that no round resumes any more (it stopped acting on its plan, or the layout blocks or no longer
+ * admits it). A node still stopped by its plan is paused again by its next round, which the answer says.
+ */
+export async function resumeRecordedPauses(sources: NodePolicySources, instance: LocalInstance, confirm: unknown): Promise<{ resumed: string[]; forgotten: string[] }> {
+  if (confirm !== instance.name) throw new RequestError(400, `type the node's name ${instance.name} to resume its folders`);
+  const pauses = sources.pauses;
+  if (!pauses) throw new RequestError(503, "this host keeps no record of the folders it pauses");
+  const marks = await pauses.of(instance.nodeId).catch((error) => {
+    throw new RequestError(409, `the record of layered pauses cannot be read, so nothing is resumed: ${(error as Error).message}`);
+  });
+  const resumed: string[] = [];
+  const forgotten: string[] = [];
+  for (const folderId of marks.keys()) {
+    const settings = await callSyncthing(instance, (client) => client.folderSettings(folderId)).catch(() => null);
+    if (settings?.paused === true) {
+      await callSyncthing(instance, (client) => client.request("PATCH", `/config/folders/${encodeURIComponent(folderId)}`, { paused: false }));
+      resumed.push(folderId);
+    } else forgotten.push(folderId);
+    await pauses.unmark(instance.nodeId, folderId);
+  }
+  return { resumed, forgotten };
+}
+
 const liveSources: NodePolicySources = {
   repository: setupRepoDirectory,
+  pauses: fileLayeredPauses(layeredPausesFile),
   resolve: (nodeId) => resolveInstance(nodeId),
   configured: async (instance) => new Set((await callSyncthing(instance, (client) => client.folders())).map((folder) => folder.id)),
   localSize: async (instance, folderId) => {
@@ -195,6 +225,18 @@ export function nodePolicyRoutes(sources: NodePolicySources = liveSources): AnyR
         const { saved, note } = await saveChange(sources, target, change, base, changeText(target.node, change));
         sendJson(response, 200, { saved });
         return saved.committed ? note : { nothingWritten: true };
+      },
+    },
+    {
+      method: "PUT",
+      pattern: /^\/api\/nodes\/([^/]+)\/layered\/resume$/,
+      write: async ({ request, response, params: [nodeSegment] }) => {
+        const body = asObject(await readBody(request));
+        const instance = requireLocal(await sources.resolve(decodedSegment(nodeSegment, "node ID")));
+        const answer = await resumeRecordedPauses(sources, instance, body.confirm);
+        sendJson(response, 200, answer);
+        const count = answer.resumed.length;
+        return count ? { nodeId: instance.nodeId, nodeName: instance.name, folderId: null, text: `${instance.name}: resumed ${count} ${count === 1 ? "folder" : "folders"} the layered sync had paused, by hand` } : { nothingWritten: true };
       },
     },
     {

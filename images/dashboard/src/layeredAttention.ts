@@ -106,11 +106,29 @@ function contractWarnings(node: StorageNode, state: LayeredState, now: number): 
   return warnings;
 }
 
+/**
+ * Folders the layered sync's record says it paused, whatever the node's state now. A node that still acts on its plan resumes them by
+ * itself; one that no longer does (it reports only, or the layout blocks or no longer admits it) keeps them paused until a person resumes
+ * them from its node page.
+ */
+function stopPausedWarnings(node: StorageNode, state: LayeredState): Warning[] {
+  const paused = state.pausedByStop ?? [];
+  if (!paused.length) return [];
+  const count = plural(paused.length, "folder");
+  const acting = state.mode === "apply" && state.problems.length === 0;
+  const way = acting
+    ? `they resume once ${state.stopped ? "the stop ends and " : ""}its space decision lets it pull, or by Resume on its node page`
+    : "it no longer acts on its plan, so no round resumes them: resume them on its node page";
+  return [warning({ id: `stop-paused:${node.id}`, level: acting ? "info" : "warning", kind: "stop-paused", text: `${node.name}: ${count} ${paused.length === 1 ? "is" : "are"} paused by a stop; ${way}`, nodeId: node.id })];
+}
+
 /** The round's space decision, made in report mode too: a stop pauses the node only once it acts. */
 function spaceWarnings(node: StorageNode, state: LayeredState): Warning[] {
   const space = state.space;
   if (space?.state === "stopped") {
-    const outcome = state.mode === "apply" ? "its folders are paused and nothing is handed off until it fits with 10% free" : "once it acts, its folders are paused until it fits";
+    const outcome = state.pauseHeld
+      ? `${state.pauseHeld}, so nothing was paused; nothing is handed off`
+      : state.mode === "apply" ? "its folders are paused and nothing is handed off until it fits with 10% free" : "once it acts, its folders are paused until it fits";
     return [warning({ id: `space-stopped:${node.id}`, level: state.mode === "apply" ? "warning" : "info", kind: "space-stopped", text: `${node.name} does not fit even at its top priority: it needs ${space.neededBytes} bytes and has ${space.availableBytes}; ${outcome}`, nodeId: node.id })];
   }
   if (space?.state === "raised")
@@ -144,7 +162,7 @@ function planWarnings(node: StorageNode, state: LayeredState): Warning[] {
 export function layeredWarnings(node: StorageNode, now = Date.now()): Warning[] {
   const state = node.layered;
   if (!state) return [];
-  return [...planWarnings(node, state), ...spaceWarnings(node, state), ...contractWarnings(node, state, now), ...resultWarnings(node, state)];
+  return [...planWarnings(node, state), ...spaceWarnings(node, state), ...stopPausedWarnings(node, state), ...contractWarnings(node, state, now), ...resultWarnings(node, state)];
 }
 
 /** The setup repo's pull or push problem, a commit of this host the others do not have yet among them. */

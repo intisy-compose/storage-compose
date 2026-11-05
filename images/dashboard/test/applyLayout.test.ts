@@ -7,12 +7,13 @@ import { type LayoutRoundDependencies, LayoutRound, type SpaceReads, mountedHand
 import type { HandoffPublisher } from "../src/handoffFeed.js";
 import type { LocalInstance } from "../src/instanceResolver.js";
 import { layeredStateOf } from "../src/layeredDrift.js";
-import { nodePlan } from "../src/nodePlan.js";
+import { type NodePlan, nodePlan } from "../src/nodePlan.js";
 import { carriedLayoutPaths } from "../src/reconcileNode.js";
 import { type SetupLayout, parseLayout } from "../src/setupRepo.js";
 import type { FolderSize } from "../src/spacePlan.js";
 import { memoryLayeredPauses } from "../src/layeredPauses.js";
 import type { Notification } from "../src/notifyOutbox.js";
+import { fileNotifiedState } from "../src/notifiedState.js";
 import { FakeSyncthing, clientOf, folderOf, onPlan } from "./fakeFolderSyncthing.js";
 
 function layoutText(apply: boolean, threshold = 50): string {
@@ -278,7 +279,7 @@ describe("the space of each node of this host, every round", () => {
   it("lets a node that holds everything raise once a keeper of this host holds all of what the raise drops", async () => {
     const completions: Record<string, number> = {};
     const holdingAll: SpaceReads = {
-      space: async () => ({ totalBytes: 1000, freeBytes: 50 }),
+      space: async (instance) => (instance.nodeId === "a002" ? { totalBytes: 10_000, freeBytes: 9_000 } : { totalBytes: 1000, freeBytes: 50 }),
       sizes: async () => ({ globalBytes: 100, localBytes: 100, needBytes: 0 }),
       completion: async (instance, folderId) => (instance.nodeId === "a002" ? (completions[folderId] ?? 0) : 0),
     };
@@ -493,5 +494,154 @@ describe("the hand-off list on a node's files this host mounts", () => {
     assert.equal(await files.ensure({ ...linux, root: null }, { id: "x", path: folderIn(ownRoot, "Documents") }), "the node has no root known to this host");
     assert.equal(await files.ensure({ ...linux, os: "windows" }, { id: "x", path: folderIn(ownRoot, "Documents") }), "the host agent creates it on a Windows node");
     assert.equal(existsSync(join(otherNode, ".stignore-handoff")), false);
+  });
+});
+
+/** Space reads that can be switched between rounds. */
+function switchable(initial: SpaceReads): { reads: SpaceReads; set(next: SpaceReads): void } {
+  let current = initial;
+  return {
+    reads: { space: (instance) => current.space(instance), sizes: (instance, id) => current.sizes(instance, id), completion: (instance, id) => current.completion?.(instance, id) ?? Promise.resolve(0) },
+    set: (next) => void (current = next),
+  };
+}
+
+describe("a stop holds until a decision lets the node pull", () => {
+  it("two stopped rounds keep the pause and notify once; an unreadable round after a stop keeps it too", async () => {
+    const syncthing = nodeAtTwenty();
+    const pauses = memoryLayeredPauses();
+    const notified: Notification[] = [];
+    const space = switchable(spaceOf(110, 10));
+    const round = roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(syncthing)], [], { space: space.reads, pauses, notify: async (entry) => void notified.push(entry) });
+
+    await round.run();
+    await round.run();
+    assert.ok(syncthing.folders.every((folder) => folder.paused === true));
+    assert.deepEqual(notified.map((entry) => entry.title), ["laptop-data stopped"]);
+
+    for (const unreadable of [{ ...spaceOf(1000, 900), space: async () => null }, { ...spaceOf(1000, 900), space: async () => Promise.reject(new Error("statfs failed")) }]) {
+      space.set(unreadable);
+      await round.run();
+      assert.ok(syncthing.folders.every((folder) => folder.paused === true), "nothing is resumed on a decision not made");
+      assert.equal(layeredStateOf("a001")?.space, null);
+      assert.deepEqual(layeredStateOf("a001")?.pausedByStop, ["documents", "documents-old"]);
+      assert.ok(layeredStateOf("a001")?.drift.every((change) => change.field !== "paused" || /space can be read/.test(change.held ?? "")));
+    }
+    assert.deepEqual(notified.map((entry) => entry.title), ["laptop-data stopped"]);
+  });
+
+  it("a paused folder whose status errors or reads empty is sized from its pause record, and without one the node stays paused", async () => {
+    const pausedStatus = { globalBytes: 0, localBytes: 0, needBytes: 0, state: "", stateChanged: "0001-01-01T00:00:00Z", remoteSequence: null };
+    const roomy = (failing: "errors" | "empty"): SpaceReads => ({
+      space: async () => ({ totalBytes: 1000, freeBytes: 900 }),
+      sizes: async () => (failing === "errors" ? Promise.reject(new Error("folder is paused")) : pausedStatus),
+    });
+    for (const failing of ["errors", "empty"] as const) {
+      const recorded = nodeAtTwenty();
+      for (const folder of recorded.folders) folder.paused = true;
+      const size = { globalBytes: 100, localBytes: 100, needBytes: 0 };
+      const withSizes = memoryLayeredPauses({ a001: { documents: { at: "t", size }, "documents-old": { at: "t", size } } });
+      await roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(recorded)], [], { space: roomy(failing), pauses: withSizes }).run();
+      assert.equal(layeredStateOf("a001")?.space?.state, "fits", failing);
+      assert.ok(recorded.folders.every((folder) => folder.paused === false), `${failing}: resumed on the recorded sizes`);
+
+      const unsized = nodeAtTwenty();
+      for (const folder of unsized.folders) folder.paused = true;
+      const withoutSizes = memoryLayeredPauses({ a001: { documents: { at: "t", size: null }, "documents-old": { at: "t", size: null } } });
+      await roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(unsized)], [], { space: roomy(failing), pauses: withoutSizes }).run();
+      assert.equal(layeredStateOf("a001")?.space?.state, "unknown", failing);
+      assert.ok(unsized.folders.every((folder) => folder.paused === true), `${failing}: no size, no resume`);
+    }
+  });
+
+  it("a folder is unknown until it is indexed: past its first scan, not paused, with a remote index when it is shared", async () => {
+    const statusOf = (overrides: Record<string, unknown>) => ({ globalBytes: 0, localBytes: 0, needBytes: 0, state: "idle", stateChanged: "2026-11-05T11:00:00Z", remoteSequence: { "KEEPER-ID": 3 }, ...overrides });
+    const cases: [Record<string, unknown>, string][] = [
+      [{}, "fits"],
+      [{ remoteSequence: {} }, "unknown"],
+      [{ remoteSequence: null, state: "" }, "unknown"],
+      [{ stateChanged: "0001-01-01T00:00:00Z" }, "unknown"],
+      [{ state: "error" }, "unknown"],
+    ];
+    for (const [overrides, state] of cases) {
+      await roundOf(() => parseLayout(layoutText(false, 20)), [instanceOf(nodeAtTwenty())], [], { space: { space: async () => ({ totalBytes: 1000, freeBytes: 900 }), sizes: async () => statusOf(overrides) } }).run();
+      assert.equal(layeredStateOf("a001")?.space?.state, state, JSON.stringify(overrides));
+    }
+  });
+});
+
+describe("keepers by their own decision", () => {
+  it("two nodes that both keep a folder and are both short of space never drop it on the word of the other", async () => {
+    const both = layoutText(true, 20).replace("threshold = 0\nadmitted  = true", "threshold = 20\nadmitted  = true\napply     = true");
+    const layout = parseLayout(both);
+    const syncthings = ["a001", "a002"].map((nodeId) => onPlan(nodePlan(layout, nodeId, carriedLayoutPaths(layout, nodeId, new Set(["documents", "documents-old"]))) as NodePlan));
+    const short: SpaceReads = {
+      space: async () => ({ totalBytes: 1000, freeBytes: 50 }),
+      sizes: async () => ({ globalBytes: 100, localBytes: 100, needBytes: 0 }),
+      completion: async () => 100,
+    };
+
+    await roundOf(() => layout, [instanceOf(syncthings[0], "a001"), instanceOf(syncthings[1], "a002")], [], { space: short, pauses: memoryLayeredPauses() }).run();
+
+    const states = ["a001", "a002"].map((nodeId) => layeredStateOf(nodeId)?.space?.state);
+    assert.deepEqual(states, ["stopped", "stopped"], "neither counts the other, which only fits by dropping the folder");
+    for (const syncthing of syncthings) assert.equal(folderOf(syncthing, "documents-old").type, "sendreceive", "neither turned it send-only");
+  });
+});
+
+describe("the hand-off trash", () => {
+  it("counts as freeing on its own, so a node in the middle of a hand-off stays raised, and lets nothing pull on it", async () => {
+    const syncthing = nodeAtFifty();
+    const result = (trashBytes: number) => ({ schema: 1, nodeId: "a001", contractWrittenAt: "", finishedAt: "", refused: null, results: [], trash: [], notes: [], purged: 0, trashBytes });
+    let trash = 100;
+    const publisher: HandoffPublisher = { publish: async () => 0, clear: async () => {}, last: () => null, result: async () => result(trash) };
+    const space: SpaceReads = {
+      space: async () => ({ totalBytes: 1000, freeBytes: 50 }),
+      sizes: async (_instance, id) => (id === "documents" ? { globalBytes: 100, localBytes: 100, needBytes: 0 } : { globalBytes: 100, localBytes: 0, needBytes: 100 }),
+    };
+    const round = roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(syncthing)], [], { space, handoffs: publisher, pauses: memoryLayeredPauses() });
+
+    await round.run();
+    assert.deepEqual(layeredStateOf("a001")?.space, { state: "raised", threshold: 80, neededBytes: 100, availableBytes: 250 }, "Old has left into the trash, which frees 100 by itself");
+    assert.equal(folderOf(syncthing, "documents-old").type, "sendonly", "no type-up on bytes still in the trash");
+
+    trash = 0;
+    await round.run();
+    assert.equal(layeredStateOf("a001")?.space?.state, "stopped", "without it the same node would stop");
+  });
+});
+
+describe("a stop held on an array", () => {
+  it("says it cannot pause without the folder ID typed, in its state and in one notification", async () => {
+    const syncthing = nodeAtTwenty();
+    const notified: Notification[] = [];
+    const round = roundOf(() => parseLayout(disabled(layoutText(true, 20))), [instanceOf(syncthing, "a001", "array")], [], { space: spaceOf(1000, 900), pauses: memoryLayeredPauses(), notify: async (entry) => void notified.push(entry) });
+
+    await round.run();
+    await round.run();
+
+    assert.deepEqual(syncthing.writes(), []);
+    assert.equal(layeredStateOf("a001")?.pauseHeld, "it cannot be paused without the folder ID typed");
+    assert.deepEqual(notified.map((entry) => entry.title), ["laptop-data cannot be paused"]);
+    assert.match(notified[0].message, /nothing was paused/);
+  });
+});
+
+describe("the cluster's notification across a restart", () => {
+  it("is sent once although a new round object reads the same record", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "notified-round-"));
+    try {
+      const clusterText = layoutText(true).replace('root = "/keep"', 'root = "/keep"\nrole = "archive"');
+      const layout = parseLayout(clusterText);
+      const plan = nodePlan(layout, "a002", carriedLayoutPaths(layout, "a002", new Set(["documents", "documents-old"]))) as NodePlan;
+      const notified: Notification[] = [];
+      for (let restart = 0; restart < 2; restart++) {
+        const instance = { ...instanceOf(onPlan(plan), "a002"), name: "keeper-data" };
+        await roundOf(() => layout, [instance], [], { space: spaceOf(210, 10), notified: fileNotifiedState(join(directory, "notified.json")), notify: async (entry) => void notified.push(entry) }).run();
+      }
+      assert.deepEqual(notified.map((entry) => entry.title), ["keeper-data is short of space"]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

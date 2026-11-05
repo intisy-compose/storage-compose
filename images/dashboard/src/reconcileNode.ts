@@ -1,11 +1,11 @@
 import { shortDeviceId } from "./api/deviceText.js";
 import { type FolderType, folderTypeTexts } from "./api/types.js";
-import type { LayeredPauses } from "./layeredPauses.js";
+import type { LayeredPauses, PauseMark } from "./layeredPauses.js";
 import { type LocalInstance, arrayConfirmProblem, callSyncthing, defaultReadBackDelaysMs, writeConfirmed } from "./instanceResolver.js";
 import { type NodePlan, type PlannedFolder, type PlannedVersioning, handoffIgnoreFile, handoffIgnoreLines } from "./nodePlan.js";
 import { writeIgnoreLines } from "./routes/folderIgnores.js";
 import { type SetupLayout, topDirectoryPath } from "./setupRepo.js";
-import { type SpaceDecision, spaceAllowsPull } from "./spacePlan.js";
+import { type FolderSizes, type SpaceDecision, spaceAllowsPull } from "./spacePlan.js";
 import type { SyncthingFolderSettings } from "./syncthing.js";
 import { effectiveSharing, sharedDevices } from "./syncthingConfig.js";
 
@@ -84,6 +84,10 @@ export interface ReconcileOptions {
   stopped?: string | null;
   /** The folders the layered sync paused, so a resume undoes only its own pause; without it no pause or resume is written. */
   pauses?: LayeredPauses;
+  /** Why a recorded pause is not resumed this round; null resumes it. Absent holds every resume. */
+  resumeHeld?: string | null;
+  /** Each folder's size this round, recorded with its pause, since a paused folder reports none. */
+  sizes?: FolderSizes;
   /** On an array, the folder ID as typed for each folder the person confirmed. */
   confirmations?: Readonly<Record<string, string>>;
   /** Called after each confirmed write, with the change in words for Activity. */
@@ -283,8 +287,9 @@ interface DiffContext {
   /** Why no folder may turn send-receive this round; null while the space decision allows it. */
   pullHeld: string | null;
   stopped: string | null;
-  /** The node's folders the layered sync paused; null without a record, which holds every pause and resume. */
-  paused: ReadonlySet<string> | null;
+  /** The node's folders the layered sync paused; null without a record, which holds every pause and resume; `unreadable` resumes nothing. */
+  paused: ReadonlyMap<string, PauseMark> | null | "unreadable";
+  resumeHeld: string | null;
 }
 
 function typeDiff(planned: PlannedFolder, current: CurrentFolder, context: DiffContext): { type: FolderType | null; changes: FieldChange[] } {
@@ -330,10 +335,22 @@ function versioningDiff(planned: PlannedFolder, current: CurrentFolder): { versi
 function pausedDiff(planned: PlannedFolder, current: CurrentFolder, context: DiffContext): { paused: boolean | null; changes: FieldChange[] } {
   const isPaused = current.settings.paused === true;
   if (planned.paused === isPaused) return { paused: null, changes: [] };
-  if (!planned.paused && !context.paused?.has(planned.id)) return { paused: null, changes: [] };
-  const held = context.paused === null ? "this host keeps no record of the folders it pauses" : null;
-  const text = planned.paused ? `pause the folder: ${context.stopped ?? "the node is stopped"}` : "resume the folder";
-  return { paused: held ? null : planned.paused, changes: [change("paused", text, held)] };
+  if (planned.paused) {
+    const held = context.paused === null ? "this host keeps no record of the folders it pauses" : null;
+    return { paused: held ? null : true, changes: [change("paused", `pause the folder: ${context.stopped ?? "the node is stopped"}`, held)] };
+  }
+  if (!(context.paused instanceof Map) || !context.paused.has(planned.id)) return { paused: null, changes: [] };
+  return { paused: context.resumeHeld ? null : false, changes: [change("paused", "resume the folder", context.resumeHeld)] };
+}
+
+/**
+ * Recorded pauses whose folder is neither paused nor to be paused: a pause recorded before a write that never happened, or one a person
+ * resumed. Forgetting them keeps a person's later pause of that folder from ever being resumed.
+ */
+function staleMarks(plan: NodePlan, byId: ReadonlyMap<string, SyncthingFolderSettings>, paused: DiffContext["paused"]): string[] {
+  if (!(paused instanceof Map)) return [];
+  const planned = new Map(plan.folders.map((folder) => [folder.id, folder]));
+  return [...paused.keys()].filter((id) => byId.get(id)?.paused !== true && planned.get(id)?.paused !== true);
 }
 
 /** @implNote A stopped node holds everything but its pause: nothing it has changes until it rejoins. */
@@ -449,12 +466,15 @@ async function applySharing(writer: Writer, folderId: string, sharing: Sharing):
   await patchField(writer, folderId, { devices }, (settings) => deviceSet(settings) === wanted);
 }
 
-/** @implNote A pause is recorded only once Syncthing has it, and forgotten only once the resume is read back, so a failed write is never lost. */
+/**
+ * @implNote A pause is recorded before it is written and forgotten only once the resume is read back, so no pause of the layered sync is
+ * ever left without its record; a record of a write that never happened is dropped as stale by the next round.
+ */
 async function applyPaused(writer: Writer, folderId: string, paused: boolean): Promise<void> {
   const pauses = writer.options.pauses as LayeredPauses;
+  if (paused) await pauses.mark(writer.instance.nodeId, folderId, { at: new Date().toISOString(), size: writer.options.sizes?.[folderId] ?? null });
   await patchField(writer, folderId, { paused }, (settings) => settings.paused === paused);
-  if (paused) await pauses.mark(writer.instance.nodeId, folderId);
-  else await pauses.unmark(writer.instance.nodeId, folderId);
+  if (!paused) await pauses.unmark(writer.instance.nodeId, folderId);
 }
 
 async function applyField(writer: Writer, work: FolderWork, field: ReconcileField): Promise<"written" | "none" | string> {
@@ -531,7 +551,7 @@ export async function reconcileNode(instance: LocalInstance, plan: NodePlan, opt
     callSyncthing(instance, (client) => client.devices()),
   ]);
   const byId = new Map((configured ?? []).map((folder) => [folder.id, folder]));
-  const paused = options.pauses ? await options.pauses.of(plan.nodeId) : null;
+  const paused: DiffContext["paused"] = options.pauses ? await options.pauses.of(plan.nodeId).catch(() => "unreadable" as const) : null;
   const context: DiffContext = {
     ownId,
     known: new Set((devices ?? []).map((device) => device.deviceID)),
@@ -541,6 +561,7 @@ export async function reconcileNode(instance: LocalInstance, plan: NodePlan, opt
     pullHeld: pullHeldBy(options.space ?? null, plan),
     stopped: options.stopped ?? null,
     paused,
+    resumeHeld: options.resumeHeld === undefined ? "a resume waits for a space decision that lets the node pull" : options.resumeHeld,
   };
   const result: NodeReconcile = { nodeId: plan.nodeId, mode: options.apply ? "apply" : "report", folders: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], failed: [] };
   const unknownDevices = new Set<string>();
@@ -563,6 +584,9 @@ export async function reconcileNode(instance: LocalInstance, plan: NodePlan, opt
   result.unknownDevices = [...unknownDevices].sort();
   result.folders = works.map((entry) => entry.reconcile);
   if (!options.apply) return result;
+  for (const folderId of staleMarks(plan, byId, paused)) {
+    await options.pauses?.unmark(plan.nodeId, folderId).catch((error) => result.failed.push(`${folderId}: its stale pause record was not dropped: ${reasonOf(error)}`));
+  }
   const writer: Writer = { instance, options, delays: options.readBackDelaysMs ?? defaultReadBackDelaysMs };
   for (const { work, reconcile } of works) {
     try {

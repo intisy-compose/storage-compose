@@ -590,46 +590,79 @@ function pausedPlan(plan: NodePlan): NodePlan {
   return { ...plan, folders: plan.folders.map((folder) => ({ ...folder, paused: true })) };
 }
 
+const marked = (...ids: string[]) => ({ a001: Object.fromEntries(ids.map((id) => [id, { at: "2026-11-05T11:00:00.000Z", size: null }])) });
+
 describe("pausing a stopped node and resuming it", () => {
   const stopped = "laptop-data does not fit even at its top priority";
 
-  it("pauses every folder first, records the pause, and holds every other change", async () => {
+  it("records each pause with its size before writing it, pauses every folder first, and holds every other change", async () => {
     const syncthing = onPlan(planOf(configured));
     const pauses = memoryLayeredPauses();
+    const recordedBeforeWrite: boolean[] = [];
+    syncthing.onRequest = (method, path) => {
+      if (method === "PATCH" && path.startsWith("/config/folders/")) recordedBeforeWrite.push(decodeURIComponent(path.split("/").pop() ?? "") in (pauses.marks.a001 ?? {}));
+    };
+    const sizes = { documents: { globalBytes: 7, localBytes: 7, needBytes: 0 } };
 
-    const result = await reconcileNode(instanceOf(syncthing), pausedPlan(planOf(configured, 20)), options({ space: decision("stopped", 20), stopped, pauses }));
+    const result = await reconcileNode(instanceOf(syncthing), pausedPlan(planOf(configured, 20)), options({ space: decision("stopped", 20), stopped, pauses, sizes }));
 
     for (const id of configured) assert.equal(folderOf(syncthing, id).paused, true, id);
-    assert.deepEqual(pauses.marks, { a001: ["documents", "documents-old"] });
+    assert.deepEqual(recordedBeforeWrite, [true, true], "each pause is recorded before its PATCH");
+    assert.deepEqual(Object.keys(pauses.marks.a001).sort(), configured);
+    assert.equal(pauses.marks.a001.documents.size?.globalBytes, 7, "the size is kept, as a paused folder reports none");
     assert.deepEqual(syncthing.writes().map((sent) => JSON.stringify(sent.body)), ['{"paused":true}', '{"paused":true}'], "nothing but the pause is written");
     const type = result.folders.find((folder) => folder.folderId === "documents-old")?.changes.find((change) => change.field === "type");
     assert.deepEqual([type?.written, type?.held], [false, stopped]);
-    assert.equal(folderOf(syncthing, "documents-old").type, "sendonly");
   });
 
-  it("resumes only the folders it paused: one paused by anyone else stays paused and is no drift", async () => {
-    const syncthing = onPlan(planOf(configured));
-    for (const id of configured) folderOf(syncthing, id).paused = true;
-    const pauses = memoryLayeredPauses({ a001: ["documents"] });
+  it("resumes only the folders it paused, and only when the round lets it", async () => {
+    for (const resumeHeld of [null, "a resume waits for a space decision that lets the node pull (it is unknown)"]) {
+      const syncthing = onPlan(planOf(configured));
+      for (const id of configured) folderOf(syncthing, id).paused = true;
+      const pauses = memoryLayeredPauses(marked("documents"));
 
-    const result = await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses }));
+      const result = await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses, resumeHeld }));
 
-    assert.equal(folderOf(syncthing, "documents").paused, false);
-    assert.equal(folderOf(syncthing, "documents-old").paused, true);
-    assert.deepEqual(pauses.marks, {});
-    assert.deepEqual(result.folders.map((folder) => `${folder.folderId} ${folder.changes.map((change) => change.field).join(",")}`), ["documents paused"]);
+      assert.equal(folderOf(syncthing, "documents").paused, resumeHeld !== null, String(resumeHeld));
+      assert.equal(folderOf(syncthing, "documents-old").paused, true, "paused by someone else, and no drift");
+      assert.deepEqual(Object.keys(pauses.marks.a001 ?? {}), resumeHeld ? ["documents"] : []);
+      assert.deepEqual(result.folders.map((folder) => `${folder.folderId} ${folder.changes.map((change) => `${change.field}:${change.held ?? ""}`).join(",")}`), [`documents paused:${resumeHeld ?? ""}`]);
+    }
   });
 
-  it("resumes after the other changes and before a type-up", async () => {
+  it("holds every resume when no round says otherwise", async () => {
     const syncthing = onPlan(planOf(configured));
-    syncthing.ignores.set("documents-old", []);
-    folderOf(syncthing, "documents-old").paused = true;
-    const pauses = memoryLayeredPauses({ a001: ["documents-old"] });
+    folderOf(syncthing, "documents").paused = true;
+    const result = await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses: memoryLayeredPauses(marked("documents")) }));
+    assert.match(result.folders[0].changes[0].held ?? "", /waits for a space decision/);
+    assert.equal(folderOf(syncthing, "documents").paused, true);
+  });
 
-    await reconcileNode(instanceOf(syncthing), planOf(configured, 20), options({ space: decision("fits", 20), pauses }));
+  it("drops a record whose folder is neither paused nor to be paused, so a person's later pause is never resumed", async () => {
+    const syncthing = onPlan(planOf(configured));
+    const pauses = memoryLayeredPauses(marked("documents"));
 
-    const bodies = syncthing.writes().filter((sent) => sent.path === "/config/folders/documents-old").map((sent) => JSON.stringify(sent.body));
-    assert.deepEqual(bodies.slice(-2), ['{"paused":false}', '{"type":"sendreceive"}']);
+    await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses, resumeHeld: null }));
+    assert.deepEqual(pauses.marks, {}, "a crash between the record and the PATCH leaves a record of a folder never paused");
+
+    folderOf(syncthing, "documents").paused = true;
+    await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses, resumeHeld: null }));
+    assert.equal(folderOf(syncthing, "documents").paused, true, "the person's pause stays");
+  });
+
+  it("still pauses over a record it cannot read, and then resumes nothing on a guess", async () => {
+    const syncthing = onPlan(planOf(configured));
+    const pauses = memoryLayeredPauses(marked("documents-old"));
+    pauses.corrupt = true;
+
+    await reconcileNode(instanceOf(syncthing), pausedPlan(planOf(configured)), options({ stopped, pauses }));
+    assert.ok(configured.every((id) => folderOf(syncthing, id).paused === true));
+
+    const unreadable = memoryLayeredPauses(marked("documents", "documents-old"));
+    unreadable.corrupt = true;
+    const result = await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses: unreadable, resumeHeld: null }));
+    assert.ok(configured.every((id) => folderOf(syncthing, id).paused === true));
+    assert.deepEqual(result.folders, []);
   });
 
   it("writes no pause without a record of its pauses, and nothing in report mode", async () => {
@@ -643,5 +676,18 @@ describe("pausing a stopped node and resuming it", () => {
     const reported = await reconcileNode(instanceOf(reporting), pausedPlan(planOf(configured)), options({ apply: false, stopped, pauses }));
     assert.equal(reported.folders[0].changes[0].text, `pause the folder: ${stopped}`);
     assert.deepEqual([reporting.writes(), pauses.marks], [[], {}]);
+  });
+
+  it("never pauses an array, whose freeze (C-24) pauses its own folders: a held stop writes nothing and resumes no freeze", async () => {
+    const syncthing = onPlan(planOf(configured));
+    folderOf(syncthing, "documents").paused = true;
+    const pauses = memoryLayeredPauses();
+
+    const result = await reconcileNode(instanceOf(syncthing, "array"), pausedPlan(planOf(configured)), options({ stopped, pauses }));
+    await reconcileNode(instanceOf(syncthing, "array"), planOf(configured), options({ pauses, resumeHeld: null }));
+
+    assert.deepEqual([syncthing.writes(), pauses.marks], [[], {}]);
+    assert.equal(folderOf(syncthing, "documents").paused, true, "the freeze's pause is left to its guard");
+    assert.match(result.folders.find((folder) => folder.folderId === "documents-old")?.held ?? "", /type the folder ID/);
   });
 });

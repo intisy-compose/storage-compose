@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -10,6 +10,7 @@ import { layeredStateOf } from "../src/layeredDrift.js";
 import { memoryLayeredPauses } from "../src/layeredPauses.js";
 import { handoffIgnoreFile } from "../src/nodePlan.js";
 import type { Notification } from "../src/notifyOutbox.js";
+import { fileNotifiedState } from "../src/notifiedState.js";
 import type { HandoffFiles } from "../src/reconcileNode.js";
 import { type SetupLayout, parseLayout } from "../src/setupRepo.js";
 import type { NodeSpace } from "../src/spacePlan.js";
@@ -52,6 +53,7 @@ interface Shape {
   stickThreshold: number;
   otherThreshold: number;
   keeperIsCluster: boolean;
+  keeperThreshold?: number;
 }
 
 const ordinary: Shape = { stickThreshold: 20, otherThreshold: 0, keeperIsCluster: false };
@@ -87,7 +89,7 @@ apply     = true
 [nodes.e002]
 name      = "keeper"
 device    = "keeper"
-threshold = 0
+threshold = ${shape.keeperThreshold ?? 0}
 admitted  = true
 
 [nodes.e003]
@@ -124,6 +126,7 @@ async function layoutRound(shape: Shape = ordinary): Promise<HandoffContract> {
     space: spaceReads,
     pauses,
     notify: async (notification) => void notified.push(notification),
+    notified: fileNotifiedState(join(scratch, "notified.json")),
     record: () => {},
     readBackDelaysMs: [],
   });
@@ -205,6 +208,24 @@ test("a node near its limit raises and hands off through a confirmed keeper", as
   }
 });
 
+test("the trash frees a raised node's space: the node stays raised while it waits, and once it empties the space is back", async () => {
+  await layoutRound();
+
+  const waiting = layeredStateOf("e001")?.space;
+  assert.deepEqual([waiting?.state, waiting?.threshold, waiting?.availableBytes], ["raised", 80, 650_000], "what the trash holds counts as freeing, so the stick does not stop");
+  assert.equal((await folderConfig(peers.stick, "archive")).paused, false);
+
+  const due = Math.floor(Date.now() / 1000) + 8 * 86400;
+  writeFileSync(join(scratch, "e001.json"), JSON.stringify({ schema: 1, nodeId: "e001", writtenAt: new Date(due * 1000).toISOString(), apply: true, cluster: false, quietMinutes: 10, entries: [], waiting: [], notes: [] }));
+  const purge = await runExecutor(peers.stick, scratch, "e001", root, { HANDOFF_NOW: String(due) });
+  assert.deepEqual([purge.refused, purge.purged, (purge as { trashBytes?: number }).trashBytes], [null, 2, 0], "both copies are due and held by their keepers");
+
+  spaceOf.e001 = { totalBytes: 1_000_000, freeBytes: 650_000 };
+  await layoutRound();
+  const back = layeredStateOf("e001")?.space;
+  assert.deepEqual([back?.state, back?.availableBytes], ["raised", 650_000], "the trash's bytes are free space now, and the decision reads the same");
+});
+
 test("a stopped node pulls nothing and hands off nothing", async () => {
   await seed(peers.stick, "late.bin", "would be handed off");
   spaceOf.e001 = { totalBytes: 10_000_000, freeBytes: 10_000 };
@@ -222,12 +243,34 @@ test("a stopped node pulls nothing and hands off nothing", async () => {
   const linesBefore = await readFile(peers.stick, "Archive", handoffIgnoreFile);
   const result = await runExecutor(peers.stick, scratch, "e001", root);
 
-  assert.equal(result.refused, "the contract is not in apply mode");
+  assert.equal(result.refused, null, "a held contract still lets the trash empty");
+  assert.ok((result as { notes?: string[] }).notes?.includes("the contract holds every hand-off: only the trash is emptied"));
+  assert.deepEqual(result.results, []);
   assert.equal(await fileExists(peers.stick, "Archive", "late.bin"), true, "nothing leaves a stopped node");
   assert.equal(await readFile(peers.stick, "Archive", handoffIgnoreFile), linesBefore);
   await pause(5000);
   assert.equal(await fileExists(peers.stick, "Archive", "during.bin"), false, "a paused folder pulls nothing");
   assert.equal(await fileExists(peers.keeper, "Archive", "gathered.txt"), false, "nor sends");
+});
+
+test("a second stopped round keeps the stop as it is, and so does a round whose space cannot be read", async () => {
+  await layoutRound();
+
+  assert.equal(layeredStateOf("e001")?.space?.state, "stopped", "sized from its pause record, a paused folder reporting none");
+  for (const id of ["archive", "work"]) assert.equal((await folderConfig(peers.stick, id)).paused, true, `${id} still paused`);
+  assert.deepEqual(layeredStateOf("e001")?.pausedByStop, ["archive", "work"]);
+  assert.deepEqual(notified.map((entry) => entry.title), ["stick stopped"], "no second notification");
+
+  const stoppedSpace = spaceOf.e001;
+  delete spaceOf.e001;
+  const contract = await layoutRound();
+
+  assert.equal(layeredStateOf("e001")?.space, null);
+  assert.equal(layeredStateOf("e001")?.stopped, null);
+  for (const id of ["archive", "work"]) assert.equal((await folderConfig(peers.stick, id)).paused, true, `${id} kept paused on a decision not made`);
+  assert.deepEqual([contract.apply, contract.trashOnly, contract.entries], [false, true, []]);
+  assert.deepEqual(notified.map((entry) => entry.title), ["stick stopped"]);
+  spaceOf.e001 = stoppedSpace;
 });
 
 test("rejoining resumes, and what the node gathered while stopped reaches the keepers", async () => {
@@ -253,6 +296,7 @@ test("a cluster short of space confirms no new hand-off, its folders stay as the
   spaceOf.e002 = { totalBytes: 1_000_000_000, freeBytes: 0 };
 
   await layoutRound(shape);
+  round = null;
   const contract = await layoutRound(shape);
 
   assert.equal(layeredStateOf("e002")?.space?.state, "full");
@@ -260,7 +304,7 @@ test("a cluster short of space confirms no new hand-off, its folders stay as the
   assert.deepEqual(contract.entries, [], "no hand-off waits on the full cluster's confirmation");
   assert.ok(contract.waiting.some((entry) => entry.path === "waits.bin" && entry.reason === "keeper-full"), JSON.stringify(contract.waiting));
   for (const id of ["archive", "work"]) assert.deepEqual([(await folderConfig(peers.keeper, id)).paused, (await folderConfig(peers.keeper, id)).type], [false, "sendreceive"], `the cluster's ${id}`);
-  assert.equal(notified.filter((entry) => entry.title === "keeper is short of space").length, 1);
+  assert.equal(notified.filter((entry) => entry.title === "keeper is short of space").length, 1, "once, although the second round is a new dashboard reading the same record");
   assert.equal(await fileExists(peers.stick, "Archive", "waits.bin"), true);
 
   spaceOf.e002 = roomy;
@@ -268,4 +312,17 @@ test("a cluster short of space confirms no new hand-off, its folders stay as the
 
   assert.ok(released.entries.some((entry) => entry.path === "waits.bin" && entry.keeper === "e002"), "with room again the cluster confirms it");
   assert.equal(notified.at(-1)?.title, "keeper has room again");
+});
+
+test("two nodes that both keep a folder and are both short of space never drop it on the word of the other", async () => {
+  const shape: Shape = { stickThreshold: 20, otherThreshold: 20, keeperIsCluster: false, keeperThreshold: 50 };
+  spaceOf.e001 = { totalBytes: 10_000_000, freeBytes: 10_000 };
+  spaceOf.e003 = { totalBytes: 10_000_000, freeBytes: 10_000 };
+
+  await layoutRound(shape);
+
+  assert.deepEqual(["e001", "e003"].map((nodeId) => layeredStateOf(nodeId)?.space?.state), ["stopped", "stopped"], "only the stick and other keep Archive, and neither fits without the other");
+  assert.equal(layeredStateOf("e002")?.space?.state, "fits");
+  assert.equal((await folderConfig(peers.other, "archive")).type, "sendreceive", "other still keeps Archive");
+  assert.equal((await folderConfig(peers.stick, "archive")).paused, true, "the stick stops rather than hand Archive off on the word of a node that cannot keep it");
 });

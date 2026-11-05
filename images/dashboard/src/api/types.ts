@@ -356,6 +356,10 @@ export interface LayeredState {
   space: LayeredSpace | null;
   /** Why the layered sync holds the node's folders paused (not enabled, or it does not fit even at its top priority); null while it does not. */
   stopped: string | null;
+  /** The folders the layered sync's pause record names for the node, whatever its state now: they stay paused until resumed. */
+  pausedByStop: string[];
+  /** Why a stop could not pause the node (an array without its folder ID typed); null when its pause was written or none was needed. */
+  pauseHeld: string | null;
   /** The node's hand-off as this host's last round decided it and its executor last reported it; null while no contract was written. */
   handoff: LayeredHandoff | null;
 }
@@ -405,6 +409,8 @@ export interface HandoffResult {
   trash: HandoffTrashEntry[];
   notes: string[];
   purged: number;
+  /** Bytes the manifest's copies still hold in the trash, which leave the node once due; absent from a run that was refused whole. */
+  trashBytes?: number;
 }
 
 export interface LayeredHandoff {
@@ -447,6 +453,7 @@ export type WarningKind =
   | "space-stopped"
   | "space-raised"
   | "space-full"
+  | "stop-paused"
   | "layout-drift"
   | "layout-held"
   | "layout-problem"

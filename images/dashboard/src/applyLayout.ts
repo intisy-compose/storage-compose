@@ -6,20 +6,24 @@ import { recordDashboardActivity } from "./eventFeed.js";
 import { type HandoffPublisher, type HandoffWaiting, handoffPublisher, syncthingHandoffReads } from "./handoffFeed.js";
 import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances } from "./instanceResolver.js";
 import { layeredStateOf, recordLayered } from "./layeredDrift.js";
-import { type LayeredPauses, fileLayeredPauses } from "./layeredPauses.js";
+import { type LayeredPauses, type PauseMark, fileLayeredPauses } from "./layeredPauses.js";
+import { type NotifiedState, fileNotifiedState, memoryNotifiedState } from "./notifiedState.js";
 import { type Notification, queueNotification } from "./notifyOutbox.js";
 import { type NodePlan, handoffIgnoreFile, keepsFolder, nodePlan } from "./nodePlan.js";
 import { type HandoffFiles, type NodeReconcile, carriedLayoutPaths, reconcileNode } from "./reconcileNode.js";
-import { nodeVolumesDirectory, statusDirectory, storageRoot } from "./settings.js";
+import { layeredPausesFile, nodeVolumesDirectory, statusDirectory, storageRoot } from "./settings.js";
 import { type LayoutNode, type SetupLayout, blockedNodeIds, readCommittedLayout, readLayout } from "./setupRepo.js";
 import { followLayout, nodeFilePath, withdrawApply } from "./nodeFile.js";
-import { type FolderSize, type FolderSizes, type NodeSpace, type ReleasableBytes, type SpaceDecision, effectiveThreshold } from "./spacePlan.js";
+import { type FolderSize, type FolderSizes, type NodeSpace, type ReleasableBytes, type SpaceDecision, effectiveThreshold, spaceAllowsPull } from "./spacePlan.js";
 import type { SyncthingFolderConfig } from "./syncthing.js";
 
 /** What a space decision reads of a node: its disk, and each planned folder's size as its own Syncthing counts it. */
+/** A folder's `/rest/db/status` as far as a space decision reads it; `state` and `remoteSequence` say whether it is indexed yet. */
+export type FolderStatus = FolderSize & { state?: string; stateChanged?: string; remoteSequence?: Record<string, number> | null };
+
 export interface SpaceReads {
   space(instance: LocalInstance): Promise<NodeSpace | null>;
-  sizes(instance: LocalInstance, folderId: string): Promise<FolderSize>;
+  sizes(instance: LocalInstance, folderId: string): Promise<FolderStatus>;
   /** A keeper's own completion of a folder; without it nothing a raise drops counts as freed. */
   completion?(instance: LocalInstance, folderId: string): Promise<number>;
 }
@@ -41,6 +45,8 @@ export interface LayoutRoundDependencies {
   pauses?: LayeredPauses;
   /** Sends a notification through the mounter's outbox; a round without it sends none. */
   notify?: (notification: Notification) => Promise<void>;
+  /** What was last notified, kept across restarts; a round without it keeps it in memory. */
+  notified?: NotifiedState;
   /** Enters one written change in Activity. */
   record: (nodeId: string, folderId: string | null, text: string) => void;
   readBackDelaysMs?: readonly number[];
@@ -64,7 +70,7 @@ function nodeOnlyText(entry: NodeReconcile["nodeOnlyIgnores"][number]): string {
 }
 
 function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: string): LayeredState {
-  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt, space: null, stopped: null, handoff: null };
+  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt, space: null, stopped: null, pausedByStop: [], pauseHeld: null, handoff: null };
 }
 
 function spaceView(decision: SpaceDecision | null): LayeredSpace | null {
@@ -74,10 +80,19 @@ function spaceView(decision: SpaceDecision | null): LayeredSpace | null {
 /** A node of this host as the first pass of a round leaves it: planned at its committed threshold with its space decided, or why not. */
 type Prepared =
   | { kind: "unlisted" }
-  | { kind: "unadmitted"; node: LayoutNode }
-  | { kind: "blocked"; node: LayoutNode; problems: string[] }
-  | { kind: "failed"; node: LayoutNode; error: unknown }
-  | { kind: "planned"; node: LayoutNode; localFolders: Set<string>; plan: NodePlan; decision: SpaceDecision | null };
+  | { kind: "unadmitted"; node: LayoutNode; marks: Marks }
+  | { kind: "blocked"; node: LayoutNode; problems: string[]; marks: Marks }
+  | { kind: "failed"; node: LayoutNode; error: unknown; marks: Marks }
+  | { kind: "planned"; node: LayoutNode; localFolders: Set<string>; plan: NodePlan; inputs: SpaceInputs | null; decision: SpaceDecision | null; marks: Marks };
+
+type Marks = Map<string, PauseMark> | "unreadable";
+
+interface SpaceInputs {
+  space: NodeSpace;
+  sizes: FolderSizes;
+  /** What the node's hand-off trash holds, which leaves it by itself once due. */
+  trashBytes: number;
+}
 
 /**
  * Each round brings this host's nodes to their layered plans from the shared layout, or only reports how they differ, and writes each
@@ -105,7 +120,8 @@ export class LayoutRound {
     if (layout) {
       const gated = withCommittedApply(layout, committed);
       const prepared = new Map<string, Prepared>();
-      for (const instance of instances) prepared.set(instance.nodeId, await this.prepare(gated, instance, instances));
+      for (const instance of instances) prepared.set(instance.nodeId, await this.prepare(gated, instance));
+      await this.decideAll(gated, instances, prepared);
       const spaces = new Map([...prepared].flatMap(([nodeId, entry]) => (entry.kind === "planned" ? [[nodeId, entry.decision] as const] : [])));
       for (const instance of instances) {
         const state = await this.nodeState(gated, instance, instances, prepared.get(instance.nodeId) as Prepared, spaces);
@@ -209,61 +225,94 @@ export class LayoutRound {
   }
 
   /**
-   * The space decision for the node's plan at its committed threshold; null when its disk cannot be read.
-   * @implNote A folder whose size cannot be read has none, which makes a folder the node keeps `unknown`.
+   * What the first pass reads for the node's space: its disk, each planned folder's size, and its hand-off trash.
+   * @implNote A folder only has a size once it is indexed (`isIndexed`); a folder the layered sync paused reports none, so the size recorded
+   * with its pause stands in. A folder with no size makes a folder the node keeps `unknown`.
    */
-  private async decide(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], plan: NodePlan): Promise<SpaceDecision | null> {
+  private async spaceInputs(instance: LocalInstance, plan: NodePlan, marks: ReadonlyMap<string, PauseMark>): Promise<SpaceInputs | null> {
     const reads = this.dependencies.space;
     if (!reads) return null;
     const space = await reads.space(instance).catch(() => null);
     if (!space) return null;
     const sizes: FolderSizes = {};
-    const releasable: ReleasableBytes = {};
     for (const folder of plan.folders) {
-      const size = await reads.sizes(instance, folder.id).catch(() => null);
-      if (!size || !Number.isFinite(size.globalBytes) || !Number.isFinite(size.localBytes)) continue;
-      sizes[folder.id] = size;
-      if (!folder.local && folder.keptBy !== "assigned" && (await this.keeperHolds(layout, instance, instances, folder.id))) releasable[folder.id] = heldInSync(size);
+      const status = await reads.sizes(instance, folder.id).catch(() => null);
+      const recorded = marks.get(folder.id)?.size ?? null;
+      if (status && isIndexed(status, folder.devices.length > 1)) sizes[folder.id] = { globalBytes: status.globalBytes, localBytes: status.localBytes, needBytes: status.needBytes };
+      else if (recorded) sizes[folder.id] = recorded;
     }
-    return effectiveThreshold(plan, sizes, space, releasable);
+    const result = await this.dependencies.handoffs?.result?.(instance).catch(() => null);
+    const trashBytes = Number.isFinite(result?.trashBytes) ? Math.max(0, result?.trashBytes as number) : 0;
+    return { space, sizes, trashBytes };
   }
 
   /**
-   * Whether another node of this host on another device keeps the folder and its own Syncthing has all of it, so what the node holds in
-   * sync there could leave it once each file is confirmed.
+   * Whether another node of this host on another device keeps the folder by its own decision of the first pass and its own Syncthing has
+   * all of it, so what the node holds in sync there could leave it once each file is confirmed.
+   * @implNote The first pass counts no keeper at all, so a keeper that only fits by dropping the folder onto this node is never counted: two
+   * nodes short of space never drop a folder on each other's word, and a keeper's final decision keeps at least what its first one did.
    */
-  private async keeperHolds(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], folderId: string): Promise<boolean> {
+  private async keeperHolds(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], first: ReadonlyMap<string, SpaceDecision | null>, folderId: string): Promise<boolean> {
     const completion = this.dependencies.space?.completion;
     const own = layout.nodes.find((node) => node.id === instance.nodeId);
     if (!completion || !own) return false;
     for (const keeper of instances) {
       const node = layout.nodes.find((entry) => entry.id === keeper.nodeId);
-      if (!node || node.id === own.id || node.device === own.device || !node.enabled || !keepsFolder(layout, node.id, folderId)) continue;
+      if (!node || node.id === own.id || node.device === own.device || !node.enabled) continue;
+      if (!keepsByDecision(layout, node.id, folderId, first.get(node.id) ?? null)) continue;
       if (((await completion(keeper, folderId).catch(() => 0)) ?? 0) >= 100) return true;
     }
     return false;
   }
 
-  /** @implNote Every node of the host is planned and decided before any is reconciled, so each hand-off sees the space decision of every keeper of this round. */
-  private async prepare(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[]): Promise<Prepared> {
+  /** Each planned node's final decision: its own space with what keepers of the first pass hold of the folders a raise would drop. */
+  private async decideAll(layout: SetupLayout, instances: LocalInstance[], prepared: Map<string, Prepared>): Promise<void> {
+    const first = new Map<string, SpaceDecision | null>();
+    for (const [nodeId, entry] of prepared) {
+      if (entry.kind !== "planned") continue;
+      first.set(nodeId, entry.inputs ? effectiveThreshold(entry.plan, entry.inputs.sizes, entry.inputs.space, {}, entry.inputs.trashBytes) : null);
+    }
+    for (const instance of instances) {
+      const entry = prepared.get(instance.nodeId);
+      if (entry?.kind !== "planned" || !entry.inputs) continue;
+      const releasable: ReleasableBytes = {};
+      for (const folder of entry.plan.folders) {
+        const size = entry.inputs.sizes[folder.id];
+        if (!size || folder.local || folder.keptBy === "assigned") continue;
+        if (await this.keeperHolds(layout, instance, instances, first, folder.id)) releasable[folder.id] = heldInSync(size);
+      }
+      entry.decision = effectiveThreshold(entry.plan, entry.inputs.sizes, entry.inputs.space, releasable, entry.inputs.trashBytes);
+    }
+  }
+
+  private async marksOf(nodeId: string): Promise<Map<string, PauseMark> | "unreadable"> {
+    const pauses = this.dependencies.pauses;
+    if (!pauses) return new Map();
+    return pauses.of(nodeId).catch(() => "unreadable" as const);
+  }
+
+  private async prepare(layout: SetupLayout, instance: LocalInstance): Promise<Prepared> {
     const node = layout.nodes.find((entry) => entry.id === instance.nodeId);
     if (!node) return { kind: "unlisted" };
-    if (!node.admitted) return { kind: "unadmitted", node };
+    const marks = await this.marksOf(node.id);
+    if (!node.admitted) return { kind: "unadmitted", node, marks };
     try {
       const configured = (await callSyncthing(instance, (client) => client.folders())) ?? [];
       const localFolders = carriedLayoutPaths(layout, node.id, new Set(configured.map((folder: SyncthingFolderConfig) => folder.id)));
       const plan = nodePlan(layout, node.id, localFolders);
       if (!plan) return { kind: "unlisted" };
-      if (plan.problems.length) return { kind: "blocked", node, problems: plan.problems };
-      return { kind: "planned", node, localFolders, plan, decision: await this.decide(layout, instance, instances, plan) };
+      if (plan.problems.length) return { kind: "blocked", node, problems: plan.problems, marks };
+      const inputs = await this.spaceInputs(instance, plan, marks instanceof Map ? marks : new Map());
+      return { kind: "planned", node, localFolders, plan, inputs, decision: null, marks };
     } catch (error) {
-      return { kind: "failed", node, error };
+      return { kind: "failed", node, error, marks };
     }
   }
 
   /**
    * @implNote A raise plans at the decision's threshold, so the folders it drops turn send-only; any other decision plans at the committed
-   * threshold, and the reconciler holds every type-up the decision does not allow.
+   * threshold, and the reconciler holds every type-up the decision does not allow. A recorded pause is resumed only on a decision that
+   * lets the enabled node pull; any other keeps it.
    */
   private async nodeState(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], prepared: Prepared, spaces: ReadonlyMap<string, SpaceDecision | null>): Promise<LayeredState | null> {
     if (prepared.kind === "unlisted") {
@@ -272,7 +321,7 @@ export class LayoutRound {
     }
     const node = prepared.node;
     const checkedAt = (this.dependencies.now?.() ?? new Date()).toISOString();
-    const state = emptyState(node.apply ? "apply" : "report", node.threshold, checkedAt);
+    const state = { ...emptyState(node.apply ? "apply" : "report", node.threshold, checkedAt), pausedByStop: pausedIds(prepared.marks) };
     if (prepared.kind === "unadmitted") {
       await this.clearHandoffs(instance, node.apply);
       return { ...state, problems: [`${node.name} is not admitted yet`] };
@@ -293,53 +342,114 @@ export class LayoutRound {
         space: decision,
         stopped,
         pauses: this.dependencies.pauses,
+        resumeHeld: resumeHeldBy(node, decision, plan),
+        sizes: prepared.inputs?.sizes,
         handoffFiles: this.dependencies.handoffFiles,
         onWritten: (folderId, text) => this.dependencies.record(instance.nodeId, folderId, text),
         readBackDelaysMs: this.dependencies.readBackDelaysMs ?? defaultReadBackDelaysMs,
       });
       const pendingHandoffs = await this.publishHandoffs(layout, instance, instances, localFolders, decision, spaces);
-      await this.notifyPauses(instance, result, stopped);
-      return { ...state, effectiveThreshold: plan.appliedThreshold, space: spaceView(decision), stopped, pendingHandoffs, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
+      const pauseHeld = stopped && node.apply ? heldPause(result) : null;
+      await this.notifyPauses(instance, result, stopped, pauseHeld);
+      const marks = await this.marksOf(node.id);
+      return { ...state, pausedByStop: pausedIds(marks), pauseHeld, effectiveThreshold: plan.appliedThreshold, space: spaceView(decision), stopped, pendingHandoffs, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
     } catch (error) {
       return this.failedState(instance, node, state, error);
     }
   }
 
-  /** Whether each cluster was last notified as full. */
-  private readonly notifiedFull = new Map<string, boolean>();
+  private notifiedState(): NotifiedState {
+    this.fallbackNotified ??= memoryNotifiedState();
+    return this.dependencies.notified ?? this.fallbackNotified;
+  }
 
-  /** One notification when the cluster turns full, and one when it has room again; an unknown decision changes neither. */
+  private fallbackNotified: NotifiedState | null = null;
+
+  /** One notification when the cluster turns full, and one when it has room again; an unknown decision changes neither. Kept across restarts. */
   private async notifyFull(instance: LocalInstance, state: LayeredState): Promise<void> {
     const notify = this.dependencies.notify;
     const space = state.space;
     if (!notify || !space || space.state === "unknown") return;
     const full = space.state === "full";
-    const before = this.notifiedFull.get(instance.nodeId) ?? false;
+    const key = `full:${instance.nodeId}`;
+    const before = (await this.notifiedState().get(key).catch(() => null)) === "full";
     if (full === before) return;
-    this.notifiedFull.set(instance.nodeId, full);
+    await this.notifiedState().set(key, full ? "full" : null).catch(() => {});
     const notification: Notification = full
       ? { priority: 4, tags: "warning", title: `${instance.name} is short of space`, message: `The cluster needs ${space.neededBytes} bytes and has ${space.availableBytes}, under 10% free once it holds everything. It confirms no new hand-off until it fits, so those files stay on their nodes.` }
       : { priority: 3, tags: "white_check_mark", title: `${instance.name} has room again`, message: "The cluster fits with 10% free again and confirms hand-offs." };
     await notify(notification).catch((error) => console.error(`layered sync: no notification queued for ${instance.name}: ${reasonOf(error)}`));
   }
 
-  /** One notification for a round that paused the node's folders, and one for a round that resumed them. */
-  private async notifyPauses(instance: LocalInstance, result: NodeReconcile, stopped: string | null): Promise<void> {
+  /**
+   * One notification for a round that paused the node's folders, one for a round that resumed them, and one per stop whose pause could
+   * not be written (an array without its folder ID typed), each saying what was actually written.
+   */
+  private async notifyPauses(instance: LocalInstance, result: NodeReconcile, stopped: string | null, pauseHeld: string | null): Promise<void> {
     const notify = this.dependencies.notify;
+    if (!notify) return;
     const written = result.folders.filter((folder) => folder.written.includes("paused"));
-    if (!notify || !written.length) return;
     const count = `${written.length} ${written.length === 1 ? "folder" : "folders"}`;
-    const notification: Notification = stopped
-      ? { priority: 4, tags: "warning", title: `${instance.name} stopped`, message: `${stopped}: ${count} paused, so it pulls nothing and hands nothing off. It resumes once it fits with 10% free, or when enabled = true is committed again.` }
-      : { priority: 3, tags: "white_check_mark", title: `${instance.name} resumed`, message: `${count} resumed: it syncs again and sends what it gathered while stopped.` };
-    await notify(notification).catch((error) => console.error(`layered sync: no notification queued for ${instance.name}: ${reasonOf(error)}`));
+    const heldKey = `held-stop:${instance.nodeId}`;
+    let notification: Notification | null = null;
+    if (written.length) {
+      notification = stopped
+        ? { priority: 4, tags: "warning", title: `${instance.name} stopped`, message: `${stopped}: ${count} paused, so it pulls nothing and hands nothing off. It resumes once it fits with 10% free, or when enabled = true is committed again.` }
+        : { priority: 3, tags: "white_check_mark", title: `${instance.name} resumed`, message: `${count} resumed: it syncs again and sends what it gathered while stopped.` };
+    } else if (pauseHeld && (await this.notifiedState().get(heldKey).catch(() => null)) !== stopped) {
+      await this.notifiedState().set(heldKey, stopped).catch(() => {});
+      notification = { priority: 4, tags: "warning", title: `${instance.name} cannot be paused`, message: `${stopped}, but ${pauseHeld}: nothing was paused, and it hands nothing off.` };
+    }
+    if (!stopped) await this.notifiedState().set(heldKey, null).catch(() => {});
+    if (notification) await notify(notification).catch((error) => console.error(`layered sync: no notification queued for ${instance.name}: ${reasonOf(error)}`));
   }
 
   private async failedState(instance: LocalInstance, node: LayoutNode, state: LayeredState, error: unknown): Promise<LayeredState> {
     await this.clearHandoffs(instance, node.apply);
     const last = layeredStateOf(instance.nodeId);
-    return { ...(last ?? state), mode: state.mode, threshold: state.threshold, failed: reasonOf(error), checkedAt: state.checkedAt };
+    return { ...(last ?? state), mode: state.mode, threshold: state.threshold, pausedByStop: state.pausedByStop, failed: reasonOf(error), checkedAt: state.checkedAt };
   }
+}
+
+/** The folders a node's pause record names; none while it cannot be read. */
+function pausedIds(marks: Marks): string[] {
+  return marks instanceof Map ? [...marks.keys()].sort() : [];
+}
+
+/** Why the stop's pause was not written, from what the reconciler held; null once any pause went out or none was needed. */
+function heldPause(result: NodeReconcile): string | null {
+  const pauses = result.folders.flatMap((folder) => folder.changes.filter((change) => change.field === "paused" && change.text.startsWith("pause")).map((change) => ({ folder, change })));
+  const held = pauses.filter(({ change }) => !change.written);
+  if (!held.length) return null;
+  const reason = held[0].folder.held ?? held[0].change.held ?? held[0].folder.failed;
+  return /type the folder ID/.test(reason ?? "") ? "it cannot be paused without the folder ID typed" : reason ? `its pause is held: ${reason}` : null;
+}
+
+/** Why a recorded pause is not resumed this round, or null: only a decision that lets the enabled node pull resumes it. */
+export function resumeHeldBy(node: LayoutNode, decision: SpaceDecision | null, plan: NodePlan): string | null {
+  if (!node.enabled) return `${node.name} is not enabled`;
+  if (!decision) return "a resume waits until the node's space can be read";
+  if (!spaceAllowsPull(decision, plan)) return `a resume waits for a space decision that lets the node pull (it is ${decision.state})`;
+  return null;
+}
+
+/** Whether a node's own decision keeps the folder: it fits, or a raise still keeps it; never stopped, full, unknown or undecided. */
+function keepsByDecision(layout: SetupLayout, nodeId: string, folderId: string, decision: SpaceDecision | null): boolean {
+  if (!decision || (decision.state !== "fits" && decision.state !== "raised")) return false;
+  return keepsFolder(layout, nodeId, folderId, decision.threshold);
+}
+
+/**
+ * Whether the folder's status counts as its size: past its first scan, not paused, with the index of every device it is shared with,
+ * which 2.1.6 reports in `remoteSequence` (null while paused, empty before a remote index arrives).
+ * @implNote A status without `state` is taken as indexed, as a reader that does not report it (a test's fake) cannot say otherwise.
+ */
+export function isIndexed(status: FolderStatus, shared: boolean): boolean {
+  if (status.state === undefined) return true;
+  if (!["idle", "syncing", "sync-preparing", "sync-waiting", "cleaning", "clean-waiting", "scanning", "scan-waiting"].includes(status.state)) return false;
+  if (!status.stateChanged || status.stateChanged.startsWith("0001-")) return false;
+  if (!status.remoteSequence) return false;
+  return !shared || Object.keys(status.remoteSequence).length > 0;
 }
 
 /**
@@ -422,16 +532,15 @@ export interface CommittedLayout {
 export type NodeFileAction = { kind: "follow"; policy: LayoutNode } | { kind: "withdraw"; reason: string };
 
 /**
- * What a node file is brought to: the committed policy with `apply = true` only for a listed, admitted, unblocked, enabled node whose
- * committed and pushed layout says `apply = true`; on any doubt only its `apply` line is taken out (the session's ruling).
+ * What a node file is brought to: the committed policy with `apply = true` only for a listed, admitted, unblocked node whose
+ * committed and pushed layout says `apply = true`, enabled or not, since a stopped node still empties its trash; on any doubt only its `apply` line is taken out.
  */
-export function nodeFileAction(committed: CommittedLayout | null, nodeId: string, options: { enabledRequired: boolean } = { enabledRequired: true }): NodeFileAction {
+export function nodeFileAction(committed: CommittedLayout | null, nodeId: string): NodeFileAction {
   if (!committed) return { kind: "withdraw", reason: "no committed layout can be read" };
   const node = committed.layout.nodes.find((entry) => entry.id === nodeId);
   if (!node) return { kind: "withdraw", reason: "the layout does not list it" };
   if (!node.admitted) return { kind: "withdraw", reason: "it is not admitted" };
   if (blockedNodeIds(committed.layout).has(nodeId)) return { kind: "withdraw", reason: "the layout blocks it" };
-  if (options.enabledRequired && !node.enabled) return { kind: "withdraw", reason: "it is not enabled" };
   if (!node.apply) return { kind: "withdraw", reason: "the committed layout does not say apply = true" };
   if (!committed.pushed) return { kind: "withdraw", reason: "the commit that says apply = true is not on the upstream yet" };
   return { kind: "follow", policy: node };
@@ -440,7 +549,7 @@ export function nodeFileAction(committed: CommittedLayout | null, nodeId: string
 /**
  * The working tree's layout with each node's `apply` as the committed layout lets it act, so a dirty or unpushed `apply = true` only
  * reports, and `enabled` true only while the committed layout says so too.
- * @implNote Unlike its node file, a node that is not enabled still applies, since its pause is the one change it makes: stopping is the
+ * @implNote A node that is not enabled still applies: its pause is the one change it makes, and its held contract lets only its trash empty. Stopping is the
  * safe direction on any doubt, and rejoining waits for a committed `enabled = true`.
  */
 export function withCommittedApply(layout: SetupLayout, committed: CommittedLayout | null): SetupLayout {
@@ -449,7 +558,7 @@ export function withCommittedApply(layout: SetupLayout, committed: CommittedLayo
     nodes: layout.nodes.map((node) => {
       const committedNode = committed?.layout.nodes.find((entry) => entry.id === node.id);
       const enabled = node.enabled && (committedNode?.enabled ?? false);
-      return { ...node, enabled, apply: nodeFileAction(committed, node.id, { enabledRequired: false }).kind === "follow" };
+      return { ...node, enabled, apply: nodeFileAction(committed, node.id).kind === "follow" };
     }),
   };
 }
@@ -504,7 +613,8 @@ export const layoutRound = new LayoutRound({
   nodeFiles: mountedNodeFiles([storageRoot, nodeVolumesDirectory]),
   committedLayout: () => readCommittedLayout(),
   space: syncthingHandoffReads,
-  pauses: fileLayeredPauses(`${statusDirectory}/layered/paused.json`),
+  pauses: fileLayeredPauses(layeredPausesFile),
+  notified: fileNotifiedState(`${statusDirectory}/layered/notified.json`),
   notify: (notification) => queueNotification(`${statusDirectory}/outbox`, notification),
   record: (nodeId, folderId, text) => recordDashboardActivity(nodeId, folderId, text),
 });

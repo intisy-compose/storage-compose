@@ -13,6 +13,7 @@ import { nodePolicyRoutes } from "../src/routes/nodePolicy.js";
 import { type LayoutNode, type SetupLayout, parseLayout, readCommittedLayout } from "../src/setupRepo.js";
 import type { SyncthingClient } from "../src/syncthing.js";
 import { FakeSyncthing, clientOf } from "./fakeFolderSyncthing.js";
+import { memoryLayeredPauses } from "../src/layeredPauses.js";
 import { askRoutes, git, layoutRepos } from "./layoutRepos.js";
 
 const folderNode = `[node]
@@ -136,7 +137,7 @@ describe("the layout round brings mounted node files to the committed layout", (
     assert.equal(nodeFile(path), folderNode);
   });
 
-  it("follows only a listed, admitted, unblocked, enabled node whose pushed layout says apply = true; withdraws on any doubt", () => {
+  it("follows only a listed, admitted, unblocked node whose pushed layout says apply = true, enabled or not; withdraws on any doubt", () => {
     const committed = (body: string, pushed = true) => ({ layout: parseLayout(`[devices.pc]\nid = "PC-ID"\n[nodes.a1b2]\nname = "pc"\ndevice = "pc"\nthreshold = 80\n${body}\n`), pushed });
     assert.equal(nodeFileAction(committed("admitted = true\napply = true"), "a1b2").kind, "follow");
     const reasons = [
@@ -154,7 +155,7 @@ describe("the layout round brings mounted node files to the committed layout", (
       "the layout does not list it",
       "it is not admitted",
       "the layout blocks it",
-      "it is not enabled",
+      "follow",
       "the committed layout does not say apply = true",
       "the committed layout does not say apply = true",
       "the commit that says apply = true is not on the upstream yet",
@@ -294,6 +295,27 @@ admitted = true
     assert.equal((await askRoutes(routes(), "PUT", "/api/nodes/5784/policy", { base: version(), enabled: false, threshold: 10 })).status, 404, "with any other field it is the node's own host's edit");
     assert.equal((await askRoutes(routes(), "PUT", "/api/nodes/c3d4/policy", { base: version(), enabled: false })).status, 404, "a node the layout does not list");
     assert.equal(git(repos.remote, "rev-parse", "main"), head);
+  });
+
+  it("resumes by hand the folders the layered sync paused, with the node's name typed, and forgets each", async () => {
+    const syncthing = new FakeSyncthing();
+    syncthing.folders = [{ id: "documents", paused: true }, { id: "videos", paused: false }, { id: "music", paused: true }];
+    const pauses = memoryLayeredPauses({ a1b2: { documents: { at: "t", size: null }, videos: { at: "t", size: null } } });
+    const withPauses = () =>
+      nodePolicyRoutes({ repository: repos.ours, resolve: async () => ({ ...local, client: clientOf(syncthing) }), configured: async () => new Set(), localSize: async () => ({ files: 0, bytes: 0 }), pauses });
+
+    const refused = await askRoutes(withPauses(), "PUT", "/api/nodes/a1b2/layered/resume", { confirm: "PC" });
+    assert.equal(refused.status, 400);
+    assert.deepEqual(syncthing.writes(), []);
+
+    const answer = await askRoutes(withPauses(), "PUT", "/api/nodes/a1b2/layered/resume", { confirm: "pc" });
+    assert.equal(answer.status, 200);
+    assert.deepEqual(answer.body, { resumed: ["documents"], forgotten: ["videos"] });
+    assert.deepEqual(syncthing.folders.map((folder) => `${folder.id} ${folder.paused}`), ["documents false", "videos false", "music true"], "a folder it did not pause stays paused");
+    assert.deepEqual(pauses.marks, {});
+
+    pauses.corrupt = true;
+    assert.equal((await askRoutes(withPauses(), "PUT", "/api/nodes/a1b2/layered/resume", { confirm: "pc" })).status, 409);
   });
 
   it("apply is never changed with the other fields", async () => {

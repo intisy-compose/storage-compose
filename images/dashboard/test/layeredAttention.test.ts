@@ -24,7 +24,7 @@ function handoff(overrides: Partial<LayeredHandoff> = {}): LayeredHandoff {
 }
 
 function nodeWith(layered: Partial<LayeredState>): StorageNode {
-  const state: LayeredState = { mode: "apply", threshold: 50, effectiveThreshold: 50, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt: "2026-11-06T11:59:00Z", space: null, stopped: null, handoff: null, ...layered };
+  const state: LayeredState = { mode: "apply", threshold: 50, effectiveThreshold: 50, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt: "2026-11-06T11:59:00Z", space: null, stopped: null, pausedByStop: [], pauseHeld: null, handoff: null, ...layered };
   return { id: "a1b2", name: "pc", folders: [{ id: "videos", label: "Videos" }], layered: state } as unknown as StorageNode;
 }
 
@@ -129,6 +129,18 @@ describe("Attention for the layered sync", () => {
     const full = layeredWarnings(nodeWith({ space: { state: "full", threshold: 0, neededBytes: 950, availableBytes: 1000 } }), now);
     assert.deepEqual(only(full, "space-full").map((entry) => [entry.level, entry.text]), [["warning", "pc, the cluster, does not fit with 10% free: it needs 950 bytes and has 1000; it confirms no new hand-off until it does, so files wait on the nodes that hand off to it"]]);
     assert.equal(layeredWarnings(nodeWith({ space: { state: "fits", threshold: 50, neededBytes: 1, availableBytes: 9 } }), now).length, 0);
+    const heldOnArray = layeredWarnings(nodeWith({ stopped: "pc is not enabled", pauseHeld: "it cannot be paused without the folder ID typed", space: { state: "stopped", threshold: 50, neededBytes: 900, availableBytes: 500 } }), now);
+    assert.match(only(heldOnArray, "space-stopped")[0].text, /it cannot be paused without the folder ID typed, so nothing was paused; nothing is handed off$/);
+  });
+
+  it("folders paused by a stop, and how they are resumed, whatever the node's state now", () => {
+    const acting = only(layeredWarnings(nodeWith({ pausedByStop: ["music", "videos"], stopped: "pc does not fit even at its top priority" }), now), "stop-paused");
+    assert.deepEqual(acting.map((entry) => [entry.level, entry.text]), [["info", "pc: 2 folders are paused by a stop; they resume once the stop ends and its space decision lets it pull, or by Resume on its node page"]]);
+    for (const layered of [{ mode: "report" as const }, { problems: ["pc is not admitted yet"] }, { problems: ["the layout blocks pc"] }]) {
+      const [entry] = only(layeredWarnings(nodeWith({ pausedByStop: ["videos"], ...layered }), now), "stop-paused");
+      assert.deepEqual([entry.level, entry.text], ["warning", "pc: 1 folder is paused by a stop; it no longer acts on its plan, so no round resumes them: resume them on its node page"], JSON.stringify(layered));
+    }
+    assert.equal(only(layeredWarnings(nodeWith({}), now), "stop-paused").length, 0);
   });
 
   it("drift is information while the node reports, held changes name why, and a failed round is a warning", () => {
