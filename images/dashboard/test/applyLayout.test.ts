@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { type LayoutRoundDependencies, LayoutRound, mountedHandoffFiles, pullThenReconcile } from "../src/applyLayout.js";
+import type { HandoffPublisher } from "../src/handoffFeed.js";
 import type { LocalInstance } from "../src/instanceResolver.js";
 import { layeredStateOf } from "../src/layeredDrift.js";
 import { nodePlan } from "../src/nodePlan.js";
@@ -177,6 +178,51 @@ describe("reconciling this host's nodes on every pull", () => {
 
     assert.deepEqual(layeredStateOf("a001")?.problems, ["laptop-data is not admitted yet"]);
     assert.deepEqual(syncthing.writes(), []);
+  });
+});
+
+/** Every contract the round asked for, as `<node> publish|clear <apply>`. */
+function recordingPublisher(seen: string[], pending: number | null = 3): HandoffPublisher {
+  return {
+    publish: async (context) => {
+      seen.push(`${context.nodeId} publish ${context.layout.nodes.find((node) => node.id === context.nodeId)?.apply} ${context.instances.map((instance) => instance.nodeId).join(",")}`);
+      return pending;
+    },
+    clear: async (nodeId, _instance, apply) => void seen.push(`${nodeId} clear ${apply}`),
+  };
+}
+
+describe("the hand-off contract of each node, every round", () => {
+  it("is published after the node is reconciled, with every instance of this host to read keepers from", async () => {
+    const seen: string[] = [];
+    const keeper = instanceOf(new FakeSyncthing(), "a002");
+
+    await roundOf(() => parseLayout(layoutText(true)), [instanceOf(nodeAtTwenty()), keeper], [], { handoffs: recordingPublisher(seen) }).run();
+
+    assert.deepEqual(seen.filter((entry) => entry.startsWith("a001")), ["a001 publish true a001,a002"]);
+    assert.equal(layeredStateOf("a001")?.pendingHandoffs, 3);
+  });
+
+  it("is published in report mode too, which the publisher writes as an empty list", async () => {
+    const seen: string[] = [];
+
+    await roundOf(() => parseLayout(layoutText(false)), [instanceOf(nodeAtTwenty())], [], { handoffs: recordingPublisher(seen, null) }).run();
+
+    assert.deepEqual(seen, ["a001 publish false a001"]);
+    assert.equal(layeredStateOf("a001")?.pendingHandoffs, null);
+  });
+
+  it("is cleared for a node that is not admitted, blocked by the layout, not listed, or whose Syncthing does not answer", async () => {
+    const pending = parseLayout(layoutText(true).replace("threshold = 50\nadmitted  = true", "threshold = 50"));
+    const broken = parseLayout(layoutText(true).replace('name      = "laptop-data"', 'name      = "laptop data!"'));
+    const silent = nodeAtTwenty();
+    silent.answers = false;
+    for (const [layout, instance] of [[pending, instanceOf(nodeAtTwenty())], [broken, instanceOf(nodeAtTwenty())], [parseLayout(layoutText(true)), instanceOf(new FakeSyncthing(), "b0b0")], [parseLayout(layoutText(true)), instanceOf(silent)]] as const) {
+      const seen: string[] = [];
+      await roundOf(() => layout, [instance], [], { handoffs: recordingPublisher(seen) }).run();
+      assert.equal(seen.length, 1, seen.join(" "));
+      assert.match(seen[0], / clear /);
+    }
   });
 });
 

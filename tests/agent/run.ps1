@@ -52,6 +52,7 @@ function Invoke-AgentTests([string]$Syncthing) {
         (Join-Path $PSScriptRoot "agent.Tests.ps1"),
         (Join-Path $PSScriptRoot "backoff.Tests.ps1"),
         (Join-Path $PSScriptRoot "install.Tests.ps1"),
+        (Join-Path $PSScriptRoot "handoff.Tests.ps1"),
         @{ Path = (Join-Path $PSScriptRoot "syncthing.Tests.ps1"); Parameters = @{ SyncthingPath = $Syncthing } }
     )
     $result = Invoke-Pester -Script $scripts -PassThru

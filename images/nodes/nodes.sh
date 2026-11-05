@@ -8,7 +8,8 @@
 # connections), recorded for the dashboard in /status/nodes/<id>.syncthing.json.
 # An array's instance runs with its own guard, which pauses the folders the mounter names, so the
 # C-24 freeze holds per array. Each instance takes its connection profile from
-# /status/connections.json once its API answers (apply-connections.sh).
+# /status/connections.json once its API answers (apply-connections.sh). Every minute each drive or
+# folder node with a hand-off contract in /status/handoff runs handoff.sh, one run per node at a time.
 set -u
 
 root=${STORAGE_ROOT:-/mnt/storage}
@@ -17,8 +18,12 @@ node_volumes=/mnt/nodes
 registry=/status/nodes
 ports_file=$registry/ports
 connections_file=/status/connections.json
+handoff_directory=/status/handoff
+handoff_interval=${HANDOFF_INTERVAL_SECONDS:-60}
+handoff_executor=/usr/local/bin/handoff.sh
 service_user=${SERVICE_USER_ID:-1000}
-declare -A instance_pid guard_pid
+declare -A instance_pid guard_pid instance_home instance_kind instance_gui handoff_pid
+last_handoff_round=-$handoff_interval
 
 log() { echo "$(date -u +%FT%TZ) $*"; }
 
@@ -94,6 +99,9 @@ start_instance() {   # <id> <home> <kind>
     STGUIADDRESS=$gui setpriv --reuid="$service_user" --regid="$service_user" --clear-groups \
         syncthing serve --home "$home" --no-browser --no-port-probing --no-restart > >(sed -u "s/^/[$id] /") 2>&1 &
     instance_pid[$id]=$!
+    instance_home[$id]=$home
+    instance_kind[$id]=$3
+    instance_gui[$id]=$gui
     record_endpoint "$id" "$home" "$index"
     CONNECTIONS_FILE=$connections_file sh /usr/local/bin/apply-connections.sh "$id" "http://$gui" "$(api_key_of "$home")" &
     [ "$3" = array ] && start_guard "$id" "$home" "$gui"
@@ -104,7 +112,7 @@ stop_instance() {   # <id>
     local id=$1
     [ -n "${guard_pid[$id]:-}" ] && kill "${guard_pid[$id]}" 2> /dev/null
     [ -n "${instance_pid[$id]:-}" ] && kill -TERM "${instance_pid[$id]}" 2> /dev/null && wait "${instance_pid[$id]}" 2> /dev/null
-    unset "instance_pid[$id]" "guard_pid[$id]"
+    unset "instance_pid[$id]" "guard_pid[$id]" "instance_home[$id]" "instance_kind[$id]" "instance_gui[$id]"
     rm -f "$registry/$id.syncthing.json"
     log "stopped Syncthing for $id"
 }
@@ -125,6 +133,21 @@ keep_instances() {
     done <<< "$wanted"
 }
 
+# An array never hands off, so only drive and folder nodes run the executor; it refuses an array itself too.
+run_handoffs() {
+    [ $((SECONDS - last_handoff_round)) -ge "$handoff_interval" ] || return 0
+    last_handoff_round=$SECONDS
+    local id home
+    for id in "${!instance_pid[@]}"; do
+        [ "${instance_kind[$id]:-}" = node ] && [ -f "$handoff_directory/$id.json" ] || continue
+        [ -n "${handoff_pid[$id]:-}" ] && kill -0 "${handoff_pid[$id]}" 2> /dev/null && continue
+        home=${instance_home[$id]}
+        HANDOFF_CLUSTER_ID=$cluster bash "$handoff_executor" "$id" "${home%/.storage/syncthing}" "http://${instance_gui[$id]}" "$(api_key_of "$home")" \
+            "$handoff_directory/$id.json" "$handoff_directory/$id.result.json" > >(sed -u "s/^/[$id] /") 2>&1 &
+        handoff_pid[$id]=$!
+    done
+}
+
 shut_down() {
     local id
     log "stopping every node's Syncthing"
@@ -138,6 +161,7 @@ main() {
     mkdir -p "$registry"
     while true; do
         keep_instances
+        run_handoffs
         sleep 10 & wait $!
     done
 }
