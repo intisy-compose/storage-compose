@@ -57,7 +57,7 @@ function nodeAtTwenty(): FakeSyncthing {
 
 interface Recorded {
   nodeId: string;
-  folderId: string;
+  folderId: string | null;
   text: string;
 }
 

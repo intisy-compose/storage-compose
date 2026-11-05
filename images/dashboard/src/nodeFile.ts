@@ -16,7 +16,8 @@ export interface MemberDescription {
 
 /** `.storage/node.toml`; for an array the whole membership is on every member, the highest revision wins. */
 export interface NodeFile {
-  node: { id: string; name: string; kind: NodeFileKind; threshold: number; assigned: string[]; access: NodeAccess };
+  /** `apply` is written only while true, as the executors read a missing line as false. */
+  node: { id: string; name: string; kind: NodeFileKind; threshold: number; assigned: string[]; access: NodeAccess; apply?: true };
   array?: { revision: number; members: MemberDescription[] };
 }
 
@@ -61,7 +62,7 @@ export function parseNodeFile(source: string): NodeFile {
   if (!kinds.includes(kind)) throw new TomlError(`node kind '${kind}' is not array, drive or folder`);
   const assigned = Array.isArray(node.assigned) ? node.assigned.filter((entry): entry is string => typeof entry === "string") : [];
   const access: NodeAccess = text(node, "access") === "closed" ? "closed" : "open";
-  const file: NodeFile = { node: { id, name, kind, threshold: integer(node, "threshold"), assigned, access } };
+  const file: NodeFile = { node: { id, name, kind, threshold: integer(node, "threshold"), assigned, access, ...(node.apply === true ? { apply: true as const } : {}) } };
   const array = toml.array;
   if (kind === "array" && typeof array === "object" && !Array.isArray(array)) {
     const members = Array.isArray(array.members) ? array.members : [];
@@ -74,7 +75,7 @@ export function parseNodeFile(source: string): NodeFile {
 }
 
 export function formatNodeFile(file: NodeFile): string {
-  const lines = ["[node]", ...formatPairs({ ...file.node }, ["id", "name", "kind", "threshold", "assigned", "access"])];
+  const lines = ["[node]", ...formatPairs({ ...file.node }, ["id", "name", "kind", "threshold", "assigned", "access", "apply"])];
   if (file.array) {
     lines.push("", "[array]", `revision = ${file.array.revision}`);
     for (const entry of file.array.members) {
@@ -98,9 +99,13 @@ export async function writeNodeFile(path: string, file: NodeFile): Promise<void>
   await rename(`${path}.new`, path);
 }
 
-/** The node file with the policy the layout commits for it; identity and membership stay the node's own. */
+/**
+ * The node file with the policy the layout commits for it; identity and membership stay the node's own.
+ * @implNote `apply` follows the layout too, the executors' own second check (phase 3), so it is written only for an admitted node the layout lets act.
+ */
 export function nodeFileFromLayout(file: NodeFile, policy: LayoutNode): NodeFile {
-  return { ...file, node: { ...file.node, threshold: policy.threshold, assigned: [...policy.assigned], access: policy.access } };
+  const node: NodeFile["node"] = { id: file.node.id, name: file.node.name, kind: file.node.kind, threshold: policy.threshold, assigned: [...policy.assigned], access: policy.access };
+  return { ...file, node: policy.apply && policy.admitted ? { ...node, apply: true } : node };
 }
 
 /**

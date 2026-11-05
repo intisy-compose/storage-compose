@@ -1494,3 +1494,31 @@ export interface BandsEditBody {
   bands: PriorityBand[];
   base: string;
 }
+
+/** `PUT /api/nodes/<id>/policy`: the fields to change, each optional; `apply` is never among them. */
+export interface NodePolicyBody {
+  base: string;
+  threshold?: number;
+  assigned?: string[];
+  pins?: Record<string, number>;
+  enabled?: boolean;
+}
+
+/** `PUT /api/nodes/<id>/policy/apply`: turning it on takes the node's name typed as `confirm`. */
+export interface NodePolicyApplyBody {
+  base: string;
+  apply: boolean;
+  confirm?: string;
+}
+
+/** `GET /api/nodes/<id>/policy/preview?threshold=`: what the threshold would hand off, folder by folder, and what else it changes in the plan. */
+export interface NodePolicyPreview {
+  nodeId: string;
+  threshold: number;
+  /** The folders that would turn send-only; `keepers` empty means nothing of it can leave the node. */
+  handoffs: { folderId: string; label: string; files: number; bytes: number; keepers: string[] }[];
+  /** What would leave once each file is confirmed, counting only folders with a keeper. */
+  files: number;
+  bytes: number;
+  changes: string[];
+}

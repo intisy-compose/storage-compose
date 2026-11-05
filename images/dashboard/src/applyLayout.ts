@@ -9,7 +9,8 @@ import { layeredStateOf, recordLayered } from "./layeredDrift.js";
 import { handoffIgnoreFile, nodePlan } from "./nodePlan.js";
 import { type HandoffFiles, type NodeReconcile, carriedLayoutPaths, reconcileNode } from "./reconcileNode.js";
 import { nodeVolumesDirectory, storageRoot } from "./settings.js";
-import { type SetupLayout, readLayout } from "./setupRepo.js";
+import { type LayoutNode, type SetupLayout, blockedNodeIds, readLayout } from "./setupRepo.js";
+import { followLayout, nodeFilePath } from "./nodeFile.js";
 import type { SyncthingFolderConfig } from "./syncthing.js";
 
 export interface LayoutRoundDependencies {
@@ -19,8 +20,10 @@ export interface LayoutRoundDependencies {
   handoffFiles: HandoffFiles;
   /** Writes each node's hand-off contract; a round without one writes none. */
   handoffs?: HandoffPublisher;
+  /** Brings the node's own `.storage/node.toml` to its layout policy; true when it wrote. A round without one leaves node files alone. */
+  nodeFiles?: (instance: LocalInstance, policy: LayoutNode) => Promise<boolean>;
   /** Enters one written change in Activity. */
-  record: (nodeId: string, folderId: string, text: string) => void;
+  record: (nodeId: string, folderId: string | null, text: string) => void;
   readBackDelaysMs?: readonly number[];
   now?: () => Date;
 }
@@ -82,12 +85,28 @@ export class LayoutRound {
     }
   }
 
+  /**
+   * The node file follows the layout's policy, `apply` only for an admitted node the layout does not block, so the executors' own check of
+   * the node file turns true only after the layout commits it, and false again the round it is taken back.
+   */
+  private async followNodeFile(layout: SetupLayout, instance: LocalInstance, node: LayoutNode): Promise<void> {
+    const follow = this.dependencies.nodeFiles;
+    if (!follow) return;
+    const policy = { ...node, apply: node.apply && node.admitted && !blockedNodeIds(layout).has(node.id) };
+    try {
+      if (await follow(instance, policy)) this.dependencies.record(instance.nodeId, null, `${instance.name}: node file follows the layout, threshold ${policy.threshold}, apply ${policy.apply ? "on" : "off"}`);
+    } catch (error) {
+      console.error(`layered sync: ${instance.name}'s node file does not follow the layout: ${reasonOf(error)}`);
+    }
+  }
+
   private async nodeState(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[]): Promise<LayeredState | null> {
     const node = layout.nodes.find((entry) => entry.id === instance.nodeId);
     if (!node) {
       await this.clearHandoffs(instance, false);
       return null;
     }
+    await this.followNodeFile(layout, instance, node);
     const checkedAt = (this.dependencies.now?.() ?? new Date()).toISOString();
     const state = emptyState(node.apply ? "apply" : "report", node.threshold, checkedAt);
     if (!node.admitted) {
@@ -170,6 +189,21 @@ export function mountedHandoffFiles(roots: readonly string[]): HandoffFiles {
 }
 
 /**
+ * The node files this host may bring to the layout: a Linux drive or folder node whose root lies where this host mounts the nodes' files.
+ * @implNote An array's node file is on every member and describes the membership, so it is never followed; a Windows node's is the host
+ * agent's to write (phase 6), so it waits, and with it every Windows node's hand-off.
+ */
+export function mountedNodeFiles(roots: readonly string[]): (instance: LocalInstance, policy: LayoutNode) => Promise<boolean> {
+  return async (instance, policy) => {
+    if (instance.os !== "linux" || instance.source === "array" || !instance.root) return false;
+    const root = await realOrNull(resolve(instance.root));
+    const mounted = (await Promise.all(roots.map((entry) => realOrNull(resolve(entry))))).filter((entry): entry is string => entry !== null);
+    if (!root || !mounted.some((entry) => isInside(entry, root))) return false;
+    return followLayout(nodeFilePath(root), policy);
+  };
+}
+
+/**
  * The connection round, which pulls the setup repo, then the layout round on what the pull brought.
  * @implNote The layout round runs even when the connection round fails, so a profile problem never stops a node from reaching its plan.
  */
@@ -186,5 +220,6 @@ export const layoutRound = new LayoutRound({
   instances: () => localInstances(),
   handoffFiles: mountedHandoffFiles([storageRoot, nodeVolumesDirectory]),
   handoffs: handoffPublisher(),
+  nodeFiles: mountedNodeFiles([storageRoot, nodeVolumesDirectory]),
   record: (nodeId, folderId, text) => recordDashboardActivity(nodeId, folderId, text),
 });
