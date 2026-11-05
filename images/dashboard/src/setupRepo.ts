@@ -185,9 +185,11 @@ function parseNode(id: string, entry: TomlTable, problems: LayoutProblem[]): Lay
   };
 }
 
+/** @implNote A refused entry that is not admitted names no node anyone shares with, so it never blocks another node of the same name. */
 function sharedNameProblems(nodes: LayoutNode[]): LayoutProblem[] {
-  return nodes
-    .filter((node) => node.name !== "" && nodes.some((other) => other !== node && other.name === node.name))
+  const counted = nodes.filter((node) => node.admitted || node.refused === undefined);
+  return counted
+    .filter((node) => node.name !== "" && counted.some((other) => other !== node && other.name === node.name))
     .map((node) => ({ nodeId: node.id, text: `name '${node.name}' is used by another node too`, blocksNode: true }));
 }
 

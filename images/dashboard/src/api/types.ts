@@ -1625,6 +1625,7 @@ export interface NodeAdmission {
   /** Where the host found it: a registry entry, the host agent or an array. */
   source: string;
   host: string;
+  /** The node file's threshold, which the admission form suggests. */
   threshold: number;
   /** The layout has an entry for it, not admitted yet. */
   listed: boolean;
@@ -1634,4 +1635,6 @@ export interface NodeAdmission {
 export interface NodeAdmissionBody {
   base: string;
   answer: "accept" | "refuse";
+  /** The threshold the node is admitted at, confirmed by the person from the node file's suggestion; required to accept. */
+  threshold?: number;
 }

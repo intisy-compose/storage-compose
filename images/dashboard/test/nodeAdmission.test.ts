@@ -101,22 +101,28 @@ describe("admitting a node through the setup repo", () => {
   after(() => rmSync(repos.root, { recursive: true, force: true }));
 
   it("accepting a node the layout does not list adds its device and its entry, admitted, at its node file's threshold", async () => {
-    const answer = await askRoutes(routes(), "PUT", "/api/nodes/d003/admission", { base: version(), answer: "accept" });
+    const refused = await askRoutes(routes(), "PUT", "/api/nodes/d003/admission", { base: version(), answer: "accept" });
+    assert.equal(refused.status, 400, "an admission without the confirmed threshold is refused");
+    const answer = await askRoutes(routes(), "PUT", "/api/nodes/d003/admission", { base: version(), answer: "accept", threshold: 70 });
     assert.equal(answer.status, 200);
     const node = remote().nodes.find((entry) => entry.id === "d003");
-    assert.deepEqual([node?.name, node?.device, node?.threshold, node?.admitted, node?.apply], ["new-stick", "new-stick", 80, true, false]);
+    assert.deepEqual([node?.name, node?.device, node?.threshold, node?.admitted, node?.apply], ["new-stick", "new-stick", 70, true, false]);
+    assert.match(git(repos.remote, "show", "main:drive-sync.toml"), /\[nodes.d003\][^[]*apply = false/);
     assert.deepEqual(remote().devices.find((entry) => entry.name === "new-stick")?.id, "D003-ID");
     assert.equal(git(repos.remote, "log", "-1", "--format=%s", "main"), "feat(layout): admit new-stick to the layered sync");
   });
 
-  it("accepting a listed node only admits it, keeping its threshold", async () => {
-    await askRoutes(routes(), "PUT", "/api/nodes/b001/admission", { base: version(), answer: "accept" });
+  it("accepting a listed node admits it at the confirmed threshold, and never with apply on", async () => {
+    writeFileSync(join(repos.ours, "drive-sync.toml"), readFileSync(join(repos.ours, "drive-sync.toml"), "utf8").replace(`[nodes.b001]\nname = "stick"`, `[nodes.b001]\napply = true\nname = "stick"`));
+    git(repos.ours, "commit", "-q", "-am", "a hand-set apply");
+    git(repos.ours, "push", "-q");
+    await askRoutes(routes(), "PUT", "/api/nodes/b001/admission", { base: version(), answer: "accept", threshold: 60 });
     const node = remote().nodes.find((entry) => entry.id === "b001");
-    assert.deepEqual([node?.threshold, node?.admitted], [50, true]);
+    assert.deepEqual([node?.threshold, node?.admitted, node?.apply, node?.device], [60, true, false, "stick"]);
   });
 
   it("a device name the layout gives another ID is refused", async () => {
-    const answer = await askRoutes(routes(), "PUT", "/api/nodes/e004/admission", { base: version(), answer: "accept" });
+    const answer = await askRoutes(routes(), "PUT", "/api/nodes/e004/admission", { base: version(), answer: "accept", threshold: 50 });
     assert.equal(answer.status, 409);
     assert.match((answer.body as { error: string }).error, /a device pc with another Syncthing ID/);
   });
@@ -130,9 +136,22 @@ describe("admitting a node through the setup repo", () => {
     assert.deepEqual(waitingAdmissions(remote(), [info("f005", "lost-stick")], "storage"), []);
   });
 
+  it("a refused entry with no device blocks nothing, and its node admitted later gets its device", async () => {
+    assert.deepEqual(remote().problems, []);
+    nodes.set("a6a6", info("a6a6", "lost-stick"));
+    const sameName = parseLayout(`${git(repos.remote, "show", "main:drive-sync.toml")}\n[nodes.a6a6]\nname = "lost-stick"\ndevice = "pc"\nadmitted = true\n`);
+    assert.deepEqual(sameName.problems, [], "another node of the refused one's name is not blocked by it");
+    const answer = await askRoutes(routes(), "PUT", "/api/nodes/f005/admission", { base: version(), answer: "accept", threshold: 80 });
+    assert.equal(answer.status, 200);
+    const node = remote().nodes.find((entry) => entry.id === "f005");
+    assert.deepEqual([node?.admitted, node?.device, node?.refused], [true, "lost-stick", undefined]);
+    assert.equal(remote().devices.find((entry) => entry.name === "lost-stick")?.id, "F005-ID");
+    assert.deepEqual(remote().problems, []);
+  });
+
   it("a node of another host, or a bad answer, is refused before anything is written", async () => {
     const head = git(repos.remote, "rev-parse", "main");
-    assert.equal((await askRoutes(routes(), "PUT", "/api/nodes/9999/admission", { base: version(), answer: "accept" })).status, 404);
+    assert.equal((await askRoutes(routes(), "PUT", "/api/nodes/9999/admission", { base: version(), answer: "accept", threshold: 50 })).status, 404);
     assert.equal((await askRoutes(routes(), "PUT", "/api/nodes/d003/admission", { base: version(), answer: "maybe" })).status, 400);
     assert.equal(git(repos.remote, "rev-parse", "main"), head);
   });

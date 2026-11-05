@@ -1,7 +1,7 @@
 import type { NodeAdmission, NodeAdmissionBody } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalNodeInfo, callSyncthing, findLocalNode } from "../instanceResolver.js";
-import { checkedLayout, editNodePolicy, layoutVersion } from "../layoutEdit.js";
+import { checkedLayout, editNodePolicy, layoutVersion, validPriority } from "../layoutEdit.js";
 import type { AnyRoute } from "../routeTypes.js";
 import { setupRepoDirectory } from "../settings.js";
 import { type SetupLayout, parseLayout, saveLayout, upsertDevice } from "../setupRepo.js";
@@ -26,6 +26,13 @@ export interface AdmissionSources {
   now(): Date;
 }
 
+/** The threshold an acceptance names, which the person confirms from the node file's suggestion; required, so it is never taken unseen. */
+function thresholdOf(body: unknown): number {
+  const threshold = (body as Partial<NodeAdmissionBody> | null)?.threshold;
+  if (threshold === undefined) throw new RequestError(400, "an admission names the threshold the node is admitted at");
+  return validPriority(threshold, "the threshold");
+}
+
 function answerOf(body: unknown): NodeAdmissionBody["answer"] {
   const answer = (body as Partial<NodeAdmissionBody> | null)?.answer;
   if (answer !== "accept" && answer !== "refuse") throw new RequestError(400, "the answer is accept or refuse");
@@ -33,18 +40,21 @@ function answerOf(body: unknown): NodeAdmissionBody["answer"] {
 }
 
 /**
- * The layout with the node admitted: its device entry (found by its Syncthing ID, else added under the node's name) and its node entry,
- * at the threshold its node file says when the layout had none.
- * @implNote Admission is the commit that lets every other node share with it, so it is made before any share; a device name the layout
- * already gives another ID is refused rather than overwritten.
+ * The layout with the node admitted at the threshold the person confirmed: its device entry (found by its Syncthing ID, else added under
+ * the node's name) and its node entry, `apply = false` written outright.
+ * @implNote Admission is the commit that lets every other node share with it, so it is made before any share; it is never a path to `apply`,
+ * which only its own confirmed switch turns on. A device name the layout already gives another ID is refused rather than overwritten, and a
+ * listed entry's empty device (a refused node's) is set to the resolved one.
  */
-export function admitted(text: string, info: LocalNodeInfo, deviceId: string): string {
+export function admitted(text: string, info: LocalNodeInfo, deviceId: string, threshold: number): string {
   const layout = parseLayout(text);
   const known = layout.devices.find((device) => device.id === deviceId);
   if (!known && layout.devices.some((device) => device.name === info.name)) throw new RequestError(409, `the layout has a device ${info.name} with another Syncthing ID; give the node another name or fix the layout by hand`);
   const withDevice = known ? text : upsertDevice(text, info.name, deviceId, info.root);
   const entry = layout.nodes.find((node) => node.id === info.nodeId);
-  return entry ? editNodePolicy(withDevice, info.nodeId, { admitted: true, refused: null }) : editNodePolicy(withDevice, info.nodeId, { admitted: true, threshold: info.threshold }, { name: info.name, device: known?.name ?? info.name });
+  const device = known?.name ?? info.name;
+  const change = { admitted: true, apply: false, threshold, refused: null, device };
+  return entry ? editNodePolicy(withDevice, info.nodeId, change) : editNodePolicy(withDevice, info.nodeId, change, { name: info.name, device });
 }
 
 /** The layout with the refusal recorded on the node's entry, which keeps it off Requests until it is taken back in the layout. */
@@ -77,9 +87,10 @@ export function nodeAdmissionRoutes(sources: AdmissionSources = liveSources): An
         const info = await sources.findNode(nodeId);
         if (!info) throw new RequestError(404, `no node ${nodeId} on this host; it is admitted from the host it is attached to`);
         await layoutTextOf(sources.repository);
+        const threshold = answer === "accept" ? thresholdOf(body) : 0;
         const deviceId = answer === "accept" ? await sources.deviceId(info) : "";
         const edit = (text: string) =>
-          checkedLayout(answer === "accept" ? admitted(text, info, deviceId) : refused(text, info, sources.now()), (layout) => layout.nodes.find((node) => node.id === nodeId)?.admitted === (answer === "accept"), `${info.name} ${answer === "accept" ? "admitted" : "refused"}`);
+          checkedLayout(answer === "accept" ? admitted(text, info, deviceId, threshold) : refused(text, info, sources.now()), (layout) => layout.nodes.find((node) => node.id === nodeId)?.admitted === (answer === "accept"), `${info.name} ${answer === "accept" ? "admitted" : "refused"}`);
         const words = answer === "accept" ? `admit ${info.name} to the layered sync` : `refuse ${info.name}'s admission`;
         const saved = await pullAfterConflict(sources.repository, saveLayout(edit, `feat(layout): ${words}`, base, layoutVersion, sources.repository));
         sendJson(response, 200, { saved });
