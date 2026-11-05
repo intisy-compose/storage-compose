@@ -118,6 +118,7 @@ describe("the layout's bands", () => {
       { name: "local", from: 0 },
     ]);
     assert.deepEqual(parseLayout(`[folders.Documents]\ncategory = "synced"\n`).bands, defaultPriorityBands);
+    assert.equal(parseLayout(`[folders.Documents]\ncategory = "synced"\n`).bandsFromLayout, false);
   });
 
   it("are the layout's own when it sets them, highest first", () => {
@@ -125,6 +126,7 @@ describe("the layout's bands", () => {
       { name: "keep", from: 60 },
       { name: "local", from: 0 },
     ]);
+    assert.equal(parseLayout(`[bands]\nlocal = 0\n`).bandsFromLayout, true);
   });
 });
 

@@ -60,6 +60,8 @@ export interface SetupLayout {
   problems: LayoutProblem[];
   /** The layout's `[bands]` table, highest first, or the design's bands when it sets none. */
   bands: PriorityBand[];
+  /** Whether `bands` is the layout's own table rather than the design's default. */
+  bandsFromLayout: boolean;
 }
 
 export interface SetupRecordResult {
@@ -197,10 +199,9 @@ export function blockedNodeIds(layout: SetupLayout): Set<string> {
 }
 
 function parseBands(table: TomlTable): PriorityBand[] {
-  const bands = Object.entries(table)
+  return Object.entries(table)
     .flatMap(([name, from]) => (typeof from === "number" ? [{ name, from }] : []))
     .sort((left, right) => right.from - left.from);
-  return bands.length ? bands : defaultPriorityBands.map((band) => ({ ...band }));
 }
 
 export function parseLayout(text: string): SetupLayout {
@@ -208,12 +209,14 @@ export function parseLayout(text: string): SetupLayout {
   const problems: LayoutProblem[] = [];
   const devices = Object.entries(asTable(toml.devices)).map(([name, value]) => parseDevice(name, asTable(value)));
   const nodes = Object.entries(asTable(toml.nodes)).map(([id, value]) => parseNode(id, asTable(value), problems));
+  const bands = parseBands(asTable(toml.bands));
   return {
     devices,
     folders: Object.entries(asTable(toml.folders)).map(([key, value]) => parseFolder(key, asTable(value))),
     nodes,
     problems: [...problems, ...sharedNameProblems(nodes), ...archiveProblems(devices, nodes)],
-    bands: parseBands(asTable(toml.bands)),
+    bands: bands.length ? bands : defaultPriorityBands.map((band) => ({ ...band })),
+    bandsFromLayout: bands.length > 0,
   };
 }
 

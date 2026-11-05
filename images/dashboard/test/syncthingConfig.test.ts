@@ -220,11 +220,14 @@ describe("the host's priority bands", () => {
       { name: "working", from: 50 },
       { name: "local", from: 0 },
     ]);
+    assert.equal(hostSettings(layout).priorityBandsFromLayout, true);
   });
 
   it("are the design's while the layout defines none, and not set without a setup repo", () => {
     assert.deepEqual(hostSettings(parseLayout(["[folders.Documents]", 'category = "synced"', ""].join("\n"))).priorityBands, defaultPriorityBands);
+    assert.equal(hostSettings(parseLayout(["[folders.Documents]", 'category = "synced"', ""].join("\n"))).priorityBandsFromLayout, false);
     assert.equal(hostSettings(null).priorityBands, null);
+    assert.equal(hostSettings(null).priorityBandsFromLayout, false);
   });
 });
 

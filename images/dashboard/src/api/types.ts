@@ -856,6 +856,8 @@ export interface HostSettings {
   ntfy: { url: string; topicSet: boolean };
   /** The layout's bands, highest first, or the design's when it sets none; null without a layout. */
   priorityBands: PriorityBand[] | null;
+  /** Whether `priorityBands` is the layout's own `[bands]` table rather than the design's default. */
+  priorityBandsFromLayout: boolean;
   setupRepo: boolean;
 }
 
