@@ -35,6 +35,8 @@ export interface PlannedFolder {
 export interface NodePlan {
   nodeId: string;
   admitted: boolean;
+  /** Whether the node is the private cluster, which keeps every folder send-receive. */
+  cluster: boolean;
   /** The threshold the layout commits for the node, before any raise for space. */
   threshold: number;
   /** The threshold the plan was made at: the committed one, or a raise for space. */
@@ -132,8 +134,10 @@ function priorityFor(network: Network, node: LayoutNode, folder: LayoutFolder): 
   return Math.max(ownPriority(node, folder), ...network.layout.nodes.filter((other) => other.admitted).map((other) => ownPriority(other, folder)));
 }
 
+/** @implNote The cluster keeps all data, so no threshold of its own ever makes one of its folders send-only. */
 function keptBy(network: Network, node: LayoutNode, folder: LayoutFolder): KeptBy | null {
   if (isAssigned(node, folder)) return "assigned";
+  if (isCluster(network, node)) return "threshold";
   if (folder.priority >= node.threshold) return "threshold";
   return priorityFor(network, node, folder) >= node.threshold ? "pin" : null;
 }
@@ -273,8 +277,9 @@ export function nodePlan(layout: SetupLayout, nodeId: string, localFolders: Read
   const node = { ...listed, threshold: appliedThreshold };
   const network = networkOf(layout);
   const problems = layout.problems.filter((problem) => problem.blocksNode && problem.nodeId === nodeId).map((problem) => problem.text);
-  const plan: NodePlan = { nodeId, admitted: node.admitted, threshold: listed.threshold, appliedThreshold, folders: [], notShared: [], unplaced: unplacedPaths(network.folders, node), problems };
+  const plan: NodePlan = { nodeId, admitted: node.admitted, cluster: false, threshold: listed.threshold, appliedThreshold, folders: [], notShared: [], unplaced: unplacedPaths(network.folders, node), problems };
   if (!node.admitted || problems.length) return plan;
+  plan.cluster = isCluster(network, node);
   const device = deviceOf(layout, node);
   for (const folder of network.folders) {
     if (!carriesShared(network, node, folder)) {

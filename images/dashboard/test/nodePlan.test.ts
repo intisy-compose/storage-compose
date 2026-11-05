@@ -188,6 +188,16 @@ describe("a node's plan", () => {
     }
   });
 
+  it("keeps the cluster send-receive whatever its threshold, and marks its plan as the cluster's", () => {
+    const raised = parseLayout(layoutText.replace('device    = "array"\nthreshold = 0', 'device    = "array"\nthreshold = 95'));
+    const plan = nodePlan(raised, "c1c1", new Set());
+    assert.ok(plan);
+
+    assert.equal(plan.cluster, true);
+    assert.equal(planOf("a001").cluster, false);
+    for (const id of ["documents", "documents-github", "desktop", "videos", "music"]) assert.equal(folder(plan, id).type, "sendreceive", id);
+  });
+
   it("pauses every folder of a node that is not enabled", () => {
     assert.equal(planOf("c1c1").folders.every((entry) => entry.paused), true);
     assert.equal(planOf("a001").folders.some((entry) => entry.paused), false);

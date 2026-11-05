@@ -1,5 +1,6 @@
 import { profileFileProblemText } from "./api/profileText.js";
 import type { ConnectionProfile, NodeAddresses, PeerTable } from "./api/types.js";
+import { layoutRound, pullThenReconcile } from "./applyLayout.js";
 import { type ApplyReport, recordDrift, recordPeerTable } from "./connectionsDrift.js";
 import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances, writeConfirmed } from "./instanceResolver.js";
 import { localPeerTable, readRemoteTable } from "./peerSources.js";
@@ -228,8 +229,9 @@ export const connectionsRound = new ConnectionsRound({
   readBackDelaysMs: defaultReadBackDelaysMs,
 });
 
+/** One pull of the setup repo, the connection profile applied, then each node brought to its layered plan. */
 export function applyRound(): Promise<ApplyReport> {
-  return connectionsRound.run();
+  return pullThenReconcile(connectionsRound, layoutRound);
 }
 
 /** A round now and then every `seconds`, one at a time; the returned function stops them. */

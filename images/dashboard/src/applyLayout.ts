@@ -1,0 +1,159 @@
+import { constants } from "node:fs";
+import { lstat, open, realpath, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import type { LayeredChange, LayeredState } from "./api/types.js";
+import { recordDashboardActivity } from "./eventFeed.js";
+import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances } from "./instanceResolver.js";
+import { layeredStateOf, recordLayered } from "./layeredDrift.js";
+import { handoffIgnoreFile, nodePlan } from "./nodePlan.js";
+import { type HandoffFiles, type NodeReconcile, carriedLayoutPaths, reconcileNode } from "./reconcileNode.js";
+import { nodeVolumesDirectory, storageRoot } from "./settings.js";
+import { type SetupLayout, readLayout } from "./setupRepo.js";
+import type { SyncthingFolderConfig } from "./syncthing.js";
+
+export interface LayoutRoundDependencies {
+  /** The layout as the last pull left it; null while the setup repo holds none. */
+  layout: () => Promise<SetupLayout | null>;
+  instances: () => Promise<LocalInstance[]>;
+  handoffFiles: HandoffFiles;
+  /** Enters one written change in Activity. */
+  record: (nodeId: string, folderId: string, text: string) => void;
+  readBackDelaysMs?: readonly number[];
+  now?: () => Date;
+}
+
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function driftOf(result: NodeReconcile): LayeredChange[] {
+  return result.folders.flatMap((folder) =>
+    folder.changes.map((change) => ({ folderId: folder.folderId, label: folder.label, field: change.field, text: change.text, written: change.written, held: change.written ? null : (change.held ?? folder.held ?? folder.failed) })),
+  );
+}
+
+function nodeOnlyText(entry: NodeReconcile["nodeOnlyIgnores"][number]): string {
+  const kept = entry.lines.length ? [`kept ${entry.lines.join(" ")}`] : [];
+  const replaced = entry.inBlock.length ? [`replaced in the block ${entry.inBlock.join(" ")}`] : [];
+  return `${entry.label}: ${[...kept, ...replaced].join("; ")}`;
+}
+
+function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: string): LayeredState {
+  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt };
+}
+
+/**
+ * Each round brings this host's nodes to their layered plans from the shared layout, or only reports how they differ.
+ * @implNote The plan is made at the committed threshold and no hand-off is decided yet, so `effectiveThreshold` is the committed one and
+ * `pendingHandoffs` null. A round never confirms for an array, so an array's changes always wait for the folder ID typed.
+ */
+export class LayoutRound {
+  constructor(private readonly dependencies: LayoutRoundDependencies) {}
+
+  async run(): Promise<void> {
+    const layout = await this.dependencies.layout();
+    const states = new Map<string, LayeredState>();
+    if (layout) {
+      for (const instance of await this.dependencies.instances()) {
+        const state = await this.nodeState(layout, instance);
+        if (state) states.set(instance.nodeId, state);
+      }
+    }
+    recordLayered(states);
+  }
+
+  private async nodeState(layout: SetupLayout, instance: LocalInstance): Promise<LayeredState | null> {
+    const node = layout.nodes.find((entry) => entry.id === instance.nodeId);
+    if (!node) return null;
+    const checkedAt = (this.dependencies.now?.() ?? new Date()).toISOString();
+    const state = emptyState(node.apply ? "apply" : "report", node.threshold, checkedAt);
+    if (!node.admitted) return { ...state, problems: [`${node.name} is not admitted yet`] };
+    try {
+      const configured = (await callSyncthing(instance, (client) => client.folders())) ?? [];
+      const plan = nodePlan(layout, node.id, carriedLayoutPaths(layout, node.id, new Set(configured.map((folder: SyncthingFolderConfig) => folder.id))));
+      if (!plan) return null;
+      if (plan.problems.length) return { ...state, problems: plan.problems };
+      const result = await reconcileNode(instance, plan, {
+        apply: node.apply,
+        layout,
+        handoffFiles: this.dependencies.handoffFiles,
+        onWritten: (folderId, text) => this.dependencies.record(instance.nodeId, folderId, text),
+        readBackDelaysMs: this.dependencies.readBackDelaysMs ?? defaultReadBackDelaysMs,
+      });
+      return { ...state, effectiveThreshold: plan.appliedThreshold, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
+    } catch (error) {
+      const last = layeredStateOf(instance.nodeId);
+      return { ...(last ?? state), mode: state.mode, threshold: state.threshold, failed: reasonOf(error), checkedAt };
+    }
+  }
+}
+
+function isInside(root: string, path: string): boolean {
+  const between = relative(root, path);
+  return between === "" || (!between.startsWith("..") && !isAbsolute(between));
+}
+
+async function realOrNull(path: string): Promise<string | null> {
+  try {
+    return await realpath(path);
+  } catch {
+    return null;
+  }
+}
+
+/** Why the folder's path is no place this host may create the list in, or null; `real` is its path with every link resolved. */
+async function placeProblem(roots: readonly string[], ownRoot: string | null, path: string): Promise<{ problem: string } | { real: string }> {
+  if (!ownRoot) return { problem: "the node has no root known to this host" };
+  const realRoot = await realOrNull(resolve(ownRoot));
+  if (!realRoot || !isInside(resolve(ownRoot), resolve(path))) return { problem: "the folder is not under the node's own root" };
+  const mounted = (await Promise.all(roots.map((root) => realOrNull(resolve(root))))).filter((root): root is string => root !== null);
+  if (!mounted.some((root) => isInside(root, realRoot))) return { problem: "this host does not mount the node's files" };
+  const real = await realOrNull(resolve(path));
+  if (!real || !isInside(realRoot, real)) return { problem: "the folder does not exist under the node's root" };
+  if (!(await stat(real)).isDirectory()) return { problem: "the folder's path is not a directory" };
+  return { real };
+}
+
+/**
+ * The hand-off list created where this host mounts the node's files at the path its Syncthing uses: the arrays under the storage root and
+ * the nodes service's volumes, both mounted into the dashboard as into the nodes' containers. The folder must lie under the node's own root.
+ * @implNote `O_EXCL` never truncates a list that exists and never follows a link in its place; what is there already counts only as a
+ * regular file, so a link or a directory of that name is held. A Windows node's files are the host agent's to reach, so its include waits for it.
+ */
+export function mountedHandoffFiles(roots: readonly string[]): HandoffFiles {
+  return {
+    ensure: async (instance, folder) => {
+      if (instance.os !== "linux") return "the host agent creates it on a Windows node";
+      const place = await placeProblem(roots, instance.root, folder.path);
+      if ("problem" in place) return place.problem;
+      const listPath = join(place.real, handoffIgnoreFile);
+      try {
+        const handle = await open(listPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o644);
+        await handle.close();
+        return null;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") return `it could not be created: ${reasonOf(error)}`;
+        return (await lstat(listPath)).isFile() ? null : `a ${handoffIgnoreFile} that is not a regular file is in the way`;
+      }
+    },
+  };
+}
+
+/**
+ * The connection round, which pulls the setup repo, then the layout round on what the pull brought.
+ * @implNote The layout round runs even when the connection round fails, so a profile problem never stops a node from reaching its plan.
+ */
+export async function pullThenReconcile<Report>(connections: { run: () => Promise<Report> }, layouts: Pick<LayoutRound, "run">): Promise<Report> {
+  try {
+    return await connections.run();
+  } finally {
+    await layouts.run().catch((error) => console.error(`layered sync: round failed: ${reasonOf(error)}`));
+  }
+}
+
+export const layoutRound = new LayoutRound({
+  layout: () => readLayout(),
+  instances: () => localInstances(),
+  handoffFiles: mountedHandoffFiles([storageRoot, nodeVolumesDirectory]),
+  record: (nodeId, folderId, text) => recordDashboardActivity(nodeId, folderId, text),
+});
