@@ -323,7 +323,7 @@ export interface StorageNode {
 export interface LayeredChange {
   folderId: string;
   label: string;
-  field: "type" | "sharing" | "ignores" | "versioning";
+  field: "type" | "sharing" | "ignores" | "versioning" | "paused";
   text: string;
   written: boolean;
   /** Why it was not written although the node applies its plan; null when nothing held it. */
@@ -352,8 +352,20 @@ export interface LayeredState {
   /** Why the last round could not read the node (its drift is then the last one found), or which folders' writes failed. */
   failed: string | null;
   checkedAt: string;
+  /** The node's space decision this round, in report mode too; null while its space or its folders' sizes cannot be read at all. */
+  space: LayeredSpace | null;
+  /** Why the layered sync holds the node's folders paused (not enabled, or it does not fit even at its top priority); null while it does not. */
+  stopped: string | null;
   /** The node's hand-off as this host's last round decided it and its executor last reported it; null while no contract was written. */
   handoff: LayeredHandoff | null;
+}
+
+/** A node's space decision: `full` is the cluster's, which cannot raise. */
+export interface LayeredSpace {
+  state: "fits" | "raised" | "stopped" | "full" | "unknown";
+  threshold: number;
+  neededBytes: number;
+  availableBytes: number;
 }
 
 /** One file the contract waits with, and since when this host has seen it wait. */
@@ -402,7 +414,7 @@ export interface LayeredHandoff {
   waiting: HandoffWaitingView[];
   notes: string[];
   /** The space decision the contract rests on; null in report mode, where none is made. */
-  space: { state: "fits" | "raised" | "stopped" | "unknown"; threshold: number; neededBytes: number; availableBytes: number } | null;
+  space: LayeredSpace | null;
   result: HandoffResult | null;
 }
 

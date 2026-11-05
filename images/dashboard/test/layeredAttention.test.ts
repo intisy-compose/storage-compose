@@ -24,7 +24,7 @@ function handoff(overrides: Partial<LayeredHandoff> = {}): LayeredHandoff {
 }
 
 function nodeWith(layered: Partial<LayeredState>): StorageNode {
-  const state: LayeredState = { mode: "apply", threshold: 50, effectiveThreshold: 50, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt: "2026-11-06T11:59:00Z", handoff: null, ...layered };
+  const state: LayeredState = { mode: "apply", threshold: 50, effectiveThreshold: 50, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt: "2026-11-06T11:59:00Z", space: null, stopped: null, handoff: null, ...layered };
   return { id: "a1b2", name: "pc", folders: [{ id: "videos", label: "Videos" }], layered: state } as unknown as StorageNode;
 }
 

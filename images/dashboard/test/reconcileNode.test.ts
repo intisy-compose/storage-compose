@@ -5,6 +5,7 @@ import { type NodePlan, handoffIgnoreLines, nodePlan } from "../src/nodePlan.js"
 import { type HandoffFiles, type ReconcileOptions, carriedLayoutPaths, ignoreBlockBegin, ignoreBlockEnd, layoutDeviceIds, managedIgnoreLines, reconcileNode } from "../src/reconcileNode.js";
 import { saveIgnores } from "../src/routes/folderIgnores.js";
 import { parseLayout } from "../src/setupRepo.js";
+import type { SpaceDecision } from "../src/spacePlan.js";
 import { type FakeSyncthing, type SyncthingObject, clientOf, folderOf, keeperId, onPlan, ownId, phoneId, versioningOf } from "./fakeFolderSyncthing.js";
 
 const layoutText = `
@@ -58,6 +59,10 @@ function options(overrides: Partial<ReconcileOptions> = {}): ReconcileOptions {
 }
 
 const configured = ["documents", "documents-old"];
+
+function decision(state: SpaceDecision["state"], threshold: number): SpaceDecision {
+  return { state, threshold, neededBytes: 0, availableBytes: 0, handoffAllowed: state === "fits" || state === "raised" };
+}
 
 describe("reconciling a node with its plan", () => {
   it("finds nothing to change on a node that has its plan", async () => {
@@ -138,7 +143,7 @@ describe("reconciling a node with its plan", () => {
     assert.equal(syncthing.writes().filter((sent) => sent.path.includes("documents-old"))[0], first);
   });
 
-  it("holds a folder turning send-receive until the space rule, and writes its ignores and versioning", async () => {
+  it("holds a folder turning send-receive while no space decision is made, and writes its ignores and versioning", async () => {
     const below = planOf(configured);
     const syncthing = onPlan(below);
     const above = planOf(configured, 20);
@@ -150,22 +155,50 @@ describe("reconciling a node with its plan", () => {
     const old = result.folders.find((folder) => folder.folderId === "documents-old");
     const type = old?.changes.find((change) => change.field === "type");
     assert.equal(type?.written, false);
-    assert.equal(type?.held, "turning send-receive waits for the space rule");
+    assert.equal(type?.held, "turning send-receive waits until the node's space can be read");
     assert.deepEqual(old?.written.sort(), ["ignores", "versioning"]);
   });
 
-  it("holds the type-up in report mode too, and while the ignores are held", async () => {
+  it("turns a folder send-receive, last, once the space decision fits at the plan's threshold", async () => {
+    const syncthing = onPlan(planOf(configured));
+    syncthing.ignores.set("documents-old", []);
+    const above = planOf(configured, 20);
+
+    const result = await reconcileNode(instanceOf(syncthing), above, options({ space: decision("fits", 20) }));
+
+    assert.equal(folderOf(syncthing, "documents-old").type, "sendreceive");
+    const writes = syncthing.writes().filter((sent) => sent.path.includes("documents-old"));
+    assert.deepEqual(writes.at(-1)?.body, { type: "sendreceive" }, "the type comes after the ignores and the versioning");
+    assert.deepEqual(result.folders.find((folder) => folder.folderId === "documents-old")?.written, ["ignores", "versioning", "type"]);
+  });
+
+  it("holds the type-up while the space decision is unknown, stopped, or made at another threshold", async () => {
+    const above = planOf(configured, 20);
+    const cases: [ReturnType<typeof decision>, RegExp][] = [
+      [decision("unknown", 20), /every folder the node keeps has a size/],
+      [decision("stopped", 20), /does not fit even at its top priority/],
+      [decision("raised", 50), /made at threshold 20, not at the space decision's 50/],
+    ];
+    for (const [space, held] of cases) {
+      const syncthing = onPlan(planOf(configured));
+      const result = await reconcileNode(instanceOf(syncthing), above, options({ space }));
+      const type = result.folders.find((folder) => folder.folderId === "documents-old")?.changes.find((change) => change.field === "type");
+      assert.match(type?.held ?? "", held, space.state);
+      assert.equal(folderOf(syncthing, "documents-old").type, "sendonly");
+    }
+  });
+
+  it("holds the type-up in report mode while space allows nothing, and while the ignores are held even when it does", async () => {
     const syncthing = onPlan(planOf(configured));
     syncthing.ignores.set("documents-old", []);
     const above = planOf(configured, 20);
 
     const reported = await reconcileNode(instanceOf(syncthing), above, options({ apply: false }));
-    const applied = await reconcileNode(instanceOf(syncthing), above, options({ handoffFiles: { ensure: async () => "not mounted" } }));
+    const applied = await reconcileNode(instanceOf(syncthing), above, options({ space: decision("fits", 20), handoffFiles: { ensure: async () => "not mounted" } }));
 
-    for (const result of [reported, applied]) {
-      const type = result.folders.find((folder) => folder.folderId === "documents-old")?.changes.find((change) => change.field === "type");
-      assert.equal(type?.held, "turning send-receive waits for the space rule");
-    }
+    const typeOf = (result: typeof reported) => result.folders.find((folder) => folder.folderId === "documents-old")?.changes.find((change) => change.field === "type");
+    assert.equal(typeOf(reported)?.held, "turning send-receive waits until the node's space can be read");
+    assert.equal(typeOf(applied)?.held, "the ignore block is held, so turning send-receive waits for it");
     assert.equal(folderOf(syncthing, "documents-old").type, "sendonly");
   });
 

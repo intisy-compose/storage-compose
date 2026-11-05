@@ -111,6 +111,8 @@ export interface HandoffInput {
   now: () => Date;
   quietMinutes?: number;
   batch?: number;
+  /** The round's space decision for the node, made once for the reconciler and the contract alike; absent, it is read here. */
+  decided?: { decision: SpaceDecision | null };
 }
 
 const isoTime = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
@@ -251,10 +253,15 @@ function entriesOf(layout: SetupLayout, plan: NodePlan, decision: HandoffDecisio
 }
 
 /** The plan at the threshold the space decision allows, or the reason nothing may leave the node; the decision whenever one was made. */
-async function plannedForSpace(input: HandoffInput, plan: NodePlan): Promise<{ plan: NodePlan; decision: SpaceDecision } | { note: string; decision: SpaceDecision | null }> {
+async function decisionOf(input: HandoffInput, plan: NodePlan): Promise<SpaceDecision | null> {
+  if (input.decided) return input.decided.decision;
   const space = await input.reads.space(input.instance);
-  if (!space) return { note: "the node's space cannot be read, so nothing is handed off", decision: null };
-  const decision = effectiveThreshold(plan, await folderSizes(input, plan), space);
+  return space ? effectiveThreshold(plan, await folderSizes(input, plan), space) : null;
+}
+
+async function plannedForSpace(input: HandoffInput, plan: NodePlan): Promise<{ plan: NodePlan; decision: SpaceDecision } | { note: string; decision: SpaceDecision | null }> {
+  const decision = await decisionOf(input, plan);
+  if (!decision) return { note: "the node's space cannot be read, so nothing is handed off", decision: null };
   if (!decision.handoffAllowed) return { note: `the node's space decision is ${decision.state}, so nothing is handed off`, decision };
   const raised = decision.threshold === plan.appliedThreshold ? plan : nodePlan(input.layout, input.nodeId, input.localFolders, decision.threshold);
   return raised ? { plan: raised, decision } : { note: "the node has no plan at the raised threshold", decision };
@@ -417,6 +424,9 @@ export interface PublishContext {
   localFolders: ReadonlySet<string>;
   instance: LocalInstance;
   instances: LocalInstance[];
+  decided?: { decision: SpaceDecision | null };
+  /** Each node's space decision this round, for the keepers. */
+  keeperSpace?: (nodeId: string) => SpaceDecision | null;
 }
 
 export interface HandoffPublisher {

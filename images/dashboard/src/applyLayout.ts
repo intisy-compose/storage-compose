@@ -1,17 +1,24 @@
 import { constants } from "node:fs";
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import type { HandoffWaitingView, LayeredChange, LayeredHandoff, LayeredState } from "./api/types.js";
+import type { HandoffWaitingView, LayeredChange, LayeredHandoff, LayeredSpace, LayeredState } from "./api/types.js";
 import { recordDashboardActivity } from "./eventFeed.js";
-import { type HandoffPublisher, type HandoffWaiting, handoffPublisher } from "./handoffFeed.js";
+import { type HandoffPublisher, type HandoffWaiting, handoffPublisher, syncthingHandoffReads } from "./handoffFeed.js";
 import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances } from "./instanceResolver.js";
 import { layeredStateOf, recordLayered } from "./layeredDrift.js";
-import { handoffIgnoreFile, nodePlan } from "./nodePlan.js";
+import { type NodePlan, handoffIgnoreFile, nodePlan } from "./nodePlan.js";
 import { type HandoffFiles, type NodeReconcile, carriedLayoutPaths, reconcileNode } from "./reconcileNode.js";
 import { nodeVolumesDirectory, storageRoot } from "./settings.js";
 import { type LayoutNode, type SetupLayout, blockedNodeIds, readCommittedLayout, readLayout } from "./setupRepo.js";
 import { followLayout, nodeFilePath, withdrawApply } from "./nodeFile.js";
+import { type FolderSize, type FolderSizes, type NodeSpace, type SpaceDecision, effectiveThreshold } from "./spacePlan.js";
 import type { SyncthingFolderConfig } from "./syncthing.js";
+
+/** What a space decision reads of a node: its disk, and each planned folder's size as its own Syncthing counts it. */
+export interface SpaceReads {
+  space(instance: LocalInstance): Promise<NodeSpace | null>;
+  sizes(instance: LocalInstance, folderId: string): Promise<FolderSize>;
+}
 
 export interface LayoutRoundDependencies {
   /** The layout as the last pull left it; null while the setup repo holds none. */
@@ -24,6 +31,8 @@ export interface LayoutRoundDependencies {
   nodeFiles?: NodeFiles;
   /** The layout as `HEAD` commits it, and whether that commit is on the upstream; null on any doubt. A round without one only withdraws. */
   committedLayout?: () => Promise<CommittedLayout | null>;
+  /** Each node's disk and folder sizes for its space decision; a round without them decides nothing, which holds every type-up and hand-off. */
+  space?: SpaceReads;
   /** Enters one written change in Activity. */
   record: (nodeId: string, folderId: string | null, text: string) => void;
   readBackDelaysMs?: readonly number[];
@@ -47,14 +56,25 @@ function nodeOnlyText(entry: NodeReconcile["nodeOnlyIgnores"][number]): string {
 }
 
 function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: string): LayeredState {
-  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt, handoff: null };
+  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt, space: null, stopped: null, handoff: null };
 }
+
+function spaceView(decision: SpaceDecision | null): LayeredSpace | null {
+  return decision ? { state: decision.state, threshold: decision.threshold, neededBytes: decision.neededBytes, availableBytes: decision.availableBytes } : null;
+}
+
+/** A node of this host as the first pass of a round leaves it: planned at its committed threshold with its space decided, or why not. */
+type Prepared =
+  | { kind: "unlisted" }
+  | { kind: "unadmitted"; node: LayoutNode }
+  | { kind: "blocked"; node: LayoutNode; problems: string[] }
+  | { kind: "failed"; node: LayoutNode; error: unknown }
+  | { kind: "planned"; node: LayoutNode; localFolders: Set<string>; plan: NodePlan; decision: SpaceDecision | null };
 
 /**
  * Each round brings this host's nodes to their layered plans from the shared layout, or only reports how they differ, and writes each
  * node's hand-off contract, an empty one whenever the node cannot be planned, so an executor never acts on an older round's list.
- * @implNote The plan is made at the committed threshold, so `effectiveThreshold` is the committed one. A round never confirms for an
- * array, so an array's changes always wait for the folder ID typed.
+ * @implNote A round never confirms for an array, so an array's changes always wait for the folder ID typed.
  */
 export class LayoutRound {
   constructor(private readonly dependencies: LayoutRoundDependencies) {}
@@ -76,8 +96,11 @@ export class LayoutRound {
     if (this.dependencies.nodeFiles) await this.followNodeFiles(instances, committed);
     if (layout) {
       const gated = withCommittedApply(layout, committed);
+      const prepared = new Map<string, Prepared>();
+      for (const instance of instances) prepared.set(instance.nodeId, await this.prepare(gated, instance));
+      const spaces = new Map([...prepared].flatMap(([nodeId, entry]) => (entry.kind === "planned" ? [[nodeId, entry.decision] as const] : [])));
       for (const instance of instances) {
-        const state = await this.nodeState(gated, instance, instances);
+        const state = await this.nodeState(gated, instance, instances, prepared.get(instance.nodeId) as Prepared, spaces);
         if (!state) continue;
         const handoff = await this.handoffView(instance, state.checkedAt);
         this.recordHandoffActivity(instance, state, handoff);
@@ -97,7 +120,7 @@ export class LayoutRound {
   private recordHandoffActivity(instance: LocalInstance, state: LayeredState, handoff: LayeredHandoff | null): void {
     const before = this.reported.get(instance.nodeId) ?? { finishedAt: null, space: `fits:${state.threshold}` };
     const result = handoff?.result ?? null;
-    const space = handoff?.space ?? null;
+    const space = state.space;
     const spaceKey = space ? `${space.state}:${space.threshold}` : before.space;
     if (result && result.finishedAt !== before.finishedAt && before.finishedAt !== null) {
       for (const [outcome, words] of [["moved", "handed off"], ["released", "released back into sync"]] as const) {
@@ -110,6 +133,7 @@ export class LayoutRound {
       const text =
         space.state === "raised" ? `${instance.name}: threshold raised from ${state.threshold} to ${space.threshold} for space`
         : space.state === "stopped" ? `${instance.name}: does not fit even at its top priority, nothing is handed off`
+        : space.state === "full" ? `${instance.name}: the cluster does not fit with 10% free; it confirms no new hand-off until it does`
         : space.state === "fits" ? `${instance.name}: fits at its threshold ${state.threshold} again`
         : `${instance.name}: its space decision is unknown, nothing is handed off`;
       this.dependencies.record(instance.nodeId, null, text);
@@ -145,11 +169,11 @@ export class LayoutRound {
     await this.dependencies.handoffs?.clear(instance.nodeId, instance, apply).catch((error) => console.error(`layered sync: no hand-off contract written for ${instance.nodeId}: ${reasonOf(error)}`));
   }
 
-  private async publishHandoffs(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], localFolders: ReadonlySet<string>): Promise<number | null> {
+  private async publishHandoffs(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], localFolders: ReadonlySet<string>, decision: SpaceDecision | null, spaces: ReadonlyMap<string, SpaceDecision | null>): Promise<number | null> {
     const publisher = this.dependencies.handoffs;
     if (!publisher) return null;
     try {
-      return await publisher.publish({ layout, nodeId: instance.nodeId, localFolders, instance, instances });
+      return await publisher.publish({ layout, nodeId: instance.nodeId, localFolders, instance, instances, decided: { decision }, keeperSpace: (nodeId) => spaces.get(nodeId) ?? null });
     } catch (error) {
       console.error(`layered sync: no hand-off contract written for ${instance.nodeId}: ${reasonOf(error)}`);
       return null;
@@ -175,39 +199,83 @@ export class LayoutRound {
     }
   }
 
-  private async nodeState(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[]): Promise<LayeredState | null> {
+  /**
+   * The space decision for the node's plan at its committed threshold; null when its disk cannot be read.
+   * @implNote A folder whose size cannot be read has none, which makes a folder the node keeps `unknown`.
+   */
+  private async decide(instance: LocalInstance, plan: NodePlan): Promise<SpaceDecision | null> {
+    const reads = this.dependencies.space;
+    if (!reads) return null;
+    const space = await reads.space(instance).catch(() => null);
+    if (!space) return null;
+    const sizes: FolderSizes = {};
+    for (const folder of plan.folders) {
+      const size = await reads.sizes(instance, folder.id).catch(() => null);
+      if (size && Number.isFinite(size.globalBytes) && Number.isFinite(size.localBytes)) sizes[folder.id] = size;
+    }
+    return effectiveThreshold(plan, sizes, space);
+  }
+
+  /** @implNote Every node of the host is planned and decided before any is reconciled, so each hand-off sees the space decision of every keeper of this round. */
+  private async prepare(layout: SetupLayout, instance: LocalInstance): Promise<Prepared> {
     const node = layout.nodes.find((entry) => entry.id === instance.nodeId);
-    if (!node) {
-      await this.clearHandoffs(instance, false);
-      return null;
-    }
-    const checkedAt = (this.dependencies.now?.() ?? new Date()).toISOString();
-    const state = emptyState(node.apply ? "apply" : "report", node.threshold, checkedAt);
-    if (!node.admitted) {
-      await this.clearHandoffs(instance, node.apply);
-      return { ...state, problems: [`${node.name} is not admitted yet`] };
-    }
+    if (!node) return { kind: "unlisted" };
+    if (!node.admitted) return { kind: "unadmitted", node };
     try {
       const configured = (await callSyncthing(instance, (client) => client.folders())) ?? [];
       const localFolders = carriedLayoutPaths(layout, node.id, new Set(configured.map((folder: SyncthingFolderConfig) => folder.id)));
       const plan = nodePlan(layout, node.id, localFolders);
-      if (!plan || plan.problems.length) await this.clearHandoffs(instance, node.apply);
-      if (!plan) return null;
-      if (plan.problems.length) return { ...state, problems: plan.problems };
+      if (!plan) return { kind: "unlisted" };
+      if (plan.problems.length) return { kind: "blocked", node, problems: plan.problems };
+      return { kind: "planned", node, localFolders, plan, decision: await this.decide(instance, plan) };
+    } catch (error) {
+      return { kind: "failed", node, error };
+    }
+  }
+
+  /**
+   * @implNote A raise plans at the decision's threshold, so the folders it drops turn send-only; any other decision plans at the committed
+   * threshold, and the reconciler holds every type-up the decision does not allow.
+   */
+  private async nodeState(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], prepared: Prepared, spaces: ReadonlyMap<string, SpaceDecision | null>): Promise<LayeredState | null> {
+    if (prepared.kind === "unlisted") {
+      await this.clearHandoffs(instance, false);
+      return null;
+    }
+    const node = prepared.node;
+    const checkedAt = (this.dependencies.now?.() ?? new Date()).toISOString();
+    const state = emptyState(node.apply ? "apply" : "report", node.threshold, checkedAt);
+    if (prepared.kind === "unadmitted") {
+      await this.clearHandoffs(instance, node.apply);
+      return { ...state, problems: [`${node.name} is not admitted yet`] };
+    }
+    if (prepared.kind === "blocked") {
+      await this.clearHandoffs(instance, node.apply);
+      return { ...state, problems: prepared.problems };
+    }
+    if (prepared.kind === "failed") return this.failedState(instance, node, state, prepared.error);
+    const { decision, localFolders } = prepared;
+    try {
+      const plan = decision?.state === "raised" ? (nodePlan(layout, node.id, localFolders, decision.threshold) ?? prepared.plan) : prepared.plan;
       const result = await reconcileNode(instance, plan, {
         apply: node.apply,
         layout,
+        space: decision,
         handoffFiles: this.dependencies.handoffFiles,
         onWritten: (folderId, text) => this.dependencies.record(instance.nodeId, folderId, text),
         readBackDelaysMs: this.dependencies.readBackDelaysMs ?? defaultReadBackDelaysMs,
       });
-      const pendingHandoffs = await this.publishHandoffs(layout, instance, instances, localFolders);
-      return { ...state, effectiveThreshold: plan.appliedThreshold, pendingHandoffs, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
+      const pendingHandoffs = await this.publishHandoffs(layout, instance, instances, localFolders, decision, spaces);
+      return { ...state, effectiveThreshold: plan.appliedThreshold, space: spaceView(decision), pendingHandoffs, drift: driftOf(result), missing: result.missing.map((folder) => folder.label), unplanned: result.unplanned, unknownDevices: result.unknownDevices, nodeOnlyIgnores: result.nodeOnlyIgnores.map(nodeOnlyText), failed: result.failed.length ? result.failed.join("; ") : null };
     } catch (error) {
-      await this.clearHandoffs(instance, node.apply);
-      const last = layeredStateOf(instance.nodeId);
-      return { ...(last ?? state), mode: state.mode, threshold: state.threshold, failed: reasonOf(error), checkedAt };
+      return this.failedState(instance, node, state, error);
     }
+  }
+
+  private async failedState(instance: LocalInstance, node: LayoutNode, state: LayeredState, error: unknown): Promise<LayeredState> {
+    await this.clearHandoffs(instance, node.apply);
+    const last = layeredStateOf(instance.nodeId);
+    return { ...(last ?? state), mode: state.mode, threshold: state.threshold, failed: reasonOf(error), checkedAt: state.checkedAt };
   }
 }
 
@@ -340,5 +408,6 @@ export const layoutRound = new LayoutRound({
   handoffs: handoffPublisher(),
   nodeFiles: mountedNodeFiles([storageRoot, nodeVolumesDirectory]),
   committedLayout: () => readCommittedLayout(),
+  space: syncthingHandoffReads,
   record: (nodeId, folderId, text) => recordDashboardActivity(nodeId, folderId, text),
 });

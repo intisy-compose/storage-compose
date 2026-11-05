@@ -115,6 +115,7 @@ async function layoutRound(apply: boolean, instances: Peer[] = [peers.stick, pee
     instances: async () => instances.map(instanceOf),
     handoffFiles: stickFiles(),
     handoffs: handoffPublisher(reads, () => scratch),
+    space: reads,
     record: () => {},
     readBackDelaysMs: [],
   }).run();

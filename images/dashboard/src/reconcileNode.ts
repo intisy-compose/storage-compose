@@ -4,6 +4,7 @@ import { type LocalInstance, arrayConfirmProblem, callSyncthing, defaultReadBack
 import { type NodePlan, type PlannedFolder, type PlannedVersioning, handoffIgnoreFile, handoffIgnoreLines } from "./nodePlan.js";
 import { writeIgnoreLines } from "./routes/folderIgnores.js";
 import { type SetupLayout, topDirectoryPath } from "./setupRepo.js";
+import { type SpaceDecision, spaceAllowsPull } from "./spacePlan.js";
 import type { SyncthingFolderSettings } from "./syncthing.js";
 import { effectiveSharing, sharedDevices } from "./syncthingConfig.js";
 
@@ -73,6 +74,8 @@ export interface ReconcileOptions {
   /** The layout the plan was made from: a folder stops being shared only with one of its devices, never with a device it does not list. */
   layout: SetupLayout;
   handoffFiles: HandoffFiles;
+  /** The node's space decision this round; a folder turns send-receive only while it allows the plan to pull. Null or absent holds every type-up. */
+  space?: SpaceDecision | null;
   /** On an array, the folder ID as typed for each folder the person confirmed. */
   confirmations?: Readonly<Record<string, string>>;
   /** Called after each confirmed write, with the change in words for Activity. */
@@ -197,14 +200,24 @@ function wantedVersioning(current: SyncthingFolderSettings["versioning"], planne
 
 const changeableTypes: ReadonlySet<FolderType> = new Set(["sendreceive", "sendonly"]);
 
+/** Why the space decision lets no folder of the plan turn send-receive, or null when it does. */
+export function pullHeldBy(space: SpaceDecision | null, plan: NodePlan): string | null {
+  if (spaceAllowsPull(space, plan)) return null;
+  if (!space) return "turning send-receive waits until the node's space can be read";
+  if (space.state === "unknown") return "turning send-receive waits until every folder the node keeps has a size, so it is known to keep 10% free";
+  if (space.state === "stopped") return "the node does not fit even at its top priority, so nothing turns send-receive";
+  if (space.state === "full") return "the cluster does not fit with 10% free, so nothing turns send-receive";
+  return `the plan was made at threshold ${plan.appliedThreshold}, not at the space decision's ${space.threshold}`;
+}
+
 /**
  * Why the folder's type is not changed to the plan's, or null when it is.
- * @implNote Turning send-receive makes a folder pull, which only the space rule may allow, so it waits for it.
+ * @implNote Turning send-receive makes a folder pull, which only the space rule may allow: `pullHeld` says why it does not.
  */
-function typeHeld(current: FolderType, planned: PlannedFolder, cluster: boolean): string | null {
-  if (cluster && planned.type === "sendonly") return "the cluster is never made send-only";
+function typeHeld(current: FolderType, planned: PlannedFolder, context: DiffContext): string | null {
+  if (context.cluster && planned.type === "sendonly") return "the cluster is never made send-only";
   if (!changeableTypes.has(current)) return `type ${folderTypeTexts[current]} is not changed here`;
-  return planned.type === "sendreceive" ? "turning send-receive waits for the space rule" : null;
+  return planned.type === "sendreceive" ? context.pullHeld : null;
 }
 
 function isSameLines(left: readonly string[], right: readonly string[]): boolean {
@@ -257,12 +270,14 @@ interface DiffContext {
   layoutDevices: ReadonlySet<string>;
   closed: ReadonlySet<string>;
   cluster: boolean;
+  /** Why no folder may turn send-receive this round; null while the space decision allows it. */
+  pullHeld: string | null;
 }
 
 function typeDiff(planned: PlannedFolder, current: CurrentFolder, context: DiffContext): { type: FolderType | null; changes: FieldChange[] } {
   const from = current.settings.type;
   if (from === planned.type) return { type: null, changes: [] };
-  const held = typeHeld(from, planned, context.cluster);
+  const held = typeHeld(from, planned, context);
   return { type: held ? null : planned.type, changes: [change("type", `type ${folderTypeTexts[from]} to ${folderTypeTexts[planned.type]}`, held)] };
 }
 
@@ -427,8 +442,15 @@ async function applyFolder(writer: Writer, work: FolderWork, result: FolderRecon
     result.held = confirmProblem;
     return;
   }
+  let ignoresHeld = false;
   for (const field of writeOrder(work)) {
+    if (field === "type" && work.type === "sendreceive" && ignoresHeld) {
+      const entry = result.changes.find((candidate) => candidate.field === "type");
+      if (entry) entry.held = "the ignore block is held, so turning send-receive waits for it";
+      continue;
+    }
     const outcome = await applyField(writer, work, field);
+    if (field === "ignores" && outcome !== "written" && outcome !== "none") ignoresHeld = true;
     if (outcome === "none") continue;
     const entry = result.changes.find((candidate) => candidate.field === field && candidate.held === null);
     if (outcome !== "written") {
@@ -460,7 +482,7 @@ export async function reconcileNode(instance: LocalInstance, plan: NodePlan, opt
     callSyncthing(instance, (client) => client.devices()),
   ]);
   const byId = new Map((configured ?? []).map((folder) => [folder.id, folder]));
-  const context: DiffContext = { ownId, known: new Set((devices ?? []).map((device) => device.deviceID)), layoutDevices: layoutDeviceIds(options.layout), closed: closedDeviceIds(options.layout), cluster: plan.cluster };
+  const context: DiffContext = { ownId, known: new Set((devices ?? []).map((device) => device.deviceID)), layoutDevices: layoutDeviceIds(options.layout), closed: closedDeviceIds(options.layout), cluster: plan.cluster, pullHeld: pullHeldBy(options.space ?? null, plan) };
   const result: NodeReconcile = { nodeId: plan.nodeId, mode: options.apply ? "apply" : "report", folders: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], failed: [] };
   const unknownDevices = new Set<string>();
   const works: { work: FolderWork; reconcile: FolderReconcile }[] = [];

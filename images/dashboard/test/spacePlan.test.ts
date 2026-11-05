@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { type NodePlan, nodePlan } from "../src/nodePlan.js";
 import { parseLayout } from "../src/setupRepo.js";
-import { type FolderSizes, effectiveThreshold, spaceHeadroom } from "../src/spacePlan.js";
+import { type FolderSizes, effectiveThreshold, spaceAllowsPull, spaceHeadroom } from "../src/spacePlan.js";
 
 const layout = parseLayout(`
 [devices.stick]
@@ -132,7 +132,57 @@ admitted = true
     const cluster = nodePlan(network, "c1c1", new Set()) as NodePlan;
     const clusterSizes: FolderSizes = { low: { globalBytes: 100, localBytes: 0 }, high: { globalBytes: 100, localBytes: 0 }, "a001-own": { globalBytes: 100, localBytes: 0 } };
 
-    assert.deepEqual(effectiveThreshold(cluster, clusterSizes, space(300, 300)), { state: "raised", threshold: 80, neededBytes: 200, availableBytes: 300, handoffAllowed: true });
+    assert.deepEqual(effectiveThreshold(cluster, clusterSizes, space(10_000, 10_000)), { state: "fits", threshold: 0, neededBytes: 300, availableBytes: 10_000, handoffAllowed: true });
+    assert.equal(effectiveThreshold(cluster, clusterSizes, space(300, 300)).neededBytes, 300, "the priority 0 folder of pc counts too");
+  });
+
+  it("counts every folder of the cluster whatever its threshold, since it keeps them all, and never raises it", () => {
+    const network = parseLayout(`
+[devices.array]
+id   = "ARRAY-ID"
+role = "archive"
+
+[devices.pc]
+id = "PC-ID"
+
+[folders.Low]
+priority = 10
+
+[folders.High]
+priority = 80
+
+[nodes.a001]
+name     = "pc"
+device   = "pc"
+admitted = true
+
+[nodes.c1c1]
+name      = "private-array"
+device    = "array"
+threshold = 50
+admitted  = true
+`);
+    const cluster = nodePlan(network, "c1c1", new Set()) as NodePlan;
+    const clusterSizes: FolderSizes = { low: { globalBytes: 100, localBytes: 0 }, high: { globalBytes: 100, localBytes: 0 } };
+
+    assert.deepEqual(effectiveThreshold(cluster, clusterSizes, space(1000, 1000)), { state: "fits", threshold: 50, neededBytes: 200, availableBytes: 1000, handoffAllowed: true });
+    assert.deepEqual(effectiveThreshold(cluster, clusterSizes, space(210, 210)), { state: "full", threshold: 50, neededBytes: 200, availableBytes: 210, handoffAllowed: false }, "a raise would relieve nothing, so it is full");
+    assert.equal(effectiveThreshold(cluster, { high: clusterSizes.high }, space(1000, 1000)).state, "unknown", "Low has no size, and the cluster keeps it");
+  });
+});
+
+describe("whether a folder may turn send-receive", () => {
+  it("only while the node's space decision fits or is raised, at the threshold the plan was made at", () => {
+    const fits = effectiveThreshold(plan, sizes, space(1000, 900));
+    const raised = effectiveThreshold(plan, sizes, space(450, 400));
+    const raisedPlan = nodePlan(layout, "b001", new Set(["Old", "Notes"]), raised.threshold) as NodePlan;
+
+    assert.equal(spaceAllowsPull(fits, plan), true);
+    assert.equal(spaceAllowsPull(raised, raisedPlan), true);
+    assert.equal(spaceAllowsPull(raised, plan), false, "a plan at the committed threshold while the decision is raised");
+    assert.equal(spaceAllowsPull(effectiveThreshold(plan, sizes, space(220, 220)), plan), false, "stopped");
+    assert.equal(spaceAllowsPull(effectiveThreshold(plan, {}, space(1000, 900)), plan), false, "unknown");
+    assert.equal(spaceAllowsPull(null, plan), false, "no decision at all");
   });
 });
 

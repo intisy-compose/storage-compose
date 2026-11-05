@@ -3,13 +3,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { type LayoutRoundDependencies, LayoutRound, mountedHandoffFiles, pullThenReconcile } from "../src/applyLayout.js";
+import { type LayoutRoundDependencies, LayoutRound, type SpaceReads, mountedHandoffFiles, pullThenReconcile } from "../src/applyLayout.js";
 import type { HandoffPublisher } from "../src/handoffFeed.js";
 import type { LocalInstance } from "../src/instanceResolver.js";
 import { layeredStateOf } from "../src/layeredDrift.js";
 import { nodePlan } from "../src/nodePlan.js";
 import { carriedLayoutPaths } from "../src/reconcileNode.js";
 import { type SetupLayout, parseLayout } from "../src/setupRepo.js";
+import type { FolderSize } from "../src/spacePlan.js";
 import { FakeSyncthing, clientOf, folderOf, onPlan } from "./fakeFolderSyncthing.js";
 
 function layoutText(apply: boolean, threshold = 50): string {
@@ -206,6 +207,70 @@ describe("reconciling this host's nodes on every pull", () => {
 
     assert.deepEqual(layeredStateOf("a001")?.problems, ["laptop-data is not admitted yet"]);
     assert.deepEqual(syncthing.writes(), []);
+  });
+});
+
+/** A node at threshold 50, where `Documents/Old` is send-only, as a raise to 80 or a held type-up leaves it. */
+function nodeAtFifty(): FakeSyncthing {
+  const layout = parseLayout(layoutText(false, 50));
+  const plan = nodePlan(layout, "a001", carriedLayoutPaths(layout, "a001", new Set(["documents", "documents-old"])));
+  assert.ok(plan);
+  return onPlan(plan);
+}
+
+/** Both folders 100 bytes in the network; the node holds Documents whole and nothing of Old. */
+function spaceOf(totalBytes: number, freeBytes: number, missing: string[] = []): SpaceReads {
+  const sizes: Record<string, FolderSize> = { documents: { globalBytes: 100, localBytes: 100 }, "documents-old": { globalBytes: 100, localBytes: 0 } };
+  return {
+    space: async () => ({ totalBytes, freeBytes }),
+    sizes: async (_instance, folderId) => {
+      if (missing.includes(folderId) || !sizes[folderId]) throw new Error(`no status for ${folderId}`);
+      return sizes[folderId];
+    },
+  };
+}
+
+describe("the space of each node of this host, every round", () => {
+  it("is decided in report mode too, and a raise plans at its threshold: the folder it drops turns send-only", async () => {
+    for (const apply of [false, true]) {
+      const syncthing = nodeAtTwenty();
+      await roundOf(() => parseLayout(layoutText(apply, 20)), [instanceOf(syncthing)], [], { space: spaceOf(300, 100) }).run();
+
+      const state = layeredStateOf("a001");
+      assert.deepEqual(state?.space, { state: "raised", threshold: 80, neededBytes: 100, availableBytes: 200 });
+      assert.equal(state?.effectiveThreshold, 80);
+      assert.deepEqual(state?.drift.map((change) => `${change.folderId} ${change.field} ${change.written}`), [`documents-old type ${apply}`]);
+      assert.equal(folderOf(syncthing, "documents-old").type, apply ? "sendonly" : "sendreceive");
+    }
+  });
+
+  it("turns a folder held send-only send-receive once what the node keeps fits with 10% free, the folder counted", async () => {
+    const syncthing = nodeAtFifty();
+    const recorded: Recorded[] = [];
+
+    await roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(syncthing)], recorded, { space: spaceOf(1000, 800) }).run();
+
+    assert.equal(layeredStateOf("a001")?.space?.state, "fits");
+    assert.equal(folderOf(syncthing, "documents-old").type, "sendreceive");
+    assert.ok(recorded.some((entry) => /Documents\/Old: type send only to send and receive/.test(entry.text)));
+  });
+
+  it("holds the type-up while the node's disk or a kept folder's size cannot be read, or what it keeps would not fit", async () => {
+    const cases: [string, Partial<LayoutRoundDependencies>, string | null, RegExp][] = [
+      ["no space reads", {}, null, /space can be read/],
+      ["the disk unread", { space: { ...spaceOf(1000, 800), space: async () => null } }, null, /space can be read/],
+      ["a size unread", { space: spaceOf(1000, 800, ["documents-old"]) }, "unknown", /every folder the node keeps has a size/],
+      ["only at 80", { space: spaceOf(300, 100) }, "raised", /./],
+    ];
+    for (const [name, overrides, state, held] of cases) {
+      const syncthing = nodeAtFifty();
+      await roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(syncthing)], [], overrides).run();
+      assert.equal(layeredStateOf("a001")?.space?.state ?? null, state, name);
+      assert.equal(folderOf(syncthing, "documents-old").type, "sendonly", name);
+      const type = layeredStateOf("a001")?.drift.find((change) => change.field === "type");
+      if (state !== "raised") assert.match(type?.held ?? "", held, name);
+      else assert.equal(type, undefined, "a raise to 80 plans Old send-only, as it is");
+    }
   });
 });
 
