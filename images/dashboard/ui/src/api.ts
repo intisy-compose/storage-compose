@@ -98,6 +98,14 @@ export type {
   PullOrder,
   Peer,
   LayeredState,
+  LayoutNodeView,
+  LayoutSaveAnswer,
+  LayoutView,
+  NodePlanChangeView,
+  FolderLayeredNode,
+  NodeAdmission,
+  NodePolicyPreview,
+  PriorityPreview,
   RemoteState,
   RemoteNeedPage,
   RemoveDeviceBody,
@@ -146,6 +154,7 @@ export type {
 } from "../../src/api/types.js";
 import type { LocalChangesAction } from "../../src/api/localChangesText.js";
 import { requestRefresh } from "./renderRequest.js";
+import type { BandsEditBody, NodeAdmissionBody, LayoutSaveAnswer, LayoutSaveResult, LayoutView, NodePolicyApplyBody, NodePolicyBody, NodePolicyPreview, PriorityPreview } from "../../src/api/types.js";
 import type { AdvancedConfig, AdvancedTarget, ConnectionProfile, DefaultIgnores, DeviceDefaults, FolderDefaults, GeneralEditResponse, GeneralSettingsChange, IgnoredLists, NodeRestartState, PeerTable, ProfileRead, ProfileSaveBody, RestartAnswer, RestartBody } from "../../src/api/types.js";
 import type { AcceptDeviceBody, AcceptFolderBody, AcceptFolderDefaults, AcceptedDevice, ActivityResponse, DebugChange, DebugFacilities, NodeErrors, NodeLog, AddedDevice, ArrayAction, ArrayActionBody, ConflictsPage, DeviceIdCheck, DeviceSettings, DeviceSettingsChange, DevicesResponse, ErrorAnswer, FailedPage, NearbyDevice, NewDevice, NewFolder, NewFolderDefaults, FolderDetailResponse, FolderIgnores, FolderPathCheck, IgnoresChange, FolderEditBody, FolderSettings, FolderRescan, DiscardCounts, LocalChangedPage, LocalChangesBody, LocalChangesDone, RemoveDeviceBody, RemoveFolderBody, RemovedFolder, RescanBody, HostSettings, IgnoredDevice, IgnoredFolderOffer, ItemsPage, NeedItem, NodeOptionsResponse, NodesResponse, PendingDevice, PendingFolderOffer, RemoteNeedPage, RequestsResponse, RestoredVersions, RestoreVersionsBody, TreeListing, VersionsPage } from "../../src/api/types.js";
 import { type ActivityFilters, activityRequestQuery, defaultActivityFilters, folderChangesShown } from "../../src/api/activityFilters.js";
@@ -165,14 +174,14 @@ export {
 } from "../../src/api/profileText.js";
 export { nodeLimitsOf, withNodeLimits } from "../../src/connectionProfile.js";
 export { newlyStrandedPairs } from "../../src/reachability.js";
-export { defaultItemsPerPage, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
+export { defaultItemsPerPage, defaultPriorityBands, diskFreeUnits, editableFolderTypes, folderSettingLabels, folderShare, folderTypeTexts, maxItemsPerPage, pullOrderTexts, removalConfirmations, topDirectoryDefault } from "../../src/api/types.js";
 
 export { addressLabel, connectionKindText, deviceDisplayName, deviceStateText, driveLastSeenHereText, driveWhereText, deviceSettingLabels, isNodePaused, isReachable, reachTone, seenTimeText, shareFoldersLabel, shortDeviceId } from "../../src/api/deviceText.js";
 export { changedFields } from "../../src/syncthingConfig.js";
 export { ignoreLinesOf, ignoreLinesProblem } from "../../src/api/ignorePatterns.js";
 export { type VersioningParam, cleanupIntervalLabel, externalVersioningRefusal, isKeptBySyncthing, offeredVersioningTypes, restoreConsequences, secondsPerDay, versioningParamKeys, versioningParamLabels, versioningTypeTexts, versioningWords, versionsPathLabel, versionsReadLongestSeconds } from "../../src/api/versioningText.js";
 export { type StatusPresentation, type StatusTone, priorityBadgeText, statusPresentation } from "../../src/api/explorerText.js";
-export { type LocalChangesAction, discardedCount, localChangesFolderType, overrideLossText, revertLossText } from "../../src/api/localChangesText.js";
+export { type LocalChangesAction, discardedCount, handoffOverrideText, localChangesFolderType, overrideLossText, revertLossText } from "../../src/api/localChangesText.js";
 
 export interface ActionResult {
   ok: boolean;
@@ -629,4 +638,38 @@ export async function runArrayAction(nodeId: string, action: ArrayAction, body: 
   } catch {
     return { ok: false, message: "The dashboard is not answering." };
   }
+}
+
+export function fetchLayout(): Promise<LayoutView> {
+  return getJson("api/layout");
+}
+
+export function previewPriority(path: string, priority: number | null): Promise<SaveResult<PriorityPreview>> {
+  return sendWrite("api/priorities/preview", "POST", { path, priority });
+}
+
+/** `confirm` is the folder ID, when the edit creates or removes a folder boundary. */
+export function savePriority(path: string, priority: number | null, base: string, confirm?: string): Promise<SaveResult<LayoutSaveAnswer>> {
+  return sendWrite("api/priorities", "PUT", { path, priority, base, confirm });
+}
+
+export function fetchPolicyPreview(nodeId: string, threshold: number): Promise<NodePolicyPreview> {
+  return getJson(`api/nodes/${encodeURIComponent(nodeId)}/policy/preview?threshold=${threshold}`);
+}
+
+export function saveNodePolicy(nodeId: string, body: NodePolicyBody): Promise<SaveResult<{ saved: LayoutSaveResult }>> {
+  return sendWrite(`api/nodes/${encodeURIComponent(nodeId)}/policy`, "PUT", body);
+}
+
+/** `confirm` is the node's name, typed, to turn apply on. */
+export function setNodeApply(nodeId: string, body: NodePolicyApplyBody): Promise<SaveResult<{ saved: LayoutSaveResult }>> {
+  return sendWrite(`api/nodes/${encodeURIComponent(nodeId)}/policy/apply`, "PUT", body);
+}
+
+export function saveBands(body: BandsEditBody): Promise<SaveResult<LayoutSaveAnswer>> {
+  return sendWrite("api/layout/bands", "PUT", body);
+}
+
+export function answerAdmission(nodeId: string, body: NodeAdmissionBody): Promise<SaveResult<{ saved: LayoutSaveResult }>> {
+  return sendWrite(`api/nodes/${encodeURIComponent(nodeId)}/admission`, "PUT", body);
 }

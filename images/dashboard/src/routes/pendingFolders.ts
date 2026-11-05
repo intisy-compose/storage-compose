@@ -9,6 +9,7 @@ import type { AnyRoute, NothingWritten, WriteNote } from "../routeTypes.js";
 import type { SyncthingFolderSettings } from "../syncthing.js";
 import { folderChangeProblem } from "../syncthingConfig.js";
 import { type SyncthingConfig, changeWholeConfig } from "../wholeConfig.js";
+import { clusterVersionsDays } from "../nodePlan.js";
 import { decodedSegment } from "./devices.js";
 import { type CreatedFolder, type NodeFolderSources, createFolder, guardNewFolderPath, newFolderPlacementProblem, nodeFolderSources } from "./nodeFolders.js";
 
@@ -18,7 +19,8 @@ const acceptKeys: readonly (keyof AcceptFolderBody)[] = ["offeredBy", "path", "t
 const folderTypes = Object.keys(folderTypeTexts) as FolderType[];
 
 /** What an array keeps of an offered folder unless the person changes it: Syncthing's own staggered default, a year of versions. */
-export const arrayVersioning: Versioning = { type: "staggered", params: { maxAge: "31536000" }, cleanupIntervalS: 3600, fsPath: "" };
+/** The cluster keeps what is deleted in staggered versions for 90 days (section 5 item 2). */
+export const arrayVersioning: Versioning = { type: "staggered", params: { maxAge: String(clusterVersionsDays * 86_400) }, cleanupIntervalS: 3600, fsPath: "" };
 
 function asObject(value: unknown): SyncthingObject {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as SyncthingObject) : {};
@@ -64,7 +66,7 @@ function typeProblem(offer: PendingFolderOffer, type: FolderType): string | null
 
 function defaultType(instance: LocalInstance, offer: PendingFolderOffer, nodeDefault: unknown): FolderType {
   if (offer.receiveEncrypted) return "receiveencrypted";
-  if (isArrayInstance(instance)) return "receiveonly";
+  if (isArrayInstance(instance)) return "sendreceive";
   return nodeDefault === "sendonly" || nodeDefault === "receiveonly" ? nodeDefault : "sendreceive";
 }
 
@@ -81,8 +83,8 @@ function rootOf(instance: LocalInstance): string {
 
 /**
  * The accept form's defaults for one device's offer: placed at `<root>/<label>`, shared with the offering device, the node's
- * own folder defaults for the rest. On an array (HANDOFF decision 1, plan call 5) the folder is received only, kept with
- * staggered versioning, and the folder ID must be typed.
+ * own folder defaults for the rest. On an array the folder is send-receive like on any node (section 5 item 9), kept with
+ * staggered versioning for 90 days, and the folder ID must be typed.
  */
 export async function acceptFolderDefaults(instance: ResolvedInstance, folderId: string, offeredBy: string, nodes: NodeRoot[]): Promise<AcceptFolderDefaults> {
   const local = requireLocal(instance);

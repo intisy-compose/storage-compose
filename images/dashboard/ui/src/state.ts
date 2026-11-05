@@ -1,5 +1,5 @@
 import { type ActivityEntry, type ConflictFile, type FailedItem, type FolderItem, type ItemsPage, type NeedItem, type ReadResult, activityFiltersOf, activityFiltersQuery, defaultActivityFilters, defaultItemsPerPage } from "./api.js";
-import type { ActivityFilters, ActivityResponse, DebugFacilities, LogLevel, LogMessage, NodeErrors, FileVersion, VersionsPage, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, IgnoredLists, NodeOptionsResponse, NodeRestartState, NodesResponse, PeerTable, ProfileRead, RequestsResponse, TreeListing } from "./api.js";
+import type { ActivityFilters, ActivityResponse, DebugFacilities, LogLevel, LogMessage, NodeErrors, FileVersion, VersionsPage, AddedDevice, DeviceIdCheck, DiscardCounts, DeviceSettings, DevicesResponse, NearbyDevice, FolderDetailResponse, FolderIgnores, FolderPathCheck, FolderSettings, FolderType, NewFolderDefaults, HostSettings, IgnoredLists, LayoutView, NodeOptionsResponse, NodeRestartState, NodesResponse, PeerTable, ProfileRead, RequestsResponse, TreeListing } from "./api.js";
 import type { KindFilter, ReachFilter } from "./devicePlacement.js";
 import { type ThemeChoice, storedTheme } from "./preferences.js";
 
@@ -300,6 +300,9 @@ export interface AppState {
   requestsError: string | null;
   hostSettings: HostSettings | null;
   hostSettingsError: string | null;
+  /** The setup repo's layout, which the priority, node policy and band forms edit; null without one. */
+  layout: LayoutView | null;
+  layoutError: string | null;
   /** The cluster's connection profile as this host's data repo holds it. */
   connectionProfile: ProfileRead | null;
   connectionProfileError: string | null;
@@ -364,6 +367,8 @@ export const appState: AppState = {
   requestsError: null,
   hostSettings: null,
   hostSettingsError: null,
+  layout: null,
+  layoutError: null,
   connectionProfile: null,
   connectionProfileError: null,
   peerTable: null,

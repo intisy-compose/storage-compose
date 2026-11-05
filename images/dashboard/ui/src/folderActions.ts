@@ -3,6 +3,7 @@ import { button, element } from "./dom.js";
 import { isOrphanedAction } from "./folderCondition.js";
 import { registerForm } from "./forms.js";
 import { type RunAction, localChangesActionOf, localChangesForm, localChangesToggle } from "./localChangesForm.js";
+import { handoffOverrideText } from "./api.js";
 import { requestRender } from "./renderRequest.js";
 import { type FolderActionState, type Notice, appState } from "./state.js";
 
@@ -166,13 +167,15 @@ function resultLine(result: Notice | null): HTMLElement | null {
 export function folderActions(copy: FolderCopy, settings: FolderSettings): HTMLElement {
   const state = actionState(settings.id, copy.nodeId);
   const formId = formIdOf(settings.id, copy.nodeId);
-  const discard = localChangesActionOf(settings);
+  const discard = localChangesActionOf(settings, copy.handoff === true);
+  const overrideWithheld = copy.handoff === true && settings.type === "sendonly";
   const runDiscard: RunAction = (send, done, failed) => void run(state, send, (value) => done(value.text), failed);
   return element(
     "div",
     { className: "folder-actions", attributes: { id: formId } },
     settings.paused ? element("p", { className: "notice tone-text-warn" }, `Paused on ${copy.nodeName}: Syncthing neither scans nor syncs it here until it is resumed.`) : null,
     element("div", { className: "button-row" }, pauseButton(copy, settings, state), discard ? localChangesToggle(discard, settings, state) : null, removeToggle(state)),
+    overrideWithheld ? element("p", { className: "muted small" }, `${handoffOverrideText}.`) : null,
     rescanControls(copy, settings, state, formId),
     resultLine(state.result),
     discard && state.discardOpen ? localChangesForm(discard, copy, settings, state, formId, runDiscard) : null,

@@ -1,5 +1,6 @@
 import type { HostSettings, InstanceGui, InstanceOptions, NodeOptionsResponse, PriorityBand, StorageNode } from "./api.js";
 import { advancedEditor } from "./advancedEditor.js";
+import { bandsForm } from "./bandsForm.js";
 import { element, keyValueList } from "./dom.js";
 import { priorityUnsetText } from "./folderCondition.js";
 import { isNotConnected } from "./nodeStatus.js";
@@ -39,7 +40,7 @@ function dashboardLinks(peers: string[]): HTMLElement | string {
   return element("span", {}, ...peers.flatMap((peer, index) => [index ? ", " : null, element("a", { attributes: { href: peer, target: "_blank", rel: "noreferrer" } }, peer)]));
 }
 
-function hostCard(settings: HostSettings): HTMLElement {
+function hostCard(settings: HostSettings, bands: HTMLElement | null): HTMLElement {
   return card(
     "This host",
     "from config.env and the setup repo",
@@ -51,6 +52,7 @@ function hostCard(settings: HostSettings): HTMLElement {
       ["Setup repo", settings.setupRepo ? "configured" : "not configured"],
       ["Priority bands", settings.priorityBands ? bandsText(settings.priorityBands) : priorityUnsetText],
     ]),
+    bands,
   );
 }
 
@@ -124,7 +126,7 @@ export function readableLocalNodes(): StorageNode[] {
 }
 
 function hostSection(): HTMLElement {
-  if (appState.hostSettings) return hostCard(appState.hostSettings);
+  if (appState.hostSettings) return hostCard(appState.hostSettings, bandsForm());
   return card("This host", null, element("p", { className: appState.hostSettingsError ? "warning" : "muted" }, appState.hostSettingsError ?? "Loading…"));
 }
 

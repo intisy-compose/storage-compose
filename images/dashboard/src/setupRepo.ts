@@ -1,9 +1,9 @@
-import { access, readFile, rm, writeFile } from "node:fs/promises";
+import { access, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { type ConnectionProfile, type NodeAccess, type PriorityBand, type ProfileRead, defaultPriorityBands } from "./api/types.js";
+import { type ConnectionProfile, type LayoutSaveResult, type NodeAccess, type PriorityBand, type ProfileRead, defaultPriorityBands } from "./api/types.js";
 import { runCommand } from "./commands.js";
 import { ProfileError, defaultProfile, formatProfile, parseProfile } from "./connectionProfile.js";
-import { heldCommitText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseInProgressText, rebaseRefusedText, unpushedText } from "./api/profileText.js";
+import { heldCommitText, layoutChangedText, layoutConflictText, profileChangedText, profileConflictText, profileStuckText, rebaseConflictText, rebaseInProgressText, rebaseRefusedText, unpushedText } from "./api/profileText.js";
 import { RequestError } from "./http.js";
 import { connectionsProfilePath, setupLayoutPath, setupRepoDirectory } from "./settings.js";
 import { type TomlTable, type TomlValue, parseToml } from "./toml.js";
@@ -44,6 +44,8 @@ export interface LayoutNode {
   /** False while the node only reports what its plan would change. */
   apply: boolean;
   enabled: boolean;
+  /** When a person refused the node's admission (Requests); absent when nobody did. */
+  refused?: string;
 }
 
 /** A layout entry that cannot be read as written; a blocking one leaves its node out of every plan. */
@@ -179,12 +181,15 @@ function parseNode(id: string, entry: TomlTable, problems: LayoutProblem[]): Lay
     admitted: entry.admitted === true,
     apply: entry.apply === true,
     enabled: parseEnabled(id, entry.enabled, problems),
+    ...(typeof entry.refused === "string" ? { refused: entry.refused } : {}),
   };
 }
 
+/** @implNote A refused entry that is not admitted names no node anyone shares with, so it never blocks another node of the same name. */
 function sharedNameProblems(nodes: LayoutNode[]): LayoutProblem[] {
-  return nodes
-    .filter((node) => node.name !== "" && nodes.some((other) => other !== node && other.name === node.name))
+  const counted = nodes.filter((node) => node.admitted || node.refused === undefined);
+  return counted
+    .filter((node) => node.name !== "" && counted.some((other) => other !== node && other.name === node.name))
     .map((node) => ({ nodeId: node.id, text: `name '${node.name}' is used by another node too`, blocksNode: true }));
 }
 
@@ -267,7 +272,7 @@ export function upsertDevice(text: string, name: string, deviceId: string, root:
   return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
-async function readLayoutText(repository = setupRepoDirectory): Promise<string | null> {
+export async function readLayoutText(repository = setupRepoDirectory): Promise<string | null> {
   try {
     return await readFile(`${repository}/${setupLayoutPath}`, "utf8");
   } catch (error) {
@@ -564,13 +569,13 @@ function isRejectedPush(output: string): boolean {
  * Undoes the save, false when `savedCommit` is no longer HEAD: then the commit and its file stay as committed.
  * @implNote Only this file is touched: the data repo may hold other uncommitted work, so a commit is undone with a soft reset and the file restored by hand.
  */
-async function undoSave(repository: string, before: string | null, savedCommit: string | null): Promise<boolean> {
+async function undoSave(repository: string, before: string | null, savedCommit: string | null, file = connectionsProfilePath): Promise<boolean> {
   if (savedCommit !== null) {
     if ((await gitIn(repository, "rev-parse", "HEAD")).output !== savedCommit) return false;
     await gitIn(repository, "reset", "--soft", "HEAD~1");
   }
-  await gitIn(repository, "reset", "-q", "--", connectionsProfilePath);
-  const path = `${repository}/${connectionsProfilePath}`;
+  await gitIn(repository, "reset", "-q", "--", file);
+  const path = `${repository}/${file}`;
   if (before === null) await rm(path, { force: true });
   else await writeFile(path, before);
   return true;
@@ -632,7 +637,86 @@ async function saveNow(profile: ConnectionProfile, message: string, repository: 
 }
 
 /** Undoes the save and throws `refusal`, or ProfileStuck when another commit landed on top of the save's. */
-async function refuseAfterUndo(repository: string, before: string | null, savedCommit: string, refusal: RequestError): Promise<never> {
-  if (!(await undoSave(repository, before, savedCommit))) throw new ProfileStuck(await shortCommitOf(repository, savedCommit));
+async function refuseAfterUndo(repository: string, before: string | null, savedCommit: string, refusal: RequestError, file = connectionsProfilePath): Promise<never> {
+  if (!(await undoSave(repository, before, savedCommit, file))) throw new ProfileStuck(await shortCommitOf(repository, savedCommit));
   throw refusal;
+}
+
+/** Writes `text` beside `path` and renames it over, so a reader never sees half a layout. */
+async function replaceFile(path: string, text: string): Promise<void> {
+  await writeFile(`${path}.new`, text);
+  await rename(`${path}.new`, path);
+}
+
+/** A layout save made from a layout that is no longer the one on disk. */
+export class LayoutChanged extends RequestError {
+  constructor() {
+    super(409, layoutChangedText);
+  }
+}
+
+/** A layout save whose push the remote refused because another host pushed first; nothing of the save remains. */
+export class LayoutConflict extends RequestError {
+  constructor() {
+    super(409, layoutConflictText);
+  }
+}
+
+/**
+ * Commits `edit` of the layout and pushes it, only while the layout on disk is still the one named by `base`, checked under the repo's lock.
+ * @implNote A remote that cannot be reached keeps the commit ("not pushed yet"): the pull timer pushes the dashboard's own commits once it answers,
+ * so a priority set offline is not lost. A rejected push or a commit that is not the dashboard's undoes the save, as for the profile.
+ */
+export function saveLayout(edit: (text: string) => string, message: string, base: string, version: (text: string) => string, repository = setupRepoDirectory): Promise<LayoutSaveResult> {
+  if (!repository) return Promise.reject(new RequestError(503, "this host has no setup repo to keep the layout in"));
+  return serializeGit(repository, async () => {
+    const rebase = await rebaseInProgress(repository);
+    if (rebase) throw new RequestError(503, rebaseInProgressText(rebase));
+    const before = await readLayoutText(repository);
+    if (before === null) throw new RequestError(409, `the setup repo has no ${setupLayoutPath}`);
+    const dirty = await gitIn(repository, "status", "--porcelain", "--", setupLayoutPath);
+    if (!dirty.ok || dirty.output.trim()) throw new RequestError(409, `${setupLayoutPath} has changes in the setup repo that are not committed, so the dashboard does not save over them; commit or drop them there first`);
+    if (version(before) !== base) throw new LayoutChanged();
+    return saveLayoutNow(before, edit(before), message, repository);
+  });
+}
+
+async function saveLayoutNow(before: string, after: string, message: string, repository: string): Promise<LayoutSaveResult> {
+  if (after === before) return { committed: false, pushed: true, message: "nothing to change" };
+  await replaceFile(`${repository}/${setupLayoutPath}`, after);
+  await gitIn(repository, "add", setupLayoutPath);
+  const commit = await commitAsDashboard(repository, message, setupLayoutPath);
+  if (!commit.ok) {
+    await undoSave(repository, before, null, setupLayoutPath);
+    throw new RequestError(500, `the layout could not be committed: ${lastLine(commit.output, "git commit failed")}`);
+  }
+  const savedCommit = (await gitIn(repository, "rev-parse", "HEAD")).output;
+  const held = await heldUnpushedProblem(repository);
+  if (held) return refuseAfterUndo(repository, before, savedCommit, new ProfileHeld(held), setupLayoutPath);
+  const push = await pushToUpstream(repository);
+  if (push.ok) return { committed: true, pushed: true, message: "committed and pushed to the setup repo" };
+  if (isRejectedPush(push.output)) return refuseAfterUndo(repository, before, savedCommit, new LayoutConflict(), setupLayoutPath);
+  return { committed: true, pushed: false, message: `committed, not pushed yet: ${lastLine(push.output, "git push failed")}; it is pushed once the remote answers` };
+}
+
+/**
+ * The layout as `HEAD` commits it, and whether the last commit of it is on the upstream; null without a setup repo, during a rebase, or
+ * when `HEAD` holds no layout that parses, so a node file's `apply` turns on only from a layout every host has (the session's ruling).
+ */
+export function readCommittedLayout(repository = setupRepoDirectory): Promise<{ layout: SetupLayout; pushed: boolean } | null> {
+  if (!repository) return Promise.resolve(null);
+  return serializeGit(repository, async () => {
+    if (await rebaseInProgress(repository)) return null;
+    const shown = await runCommand("git", ["-C", repository, "show", `HEAD:${setupLayoutPath}`], 60_000);
+    if (shown.exitCode !== 0) return null;
+    let layout: SetupLayout;
+    try {
+      layout = parseLayout(shown.stdout);
+    } catch {
+      return null;
+    }
+    const last = await gitIn(repository, "log", "-1", "--format=%H", "HEAD", "--", setupLayoutPath);
+    const pushed = last.ok && last.output !== "" && (await gitIn(repository, "merge-base", "--is-ancestor", last.output, "@{upstream}")).ok;
+    return { layout, pushed };
+  });
 }

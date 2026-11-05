@@ -44,3 +44,6 @@ export function localChangesDoneText(action: LocalChangesAction, nodeName: strin
   if (action === "revert") return `${nodeName}: reverted ${itemCount(items)} changed here in folder ${folderName}, deleted or replaced by the other devices' versions; ${versioningText}`;
   return `${nodeName}: overrode ${itemCount(items)} other devices changed in folder ${folderName} with ${nodeName}'s versions; ${versioningText} on ${nodeName}`;
 }
+
+/** The refusal of Override changes on a hand-off folder, and the folder form's note where it is not offered. */
+export const handoffOverrideText = "Override changes is never offered on a hand-off folder: its handed-off files are gone from this node, so an override would delete every copy the keepers hold";

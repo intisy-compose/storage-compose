@@ -1,11 +1,13 @@
 import { deviceDisplayName, shortDeviceId } from "../api/deviceText.js";
-import type { AcceptDeviceBody, AcceptedDevice, IgnoredDevice, JoinEntry, PendingDevice, PendingFolderOffer, RequestsResponse } from "../api/types.js";
+import type { AcceptDeviceBody, AcceptedDevice, IgnoredDevice, JoinEntry, NodeAdmission, PendingDevice, PendingFolderOffer, RequestsResponse } from "../api/types.js";
+import { isOfferHeldByLayout } from "../layoutOffers.js";
+import { waitingAdmissions } from "./nodeAdmission.js";
 import { offersOf } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalInstance, type ResolvedInstance, callSyncthing, localNodeInfos, readDashboard, requireLocal, resolveInstance } from "../instanceResolver.js";
 import { type JoinRecords, type JoinedDevice, conflictingId, isDeviceName } from "../join.js";
 import type { AnyRoute, NothingWritten, WriteNote } from "../routeTypes.js";
-import { peerDashboards, setupRepoDirectory } from "../settings.js";
+import { hostName, peerDashboards, setupRepoDirectory } from "../settings.js";
 import { type SetupLayout, type SetupRecordResult, readLayout, recordDevice, withoutUrlCredentials } from "../setupRepo.js";
 import { type PendingDevices, type SyncthingClient, SyncthingUnavailable } from "../syncthing.js";
 import { type SyncthingConfig, changeWholeConfig } from "../wholeConfig.js";
@@ -24,6 +26,10 @@ export interface RequestSources {
   localNodes: () => Promise<RequestNode[]>;
   peerDashboards: string[];
   joins: () => Promise<Record<string, JoinedDevice>>;
+  /** The layout, which says which offers are only keepers sharing with a sender; none filters nothing. */
+  layout?: () => Promise<SetupLayout | null>;
+  /** This host's nodes waiting for admission. */
+  admissions?: () => Promise<NodeAdmission[]>;
 }
 
 function emptyRequests(): RequestsResponse {
@@ -42,12 +48,13 @@ function devicesOf(node: RequestNode, pending: PendingDevices): PendingDevice[] 
   return Object.entries(pending).map(([deviceId, device]) => ({ nodeId: node.nodeId, nodeName: node.name, deviceId, name: device.name, address: device.address, time: device.time }));
 }
 
-async function readNode(node: RequestNode): Promise<RequestsResponse> {
+async function readNode(node: RequestNode, layout: SetupLayout | null): Promise<RequestsResponse> {
   if (!node.present) return notConnected(node.name);
   if (!node.client) return unreadable(node.name, "its Syncthing is not answering");
   try {
     const [devices, folders, configured] = await Promise.all([node.client.pendingDevices(), node.client.pendingFolders(), node.client.devices()]);
-    return { ...emptyRequests(), devices: devicesOf(node, devices), folders: offersOf({ nodeId: node.nodeId, nodeName: node.name }, configured, folders) };
+    const offers = offersOf({ nodeId: node.nodeId, nodeName: node.name }, configured, folders).filter((offer) => !isOfferHeldByLayout(layout, node.nodeId, offer.folderId));
+    return { ...emptyRequests(), devices: devicesOf(node, devices), folders: offers };
   } catch (error) {
     return unreadable(node.name, error instanceof SyncthingUnavailable ? "its Syncthing is not answering" : (error as Error).message);
   }
@@ -89,22 +96,34 @@ async function readJoins(sources: RequestSources): Promise<RequestsResponse> {
   }
 }
 
+async function readAdmissions(sources: RequestSources): Promise<RequestsResponse> {
+  if (!sources.admissions) return emptyRequests();
+  try {
+    return { ...emptyRequests(), admissions: await sources.admissions() };
+  } catch (error) {
+    return unreadable("the nodes waiting for admission", (error as Error).message);
+  }
+}
+
 function newestFirst<Entry>(time: (entry: Entry) => string): (left: Entry, right: Entry) => number {
   return (left, right) => (Date.parse(time(right)) || 0) - (Date.parse(time(left)) || 0);
 }
 
 /** Everything waiting for an answer on this host's nodes and, unless `scope` is local, on the other hosts'. */
 export async function requestsResponse(scope: "all" | "local", sources: RequestSources): Promise<RequestsResponse> {
-  const [local, remote, joins] = await Promise.all([
-    sources.localNodes().then((nodes) => Promise.all(nodes.map(readNode))),
+  const layout = (await sources.layout?.().catch(() => null)) ?? null;
+  const [local, remote, joins, admissions] = await Promise.all([
+    sources.localNodes().then((nodes) => Promise.all(nodes.map((node) => readNode(node, layout)))),
     scope === "all" ? Promise.all(sources.peerDashboards.map(readPeer)) : Promise.resolve([]),
     readJoins(sources),
+    readAdmissions(sources),
   ]);
-  const parts = [...local, ...remote, joins];
+  const parts = [...local, ...remote, joins, admissions];
   return {
     devices: parts.flatMap((part) => part.devices).sort(newestFirst((device) => device.time)),
     folders: parts.flatMap((part): PendingFolderOffer[] => part.folders).sort(newestFirst((offer) => offer.time)),
     joins: parts.flatMap((part) => part.joins).sort(newestFirst((join) => join.joinedAt)),
+    admissions: parts.flatMap((part) => part.admissions ?? []),
     unreadable: parts.flatMap((part) => part.unreadable),
   };
 }
@@ -114,6 +133,8 @@ function liveSources(joinRecords: JoinRecords): RequestSources {
     localNodes: async () => (await localNodeInfos()).map((info) => ({ nodeId: info.nodeId, name: info.name, present: info.present, client: info.instance?.client ?? null })),
     peerDashboards,
     joins: () => joinRecords.all(),
+    layout: readLayout,
+    admissions: async () => waitingAdmissions(await readLayout(), await localNodeInfos(), hostName),
   };
 }
 

@@ -1,15 +1,16 @@
 import { constants } from "node:fs";
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import type { LayeredChange, LayeredState } from "./api/types.js";
+import type { HandoffWaitingView, LayeredChange, LayeredHandoff, LayeredState } from "./api/types.js";
 import { recordDashboardActivity } from "./eventFeed.js";
-import { type HandoffPublisher, handoffPublisher } from "./handoffFeed.js";
+import { type HandoffPublisher, type HandoffWaiting, handoffPublisher } from "./handoffFeed.js";
 import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances } from "./instanceResolver.js";
 import { layeredStateOf, recordLayered } from "./layeredDrift.js";
 import { handoffIgnoreFile, nodePlan } from "./nodePlan.js";
 import { type HandoffFiles, type NodeReconcile, carriedLayoutPaths, reconcileNode } from "./reconcileNode.js";
 import { nodeVolumesDirectory, storageRoot } from "./settings.js";
-import { type SetupLayout, readLayout } from "./setupRepo.js";
+import { type LayoutNode, type SetupLayout, blockedNodeIds, readCommittedLayout, readLayout } from "./setupRepo.js";
+import { followLayout, nodeFilePath, withdrawApply } from "./nodeFile.js";
 import type { SyncthingFolderConfig } from "./syncthing.js";
 
 export interface LayoutRoundDependencies {
@@ -19,8 +20,12 @@ export interface LayoutRoundDependencies {
   handoffFiles: HandoffFiles;
   /** Writes each node's hand-off contract; a round without one writes none. */
   handoffs?: HandoffPublisher;
+  /** Brings the node's own `.storage/node.toml` to its layout policy; true when it wrote. A round without one leaves node files alone. */
+  nodeFiles?: NodeFiles;
+  /** The layout as `HEAD` commits it, and whether that commit is on the upstream; null on any doubt. A round without one only withdraws. */
+  committedLayout?: () => Promise<CommittedLayout | null>;
   /** Enters one written change in Activity. */
-  record: (nodeId: string, folderId: string, text: string) => void;
+  record: (nodeId: string, folderId: string | null, text: string) => void;
   readBackDelaysMs?: readonly number[];
   now?: () => Date;
 }
@@ -42,7 +47,7 @@ function nodeOnlyText(entry: NodeReconcile["nodeOnlyIgnores"][number]): string {
 }
 
 function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: string): LayeredState {
-  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt };
+  return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt, handoff: null };
 }
 
 /**
@@ -54,17 +59,86 @@ function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: st
 export class LayoutRound {
   constructor(private readonly dependencies: LayoutRoundDependencies) {}
 
+  /**
+   * @implNote Whether a node applies comes from the committed, pushed layout through `nodeFileAction`, the same gate as its node file, so
+   * the two never disagree; the working tree's layout still makes the plans and the report. A failed read of the instances leaves the last
+   * round's states and writes nothing.
+   */
   async run(): Promise<void> {
     const layout = await this.dependencies.layout();
     const states = new Map<string, LayeredState>();
+    const instances = await this.dependencies.instances().catch((error) => {
+      console.error(`layered sync: this host's nodes cannot be read: ${reasonOf(error)}`);
+      return null;
+    });
+    if (!instances) return;
+    const committed = await (this.dependencies.committedLayout?.() ?? Promise.resolve(null)).catch(() => null);
+    if (this.dependencies.nodeFiles) await this.followNodeFiles(instances, committed);
     if (layout) {
-      const instances = await this.dependencies.instances();
+      const gated = withCommittedApply(layout, committed);
       for (const instance of instances) {
-        const state = await this.nodeState(layout, instance, instances);
-        if (state) states.set(instance.nodeId, state);
+        const state = await this.nodeState(gated, instance, instances);
+        if (!state) continue;
+        const handoff = await this.handoffView(instance, state.checkedAt);
+        this.recordHandoffActivity(instance, state, handoff);
+        states.set(instance.nodeId, { ...state, handoff });
       }
     }
     recordLayered(states);
+  }
+
+  /** The executor run and the space state each node's last Activity entries were made for, so each is entered once. */
+  private readonly reported = new Map<string, { finishedAt: string | null; space: string }>();
+
+  /**
+   * Activity for each new executor run (files handed off and released, by folder) and for each change of the node's space state
+   * (a raise, a stop, back at its threshold).
+   */
+  private recordHandoffActivity(instance: LocalInstance, state: LayeredState, handoff: LayeredHandoff | null): void {
+    const before = this.reported.get(instance.nodeId) ?? { finishedAt: null, space: `fits:${state.threshold}` };
+    const result = handoff?.result ?? null;
+    const space = handoff?.space ?? null;
+    const spaceKey = space ? `${space.state}:${space.threshold}` : before.space;
+    if (result && result.finishedAt !== before.finishedAt && before.finishedAt !== null) {
+      for (const [outcome, words] of [["moved", "handed off"], ["released", "released back into sync"]] as const) {
+        const byFolder = new Map<string, number>();
+        for (const entry of result.results.filter((candidate) => candidate.outcome === outcome)) byFolder.set(entry.folderId, (byFolder.get(entry.folderId) ?? 0) + 1);
+        for (const [folderId, count] of byFolder) this.dependencies.record(instance.nodeId, folderId, `${instance.name}: ${words} ${count} ${count === 1 ? "file" : "files"} of ${folderId}`);
+      }
+    }
+    if (space && spaceKey !== before.space) {
+      const text =
+        space.state === "raised" ? `${instance.name}: threshold raised from ${state.threshold} to ${space.threshold} for space`
+        : space.state === "stopped" ? `${instance.name}: does not fit even at its top priority, nothing is handed off`
+        : space.state === "fits" ? `${instance.name}: fits at its threshold ${state.threshold} again`
+        : `${instance.name}: its space decision is unknown, nothing is handed off`;
+      this.dependencies.record(instance.nodeId, null, text);
+    }
+    this.reported.set(instance.nodeId, { finishedAt: result?.finishedAt ?? before.finishedAt ?? "", space: spaceKey });
+  }
+
+  /** When this host first saw each file the contract waits with, by node, folder and path, so Attention can tell a wait of a day. */
+  private readonly waitingSince = new Map<string, string>();
+
+  private sinceOf(nodeId: string, waiting: HandoffWaiting[], checkedAt: string): HandoffWaitingView[] {
+    const prefix = `${nodeId}\n`;
+    const current = new Set(waiting.map((entry) => `${prefix}${entry.folderId}\n${entry.path}`));
+    for (const key of [...this.waitingSince.keys()]) if (key.startsWith(prefix) && !current.has(key)) this.waitingSince.delete(key);
+    return waiting.map((entry) => {
+      const key = `${prefix}${entry.folderId}\n${entry.path}`;
+      if (!this.waitingSince.has(key)) this.waitingSince.set(key, checkedAt);
+      return { ...entry, since: this.waitingSince.get(key) as string };
+    });
+  }
+
+  /** The node's last contract, its space decision and its executor's last result, for the node detail and Attention; null before any contract. */
+  private async handoffView(instance: LocalInstance, checkedAt: string): Promise<LayeredHandoff | null> {
+    const publisher = this.dependencies.handoffs;
+    const last = publisher?.last?.(instance.nodeId);
+    if (!publisher || !last) return null;
+    const result = publisher.result ? await publisher.result(instance).catch(() => null) : null;
+    const space = last.space ? { state: last.space.state, threshold: last.space.threshold, neededBytes: last.space.neededBytes, availableBytes: last.space.availableBytes } : null;
+    return { writtenAt: last.contract.writtenAt, entries: last.contract.entries.length, waiting: this.sinceOf(instance.nodeId, last.contract.waiting, checkedAt), notes: [...last.contract.notes], space, result };
   }
 
   private async clearHandoffs(instance: LocalInstance, apply: boolean): Promise<void> {
@@ -79,6 +153,25 @@ export class LayoutRound {
     } catch (error) {
       console.error(`layered sync: no hand-off contract written for ${instance.nodeId}: ${reasonOf(error)}`);
       return null;
+    }
+  }
+
+  /**
+   * Every node file this host keeps follows the committed layout: fully, `apply = true` included, only for a node `nodeFileAction` lets act;
+   * otherwise only its `apply` line is taken out, the layout unreadable or missing included.
+   */
+  private async followNodeFiles(instances: LocalInstance[], committed: CommittedLayout | null): Promise<void> {
+    const files = this.dependencies.nodeFiles as NodeFiles;
+    for (const instance of instances) {
+      const action = nodeFileAction(committed, instance.nodeId);
+      try {
+        const wrote = action.kind === "follow" ? await files.follow(instance, action.policy) : await files.withdraw(instance);
+        if (!wrote) continue;
+        const text = action.kind === "follow" ? `${instance.name}: node file follows the layout, threshold ${action.policy.threshold}, apply on` : `${instance.name}: apply taken out of its node file: ${action.reason}`;
+        this.dependencies.record(instance.nodeId, null, text);
+      } catch (error) {
+        console.error(`layered sync: ${instance.name}'s node file does not follow the layout: ${reasonOf(error)}`);
+      }
     }
   }
 
@@ -169,6 +262,65 @@ export function mountedHandoffFiles(roots: readonly string[]): HandoffFiles {
   };
 }
 
+/** The layout `HEAD` commits, and whether that commit is on the upstream, so every host has it. */
+export interface CommittedLayout {
+  layout: SetupLayout;
+  pushed: boolean;
+}
+
+export type NodeFileAction = { kind: "follow"; policy: LayoutNode } | { kind: "withdraw"; reason: string };
+
+/**
+ * What a node file is brought to: the committed policy with `apply = true` only for a listed, admitted, unblocked, enabled node whose
+ * committed and pushed layout says `apply = true`; on any doubt only its `apply` line is taken out (the session's ruling).
+ */
+export function nodeFileAction(committed: CommittedLayout | null, nodeId: string): NodeFileAction {
+  if (!committed) return { kind: "withdraw", reason: "no committed layout can be read" };
+  const node = committed.layout.nodes.find((entry) => entry.id === nodeId);
+  if (!node) return { kind: "withdraw", reason: "the layout does not list it" };
+  if (!node.admitted) return { kind: "withdraw", reason: "it is not admitted" };
+  if (blockedNodeIds(committed.layout).has(nodeId)) return { kind: "withdraw", reason: "the layout blocks it" };
+  if (!node.enabled) return { kind: "withdraw", reason: "it is not enabled" };
+  if (!node.apply) return { kind: "withdraw", reason: "the committed layout does not say apply = true" };
+  if (!committed.pushed) return { kind: "withdraw", reason: "the commit that says apply = true is not on the upstream yet" };
+  return { kind: "follow", policy: node };
+}
+
+/** The working tree's layout with each node's `apply` as `nodeFileAction` lets it act, so a dirty or unpushed `apply = true` only reports. */
+export function withCommittedApply(layout: SetupLayout, committed: CommittedLayout | null): SetupLayout {
+  return { ...layout, nodes: layout.nodes.map((node) => ({ ...node, apply: nodeFileAction(committed, node.id).kind === "follow" })) };
+}
+
+/** Brings a node file to the committed policy, or takes its `apply` line out; each answers whether it wrote. */
+export interface NodeFiles {
+  follow(instance: LocalInstance, policy: LayoutNode): Promise<boolean>;
+  withdraw(instance: LocalInstance): Promise<boolean>;
+}
+
+/**
+ * The node files this host may write: a Linux drive or folder node whose root lies where this host mounts the nodes' files.
+ * @implNote An array's node file describes its membership and `followLayout` and `withdrawApply` never rewrite one; a Windows node's is the
+ * host agent's to write (phase 6), so it waits, and with it every Windows node's hand-off.
+ */
+export function mountedNodeFiles(roots: readonly string[]): NodeFiles {
+  const pathOf = async (instance: LocalInstance): Promise<string | null> => {
+    if (instance.os !== "linux" || instance.source === "array" || !instance.root) return null;
+    const root = await realOrNull(resolve(instance.root));
+    const mounted = (await Promise.all(roots.map((entry) => realOrNull(resolve(entry))))).filter((entry): entry is string => entry !== null);
+    return root && mounted.some((entry) => isInside(entry, root)) ? nodeFilePath(root) : null;
+  };
+  return {
+    follow: async (instance, policy) => {
+      const path = await pathOf(instance);
+      return path ? followLayout(path, policy) : false;
+    },
+    withdraw: async (instance) => {
+      const path = await pathOf(instance);
+      return path ? withdrawApply(path) : false;
+    },
+  };
+}
+
 /**
  * The connection round, which pulls the setup repo, then the layout round on what the pull brought.
  * @implNote The layout round runs even when the connection round fails, so a profile problem never stops a node from reaching its plan.
@@ -186,5 +338,7 @@ export const layoutRound = new LayoutRound({
   instances: () => localInstances(),
   handoffFiles: mountedHandoffFiles([storageRoot, nodeVolumesDirectory]),
   handoffs: handoffPublisher(),
+  nodeFiles: mountedNodeFiles([storageRoot, nodeVolumesDirectory]),
+  committedLayout: () => readCommittedLayout(),
   record: (nodeId, folderId, text) => recordDashboardActivity(nodeId, folderId, text),
 });

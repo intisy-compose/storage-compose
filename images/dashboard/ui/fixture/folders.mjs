@@ -1,3 +1,4 @@
+import { folderLayeredFixture, handoffCopies, handoffEntries } from "./layout.mjs";
 /** The add and edit forms' reads, as `newFolderDefaults` and the folder detail answer them, for the fixture's local nodes. */
 
 const roots = { a3f9: "/mnt/storage/pool", b71c: "/mnt/b71c/pool", e5d0: "E:\\" };
@@ -28,8 +29,9 @@ export function folderDefaultsFixture(nodes, nodeId, under) {
 export function folderDetailFixture(nodes, folderId) {
   const holders = nodes.filter((node) => node.folders.some((folder) => folder.id === folderId));
   if (!holders.length) return null;
-  const copies = holders.map((node) => ({ ...node.folders.find((folder) => folder.id === folderId), nodeId: node.id, nodeName: node.name, host: node.host, local: node.local, paused: false }));
+  const copies = holders.map((node) => ({ ...node.folders.find((folder) => folder.id === folderId), nodeId: node.id, nodeName: node.name, host: node.host, local: node.local, paused: false, handoff: (handoffCopies[node.id] ?? []).includes(folderId), handoffEntries: handoffEntries[node.id]?.[folderId] }));
   const local = holders.filter((node) => node.local && node.syncthing);
   const detailSettings = Object.fromEntries(local.map((node) => [node.id, settings(node, node.folders.find((folder) => folder.id === folderId))]));
-  return { summary: { id: folderId, label: copies[0].label || folderId, priority: null, prioritySource: "none", copies, offers: [] }, settings: detailSettings, treePath: null };
+  const layered = folderLayeredFixture(folderId);
+  return { summary: { id: folderId, label: copies[0].label || folderId, priority: layered?.priority ?? null, prioritySource: layered ? "setup-repo" : "none", copies, offers: [], layered }, settings: detailSettings, treePath: null };
 }

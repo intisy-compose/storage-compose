@@ -19,7 +19,8 @@ import { type NodePlan, type PlannedFolder, keepsFolder, nodePlan } from "./node
 import { handoffDirectory, handoffSettings, hostAgentHandoffDirectory, hostAgentHeartbeatFile } from "./settings.js";
 import type { LayoutNode, SetupLayout } from "./setupRepo.js";
 import { SyncthingRefusal } from "./syncthing.js";
-import { type FolderSize, type FolderSizes, type NodeSpace, effectiveThreshold } from "./spacePlan.js";
+import { type FolderSize, type FolderSizes, type NodeSpace, type SpaceDecision, effectiveThreshold } from "./spacePlan.js";
+import type { HandoffResult } from "./api/types.js";
 
 export const handoffContractSchema = 1;
 
@@ -249,14 +250,20 @@ function entriesOf(layout: SetupLayout, plan: NodePlan, decision: HandoffDecisio
   });
 }
 
-/** The plan at the threshold the space decision allows, or null with the reason when nothing may leave the node. */
-async function plannedForSpace(input: HandoffInput, plan: NodePlan): Promise<{ plan: NodePlan; decision: ReturnType<typeof effectiveThreshold> } | { note: string }> {
+/** The plan at the threshold the space decision allows, or the reason nothing may leave the node; the decision whenever one was made. */
+async function plannedForSpace(input: HandoffInput, plan: NodePlan): Promise<{ plan: NodePlan; decision: SpaceDecision } | { note: string; decision: SpaceDecision | null }> {
   const space = await input.reads.space(input.instance);
-  if (!space) return { note: "the node's space cannot be read, so nothing is handed off" };
+  if (!space) return { note: "the node's space cannot be read, so nothing is handed off", decision: null };
   const decision = effectiveThreshold(plan, await folderSizes(input, plan), space);
-  if (!decision.handoffAllowed) return { note: `the node's space decision is ${decision.state}, so nothing is handed off` };
+  if (!decision.handoffAllowed) return { note: `the node's space decision is ${decision.state}, so nothing is handed off`, decision };
   const raised = decision.threshold === plan.appliedThreshold ? plan : nodePlan(input.layout, input.nodeId, input.localFolders, decision.threshold);
-  return raised ? { plan: raised, decision } : { note: "the node has no plan at the raised threshold" };
+  return raised ? { plan: raised, decision } : { note: "the node has no plan at the raised threshold", decision };
+}
+
+/** A round's contract with the space decision it rests on, null when none was made. */
+export interface HandoffRound {
+  contract: HandoffContract;
+  space: SpaceDecision | null;
 }
 
 /**
@@ -265,29 +272,38 @@ async function plannedForSpace(input: HandoffInput, plan: NodePlan): Promise<{ p
  * a node blocked by the layout and whenever the space decision allows no hand-off.
  */
 export async function decideHandoffContract(input: HandoffInput): Promise<HandoffContract> {
+  return (await decideHandoffRound(input)).contract;
+}
+
+export async function decideHandoffRound(input: HandoffInput): Promise<HandoffRound> {
   const quietMinutes = input.quietMinutes ?? handoffQuietMinutes;
   const node = input.layout.nodes.find((entry) => entry.id === input.nodeId);
   const plan = node ? nodePlan(input.layout, input.nodeId, input.localFolders) : null;
   const contract = emptyContract(input.nodeId, node?.apply ?? false, plan?.cluster ?? false, input.now(), quietMinutes);
-  if (!node || !plan || !node.apply || !node.enabled || plan.cluster || plan.problems.length || !plan.admitted) return contract;
+  if (!node || !plan || !node.apply || !node.enabled || plan.cluster || plan.problems.length || !plan.admitted) return { contract, space: null };
+  let space: SpaceDecision | null = null;
   try {
     const placed = await plannedForSpace(input, plan);
-    if ("note" in placed) return { ...contract, notes: [placed.note] };
+    space = placed.decision;
+    if ("note" in placed) return { contract: { ...contract, notes: [placed.note] }, space };
     const handing = placed.plan.folders.filter((folder) => folder.handsOff);
     const own = await ownRecords(input, handing, quietMinutes);
     const candidates = handoffCandidates(input.layout, placed.plan, own.files, placed.decision, input.now(), quietMinutes);
-    if (candidates.length === 0) return contract;
+    if (candidates.length === 0) return { contract, space };
     const reports = await keeperReports(input, candidates);
     const current = await currentFiles(input, candidates);
     const decision = confirmedHandoffs(input.layout, placed.plan, candidates, current, reports, placed.decision, input.now());
     return {
-      ...contract,
-      entries: entriesOf(input.layout, placed.plan, decision, own.entries),
-      waiting: decision.waiting.map((waiting) => ({ folderId: waiting.folderId, path: waiting.path, reason: waiting.reason })),
-      notes: decision.notes,
+      contract: {
+        ...contract,
+        entries: entriesOf(input.layout, placed.plan, decision, own.entries),
+        waiting: decision.waiting.map((waiting) => ({ folderId: waiting.folderId, path: waiting.path, reason: waiting.reason })),
+        notes: decision.notes,
+      },
+      space,
     };
   } catch (error) {
-    return { ...contract, notes: [`${node.name} does not answer: ${reasonOf(error)}`] };
+    return { contract: { ...contract, notes: [`${node.name} does not answer: ${reasonOf(error)}`] }, space };
   }
 }
 
@@ -313,6 +329,17 @@ export function handoffContractFile(directory: string, nodeId: string): string {
 
 export function handoffResultFile(directory: string, nodeId: string): string {
   return join(directory, `${nodeId}.result.json`);
+}
+
+/** The executor's last result, null while there is none or it is not one this dashboard reads. */
+export async function readHandoffResult(path: string): Promise<HandoffResult | null> {
+  try {
+    const result = JSON.parse(await readFile(path, "utf8")) as HandoffResult;
+    if (result?.schema !== 1 || !Array.isArray(result.results) || !Array.isArray(result.trash)) return null;
+    return { ...result, notes: Array.isArray(result.notes) ? result.notes : [], refused: typeof result.refused === "string" ? result.refused : null };
+  } catch {
+    return null;
+  }
 }
 
 interface BrowseEntry {
@@ -395,11 +422,16 @@ export interface PublishContext {
 export interface HandoffPublisher {
   /** Writes the node's contract for this round, an empty one included, and returns how many files it names and waits for; null in report mode. */
   publish(context: PublishContext): Promise<number | null>;
+  /** The last contract written for the node, with its space decision. */
+  last?(nodeId: string): HandoffRound | null;
+  /** The node's executor's last result, null while it wrote none that can be read. */
+  result?(instance: LocalInstance): Promise<HandoffResult | null>;
   /** The empty contract, for a round that could not plan the node, so no older one stays for its executor. */
   clear(nodeId: string, instance: LocalInstance, apply: boolean): Promise<void>;
 }
 
 const published = new Map<string, HandoffContract>();
+const publishedSpace = new Map<string, SpaceDecision | null>();
 
 /** The contract this host last wrote for the node, null when it wrote none. */
 export function publishedContract(nodeId: string): HandoffContract | null {
@@ -412,16 +444,22 @@ export function handoffPublisher(
   now: () => Date = () => new Date(),
   quietMinutes = handoffSettings.quietMinutes,
 ): HandoffPublisher {
-  const write = async (instance: LocalInstance, contract: HandoffContract) => {
+  const write = async (instance: LocalInstance, contract: HandoffContract, space: SpaceDecision | null) => {
     await writeHandoffContract(handoffContractFile(directoryOf(instance), contract.nodeId), contract);
     published.set(contract.nodeId, contract);
+    publishedSpace.set(contract.nodeId, space);
   };
   return {
     publish: async (context) => {
-      const contract = await decideHandoffContract({ ...context, reads, now, quietMinutes });
-      await write(context.instance, contract);
-      return contract.apply ? contract.entries.length + contract.waiting.length : null;
+      const round = await decideHandoffRound({ ...context, reads, now, quietMinutes });
+      await write(context.instance, round.contract, round.space);
+      return round.contract.apply ? round.contract.entries.length + round.contract.waiting.length : null;
     },
-    clear: (nodeId, instance, apply) => write(instance, emptyContract(nodeId, apply, false, now(), quietMinutes)),
+    last: (nodeId) => {
+      const contract = published.get(nodeId);
+      return contract ? { contract, space: publishedSpace.get(nodeId) ?? null } : null;
+    },
+    result: (instance) => readHandoffResult(handoffResultFile(directoryOf(instance), instance.nodeId)),
+    clear: (nodeId, instance, apply) => write(instance, emptyContract(nodeId, apply, false, now(), quietMinutes), null),
   };
 }

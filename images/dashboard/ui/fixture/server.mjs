@@ -7,6 +7,7 @@ import { needFixture, remoteNeedFixture } from "./items.mjs";
 import { nodesFixture } from "./nodes.mjs";
 import { acceptDefaultsFixture, requestsFixture } from "./requests.mjs";
 import { treeFixture } from "./tree.mjs";
+import { admissionsFixture, layoutFixture, policyPreviewFixture, priorityPreviewFixture, saveAdmissionFixture, saveApplyFixture, saveBandsFixture, savePolicyFixture, savePriorityFixture } from "./layout.mjs";
 
 /** Serves the built page with made-up nodes, so the UI is tested without the storage stack. */
 const port = Number(process.env.PORT ?? 8099);
@@ -46,7 +47,23 @@ async function route(request, response) {
   if (request.method === "GET" && path === "/api/devices") return sendJson(response, 200, devicesFixture(startedAt));
   if (request.method === "GET" && path === "/api/tree") return sendJson(response, 200, treeFixture(url.searchParams.get("node") ?? "all", url.searchParams.get("path") ?? ""));
   if (request.method === "GET" && path === "/api/fixture/actions") return sendJson(response, 200, actionLog);
-  if (request.method === "GET" && path === "/api/requests") return sendJson(response, 200, requestsFixture());
+  if (request.method === "GET" && path === "/api/requests") return sendJson(response, 200, { ...requestsFixture(), admissions: admissionsFixture() });
+  if (request.method === "GET" && path === "/api/layout") return sendJson(response, 200, layoutFixture());
+  if (request.method === "POST" && path === "/api/priorities/preview") return sendJson(response, 200, priorityPreviewFixture(await readBody(request)));
+  const layoutWrite = request.method === "PUT" ? path.match(/^\/api\/(priorities|layout\/bands|nodes\/([^/]+)\/(policy|policy\/apply|admission))$/) : null;
+  if (layoutWrite) {
+    const body = await readBody(request);
+    const nodeId = layoutWrite[2] ? decodeURIComponent(layoutWrite[2]) : null;
+    const handlers = { priorities: () => savePriorityFixture(body), "layout/bands": () => saveBandsFixture(body), policy: () => savePolicyFixture(nodeId, body), "policy/apply": () => saveApplyFixture(nodeId, body), admission: () => saveAdmissionFixture(nodeId, body) };
+    const answer = handlers[layoutWrite[3] ?? layoutWrite[1]]();
+    actionLog.push({ action: layoutWrite[1], nodeId, status: answer.status, body });
+    return sendJson(response, answer.status, answer.body);
+  }
+  const policyPreview = path.match(/^\/api\/nodes\/([^/]+)\/policy\/preview$/);
+  if (request.method === "GET" && policyPreview) {
+    const preview = policyPreviewFixture(decodeURIComponent(policyPreview[1]), Number(url.searchParams.get("threshold")));
+    return preview ? sendJson(response, 200, preview) : sendJson(response, 404, { error: "the layout does not list this node" });
+  }
   if (request.method === "GET" && path === "/api/settings") return sendJson(response, 200, hostSettingsFixture());
   if (request.method === "GET" && path === "/api/connections/profile") return sendJson(response, 200, profileFixture());
   if (request.method === "GET" && path === "/api/connections/addresses") return sendJson(response, 200, peerTableFixture());

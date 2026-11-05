@@ -1,4 +1,5 @@
 import { type JoinEntry, type PendingDevice, type PendingFolderOffer, type RequestsResponse, acceptPendingDevice, deviceDisplayName, deviceSettingLabels, dismissPendingDevice, ignorePendingDevice, shortDeviceId } from "./api.js";
+import { admissionEntry, admissionNotice } from "./admissionEntry.js";
 import { arrayAutomationText } from "./arrayConfirm.js";
 import { button, element } from "./dom.js";
 import { formatAge, formatDate } from "./format.js";
@@ -243,6 +244,8 @@ function body(): (HTMLElement | null)[] {
     unreadableNotes(requests),
     notConnectedNote(requests),
     lastAnswerLine(),
+    admissionNotice(),
+    group("Nodes waiting for admission", requests.admissions ?? [], admissionEntry, "No node is waiting for admission into the layout."),
     group("Devices asking to connect", requests.devices, deviceEntry, "No device is asking to connect to a node."),
     group("Folders offered", requests.folders, folderEntry, "No folder is waiting to be accepted on a node."),
     group("Joined", requests.joins, joinEntry, "No device has joined through the join API yet."),
@@ -257,7 +260,7 @@ export function renderRequestsPage(): HTMLElement {
       "header",
       { className: "page-header" },
       element("h1", {}, "Requests"),
-      element("p", { className: "page-summary" }, "Devices and folders waiting for a node's answer, and the devices admitted through the join API."),
+      element("p", { className: "page-summary" }, "Nodes waiting for admission, devices and folders waiting for a node's answer, and the devices admitted through the join API."),
     ),
     ...body(),
   );
