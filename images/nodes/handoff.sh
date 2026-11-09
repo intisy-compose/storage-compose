@@ -18,6 +18,8 @@ node_id=${1:-}
 root=${2:-}
 api=${3:-}
 key=${4:-}
+# The key may come from the environment instead (the argument is then `-`), so it is never on a command line.
+[ "$key" != - ] || key=${HANDOFF_API_KEY:-}
 contract_source=${5:-}
 result=${6:-}
 
@@ -82,8 +84,8 @@ refuse_whole() {   # <reason>: the run acts on nothing
     exit 0
 }
 
-api_get() { curl -fsS -m 10 -H "X-API-Key: $key" "$api$1"; }
-api_post() { curl -fsS -m 30 -X POST -H "X-API-Key: $key" "$api$1" > /dev/null; }
+api_get() { printf 'header = "X-API-Key: %s"\n' "$key" | curl -fsS -m 10 -K - "$api$1"; }
+api_post() { printf 'header = "X-API-Key: %s"\n' "$key" | curl -fsS -m 30 -X POST -K - "$api$1" > /dev/null; }
 uri() { jq -rn --arg value "$1" '$value | @uri'; }
 
 # Appends one line, first ending a last line that a torn write left without its newline.

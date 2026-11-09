@@ -2,8 +2,8 @@ import type { SettingsKeeper } from "./api/keeperText.js";
 import type { StorageNode } from "./api/types.js";
 import { nodeVolumesDirectory } from "./settings.js";
 
-/** Where this host knows a node from: the mounter's arrays, the registry the mounter and nodes service write, or the Windows host agent. */
-export type LocalNodeSource = "array" | "registry" | "host-agent";
+/** Where this host knows a node from: the mounter's arrays, the registry the mounter and nodes service write, the Windows host agent, or a joined device's own report. */
+export type LocalNodeSource = "array" | "registry" | "host-agent" | "joined";
 
 interface SourcedNode {
   nodeId: string;

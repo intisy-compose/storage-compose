@@ -97,7 +97,7 @@ check "the request" "{\"name\":\"p53\",\"os\":\"linux\",\"syncthingDeviceId\":\"
 check "the peer connects to the device over the tailnet address" true "$(wait_for_connection "$device_id")"
 step=/usr/local/lib/storage-join/storage-connections
 node_id="device-$(printf '%s' "${device_id:0:7}" | tr '[:upper:]' '[:lower:]')"
-check "the unit runs the connections step before syncthing" "-$step http://127.0.0.1:$dashboard_port $node_id /data/.storage/syncthing 22000" "$(sed -n 's/^ExecStartPre=//p' /etc/systemd/system/storage-syncthing.service)"
+check "the unit runs the connections step before syncthing" "-$step http://127.0.0.1:$dashboard_port $node_id /data/.storage/syncthing 22000" "$(sed -n 's/^ExecStartPre=//p' /etc/systemd/system/storage-syncthing.service | head -n 1)"
 check "the step is the join's own, installed beside the unit" "$(sha256sum < /join/storage-connections.sh)" "$(sha256sum < "$step")"
 check "with the nodes image's profile checks beside it, one source for both" "$(sha256sum < /images/nodes/connection-profile.jq)" "$(sha256sum < "${step%/*}/connection-profile.jq")"
 
@@ -112,6 +112,201 @@ check "Syncthing's config unchanged" "$config_before" "$(sha256sum /data/.storag
 check "unit unchanged" "$unit_before" "$(sha256sum /etc/systemd/system/storage-syncthing.service)"
 check "tailscale up not called again" 1 "$(wc -l < /run/fake-tailscale/up-calls)"
 check "the dashboard was asked again, harmlessly" 2 "$(wc -l < /tmp/dashboard/requests.jsonl)"
+
+echo "The layered sync on the joined device:"
+file_node_id="$(sed -n 's/^id *= *"\(.*\)"/\1/p' /data/.storage/node.toml)"
+tick() { bash /usr/local/lib/storage-join/storage-layout tick "http://127.0.0.1:$dashboard_port" "$file_node_id" /data/.storage/syncthing /data 8384 > /tmp/tick.out 2>&1; echo $?; }
+answer_with() { mkdir -p /tmp/dashboard/layered; echo "$1" > "/tmp/dashboard/layered/$file_node_id.json"; }
+config_of() { device_api "/rest/config/folders/$1"; }
+check "the unit runs the layout step before syncthing" "-/usr/local/lib/storage-join/storage-layout start /data/.storage/syncthing /data $file_node_id" "$(sed -n 's/^ExecStartPre=//p' /etc/systemd/system/storage-syncthing.service | tail -n 1)"
+check "the timer is installed" "true" "$([[ -f /etc/systemd/system/storage-layout.timer && -f /etc/systemd/system/storage-layout.service ]] && echo true || echo false)"
+check_match "the timer is enabled" "enable --now storage-layout.timer" "$(cat /run/fake-systemd/calls)"
+check "the steps are installed" "true" "$([[ -x /usr/local/lib/storage-join/storage-layout && -x /usr/local/lib/storage-join/handoff.sh && -x /usr/local/lib/storage-join/handoff-probe.sh ]] && echo true || echo false)"
+
+printf '[node]\nid        = "%s"\nname      = "p53"\nkind      = "drive"\nthreshold = 50\nassigned  = []\napply     = true\n' "$file_node_id" > /data/.storage/node.toml
+chown finn:finn /data/.storage/node.toml
+check "a dashboard with nothing to say: exit code" 0 "$(tick)"
+check "and takes apply out on any doubt" "" "$(sed -n '/^apply/p' /data/.storage/node.toml)"
+report_lines="$(wc -l < /tmp/dashboard/layered.jsonl)"
+check_match "the report names the device" '"deviceId": "[A-Z0-9-]+"' "$(tail -n 1 /tmp/dashboard/layered.jsonl)"
+check_match "the report lists its folders" '"id": "documents"' "$(tail -n 1 /tmp/dashboard/layered.jsonl)"
+check_match "the report carries the disk" '"totalBytes": [0-9]+' "$(tail -n 1 /tmp/dashboard/layered.jsonl)"
+
+answer_with '{"schema":1,"nodeId":"'"$file_node_id"'","apply":false,"nodeFile":{"action":"withdraw","reason":"report only"},"ops":[{"op":"type","folderId":"documents","type":"sendonly"}],"contract":{"schema":1,"nodeId":"'"$file_node_id"'","apply":false,"cluster":false,"entries":[]}}'
+check "a report-mode answer: exit code" 0 "$(tick)"
+check "changes nothing in Syncthing" "sendreceive" "$(config_of documents | jq -r .type)"
+check "and writes no kept change" "false" "$([[ -f /data/.storage/syncthing/layered-ops.json ]] && echo true || echo false)"
+check "and keeps the contract" "$file_node_id" "$(jq -r .nodeId "/data/.storage/syncthing/handoff/$file_node_id.json")"
+check "and the executor refused it" "the contract is not in apply mode" "$(jq -r .refused "/data/.storage/syncthing/handoff/$file_node_id.result.json")"
+
+syncthing generate --home=/tmp/other-device --no-port-probing > /dev/null
+other="$(syncthing device-id --home=/tmp/other-device)"
+applying='{"schema":1,"nodeId":"'"$file_node_id"'","apply":true,"nodeFile":{"action":"follow","policy":{"threshold":60,"assigned":["Pictures"],"access":"open"}},"contract":{"schema":1,"nodeId":"'"$file_node_id"'","writtenAt":"'"$(date -u +%FT%TZ)"'","apply":true,"cluster":false,"quietMinutes":10,"entries":[],"waiting":[],"notes":[]},"ops":[
+{"op":"addDevice","deviceId":"'"$other"'","name":"other"},
+{"op":"addFolder","id":"newone","label":"New one","path":"/data/New","type":"sendonly","devices":["'"$(device_api /rest/system/status | jq -r .myID)"'"],"versioning":null,"ignores":["// layered sync begin","#include .stignore-handoff","/.stignore-handoff","// layered sync end"]},
+{"op":"addFolder","id":"outside","label":"x","path":"/elsewhere","type":"sendonly","devices":[],"ignores":[]},
+{"op":"type","folderId":"documents","type":"sendonly"}]}'
+answer_with "$applying"
+check "an applying answer that stops at a bad change: exit code" 0 "$(tick)"
+check "the node file followed" "threshold = 60" "$(sed -n '/^threshold/p' /data/.storage/node.toml)"
+check_match "assigned written" 'assigned = \["Pictures"\]' "$(cat /data/.storage/node.toml)"
+check_match "apply written" 'apply = true' "$(cat /data/.storage/node.toml)"
+check_match "identity kept" "name      = \"p53\"" "$(cat /data/.storage/node.toml)"
+check_match "syncthing was restarted" "restart storage-syncthing.service" "$(tail -n 3 /run/fake-systemd/calls)"
+wait_api() { for _ in $(seq 1 60); do device_api /rest/system/status > /dev/null 2>&1 && return; sleep 1; done; }
+wait_api
+check "the new folder arrived send-only" "sendonly" "$(config_of newone | jq -r .type)"
+check "at the path inside the root" "/data/New" "$(config_of newone | jq -r .path)"
+check_match "with its ignores before the first scan" "#include .stignore-handoff" "$(cat /data/New/.stignore)"
+check "and its hand-off list" "true" "$([[ -f /data/New/.stignore-handoff ]] && echo true || echo false)"
+check "and Syncthing reads them" "" "$(device_api "/rest/db/ignores?folder=newone" | jq -r '.error // empty')"
+check "the device was added" "other" "$(device_api "/rest/config/devices/$other" | jq -r .name)"
+check_match "a change outside the root stops the list" "outside the node's root|not inside the node's root" "$(cat /run/fake-systemd/storage-syncthing.service.pre.log)"
+check "so the later change was not made" "sendreceive" "$(config_of documents | jq -r .type)"
+check "the kept changes are gone" "false" "$([[ -f /data/.storage/syncthing/layered-ops.json ]] && echo true || echo false)"
+check "and the contract ran under apply" "null" "$(jq -r .refused "/data/.storage/syncthing/handoff/$file_node_id.result.json")"
+
+applying='{"schema":1,"nodeId":"'"$file_node_id"'","apply":true,"nodeFile":{"action":"follow","policy":{"threshold":60,"assigned":["Pictures"],"access":"open"}},"contract":null,"ops":[
+{"op":"paused","folderId":"documents","paused":true},
+{"op":"ignores","folderId":"documents","lines":["// layered sync begin","/.stignore-handoff","// layered sync end","#kept"]},
+{"op":"ensureList","folderId":"documents"},
+{"op":"ignores","folderId":"documents","lines":["// layered sync begin","#include .stignore-handoff","/.stignore-handoff","// layered sync end","#kept"]},
+{"op":"versioning","folderId":"documents","versioning":{"type":"staggered","params":{"maxAge":"7776000"},"cleanupIntervalS":3600,"fsPath":"","fsType":"basic"}},
+{"op":"devices","folderId":"documents","devices":["'"$(device_api /rest/system/status | jq -r .myID)"'","'"$other"'"]},
+{"op":"type","folderId":"documents","type":"sendonly"}]}'
+answer_with "$applying"
+check "the next round's changes: exit code" 0 "$(tick)"
+wait_api
+config="$(config_of documents)"
+check "the folder was paused" "true" "$(jq -r .paused <<< "$config")"
+check "and turned send-only" "sendonly" "$(jq -r .type <<< "$config")"
+check "versioning written" "staggered 7776000" "$(jq -r '"\(.versioning.type) \(.versioning.params.maxAge)"' <<< "$config")"
+check_match "shared with the planned device" "$other" "$(jq -r '[.devices[].deviceID] | join(" ")' <<< "$config")"
+check_match "the ignores written" "#include .stignore-handoff" "$(device_api "/rest/db/ignores?folder=documents" | jq -r '.ignore | join(" ")')"
+check_match "with the node's own line kept below" "#kept" "$(cat /data/Documents/.stignore)"
+check "the list made in order" "true" "$([[ -f /data/Documents/.stignore-handoff ]] && echo true || echo false)"
+
+printf '{"keptAt":1,"ops":[{"op":"type","folderId":"documents","type":"sendreceive"}]}\n' > /data/.storage/syncthing/layered-ops.json
+chown finn:finn /data/.storage/syncthing/layered-ops.json
+bash /usr/local/lib/storage-join/storage-layout start /data/.storage/syncthing /data "$file_node_id" 2> /tmp/start.out
+check_match "kept changes too old are dropped" "s old; dropped" "$(cat /tmp/start.out)"
+sed -i '/^apply/d' /data/.storage/node.toml
+printf '{"keptAt":%s,"ops":[{"op":"type","folderId":"documents","type":"sendreceive"}]}\n' "$(date +%s)" > /data/.storage/syncthing/layered-ops.json
+bash /usr/local/lib/storage-join/storage-layout start /data/.storage/syncthing /data "$file_node_id" 2> /tmp/start.out
+check_match "kept changes without the node file's apply are dropped" "does not say apply = true" "$(cat /tmp/start.out)"
+check "and leave config.xml as it was" "sendonly" "$(grep -o '<folder id="documents"[^>]*' /data/.storage/syncthing/config.xml | sed -n 's/.* type="\([a-z]*\)".*/\1/p')"
+
+
+
+echo "The layered sync's bounds and escapes:"
+layout_script=/usr/local/lib/storage-join/storage-layout
+restarts() { grep -c "restart storage-syncthing.service" /run/fake-systemd/calls; }
+my_id="$(device_api /rest/system/status | jq -r .myID)"
+failing='{"schema":1,"nodeId":"'"$file_node_id"'","apply":true,"nodeFile":{"action":"follow","policy":{"threshold":60,"assigned":[],"access":"open"}},"contract":null,"ops":[{"op":"addFolder","id":"never","label":"x","path":"/elsewhere/again","type":"sendonly","devices":[],"ignores":[]}]}'
+answer_with "$failing"
+before=$(restarts)
+check "a failing change restarts once: exit code" 0 "$(tick)"
+wait_api
+first=$(restarts)
+check "and the restart was made" $((before + 1)) "$first"
+check "the same change does not restart again: exit code" 0 "$(tick)"
+second=$(restarts)
+check "no second restart for the same change" "$first" "$second"
+check_match "says so once" "already tried" "$(cat /tmp/tick.out)"
+check "a third round: exit code" 0 "$(tick)"
+check "still no restart" "$second" "$(restarts)"
+check "and says nothing more" "0" "$(grep -c 'already tried' /tmp/tick.out)"
+STORAGE_LAYOUT_NOW=$(( $(date +%s) + 2000 )) tick > /dev/null
+check "after the back-off it is tried again" $((second + 1)) "$(restarts)"
+wait_api
+
+mkdir -p /tmp/stubs
+printf '#!/bin/sh\ncp /data/.storage/syncthing/layered-ops.json /tmp/kept.json\n' > /tmp/stubs/systemctl
+chmod +x /tmp/stubs/systemctl
+cp "/usr/local/lib/storage-join/handoff.sh" /tmp/handoff.keep
+printf '#!/bin/bash\nsleep 60\n' > /usr/local/lib/storage-join/handoff.sh
+slow='{"schema":1,"nodeId":"'"$file_node_id"'","apply":true,"nodeFile":{"action":"follow","policy":{"threshold":60,"assigned":[],"access":"open"}},"contract":{"schema":1,"nodeId":"'"$file_node_id"'","apply":false,"cluster":false,"entries":[]},"ops":[{"op":"paused","folderId":"documents","paused":false}]}'
+answer_with "$slow"
+started=$(date +%s)
+PATH=/tmp/stubs:$PATH STORAGE_LAYOUT_HANDOFF_SECONDS=2 tick > /dev/null
+ended=$(date +%s)
+cp /tmp/handoff.keep /usr/local/lib/storage-join/handoff.sh
+check "a hand-off past its limit is cut off" true "$([[ $((ended - started)) -lt 20 ]] && echo true || echo false)"
+kept_at=$(jq -r .keptAt /tmp/kept.json)
+check "the kept changes carry the time the dashboard answered, not the end of the run" true "$([[ $((kept_at - started)) -le 1 ]] && echo true || echo false)"
+
+answer_with '{"schema":1,"nodeId":"'"$file_node_id"'","apply":false,"nodeFile":{"action":"withdraw","reason":"x"},"ops":[],"contract":null}'
+echo '{"schema":1}' > "/data/.storage/syncthing/handoff/$file_node_id.json"
+check "an answer with no contract: exit code" 0 "$(tick)"
+check "deletes the kept one" false "$([[ -f "/data/.storage/syncthing/handoff/$file_node_id.json" ]] && echo true || echo false)"
+
+mkdir -p /tmp/fake/.storage/syncthing
+printf '[node]\nid = "abcd"\nname = "x"\nkind = "drive"\nthreshold = 5\n' > /tmp/fake/.storage/node.toml
+printf '<configuration>\n<options></options>\n</configuration>\n' > /tmp/fake/.storage/syncthing/config.xml
+sourced() { bash -c "source $layout_script; syncthing_home=/tmp/fake/.storage/syncthing; root=/tmp/fake; gui=http://x; $1"; }
+sourced 'follow_policy "$(cat /tmp/policy.json)"' < /dev/null 2> /dev/null; true
+printf '%s' '{"threshold":10,"assigned":["a\"b"],"access":"o\"pen"}' > /tmp/policy.json
+sourced 'follow_policy "$(cat /tmp/policy.json)"'
+check 'an access value is escaped into TOML' 'access = "o\"pen"' "$(sed -n '/^access/p' /tmp/fake/.storage/node.toml)"
+printf '%s' '{"threshold":"not a number","assigned":[],"access":"open"}' > /tmp/policy.json
+sourced 'follow_policy "$(cat /tmp/policy.json)"'
+check 'a threshold that is no number changes nothing' 'threshold = 10' "$(sed -n '/^threshold/p' /tmp/fake/.storage/node.toml)"
+printf '%s' '{"op":"addDevice","deviceId":"X\"Y&Z","name":"a<b"}' > /tmp/op.json
+sourced 'work_dir=$(mktemp -d); write_programs; apply_op "$(cat /tmp/op.json)"'
+check_match 'an id and a name are escaped into config.xml' 'id="X&quot;Y&amp;Z" name="a&lt;b"' "$(cat /tmp/fake/.storage/syncthing/config.xml)"
+printf '%s' '{"op":"type","folderId":"documents","type":"some\"thing"}' > /tmp/op.json
+check 'a type it does not know is refused' 1 "$(sourced 'work_dir=$(mktemp -d); write_programs; apply_op "$(cat /tmp/op.json)"' > /dev/null 2>&1; echo $?)"
+report_stub='api() { case $1 in */db/browse*) printf "%s" "$BROWSE_ANSWER";; */db/file*) printf "{\"local\":{\"type\":\"FILE_INFO_TYPE_FILE\"}}";; esac; }; listing_problems=/tmp/listing.txt; : > "$listing_problems"'
+BROWSE_ANSWER='[{"name":"a","type":"FILE_INFO_TYPE_FILE","modTime":"not a date"}]' check "a modification time that does not parse counts as not settled" "" "$(BROWSE_ANSWER='[{"name":"a","type":"FILE_INFO_TYPE_FILE","modTime":"not a date"}]' sourced "$report_stub; report_files docs 5")"
+check "a listing that failed is said" "docs: it could not be listed" "$(BROWSE_ANSWER='not json' sourced "$report_stub; report_files docs 5"; cat /tmp/listing.txt)"
+
+
+echo "Restarts, order and the report's listing:"
+printf '#!/bin/sh\nexit 1\n' > /tmp/stubs/systemctl
+failing2='{"schema":1,"nodeId":"'"$file_node_id"'","apply":true,"nodeFile":{"action":"follow","policy":{"threshold":60,"assigned":[],"access":"open"}},"contract":null,"ops":[{"op":"paused","folderId":"documents-github","paused":false}]}'
+rm -f /data/.storage/syncthing/layered-restart.json
+answer_with "$failing2"
+printf '#!/bin/sh\necho attempt >> /tmp/attempts\nexit 1\n' > /tmp/stubs/systemctl
+: > /tmp/attempts
+attempts() { wc -l < /tmp/attempts | tr -d ' '; }
+PATH=/tmp/stubs:$PATH tick > /dev/null
+check "a failed restart is tried" 1 "$(attempts)"
+check "and recorded as failed" true "$(jq -r .failed /data/.storage/syncthing/layered-restart.json)"
+PATH=/tmp/stubs:$PATH tick > /dev/null
+check "it is not tried again every minute" 1 "$(attempts)"
+PATH=/tmp/stubs:$PATH STORAGE_LAYOUT_NOW=$(( $(date +%s) + 301 )) tick > /dev/null
+check "but soon after the short back-off, not the long one" 2 "$(attempts)"
+rm -f /data/.storage/syncthing/layered-restart.json /data/.storage/syncthing/layered-ops.json
+printf '#!/bin/sh\necho attempt >> /tmp/attempts\nexit 0\n' > /tmp/stubs/systemctl
+: > /tmp/attempts
+PATH=/tmp/stubs:$PATH tick > /dev/null
+PATH=/tmp/stubs:$PATH tick > /dev/null
+check "a restart that consumed nothing backs off the same way" 1 "$(attempts)"
+rm -f /data/.storage/syncthing/layered-restart.json /data/.storage/syncthing/layered-ops.json
+printf '#!/bin/sh\necho restart >> /tmp/order\nrm -f /data/.storage/syncthing/layered-ops.json\n' > /tmp/stubs/systemctl
+cp /usr/local/lib/storage-join/handoff.sh /tmp/handoff.keep
+printf '#!/bin/bash\necho handoff >> /tmp/order\n' > /usr/local/lib/storage-join/handoff.sh
+: > /tmp/order
+chmod 666 /tmp/order
+contract_order='{"schema":1,"nodeId":"'"$file_node_id"'","apply":true,"nodeFile":{"action":"follow","policy":{"threshold":60,"assigned":[],"access":"open"}},"contract":{"schema":1,"nodeId":"'"$file_node_id"'","apply":false,"cluster":false,"entries":[]},"ops":[{"op":"paused","folderId":"documents","paused":false}]}'
+answer_with "$contract_order"
+PATH=/tmp/stubs:$PATH tick > /dev/null
+cp /tmp/handoff.keep /usr/local/lib/storage-join/handoff.sh
+check "the restart comes before the hand-off run" "restart handoff" "$(tr '\n' ' ' < /tmp/order | sed 's/ $//')"
+check "and only then the back-off is recorded" true "$([[ -f /data/.storage/syncthing/layered-restart.json ]] && echo true || echo false)"
+PATH=/tmp/stubs:$PATH tick > /dev/null
+PATH=/tmp/stubs:$PATH tick > /dev/null
+check_match "a suppressed restart is a problem of the node" '"listingProblems": \["[^]]*already tried' "$(tail -n 1 /tmp/dashboard/layered.jsonl)"
+rm -f /data/.storage/syncthing/layered-restart.json
+
+walk_stub='api() { case $1 in *prefix=sub*) printf "[{\"name\":\"b\",\"type\":\"FILE_INFO_TYPE_FILE\",\"modTime\":\"2026-01-01T00:00:00Z\"},{\"name\":\"c\",\"type\":\"FILE_INFO_TYPE_FILE\",\"modTime\":\"2026-01-01T00:00:00Z\"}]";; */db/browse*levels=0*) printf "[{\"name\":\"sub\",\"type\":\"FILE_INFO_TYPE_DIRECTORY\"}]";; */db/browse*) printf "[]";; */db/file*) printf "{\"local\":{\"type\":\"FILE_INFO_TYPE_FILE\"}}";; esac; }; listing_problems=/tmp/listing.txt; : > "$listing_problems"'
+rm -f /tmp/fake/.storage/syncthing/layered-cursor-*
+check "a listing walks one level at a time" "sub/b" "$(sourced "$walk_stub; report_files docs 1" | jq -r .path)"
+check "and the next report goes on from there" "sub/c" "$(sourced "$walk_stub; report_files docs 1" | jq -r .path)"
+check "a report past the end has nothing" "" "$(sourced "$walk_stub; report_files docs 1" | jq -r .path)"
+check "and the one after starts over" "sub/b" "$(sourced "$walk_stub; report_files docs 1" | jq -r .path)"
+ignores_stub='api() { case $1 in */db/ignores*) printf "{\"error\":\"could not be read\",\"ignore\":null}";; */db/status*) printf "{}";; esac; }'
+check "a list Syncthing says it could not read is unknown" "null" "$(sourced "$ignores_stub; report_folder '{\"id\":\"x\",\"path\":\"/p\",\"type\":\"sendonly\",\"label\":\"\",\"paused\":false,\"devices\":[],\"versioning\":{}}'" | jq -c .ignores)"
 
 echo "The connections step at every start:"
 entry="/tmp/dashboard/connections/$node_id.json"
@@ -320,6 +515,18 @@ check "listed in the index" 'paths = ["files", "more", "outer/in", "node2"]' "$(
 check "the second run: exit code" 0 "$(STORAGE_JOIN_ROOT=/vol/node2 STORAGE_JOIN_KIND=folder STORAGE_JOIN_NAME=p53-files run_join)"
 check_match "changes nothing" "already joined; nothing changed" "$(cat /tmp/join.out)"
 check "and lists it once" 'paths = ["files", "more", "outer/in", "node2"]' "$(cat /vol/.storage/nodes.toml)"
+
+
+echo "Leaving:"
+check "leaving: exit code" 0 "$(bash "$join" --leave > /tmp/leave.out 2>&1; echo $?)"
+check_match "says what it did" "left; the timer, the unit and the steps are gone" "$(cat /tmp/leave.out)"
+check_match "it stopped the tick service too" "stop storage-layout.service" "$(cat /run/fake-systemd/calls)"
+check "the node file is gone" "false" "$([[ -f /data/.storage/node.toml ]] && echo true || echo false)"
+check "the units are gone" "false" "$([[ -f /etc/systemd/system/storage-layout.timer || -f /etc/systemd/system/storage-layout.service || -f /etc/systemd/system/storage-syncthing.service ]] && echo true || echo false)"
+check "the steps are gone" "false" "$([[ -e /usr/local/lib/storage-join ]] && echo true || echo false)"
+check "the data stays" "kept" "$(cat /data/Documents/letter.txt 2> /dev/null || cat /home/finn/Documents/letter.txt)"
+check "leaving twice is fine: exit code" 0 "$(bash "$join" --leave > /tmp/leave.out 2>&1; echo $?)"
+check_match "and says so" "nothing to leave" "$(cat /tmp/leave.out)"
 
 echo ""
 echo "join (linux): $passed passed, $failed failed"

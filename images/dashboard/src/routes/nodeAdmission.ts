@@ -1,6 +1,7 @@
 import type { NodeAdmission, NodeAdmissionBody } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalNodeInfo, callSyncthing, findLocalNode } from "../instanceResolver.js";
+import { joinedClaimFor, joinedDeviceIdOf } from "../joinedNodes.js";
 import { checkedLayout, editNodePolicy, layoutVersion, validPriority } from "../layoutEdit.js";
 import type { AnyRoute } from "../routeTypes.js";
 import { setupRepoDirectory } from "../settings.js";
@@ -14,13 +15,14 @@ export function waitingAdmissions(layout: SetupLayout | null, infos: LocalNodeIn
   return infos.flatMap((info) => {
     const entry = layout.nodes.find((node) => node.id === info.nodeId);
     if (entry?.admitted || entry?.refused) return [];
-    return [{ nodeId: info.nodeId, name: info.name, source: info.source, host, threshold: info.threshold, listed: entry !== undefined }];
+    return [{ nodeId: info.nodeId, name: info.name, source: info.source, host, threshold: info.threshold, listed: entry !== undefined, ...(info.claimedBy ? { claimedBy: info.claimedBy } : {}) }];
   });
 }
 
 export interface AdmissionSources {
   repository: string;
-  findNode(nodeId: string): Promise<LocalNodeInfo | null>;
+  /** The node, a joined claim named by `deviceId` included. */
+  findNode(nodeId: string, deviceId?: string): Promise<LocalNodeInfo | null>;
   /** The node's own Syncthing device ID, which the layout's device entry carries. */
   deviceId(info: LocalNodeInfo): Promise<string>;
   now(): Date;
@@ -48,6 +50,7 @@ function answerOf(body: unknown): NodeAdmissionBody["answer"] {
  */
 export function admitted(text: string, info: LocalNodeInfo, deviceId: string, threshold: number): string {
   const layout = parseLayout(text);
+  if (layout.nodes.find((node) => node.id === info.nodeId)?.admitted) throw new RequestError(409, `${info.name} is already admitted`);
   const known = layout.devices.find((device) => device.id === deviceId);
   if (!known && layout.devices.some((device) => device.name === info.name)) throw new RequestError(409, `the layout has a device ${info.name} with another Syncthing ID; give the node another name or fix the layout by hand`);
   const withDevice = known ? text : upsertDevice(text, info.name, deviceId, info.root);
@@ -60,13 +63,19 @@ export function admitted(text: string, info: LocalNodeInfo, deviceId: string, th
 /** The layout with the refusal recorded on the node's entry, which keeps it off Requests until it is taken back in the layout. */
 export function refused(text: string, info: LocalNodeInfo, at: Date): string {
   const entry = parseLayout(text).nodes.find((node) => node.id === info.nodeId);
+  if (entry?.admitted) throw new RequestError(409, `${info.name} is already admitted`);
   return editNodePolicy(text, info.nodeId, { admitted: false, refused: at.toISOString() }, entry ? undefined : { name: info.name, device: "" });
 }
 
 const liveSources: AdmissionSources = {
   repository: setupRepoDirectory,
-  findNode: (nodeId) => findLocalNode(nodeId),
+  findNode: async (nodeId, deviceId) => (await findLocalNode(nodeId)) ?? joinedClaimFor(nodeId, deviceId, new Date()),
   deviceId: async (info) => {
+    if (info.source === "joined") {
+      const deviceId = joinedDeviceIdOf(info.nodeId, info.claimedBy?.deviceId);
+      if (!deviceId) throw new RequestError(409, `${info.name} has not reported lately, so its device ID is not known here`);
+      return deviceId;
+    }
     if (!info.instance) throw new RequestError(503, `${info.name}'s Syncthing is not answering, so its device ID cannot be read`);
     return callSyncthing(info.instance, (client) => client.myId());
   },
@@ -84,7 +93,8 @@ export function nodeAdmissionRoutes(sources: AdmissionSources = liveSources): An
         const answer = answerOf(body);
         const base = requireBase(body as { base?: unknown });
         const nodeId = decodedSegment(nodeSegment, "node ID");
-        const info = await sources.findNode(nodeId);
+        const claimed = (body as Partial<NodeAdmissionBody> | null)?.deviceId;
+        const info = await sources.findNode(nodeId, typeof claimed === "string" ? claimed : undefined);
         if (!info) throw new RequestError(404, `no node ${nodeId} on this host; it is admitted from the host it is attached to`);
         await layoutTextOf(sources.repository);
         const threshold = answer === "accept" ? thresholdOf(body) : 0;

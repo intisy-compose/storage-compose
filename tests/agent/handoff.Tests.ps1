@@ -118,6 +118,7 @@ function New-TestNode([string]$Name) {
     $global:moveBackFails = $false
     $global:moveGrows = $false
     $script:handoffPendingAttempts = 10
+    $script:handoffHashStopping = @()
     $global:apiRequests = @()
     $global:scans = @()
     $global:handoffTestNow = 1793872800
@@ -143,6 +144,11 @@ function Write-Contract([object[]]$Entries, [int64]$WrittenAt = ($global:handoff
 }
 
 function Invoke-TestHandoff { Invoke-NodeHandoff $global:instance $global:contractPath $global:resultPath }
+
+function Wait-HashJobs {
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline -and @($script:handoffHashJobs.Values | Where-Object { -not $_.handle.IsCompleted }).Count -gt 0) { Start-Sleep -Milliseconds 100 }
+}
 
 function Get-Result { return Get-Content -Raw -LiteralPath $global:resultPath | ConvertFrom-Json }
 function Get-Outcome([string]$Relative) { return (@((Get-Result).results | Where-Object { $_.path -eq $Relative }) | ForEach-Object { $_.outcome }) -join "," }
@@ -346,42 +352,155 @@ Describe "the hand-off executor" {
         Get-Reason "boom.mp4" | Should Be "the executor failed on it: a failure on this path alone"
     }
 
-    It "hashes before the ignore, and leaves a file whose hash the deadline cut short without any trace on the node" {
+    It "hashes before the ignore, and goes on with a file the round's deadline cut short in the background, leaving no trace on the node" {
         New-TestNode "budget"
         $check = Get-HandoffContentCheck $global:folder (New-Entry "clip.mp4") ([datetime]::MinValue)
         $check.ContainsKey("budget") | Should Be $true
-        Add-TestFile "second.mp4" "hello"
-        $script:handoffRunSeconds = 0
-        try {
-            Write-Contract @((New-Entry "clip.mp4"), (New-Entry "second.mp4"))
-            Invoke-TestHandoff
-            "$(Get-Outcome 'clip.mp4') $(Get-Outcome 'second.mp4') $(Get-ListedCount 'clip.mp4') [$(Get-PendingPaths)]" | Should Be "deferred deferred 0 []"
-            $deferred = @(Read-HandoffLines (Join-Path $global:root ".storage\handoff-deferred.jsonl"))
-            "$(@($deferred | Where-Object { $_.path -eq 'clip.mp4' })[0].attempts) $(@($deferred | Where-Object { $_.path -eq 'second.mp4' })[0].attempts)" | Should Be "1 0"
-        } finally { $script:handoffRunSeconds = 20 }
-    }
-
-    It "stops hashing a file too large for the round once it ran out alone often enough" {
-        New-TestNode "toolarge"
-        $script:handoffPendingAttempts = 2
         $script:handoffRunSeconds = 0
         try {
             Write-Contract @(New-Entry "clip.mp4")
             Invoke-TestHandoff
-            Invoke-TestHandoff
-            Invoke-TestHandoff
-            "$(Get-Outcome 'clip.mp4') $(Get-ListedCount 'clip.mp4') [$(Get-PendingPaths)]" | Should Be "refused 0 []"
-            Get-Reason "clip.mp4" | Should Be "it is too large to hash within the agent's round"
+            "$(Get-Outcome 'clip.mp4') $(Get-ListedCount 'clip.mp4') [$(Get-PendingPaths)]" | Should Be "deferred 0 []"
+            $script:handoffHashJobs.Count | Should Be 1
         } finally { $script:handoffRunSeconds = 20 }
+        Wait-HashJobs
+        Write-Contract @(New-Entry "clip.mp4")
         Invoke-TestHandoff
-        Get-Outcome "clip.mp4" | Should Be "refused"
-        Set-IndexEntry "clip.mp4" 5 "STICK:2"
-        $global:fakeFiles["videos|clip.mp4"].global.version = @("STICK:2")
-        $entry = New-Entry "clip.mp4"
-        $entry.version = @("STICK:2")
-        Write-Contract @($entry)
-        Invoke-TestHandoff
-        Get-Outcome "clip.mp4" | Should Be "moved"
+        "$(Get-Outcome 'clip.mp4') $($script:handoffHashJobs.Count)" | Should Be "moved 0"
+    }
+
+    It "refuses a file a background hash found to be other content, and never hashes one file twice at once" {
+        New-TestNode "backgroundother"
+        [System.IO.File]::WriteAllText((Join-Path $global:folder "clip.mp4"), "other")
+        Set-OldTime (Join-Path $global:folder "clip.mp4") ($global:handoffTestNow - 3600)
+        $script:handoffRunSeconds = 0
+        try {
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            Wait-HashJobs
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            "$(Get-Outcome 'clip.mp4') $(Get-ListedCount 'clip.mp4') $($script:handoffHashJobs.Count)" | Should Be "refused 0 0"
+            Get-Reason "clip.mp4" | Should Be "its content is not the confirmed content"
+        } finally { $script:handoffRunSeconds = 20 }
+    }
+
+    It "reads a large file sharing it with other readers, while writers stay out" {
+        New-TestNode "sharing"
+        $path = Join-Path $global:folder "clip.mp4"
+        $reader = [System.IO.File]::Open($path, "Open", "Read", "ReadWrite")
+        try { $stream = Open-HandoffHashStream $path } finally { $reader.Dispose() }
+        try { { [System.IO.File]::Open($path, "Open", "Write", "ReadWrite") } | Should Throw } finally { $stream.Dispose() }
+    }
+
+    It "still counts a reader as open before it ignores a file hashed in the background" {
+        New-TestNode "backgroundopen"
+        $script:handoffRunSeconds = 0
+        try {
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            Wait-HashJobs
+            $reader = [System.IO.File]::Open((Join-Path $global:folder "clip.mp4"), "Open", "Read", "ReadWrite")
+            try { Write-Contract @(New-Entry "clip.mp4"); Invoke-TestHandoff } finally { $reader.Dispose() }
+            "$(Get-Outcome 'clip.mp4') $(Get-ListedCount 'clip.mp4')" | Should Be "refused 0"
+            Get-Reason "clip.mp4" | Should Be "it is open"
+        } finally { $script:handoffRunSeconds = 20; Stop-HandoffHashJobs }
+    }
+
+    function New-StallingHashJob([string]$Key) {
+        $space = [runspacefactory]::CreateRunspace()
+        $space.Open()
+        $shell = [powershell]::Create()
+        $shell.Runspace = $space
+        [void]$shell.AddScript("[System.Threading.Thread]::Sleep(8000)")
+        $script:handoffHashJobs[$Key] = [pscustomobject]@{ shell = $shell; space = $space; handle = $shell.BeginInvoke(); startedAt = Get-Date; path = (Join-Path $global:folder "clip.mp4"); size = 5; modifiedSeconds = $global:handoffTestNow - 3600 }
+    }
+    function Get-TestHashKey { return "$([System.IO.Path]::GetFullPath($global:root))|videos|clip.mp4|STICK:1|5|$($global:handoffTestNow - 3600)" }
+
+    It "gives up on a hash still running past its limit, without waiting for the disk" {
+        New-TestNode "timeout"
+        New-StallingHashJob (Get-TestHashKey)
+        $script:handoffHashJobSeconds = 0
+        try {
+            Write-Contract @(New-Entry "clip.mp4")
+            $clock = [System.Diagnostics.Stopwatch]::StartNew()
+            Invoke-TestHandoff
+            $clock.Elapsed.TotalSeconds | Should BeLessThan 5
+            "$(Get-Outcome 'clip.mp4') $($script:handoffHashJobs.Count)" | Should Be "refused 0"
+            Get-Reason "clip.mp4" | Should Match "took longer than"
+        } finally { $script:handoffHashJobSeconds = 21600; $script:handoffHashGaveUp = @{} }
+    }
+
+    It "takes a finished hash whatever its age, and does not give up on it" {
+        New-TestNode "latefinish"
+        $script:handoffRunSeconds = 0
+        $script:handoffHashJobSeconds = 0
+        try {
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            Wait-HashJobs
+            $script:handoffRunSeconds = 20
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            "$(Get-Outcome 'clip.mp4') $($script:handoffHashGaveUp.Count)" | Should Be "moved 0"
+        } finally { $script:handoffRunSeconds = 20; $script:handoffHashJobSeconds = 21600; $script:handoffHashGaveUp = @{}; Stop-HandoffHashJobs }
+    }
+
+    It "keeps a background hash through any number of rounds without its entry, while the file is the one it reads" {
+        New-TestNode "keptjob"
+        New-StallingHashJob (Get-TestHashKey)
+        try {
+            foreach ($round in 1..7) { Write-Contract @(); Invoke-TestHandoff }
+            $script:handoffHashJobs.Count | Should Be 1
+        } finally { Stop-HandoffHashJobs }
+    }
+
+    It "stops a background hash out of the contract once its file changed or is gone" {
+        New-TestNode "changedjob"
+        New-StallingHashJob (Get-TestHashKey)
+        try {
+            Set-OldTime (Join-Path $global:folder "clip.mp4") ($global:handoffTestNow - 100)
+            Write-Contract @()
+            Invoke-TestHandoff
+            $script:handoffHashJobs.Count | Should Be 0
+        } finally { Stop-HandoffHashJobs }
+        New-TestNode "gonejob"
+        New-StallingHashJob (Get-TestHashKey)
+        try {
+            Remove-Item -LiteralPath (Join-Path $global:folder "clip.mp4")
+            Write-Contract @()
+            Invoke-TestHandoff
+            $script:handoffHashJobs.Count | Should Be 0
+        } finally { Stop-HandoffHashJobs }
+    }
+
+    It "stops a background hash out of the contract at its limit, and gives that version up" {
+        New-TestNode "limitjob"
+        New-StallingHashJob (Get-TestHashKey)
+        $script:handoffHashJobSeconds = 0
+        try {
+            Write-Contract @()
+            Invoke-TestHandoff
+            "$($script:handoffHashJobs.Count) $($script:handoffHashGaveUp.ContainsKey((Get-TestHashKey)))" | Should Be "0 True"
+        } finally { $script:handoffHashJobSeconds = 21600; $script:handoffHashGaveUp = @{}; Stop-HandoffHashJobs }
+    }
+
+    It "starts a new background hash when the version changed under the old one" {
+        New-TestNode "backgroundchange"
+        $script:handoffRunSeconds = 0
+        try {
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            $script:handoffHashJobs.Count | Should Be 1
+            $entry = New-Entry "clip.mp4"
+            $entry.version = @("STICK:2")
+            Write-Contract @($entry)
+            Set-IndexEntry "clip.mp4" 5 "STICK:2"
+            Wait-HashJobs
+            Invoke-TestHandoff
+            Get-Outcome "clip.mp4" | Should Be "deferred"
+            @($script:handoffHashJobs.Keys)[0] | Should Match "STICK:2"
+        } finally { $script:handoffRunSeconds = 20; Stop-HandoffHashJobs }
     }
 
     It "completes a move a run left between the rename and the manifest line, and never releases it" {

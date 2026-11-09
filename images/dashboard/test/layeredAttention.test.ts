@@ -91,17 +91,15 @@ describe("Attention for the layered sync", () => {
     ]);
   });
 
-  it("a file hashed too late is information, one too large for the agent's round a warning", () => {
+  it("a file hashed outside the agent's round is information", () => {
     const hashing = result({
       results: [
         { folderId: "videos", path: "a.mp4", outcome: "deferred", reason: "the round's time ran out while it was hashed" },
-        { folderId: "videos", path: "big.mkv", outcome: "refused", reason: "it is too large to hash within the agent's round" },
       ],
     });
     const warnings = layeredWarnings(nodeWith({ handoff: handoff({ result: hashing }) }), now);
     assert.deepEqual(only(warnings, "handoff-deferred").map((entry) => [entry.level, entry.text]), [
-      ["info", "pc: a.mp4 in Videos could not be hashed within the host agent's round; it is hashed again next round"],
-      ["warning", "pc: big.mkv in Videos is too large to hash within the host agent's round, so it is not handed off and stays on the node"],
+      ["info", "pc: a.mp4 in Videos is being hashed outside the host agent's round; it is handed off once that is done"],
     ]);
     assert.equal(only(warnings, "handoff-refused").length, 0);
   });
