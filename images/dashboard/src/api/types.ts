@@ -1655,6 +1655,8 @@ export interface NodeAdmission {
   threshold: number;
   /** The layout has an entry for it, not admitted yet. */
   listed: boolean;
+  /** A node heard from a joined device: the device that claims it, which one admission settles. */
+  claimedBy?: { deviceId: string; deviceName: string };
 }
 
 /** `PUT /api/nodes/<id>/admission`. */
@@ -1663,4 +1665,6 @@ export interface NodeAdmissionBody {
   answer: "accept" | "refuse";
   /** The threshold the node is admitted at, confirmed by the person from the node file's suggestion; required to accept. */
   threshold?: number;
+  /** For a node a joined device claims: the claiming device this answer is for. */
+  deviceId?: string;
 }

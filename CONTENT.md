@@ -419,6 +419,23 @@ when run as admin. A node file whose volume is away is left alone. The dashboard
 device. A join on a device where this stack's agent runs leaves the node to that agent, and `down`
 does not keep it; run the join again after `down` to keep the node in joined mode.
 
+A Linux device leaves with `sudo join/storage-join.sh --leave`: the timer, the unit and the installed steps go, then
+the node file and a folder node's line in its volume's index; the data and the Syncthing home stay.
+
+**The layered sync on a joined device.** The dashboard decides, the device keeps: once a minute the device
+reports its folders, disk and settled files of send-only folders to `POST /api/layered/node/<id>` on the join port,
+over the tailnet (only its own nodes, as for the connections entry), and gets back its plan as a list of changes, what
+its node file's policy should say, and its hand-off contract. On Linux a `storage-layout.timer` does this; the
+unit's `ExecStartPre` applies the changes while Syncthing is down, which the timer restarts it for, and `handoff.sh`
+runs from the timer with the contract, run as the node's owner, with an open-file snapshot taken as root for that
+run. On Windows the joined-mode agent does the same through the node's own Syncthing API. A change is made only
+while the dashboard says `apply` and the node file, which follows the committed, pushed layout, says `apply = true`; a dashboard that does not
+answer takes `apply` out of the node file until it answers again. A planned folder the device lacks is added
+send-only, and turns send-receive once its size is known and the space rule allows it. A stick made offline
+stays pending, listed on Requests of the first online host that hears it with the device reporting it, one row per claiming device, and an empty plan, until that host
+commits it. Reports of keepers on other hosts are read through their dashboards (`GET /api/layered/keepers`) with an
+age in seconds; one older than the keeper limit counts for nothing.
+
 A Syncthing the device already runs (its home in `%LOCALAPPDATA%\Syncthing`, or the
 one its logon task names) is adopted: it is stopped, its home moves into the node with its
 certificate, folders and devices, so its device ID stays, and its logon task is removed; the package

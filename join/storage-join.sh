@@ -24,8 +24,13 @@ set -euo pipefail
 
 readonly HOME_LINKS="Documents:Documents Pictures:Pictures Music:Music Videos:Videos Downloads:Downloads Desktop:Desktop Templates:Templates Public:Public Documents/GitHub:code"
 readonly UNIT_NAME="storage-syncthing.service"
+readonly TIMER_NAME="storage-layout.timer"
+readonly TICK_SERVICE_NAME="storage-layout.service"
 readonly STEP_NAME="storage-connections"
+readonly LAYOUT_STEP_NAME="storage-layout"
 readonly PROFILE_CHECKS_NAME="connection-profile.jq"
+readonly HANDOFF_SCRIPT_NAME="handoff.sh"
+readonly PROBE_SCRIPT_NAME="handoff-probe.sh"
 
 readonly ESSENTIAL_THRESHOLD=80 WORKING_THRESHOLD=50
 
@@ -184,8 +189,19 @@ is_installed() { [[ -f "$2" && "$(cksum < "$1")" == "$(cksum < "$2")" ]]; }
 
 has_profile_checks_source() { [[ -f "$(profile_checks_source)" ]]; }
 
+layout_step_source() { printf '%s/storage-layout.sh' "$(dirname "${BASH_SOURCE[0]}")"; }
+
+handoff_source() { printf '%s/../images/nodes/%s' "$(dirname "${BASH_SOURCE[0]}")" "$1"; }
+
+has_layered_sources() { [[ -f "$(layout_step_source)" && -f "$(handoff_source "$HANDOFF_SCRIPT_NAME")" && -f "$(handoff_source "$PROBE_SCRIPT_NAME")" ]]; }
+
+is_layered_installed() {
+    is_installed "$(layout_step_source)" "$step_dir/$LAYOUT_STEP_NAME" && is_installed "$(handoff_source "$HANDOFF_SCRIPT_NAME")" "$step_dir/$HANDOFF_SCRIPT_NAME" && is_installed "$(handoff_source "$PROBE_SCRIPT_NAME")" "$step_dir/$PROBE_SCRIPT_NAME"
+}
+
 is_step_installed() {
     is_installed "$(step_source)" "$step_dir/$STEP_NAME" || return 1
+    ! has_layered_sources || is_layered_installed || return 1
     ! has_profile_checks_source || is_installed "$(profile_checks_source)" "$step_dir/$PROFILE_CHECKS_NAME"
 }
 
@@ -196,13 +212,19 @@ install_step() {
     is_step_installed && return 0
     mkdir -p "$step_dir"
     install -m 755 "$(step_source)" "$step"
+    if has_layered_sources; then
+        install -m 755 "$(layout_step_source)" "$step_dir/$LAYOUT_STEP_NAME"
+        install -m 755 "$(handoff_source "$HANDOFF_SCRIPT_NAME")" "$step_dir/$HANDOFF_SCRIPT_NAME"
+        install -m 755 "$(handoff_source "$PROBE_SCRIPT_NAME")" "$step_dir/$PROBE_SCRIPT_NAME"
+    fi
     if has_profile_checks_source; then install -m 644 "$(profile_checks_source)" "$step_dir/$PROFILE_CHECKS_NAME"; fi
     changed "installed $step"
 }
 
 unit_text() {
-    local step_command
+    local step_command layout_line=""
     step_command="$step_dir/$STEP_NAME $(dashboard_url) $(joined_node_id) $syncthing_home $listen_port"
+    if has_layered_sources; then layout_line="ExecStartPre=-$step_dir/$LAYOUT_STEP_NAME start $syncthing_home $join_root $(node_id_of_file)"$'\n'; fi
     cat << EOF
 [Unit]
 Description=Syncthing for the storage node at $join_root
@@ -213,7 +235,7 @@ Wants=network-online.target
 User=$(node_owner)
 Environment=STNOUPGRADE=1
 ExecStartPre=-$step_command
-ExecStart=$(command -v syncthing) serve --home=$syncthing_home --no-browser --gui-address=127.0.0.1:$gui_port
+${layout_line}ExecStart=$(command -v syncthing) serve --home=$syncthing_home --no-browser --gui-address=127.0.0.1:$gui_port
 Restart=on-failure
 
 [Install]
@@ -239,24 +261,118 @@ install_unit() {
     fi
 }
 
+node_id_of_file() { sed -n 's/^id *= *"\([0-9a-f]*\)".*/\1/p' "$node_file" | head -n 1; }
+
+tick_service_text() {
+    cat << EOF
+[Unit]
+Description=Plan and hand-offs of the storage node at $join_root
+After=$UNIT_NAME
+
+[Service]
+Type=oneshot
+Environment=STNOUPGRADE=1
+ExecStart=$step_dir/$LAYOUT_STEP_NAME tick $(dashboard_url) $(node_id_of_file) $syncthing_home $join_root $gui_port
+EOF
+}
+
+timer_text() {
+    cat << EOF
+[Unit]
+Description=The storage node's plan and hand-offs, once a minute
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+write_unit_file() {   # <file> <text>: 0 when it wrote
+    local unit="$unit_dir/$1" text="$2"
+    [[ -f "$unit" && "$(cat "$unit")" == "$text" ]] && return 1
+    mkdir -p "$unit_dir"
+    printf '%s\n' "$text" > "$unit"
+    return 0
+}
+
+install_timer() {
+    has_layered_sources || return 0
+    local wrote=false
+    write_unit_file "$TICK_SERVICE_NAME" "$(tick_service_text)" && wrote=true
+    write_unit_file "$TIMER_NAME" "$(timer_text)" && wrote=true
+    if [[ "$wrote" == true ]]; then
+        systemctl daemon-reload
+        systemctl enable --now "$TIMER_NAME" > /dev/null 2>&1 || true
+        changed "installed the plan and hand-off timer"
+    fi
+}
+
 start_syncthing() {
     generate_keys
     install_step
     install_unit
+    install_timer
+}
+
+# Everything the join installed for the node goes with it: the timer, the unit and the steps. The node file goes
+# last, so a failure before it leaves the join standing. Its data and Syncthing home stay, as a Windows leave's do.
+unit_path_exists() { [[ -e "$unit_dir/$1" ]]; }
+
+remove_units() {
+    if unit_path_exists "$TIMER_NAME"; then systemctl disable --now "$TIMER_NAME" 2> /dev/null || true; fi
+    if unit_path_exists "$TICK_SERVICE_NAME"; then systemctl stop "$TICK_SERVICE_NAME" 2> /dev/null || true; fi
+    if unit_path_exists "$UNIT_NAME"; then systemctl disable --now "$UNIT_NAME" 2> /dev/null || true; fi
+    rm -f "$unit_dir/$TIMER_NAME" "$unit_dir/$TICK_SERVICE_NAME" "$unit_dir/$UNIT_NAME"
+    systemctl daemon-reload 2> /dev/null || true
+}
+
+remove_steps() {
+    rm -f "$step_dir/$STEP_NAME" "$step_dir/$LAYOUT_STEP_NAME" "$step_dir/$HANDOFF_SCRIPT_NAME" "$step_dir/$PROBE_SCRIPT_NAME" "$step_dir/$PROFILE_CHECKS_NAME"
+    rmdir "$step_dir" 2> /dev/null || true
+}
+
+unregister_folder_node() {
+    [[ "$join_kind" == folder ]] || return 0
+    local volume relative index listed paths=() remaining=()
+    volume="$(volume_root_of "$join_root")"
+    relative="$(relative_to_volume "$join_root")"
+    index="$(index_file_of "$volume")"
+    mapfile -t paths < <(index_paths "$volume")
+    for listed in "${paths[@]}"; do [[ "$listed" == "$relative" ]] || remaining+=("$listed"); done
+    [[ "${#remaining[@]}" -lt "${#paths[@]}" ]] || return 0
+    if [[ "${#remaining[@]}" -eq 0 ]]; then rm -f "$index"; else printf 'paths = [%s]\n' "$(printf '"%s", ' "${remaining[@]}" | sed 's/, $//')" > "$index"; fi
+}
+
+leave() {
+    [[ "$(id -u)" -eq 0 ]] || fail "run as root"
+    if [[ ! -f "$node_file" ]]; then
+        log "$node_file does not exist; nothing to leave"
+        return 0
+    fi
+    join_kind="$(node_file_kind)"
+    remove_units
+    remove_steps
+    rm -f "$node_file"
+    unregister_folder_node
+    log "left; the timer, the unit and the steps are gone, and the data and Syncthing's home stay"
 }
 
 
 api_key() { sed -n 's:.*<apikey>\(.*\)</apikey>.*:\1:p' "$syncthing_home/config.xml" | head -n 1; }
 
+# The API key goes to curl on standard input, never on its command line.
 api() {
     local method="$1" path="$2"
     shift 2
-    curl -fsS -X "$method" -H "X-API-Key: $(api_key)" -H "Content-Type: application/json" "$@" "http://127.0.0.1:$gui_port$path"
+    printf 'header = "X-API-Key: %s"\n' "$(api_key)" | curl -fsS -K - -X "$method" -H "Content-Type: application/json" "$@" "http://127.0.0.1:$gui_port$path"
 }
 
 api_status() {
     local method="$1" path="$2"
-    curl -sS -o /dev/null -w '%{http_code}' -X "$method" -H "X-API-Key: $(api_key)" "http://127.0.0.1:$gui_port$path"
+    printf 'header = "X-API-Key: %s"\n' "$(api_key)" | curl -sS -K - -o /dev/null -w '%{http_code}' -X "$method" "http://127.0.0.1:$gui_port$path"
 }
 
 wait_for_syncthing() {
@@ -419,6 +535,8 @@ link_homes() {
     done
     return 0
 }
+
+node_file_kind() { sed -n 's/^kind *= *"\([a-z]*\)".*/\1/p' "$node_file" | head -n 1; }
 
 node_file_threshold() { sed -n 's/^threshold *= *\([0-9]*\).*/\1/p' "$node_file" | head -n 1; }
 
@@ -616,6 +734,7 @@ has_join_settings() { [[ -n "$(compgen -v STORAGE_JOIN_)" ]]; }
 is_interactive() { stdin_is_terminal && ! has_join_settings; }
 
 main() {
+    if [[ "${1:-}" == --leave ]]; then leave; return 0; fi
     [[ "$(id -u)" -eq 0 ]] || fail "run as root"
     if is_interactive && ! ask_choices; then return 0; fi
     check_threshold

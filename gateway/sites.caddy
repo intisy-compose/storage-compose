@@ -10,7 +10,7 @@
 {$TAILNET_HOST}:443 {
 	import tailnet
 	encode gzip
-	@caller path /api/join /api/connections/node/*
+	@caller path /api/join /api/connections/node/* /api/layered/node/*
 	handle @caller {
 		reverse_proxy dashboard:8447 {
 			transport http {

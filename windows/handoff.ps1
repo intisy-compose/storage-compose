@@ -21,6 +21,10 @@ $handoffKeptLogSeconds = 86400
 $handoffRoundSeconds = 60
 $handoffListName = ".stignore-handoff"
 $lastHandoffRound = [datetime]::MinValue
+$handoffHashJobs = @{}
+$handoffHashStopping = @()
+$handoffHashGaveUp = @{}
+$handoffHashJobSeconds = 21600
 
 if (-not ("StorageCompose.HandoffNative" -as [type])) {
     Add-Type -Namespace StorageCompose -Name HandoffNative -MemberDefinition @'
@@ -550,32 +554,132 @@ function Invoke-FolderHandoff($Run, $Instance, [string]$FolderId, [string]$Folde
     return $results
 }
 
+function Open-HandoffHashStream([string]$Path) { return [System.IO.File]::Open($Path, "Open", "Read", "Read") }
+
+function Get-HashJobKey($Run, [string]$FolderId, $Entry) { return "$($Run.rootFull)|$FolderId|$($Entry.path)|$(@($Entry.version) -join ',')|$($Entry.size)|$($Entry.modifiedSeconds)" }
+
+function Test-HashJobIsDone($Job) { return $Job.handle.IsCompleted }
+
+function Close-HashJob($Job) { try { $Job.shell.Dispose(); $Job.space.Dispose() } catch { } }
+
 <#
 .NOTES
-The content check before the ignore line, within the run's deadline: an open file and a file of another
-content are refused with nothing written; a hash the deadline cut short leaves no trace on the node but a
-count in handoff-deferred.jsonl, kept only when this was the run's first hash so the budget was the file's
-alone, and a file that ran out $handoffPendingAttempts times is not hashed again at that version.
-Returns a result line, or $null when the file is the confirmed one.
+A job still running is only asked to stop: a read blocked on a stalled disk would hold a synchronous Stop or Dispose,
+and with it the agent's round. It is disposed once it has stopped (Clear-StoppedHashJobs).
+#>
+function Remove-HashJob([string]$Key) {
+    $job = $script:handoffHashJobs[$Key]
+    if (-not $job) { return }
+    $script:handoffHashJobs.Remove($Key)
+    if ($job.handle.IsCompleted) { Close-HashJob $job; return }
+    try { [void]$job.shell.BeginStop($null, $null) } catch { }
+    $script:handoffHashStopping = @($script:handoffHashStopping) + $job
+}
+
+function Clear-StoppedHashJobs {
+    $still = @()
+    foreach ($job in @($script:handoffHashStopping)) {
+        if ($job.shell.InvocationStateInfo.State -in @("Stopped", "Completed", "Failed")) { Close-HashJob $job } else { $still += $job }
+    }
+    $script:handoffHashStopping = $still
+}
+
+<#
+.NOTES
+A hash the run's deadline cut short goes on to one background runspace, so a large file never stalls the round
+that carries the heartbeat: its handle shares reading, so a reader is not locked out for a whole hash, and keeps
+writers out, and the file stays where it is with nothing written about it until the next run takes the result,
+whose metadata and open checks catch a change since. One at a time per agent: the disk is read in order, not in
+parallel.
+#>
+function Start-HashJob([string]$Key, [string]$Path, [int64]$BlockSize, [int64]$Size, [int64]$ModifiedSeconds) {
+    foreach ($other in @($script:handoffHashJobs.Keys | Where-Object { $_ -cne $Key })) { if ($script:handoffHashJobs[$other].handle.IsCompleted) { Remove-HashJob $other } }
+    Clear-StoppedHashJobs
+    if ($script:handoffHashJobs.Count -ge 1 -or @($script:handoffHashStopping).Count -ge 1) { return }
+    $definition = (Get-Item function:\Get-StreamBlocksHash).Definition
+    $opener = (Get-Item function:\Open-HandoffHashStream).Definition
+    $worker = "param([string]`$Path, [int64]`$BlockSize)`nfunction Get-StreamBlocksHash {$definition}`nfunction Open-HandoffHashStream {$opener}`ntry { `$stream = Open-HandoffHashStream `$Path } catch { return [pscustomobject]@{ open = `$true; hash = `$null } }`ntry { return [pscustomobject]@{ open = `$false; hash = (Get-StreamBlocksHash `$stream `$BlockSize) } } finally { `$stream.Dispose() }"
+    $space = [runspacefactory]::CreateRunspace()
+    $space.Open()
+    $shell = [powershell]::Create()
+    $shell.Runspace = $space
+    [void]$shell.AddScript($worker).AddArgument($Path).AddArgument($BlockSize)
+    $script:handoffHashJobs[$Key] = [pscustomobject]@{ shell = $shell; space = $space; handle = $shell.BeginInvoke(); startedAt = Get-Date; path = $Path; size = $Size; modifiedSeconds = $ModifiedSeconds }
+}
+
+function Test-HashJobIsOverdue($Job) { return ((Get-Date) - $Job.startedAt).TotalSeconds -ge $script:handoffHashJobSeconds }
+
+function Test-HashJobFileIsTheSame($Job) {
+    if (-not [System.IO.File]::Exists($Job.path)) { return $false }
+    $info = [System.IO.FileInfo]::new($Job.path)
+    return $info.Length -eq [int64]$Job.size -and (Get-UnixSeconds $info.LastWriteTimeUtc) -eq [int64]$Job.modifiedSeconds
+}
+
+<#
+.NOTES
+An entry can be out of the contract for many rounds while its hash is still good, since a joined folder's files are
+reported a page at a time, so only the file decides: a job stops when its file changed or went, or at its limit.
+#>
+function Stop-HashJobsOutsideContract($Run) {
+    $wanted = @($Run.contract.entries | ForEach-Object { Get-HashJobKey $Run "$($_.folderId)" $_ })
+    $prefix = "$($Run.rootFull)|"
+    Clear-StoppedHashJobs
+    foreach ($key in @($script:handoffHashJobs.Keys | Where-Object { $_.StartsWith($prefix) -and $wanted -cnotcontains $_ })) {
+        $job = $script:handoffHashJobs[$key]
+        if (-not (Test-HashJobFileIsTheSame $job)) { Remove-HashJob $key; continue }
+        if ((Test-HashJobIsDone $job) -or -not (Test-HashJobIsOverdue $job)) { continue }
+        Remove-HashJob $key
+        $script:handoffHashGaveUp[$key] = $true
+    }
+}
+
+function Stop-HandoffHashJobs { foreach ($key in @($script:handoffHashJobs.Keys)) { Remove-HashJob $key } }
+
+function Get-HashJobOutcome([string]$Key) {
+    $job = $script:handoffHashJobs[$Key]
+    try { $answer = @($job.shell.EndInvoke($job.handle)) | Select-Object -First 1 } catch { $answer = $null }
+    Remove-HashJob $Key
+    return $answer
+}
+
+function New-HashGaveUpLine([string]$FolderId, $Entry) {
+    return New-HandoffResultLine $FolderId $Entry.path "refused" "hashing it took longer than $($script:handoffHashJobSeconds) s, so it stays on the node"
+}
+
+function New-HashDeferredLine([string]$FolderId, $Entry) {
+    return New-HandoffResultLine $FolderId $Entry.path "deferred" "it is being hashed in the background; nothing was written for it"
+}
+
+<#
+.NOTES
+The content check before the ignore line: an open file and a file of another content are refused with nothing
+written, and a file too large to hash within the run goes on in the background (Start-HashJob), its next run
+taking the result. Returns a result line, or $null when the file is the confirmed one.
 #>
 function Get-HandoffHashBeforeIgnore($Run, [string]$FolderId, [string]$Folder, $Entry) {
-    $deferred = @(Read-HandoffLines $Run.deferredFile)
-    $mine = @($deferred | Where-Object { (Test-IsHandoffRecord $_ $FolderId $Entry.path) -and (Test-SameVersion $_.version $Entry.version) }) | Select-Object -First 1
-    if ($mine -and [int]$mine.attempts -ge $handoffPendingAttempts) { return New-HandoffResultLine $FolderId $Entry.path "refused" "it is too large to hash within the agent's round" }
-    $wasFirst = -not $Run.hashed
-    $Run.hashed = $true
+    $key = Get-HashJobKey $Run $FolderId $Entry
+    if ($script:handoffHashGaveUp.ContainsKey($key)) { return New-HashGaveUpLine $FolderId $Entry }
+    if ($script:handoffHashJobs.ContainsKey($key)) {
+        if (-not (Test-HashJobIsDone $script:handoffHashJobs[$key])) {
+            if (-not (Test-HashJobIsOverdue $script:handoffHashJobs[$key])) { return New-HashDeferredLine $FolderId $Entry }
+            Remove-HashJob $key
+            $script:handoffHashGaveUp[$key] = $true
+            return New-HashGaveUpLine $FolderId $Entry
+        }
+        $outcome = Get-HashJobOutcome $key
+        if ($outcome -and $outcome.open) { return New-HandoffResultLine $FolderId $Entry.path "refused" "it is open" }
+        if ($outcome -and $outcome.hash -ceq $Entry.blocksHash) {
+            if (Test-HandoffFileIsOpen (Get-HandoffPath $Folder $Entry.path)) { return New-HandoffResultLine $FolderId $Entry.path "refused" "it is open" }
+            return $null
+        }
+        if ($outcome -and $outcome.hash) { return New-HandoffResultLine $FolderId $Entry.path "refused" "its content is not the confirmed content" }
+    }
     $check = Get-HandoffContentCheck $Folder $Entry $Run.deadline
     if ($check.ContainsKey("open")) { return New-HandoffResultLine $FolderId $Entry.path "refused" "it is open" }
     if ($check.ContainsKey("problem")) { return New-HandoffResultLine $FolderId $Entry.path "refused" $check.problem }
-    $others = @($deferred | Where-Object { -not (Test-IsHandoffRecord $_ $FolderId $Entry.path) })
-    if ($check.ContainsKey("budget")) {
-        $attempts = if ($mine) { [int]$mine.attempts } else { 0 }
-        if ($wasFirst) { $attempts++ }
-        Write-HandoffLines $Run.deferredFile @($others + [pscustomobject][ordered]@{ folderId = $FolderId; path = $Entry.path; version = @($Entry.version); attempts = $attempts })
-        return New-HandoffResultLine $FolderId $Entry.path "deferred" "the round's time ran out while it was hashed; nothing was written for it, and it is hashed again next round"
-    }
-    if ($mine) { Write-HandoffLines $Run.deferredFile $others }
-    return $null
+    if (-not $check.ContainsKey("budget")) { return $null }
+    Start-HashJob $key (Get-HandoffPath $Folder $Entry.path) (Get-HandoffBlockSize ([int64]$Entry.size) ([int64]$Entry.numBlocks)) ([int64]$Entry.size) ([int64]$Entry.modifiedSeconds)
+    return New-HashDeferredLine $FolderId $Entry
 }
 
 <#
@@ -794,9 +898,10 @@ function Invoke-LockedHandoff($Instance, [string]$ContractPath, [string]$ResultP
     if (Test-IsReparsePoint $trashRoot) { return Write-HandoffResult $ResultPath $nodeId $contract "the trash folder is a link" @() @() 0 }
     $run = [pscustomobject]@{
         contract = $contract; rootFull = $RootFull; trashRoot = $trashRoot; manifest = Join-Path $trashRoot "manifest.jsonl"
-        pendingFile = Join-Path $RootFull ".storage\handoff-pending.jsonl"; deferredFile = Join-Path $RootFull ".storage\handoff-deferred.jsonl"
-        deadline = (Get-Date).AddSeconds($handoffRunSeconds); trash = @(); purged = 0; hashed = $false; connections = $null; notes = @()
+        pendingFile = Join-Path $RootFull ".storage\handoff-pending.jsonl"
+        deadline = (Get-Date).AddSeconds($handoffRunSeconds); trash = @(); purged = 0; connections = $null; notes = @()
     }
+    Stop-HashJobsOutsideContract $run
     $results = @()
     if ($contract.apply -eq $true) {
         Move-BadPendingLines $run

@@ -29,6 +29,23 @@ function Get-DashboardEntryText([string]$Dashboard, [string]$NodeId, [double]$Ti
     }
 }
 
+function Invoke-DashboardReport([string]$Dashboard, [string]$NodeId, [string]$Json, [double]$TimeoutSeconds) {
+    Add-Type -AssemblyName System.Net.Http
+    $client = New-Object System.Net.Http.HttpClient
+    try {
+        $content = New-Object System.Net.Http.StringContent($Json, [System.Text.Encoding]::UTF8, "application/json")
+        $request = $client.PostAsync("$($Dashboard.TrimEnd('/'))/api/layered/node/$NodeId", $content)
+        if (-not $request.Wait([TimeSpan]::FromSeconds($TimeoutSeconds))) { throw "no answer within $([math]::Round($TimeoutSeconds, 1)) s" }
+        $response = $request.Result
+        if (-not $response.IsSuccessStatusCode) { throw "the dashboard answered $([int]$response.StatusCode)" }
+        $text = $response.Content.ReadAsStringAsync()
+        if (-not $text.Wait([TimeSpan]::FromSeconds($TimeoutSeconds))) { throw "no answer within $([math]::Round($TimeoutSeconds, 1)) s" }
+        return $text.Result
+    } finally {
+        $client.Dispose()
+    }
+}
+
 <#
 .NOTES
 The dashboard assumes 22000 for every joined device and leaves the device's own port to the device.

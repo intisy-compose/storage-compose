@@ -609,7 +609,7 @@ echo "nodes.sh runs the executor"
     cluster=c1c1
     mkdir -p "$handoff_directory" "$scratch/homes/a001/.storage/syncthing" "$scratch/homes/b0b0/.storage/syncthing"
     printf '<apikey>node-key</apikey>\n' > "$scratch/homes/a001/.storage/syncthing/config.xml"
-    printf '#!/bin/bash\necho "$HANDOFF_CLUSTER_ID $*" >> %s/executor.log\nsleep 3\n' "$scratch" > "$handoff_executor"
+    printf '#!/bin/bash\necho "$HANDOFF_CLUSTER_ID $HANDOFF_API_KEY $*" >> %s/executor.log\nsleep 3\n' "$scratch" > "$handoff_executor"
     echo '{}' > "$handoff_directory/a001.json"
     echo '{}' > "$handoff_directory/b0b0.json"
     sleep 30 & instance_pid[a001]=$!
@@ -621,7 +621,7 @@ echo "nodes.sh runs the executor"
     run_handoffs
     sleep 0.5
     check "only a drive or folder node with a contract runs it, with its root, API and files" \
-        "c1c1 a001 $scratch/homes/a001 http://10.0.0.2:8411 node-key $handoff_directory/a001.json $handoff_directory/a001.result.json" "$(cat "$scratch/executor.log")"
+        "c1c1 node-key a001 $scratch/homes/a001 http://10.0.0.2:8411 - $handoff_directory/a001.json $handoff_directory/a001.result.json" "$(cat "$scratch/executor.log")"
     run_handoffs
     last_handoff_round=-60
     run_handoffs

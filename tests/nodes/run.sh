@@ -80,7 +80,7 @@ expect "the folder node's threshold" "80" "$(node_query '.nodes[] | select(.id =
 expect "the second array's members" "data1 data2 parity1" "$(node_query '.nodes[] | select(.id == "b00c") | [.array.members[].role] | join(" ")')"
 expect "the host's name" "stntest" "$(node_query '.host.name')"
 echo "  /api/nodes answers in $(docker exec stn-lab sh -c 'curl -fsS -o /dev/null -w "%{time_total}" http://dashboard:8080/api/nodes') s"
-expect "the response has the contract's keys" "array,assigned,folders,host,id,kind,local,name,online,space,sync,syncthing,threshold" \
+expect "the response has the contract's keys" "array,assigned,connections,dashboardUrl,folders,host,id,instance,keeper,kind,layered,local,name,offersWaiting,online,peers,restartConfirmRequired,space,sync,syncthing,threshold,untrustedNetworks" \
     "$(node_query '.nodes[] | select(.id == "b00c") | keys | join(",")')"
 
 say "A third array attached while the stack runs"
@@ -106,7 +106,7 @@ say "Actions"
 expect "an unknown array" "404" "$(lab post /api/arrays/ffff/sync '{}' | cut -d' ' -f1)"
 expect "remove refuses a mounted drive" "409" "$(lab post /api/arrays/b00c/remove '{"role":"data2","confirm":"data2"}' | cut -d' ' -f1)"
 expect "a scrub of the second array starts" "202" "$(lab post /api/arrays/b00c/scrub '{}' | cut -d' ' -f1)"
-expect "a join from outside the tailnet" "403" "$(lab post /api/join '{"name":"p53","os":"linux","syncthingDeviceId":"AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA","nodes":[{"kind":"drive","path":"/data","threshold":80}]}' | cut -d' ' -f1)"
+expect "a join on the main port is sent to the tailnet address, where tailscale names the caller" "421" "$(lab post /api/join '{"name":"p53","os":"linux","syncthingDeviceId":"AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA-AAAAAAA","nodes":[{"kind":"drive","path":"/data","threshold":80}]}' | cut -d' ' -f1)"
 eventually "the log shows the scrub" yes 60 sh -c "docker exec stn-lab lab.sh api /api/arrays/b00c/log '.lines[]' | grep -q 'scrub done' && echo yes"
 
 say "A member missing from the start, named by the others"

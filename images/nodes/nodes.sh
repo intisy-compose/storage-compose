@@ -142,7 +142,7 @@ run_handoffs() {
         [ "${instance_kind[$id]:-}" = node ] && [ -f "$handoff_directory/$id.json" ] || continue
         [ -n "${handoff_pid[$id]:-}" ] && kill -0 "${handoff_pid[$id]}" 2> /dev/null && continue
         home=${instance_home[$id]}
-        HANDOFF_CLUSTER_ID=$cluster bash "$handoff_executor" "$id" "${home%/.storage/syncthing}" "http://${instance_gui[$id]}" "$(api_key_of "$home")" \
+        HANDOFF_API_KEY=$(api_key_of "$home") HANDOFF_CLUSTER_ID=$cluster bash "$handoff_executor" "$id" "${home%/.storage/syncthing}" "http://${instance_gui[$id]}" - \
             "$handoff_directory/$id.json" "$handoff_directory/$id.result.json" > >(sed -u "s/^/[$id] /") 2>&1 &
         handoff_pid[$id]=$!
     done

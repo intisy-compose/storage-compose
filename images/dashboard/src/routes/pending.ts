@@ -1,6 +1,7 @@
 import { deviceDisplayName, shortDeviceId } from "../api/deviceText.js";
 import type { AcceptDeviceBody, AcceptedDevice, IgnoredDevice, JoinEntry, NodeAdmission, PendingDevice, PendingFolderOffer, RequestsResponse } from "../api/types.js";
 import { isOfferHeldByLayout } from "../layoutOffers.js";
+import { joinedNodeInfos } from "../joinedNodes.js";
 import { waitingAdmissions } from "./nodeAdmission.js";
 import { offersOf } from "../folderIndex.js";
 import { RequestError, readBody, sendJson } from "../http.js";
@@ -134,7 +135,7 @@ function liveSources(joinRecords: JoinRecords): RequestSources {
     peerDashboards,
     joins: () => joinRecords.all(),
     layout: readLayout,
-    admissions: async () => waitingAdmissions(await readLayout(), await localNodeInfos(), hostName),
+    admissions: async () => waitingAdmissions(await readLayout(), [...(await localNodeInfos()), ...joinedNodeInfos(new Date())], hostName),
   };
 }
 

@@ -53,12 +53,15 @@ function Invoke-AgentTests([string]$Syncthing) {
         (Join-Path $PSScriptRoot "backoff.Tests.ps1"),
         (Join-Path $PSScriptRoot "install.Tests.ps1"),
         (Join-Path $PSScriptRoot "handoff.Tests.ps1"),
+        (Join-Path $PSScriptRoot "layered.Tests.ps1"),
         @{ Path = (Join-Path $PSScriptRoot "syncthing.Tests.ps1"); Parameters = @{ SyncthingPath = $Syncthing } }
     )
     $result = Invoke-Pester -Script $scripts -PassThru
     if ($result.FailedCount -gt 0) { return 1 }
     if ($UnitOnly) { return 0 }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "vhdx-nodes.ps1") -SyncthingPath $Syncthing | Out-Host
+    if ($LASTEXITCODE -ne 0) { return 1 }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "vhdx-seed.ps1") -SyncthingPath $Syncthing | Out-Host
     if ($LASTEXITCODE -ne 0) { return 1 }
     if (-not $Service) { return 0 }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "service.ps1") -SyncthingPath $Syncthing | Out-Host

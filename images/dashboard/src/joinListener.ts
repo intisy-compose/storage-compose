@@ -2,6 +2,7 @@ import { type IncomingMessage, type ServerResponse, createServer as createHttpSe
 import { lookup } from "node:dns/promises";
 import { type Server, type Socket, createServer as createNetServer } from "node:net";
 import { type HostAllowlist, crossSiteRefusal, hostAllowlist, hostRefusal } from "./http.js";
+import { joinedLayeredPathPattern } from "./joinedNodes.js";
 import { dashboardHosts } from "./settings.js";
 import { type ProxySource, parseProxyV2 } from "./proxyProtocol.js";
 
@@ -37,7 +38,7 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
 
 function isCallerRequest(request: IncomingMessage): boolean {
   const path = new URL(request.url ?? "/", "http://join").pathname;
-  return (request.method === "POST" && path === "/api/join") || (request.method === "GET" && /^\/api\/connections\/node\/[^/]+$/.test(path));
+  return (request.method === "POST" && (path === "/api/join" || joinedLayeredPathPattern.test(path))) || (request.method === "GET" && /^\/api\/connections\/node\/[^/]+$/.test(path));
 }
 
 /**
@@ -58,7 +59,7 @@ export function createJoinListener(handleJoin: CallerHandler, gatewayAddresses: 
     if (!caller) return void request.socket.destroy();
     const misdirected = hostRefusal(request, hosts);
     if (misdirected) return sendJson(response, misdirected.status, { error: misdirected.message });
-    if (!isCallerRequest(request)) return sendJson(response, 404, { error: "this port serves only POST /api/join and GET /api/connections/node/<node id>" });
+    if (!isCallerRequest(request)) return sendJson(response, 404, { error: "this port serves only POST /api/join, GET /api/connections/node/<node id> and POST /api/layered/node/<node id>" });
     const refusal = crossSiteRefusal(request);
     if (refusal) return sendJson(response, refusal.status, { error: refusal.message });
     handleJoin(request, response, caller).catch((error: unknown) => {

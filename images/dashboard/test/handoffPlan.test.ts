@@ -240,6 +240,14 @@ describe("a confirmed hand-off", () => {
     assert.equal(decide([keeper("c1c1", {}, { observedAt: "2026-11-05T11:58:00Z" })]).confirmed.length, 1);
   });
 
+  it("counts a relayed keeper's age on top of the time since it was read, so a stale relay confirms nothing", () => {
+    assert.equal(decide([keeper("c1c1", {}, { observedAt: "2026-11-05T11:59:30Z", ageSeconds: 30 })]).confirmed.length, 1);
+    assert.equal(reasonOf([keeper("c1c1", {}, { observedAt: "2026-11-05T11:59:30Z", ageSeconds: 91 })]), "keeper-offline");
+    assert.equal(reasonOf([keeper("c1c1", {}, { observedAt: "2026-11-05T12:00:00Z", ageSeconds: 121 })]), "keeper-offline");
+    assert.equal(reasonOf([keeper("c1c1", {}, { observedAt: "2026-11-05T12:00:00Z", ageSeconds: -5 })]), "keeper-offline");
+    assert.equal(reasonOf([keeper("c1c1", {}, { observedAt: "2026-11-05T12:00:00Z", ageSeconds: Number.NaN })]), "keeper-offline");
+  });
+
   it("drops both reports of a node reported twice, counts it offline and says so", () => {
     const twice = [keeper("c1c1"), keeper("c1c1", { blocksHash: "hash-b" })];
     const decision = decide(twice);

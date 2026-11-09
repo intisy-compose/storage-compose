@@ -20,6 +20,7 @@ $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "agent-vhdx-$([guid]::New
 $stackFolder = Join-Path $scratch "stack"
 $driveVhdx = Join-Path $scratch "drive-node.vhdx"
 $stickVhdx = Join-Path $scratch "stick.vhdx"
+$testVhdxPaths = @($driveVhdx, $stickVhdx)
 $script:passed = 0
 $script:failed = 0
 
@@ -28,6 +29,9 @@ function Get-TailnetAddress { return $null }
 function Set-SyncthingFirewallRule($Node, $Ports) { }
 function Remove-NetFirewallRule { }
 function Remove-SyncthingFirewallRules { }
+
+# Only this test's own VHDX volumes: anything else would be a real node on the host's drives.
+function Get-VolumeRoots { return @(Get-VhdxVolumeRoots $testVhdxPaths) }
 
 function Test-Expectation([string]$What, $Expected, $Actual) {
     if ("$Expected" -eq "$Actual") { Write-Host "  PASS $What`: $Actual" -ForegroundColor Green; $script:passed++ }
@@ -81,6 +85,8 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $stickRoot ".storage\nodes.toml"), "paths = [`"files`"]`n")
     Write-TestNodeFile (Join-Path $stickRoot "files") "5a1c" "test-stick-files" "folder"
     Dismount-TestVolume $stickVhdx
+
+    Assert-VhdxVolumeRoots (Get-VolumeRoots) $testVhdxPaths 1
 
     $config = [pscustomobject]@{
         stackFolder = $stackFolder; projectName = "storage-agent-test"; userSid = "S-1-5-21-0"; passThrough = "none"

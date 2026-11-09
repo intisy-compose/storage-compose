@@ -21,6 +21,8 @@ export type LocalInstance = {
   threshold: number;
   /** An array takes folders only under the stricter rules of `arrayConfirmProblem` and `acceptFolderDefaults`. */
   source: LocalNodeSource;
+  /** On a joined device: its disk as its own report gave it, since this host cannot read it. */
+  reportedSpace?: { totalBytes: number; freeBytes: number } | null;
 };
 
 /** A node of another host, read through that host's dashboard; `dashboardUrl` is null for a device no dashboard reported. */
@@ -113,6 +115,8 @@ export interface LocalNodeInfo {
   /** False for a registry entry that asks not to be remembered once it leaves. */
   remember: boolean;
   instance: LocalInstance | null;
+  /** On a joined device's report: the device that says it holds this node. */
+  claimedBy?: { deviceId: string; deviceName: string };
 }
 
 async function toInfo(local: LocalNode): Promise<LocalNodeInfo> {

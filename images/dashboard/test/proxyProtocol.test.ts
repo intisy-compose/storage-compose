@@ -111,11 +111,17 @@ describe("the join listener", () => {
   });
 
   it("serves nothing but POST /api/join and a joined device's GET of its node's connections", async () => {
-    for (const [method, path] of [["GET", "/"], ["GET", "/api/nodes"], ["POST", "/api/arrays/storage/sync"], ["GET", "/api/join"], ["POST", "/api/connections/node/device-laptopx"], ["GET", "/api/connections/profile"]]) {
+    for (const [method, path] of [["GET", "/"], ["GET", "/api/nodes"], ["POST", "/api/arrays/storage/sync"], ["GET", "/api/join"], ["POST", "/api/connections/node/device-laptopx"], ["GET", "/api/connections/profile"], ["GET", "/api/layered/node/b001"], ["POST", "/api/layered/node/not-a-node"], ["POST", "/api/layered/keepers"]]) {
       const answer = await exchange(server, Buffer.concat([ipv4Header(), httpRequest(method, path)]));
       assert.match(answer, /^HTTP\/1.1 404/, `${method} ${path}`);
-      assert.match(answer, /serves only POST \/api\/join and GET \/api\/connections\/node\/<node id>/);
+      assert.match(answer, /serves only POST \/api\/join, GET \/api\/connections\/node\/<node id> and POST \/api\/layered\/node\/<node id>/);
     }
+  });
+
+  it("hands a joined device's report on its node the caller from the header", async () => {
+    const answer = await exchange(server, Buffer.concat([ipv4Header(), httpRequest("POST", "/api/layered/node/b001", "{}", "Content-Type: application/json\r\n")]));
+    assert.match(answer, /^HTTP\/1.1 200/);
+    assert.match(answer, /"caller":"100.75.76.90"/);
   });
 
   it("hands a joined device's GET of its node's connections the caller from the header", async () => {

@@ -8,7 +8,7 @@ import { type UnreadSources, recordPresentDrives } from "./driveHistory.js";
 import { agentEntries, agentProblem, readHeartbeat } from "./hostAgent.js";
 import { registryWarnings, statusRegistryEntries, syncthingEndpoint } from "./instances.js";
 import { bridgesByAddress, connectionsStateOf, isOnUntrustedNetworks } from "./connectionsDrift.js";
-import { layeredStateOf } from "./layeredDrift.js";
+import { joinedLayeredOfDevice, layeredStateOf } from "./layeredDrift.js";
 import { layeredWarnings, setupWarnings } from "./layeredAttention.js";
 import { type SetupLayout, pullStateOf, readLayout } from "./setupRepo.js";
 import { isOfferHeldByLayout } from "./layoutOffers.js";
@@ -243,6 +243,7 @@ export async function syncthingOnlyNodes(known: StorageNode[], views: InstanceVi
         keeper: null,
         restartConfirmRequired: false,
         connections: "unknown",
+        layered: joinedLayeredOfDevice(peer.deviceId),
       });
     }
   }

@@ -10,6 +10,8 @@ import { invalidateLocalNodes } from "./nodes.js";
 import type { ProxySource } from "./proxyProtocol.js";
 import { handleRequest, joinRecords } from "./routes.js";
 import { type NodeCallerDependencies, joinedNodeConnections, joinedNodePathPattern } from "./routes/connections.js";
+import { layoutRound } from "./applyLayout.js";
+import { type JoinedLayeredDependencies, answerJoinedNode, joinedLayeredPathPattern } from "./joinedNodes.js";
 import { dataRepoPullSeconds, joinAllowedUsers, joinGatewayHost, joinPort, joinTag, port, setupRepoDirectory } from "./settings.js";
 import { readLayout, recordDevice } from "./setupRepo.js";
 import { ownLogin, whois } from "./tailnet.js";
@@ -35,8 +37,18 @@ const nodeCallerDependencies: NodeCallerDependencies = {
   connectionsOf: (node) => connectionsRound.connectionsFor(node),
 };
 
+const joinedLayeredDependencies: JoinedLayeredDependencies = {
+  admit: (addresses) => admitCaller(joinDependencies, addresses),
+  records: joinRecords,
+  layout: readLayout,
+  round: layoutRound,
+};
+
 async function answerCaller(request: IncomingMessage, caller: ProxySource): Promise<unknown> {
-  const nodePath = joinedNodePathPattern.exec(new URL(request.url ?? "/", "http://join").pathname);
+  const path = new URL(request.url ?? "/", "http://join").pathname;
+  const layered = joinedLayeredPathPattern.exec(path);
+  if (layered) return answerJoinedNode(joinedLayeredDependencies, [caller.address], layered[1], await readBody(request));
+  const nodePath = joinedNodePathPattern.exec(path);
   if (nodePath) return joinedNodeConnections(nodeCallerDependencies, [caller.address], nodePath[1]);
   const { response: answer, setup } = await handleJoin(joinDependencies, [caller.address], await readBody(request));
   if (setup) console.log(`join: ${setup.message}`);
