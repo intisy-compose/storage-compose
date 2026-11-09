@@ -5,6 +5,7 @@ from dataclasses import dataclass
 CATEGORIES = ("synced", "archive", "local")
 ROLES = ("device", "archive")
 SECTIONS = ("devices", "folders")
+DASHBOARD_SECTIONS = ("nodes", "bands")
 DEFAULT_VERSIONS_DAYS = 365
 DEVICE_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
 NOT_IN_A_FOLDER_ID = re.compile(r"[^a-z0-9]+")
@@ -51,8 +52,10 @@ def load(path) -> Layout:
 
 
 def parse(data: dict) -> Layout:
+    """@implNote The sections of the dashboard's layered sync share this file and mean nothing here. They are
+    named one by one, so that a misspelt section still fails instead of being dropped without a word."""
     for section in data:
-        if section not in SECTIONS:
+        if section not in SECTIONS and section not in DASHBOARD_SECTIONS:
             raise ConfigError(f"unknown section '{section}'; the list has only {', '.join(SECTIONS)}")
     folders = {relative: _folder(relative, entry) for relative, entry in data.get("folders", {}).items()}
     _check_unique_ids(folders)

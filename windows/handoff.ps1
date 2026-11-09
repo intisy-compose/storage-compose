@@ -736,6 +736,59 @@ function Test-VersionDescends($Global, $Recorded) {
 
 <#
 .NOTES
+Only a held contract may let keeper evidence stand in for the node's own index, and only for a folder
+this node's own Syncthing says is paused: a read that fails for any other reason must keep the copy.
+#>
+function Set-RunPausedFolders($Run, $Instance) {
+    if ($Run.contract.apply -isnot [bool] -or $Run.contract.apply -or -not (Test-IsTrashOnlyContract $Run.contract)) { return }
+    foreach ($folderId in @(Read-HandoffLines $Run.manifest | ForEach-Object { "$($_.folderId)" } | Sort-Object -Unique)) {
+        try { $config = Invoke-SyncthingApi $Instance "Get" "/rest/config/folders/$(Get-HandoffUri $folderId)" } catch { continue }
+        if ($config.PSObject.Properties["paused"] -and $config.paused -eq $true) { [void]$Run.pausedFolders.Add($folderId) }
+    }
+}
+
+function Get-TrashEvidence($Run, $Record) {
+    if (-not $Run.contract.PSObject.Properties["trashEvidence"]) { return $null }
+    return @($Run.contract.trashEvidence | Where-Object { "$($_.folderId)" -ceq "$($Record.folderId)" -and "$($_.path)" -ceq "$($Record.path)" -and "$($_.keeperDevice)" -ceq "$($Record.keeperDevice)" }) | Select-Object -First 1
+}
+
+function Test-IsEvidenceRecent($Evidence) {
+    if (-not $Evidence.PSObject.Properties["observedAt"]) { return $false }
+    try { $observed = [DateTimeOffset]::Parse("$($Evidence.observedAt)", [Globalization.CultureInfo]::InvariantCulture).ToUnixTimeSeconds() } catch { return $false }
+    $age = (Get-HandoffNow) - $observed
+    return $age -le $handoffContractMaxAgeSeconds -and $age -ge -$handoffContractMaxAheadSeconds
+}
+
+function Test-IsEvidenceReadable($Evidence) {
+    foreach ($name in "version", "globalVersion") {
+        if (-not $Evidence.PSObject.Properties[$name] -or $Evidence.$name -isnot [System.Array]) { return $false }
+    }
+    foreach ($name in "deleted", "ignored", "invalid", "globalDeleted") {
+        if (-not $Evidence.PSObject.Properties[$name] -or $Evidence.$name -isnot [bool]) { return $false }
+    }
+    return $true
+}
+
+<#
+.NOTES
+The keeper's own index, as the dashboard read it: its version must descend from the recorded one and
+be held, and the global version must do the same, the same questions the node's index answers when
+the folder runs.
+#>
+function Get-TrashEvidenceProblem($Run, $Record) {
+    $evidence = Get-TrashEvidence $Run $Record
+    if (-not $evidence) { return "its folder is paused here and no keeper evidence names it" }
+    if (-not (Test-IsEvidenceRecent $evidence)) { return "its folder is paused here and the keeper evidence is stale" }
+    if (-not (Test-IsEvidenceReadable $evidence)) { return "the keeper evidence cannot be read" }
+    if ($evidence.globalDeleted) { return "the network has its deletion" }
+    if (-not (Test-VersionDescends $evidence.globalVersion $Record.version)) { return "the network no longer has its version or a later one" }
+    if ($evidence.deleted -or $evidence.ignored -or $evidence.invalid) { return "its keeper does not hold it, as its own index says" }
+    if (-not (Test-VersionDescends $evidence.version $Record.version)) { return "its keeper does not hold that version or a later one" }
+    return $null
+}
+
+<#
+.NOTES
 The recorded keeper must be connected to this node now (one last seen hours ago may have lost the file
 since), in the path's availability not from a temporary file, and the global version must descend from
 the recorded one, not deleted.
@@ -749,6 +802,7 @@ function Get-TrashKeeperProblem($Run, $Instance, $Record) {
     }
     $connection = $Run.connections.connections.PSObject.Properties[$device]
     if (-not $connection -or $connection.Value.connected -ne $true) { return "its keeper is not connected to this node" }
+    if ($Run.pausedFolders.Contains("$($Record.folderId)")) { return Get-TrashEvidenceProblem $Run $Record }
     try { $report = Get-HandoffFileReport $Instance $Record.folderId $Record.path } catch { return "its index entry cannot be read" }
     if ($report.global.PSObject.Properties["deleted"] -and $report.global.deleted) { return "the network has its deletion" }
     if (-not (Test-VersionDescends $report.global.version $Record.version)) { return "the network no longer has its version or a later one" }
@@ -774,6 +828,12 @@ function Add-TrashKept($Run, $Record, [string]$Line, [string]$Reason) {
     return ConvertTo-Json -InputObject $Record -Compress -Depth 10
 }
 
+function Add-TrashAwaitingEvidence($Run, $Record) {
+    if (-not $Run.pausedFolders.Contains("$($Record.folderId)")) { return }
+    $device = if ($Record.PSObject.Properties["keeperDevice"]) { "$($Record.keeperDevice)" } else { "" }
+    $Run.awaiting += [pscustomobject][ordered]@{ folderId = "$($Record.folderId)"; path = "$($Record.path)"; keeperDevice = $device }
+}
+
 <#
 .NOTES
 Empties what the executor moved into the trash $handoffTrashDays ago or earlier, by its own manifest: a
@@ -784,6 +844,7 @@ function Clear-HandoffTrash($Run, $Instance) {
     $manifest = $Run.manifest
     if (-not [System.IO.File]::Exists($manifest) -or (Test-IsReparsePoint $manifest)) { return }
     $kept = New-Object System.Collections.Generic.List[string]
+    Set-RunPausedFolders $Run $Instance
     foreach ($line in [System.IO.File]::ReadAllLines($manifest)) {
         if (-not $line.Trim()) { continue }
         try { $record = ConvertFrom-Json $line } catch { $kept.Add($line); continue }
@@ -797,7 +858,11 @@ function Clear-HandoffTrash($Run, $Instance) {
             continue
         }
         $problem = Get-TrashKeeperProblem $Run $Instance $record
-        if ($problem) { $kept.Add((Add-TrashKept $Run $record $line $problem)); continue }
+        if ($problem) {
+            Add-TrashAwaitingEvidence $Run $record
+            $kept.Add((Add-TrashKept $Run $record $line $problem))
+            continue
+        }
         [System.IO.File]::Delete($target)
         $Run.purged++
         $directory = Split-Path $target
@@ -850,11 +915,11 @@ function Get-HandoffContractProblem($Contract, [string]$NodeId) {
     return Get-HandoffContractAgeProblem $Contract
 }
 
-function Write-HandoffResult([string]$Path, [string]$NodeId, $Contract, [string]$Refused, [object[]]$Results, [object[]]$Trash, [int]$Purged, [object[]]$Notes = @(), $TrashBytes = $null) {
+function Write-HandoffResult([string]$Path, [string]$NodeId, $Contract, [string]$Refused, [object[]]$Results, [object[]]$Trash, [int]$Purged, [object[]]$Notes = @(), $TrashBytes = $null, [object[]]$Awaiting = @()) {
     $result = [ordered]@{
         schema = 1; nodeId = $NodeId; contractWrittenAt = $(if ($Contract) { "$($Contract.writtenAt)" } else { "" })
         finishedAt = [DateTimeOffset]::FromUnixTimeSeconds((Get-HandoffNow)).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        refused = $(if ($Refused) { $Refused } else { $null }); results = @($Results); trash = @($Trash); notes = @($Notes); purged = $Purged
+        refused = $(if ($Refused) { $Refused } else { $null }); results = @($Results); trash = @($Trash); notes = @($Notes); purged = $Purged; awaitingKeeperEvidence = @($Awaiting)
     }
     if ($null -ne $TrashBytes) { $result["trashBytes"] = $TrashBytes }
     if ($Refused) { Write-WatcherLog "hand-off $NodeId`: nothing handed off: $Refused" }
@@ -899,7 +964,8 @@ function Invoke-LockedHandoff($Instance, [string]$ContractPath, [string]$ResultP
     $run = [pscustomobject]@{
         contract = $contract; rootFull = $RootFull; trashRoot = $trashRoot; manifest = Join-Path $trashRoot "manifest.jsonl"
         pendingFile = Join-Path $RootFull ".storage\handoff-pending.jsonl"
-        deadline = (Get-Date).AddSeconds($handoffRunSeconds); trash = @(); purged = 0; connections = $null; notes = @()
+        deadline = (Get-Date).AddSeconds($handoffRunSeconds); trash = @(); purged = 0; connections = $null; notes = @(); awaiting = @()
+        pausedFolders = New-Object 'System.Collections.Generic.HashSet[string]'
     }
     Stop-HashJobsOutsideContract $run
     $results = @()
@@ -915,7 +981,7 @@ function Invoke-LockedHandoff($Instance, [string]$ContractPath, [string]$ResultP
         $run.notes = @($run.notes) + "the contract holds every hand-off: only the trash is emptied"
     }
     try { Clear-HandoffTrash $run $Instance } catch { Write-WatcherLog "hand-off $nodeId`: the trash was not emptied: $_" }
-    Write-HandoffResult $ResultPath $nodeId $contract $null $results (@($run.trash) + @(Get-UnlistedTrash $run)) $run.purged $run.notes (Get-HandoffTrashBytes $run)
+    Write-HandoffResult $ResultPath $nodeId $contract $null $results (@($run.trash) + @(Get-UnlistedTrash $run)) $run.purged $run.notes (Get-HandoffTrashBytes $run) $run.awaiting
 }
 
 <#

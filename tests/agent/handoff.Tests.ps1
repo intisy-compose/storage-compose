@@ -40,6 +40,7 @@ function Invoke-SyncthingApi($Instance, [string]$Method, [string]$Path) {
     }
     if ($Method -eq "Get" -and $route -eq "/rest/db/file") {
         $key = "$(ConvertFrom-QueryValue $query 'folder')|$(ConvertFrom-QueryValue $query 'file')"
+        if ($global:fakePausedFolder) { throw "500 no such folder" }
         $record = $global:fakeFiles[$key]
         if (-not $record) { throw "404" }
         if ($global:fakeIgnored -contains $key) {
@@ -108,6 +109,7 @@ function New-TestNode([string]$Name) {
     [System.IO.File]::WriteAllText((Join-Path $global:folder ".stignore"), "// layered sync begin`n#include .stignore-handoff`n/.stignore-handoff`n// layered sync end`n")
     [System.IO.File]::WriteAllText((Join-Path $global:folder ".stignore-handoff"), "")
     $global:fakeFolders = @{ videos = [pscustomobject]@{ id = "videos"; path = $global:folder; type = "sendonly" } }
+    $global:fakePausedFolder = $false
     $global:fakeFiles = @{}
     $global:fakeIgnored = @()
     $global:fakeNeverIgnores = $false
@@ -799,6 +801,166 @@ Describe "the hand-off executor" {
         $global:fakeFiles["videos|clip.mp4"].global.version = @("STICK:1", "KEEPER:1")
         Invoke-TestHandoff
         "$(Test-Path -LiteralPath $trashed) $((Get-Result).purged)" | Should Be "False 1"
+    }
+
+    Context "a paused folder's trash needs the keeper's own index" {
+        function Set-PausedFolder([bool]$Paused) {
+            $global:fakeFolders.videos | Add-Member -NotePropertyName paused -NotePropertyValue $Paused -Force
+            $global:fakePausedFolder = $Paused
+        }
+
+        function New-Evidence([hashtable]$Changes = @{}, [int64]$Age = 10) {
+            $evidence = [ordered]@{
+                folderId = "videos"; path = "clip.mp4"; keeperDevice = $keeperDevice
+                observedAt = [DateTimeOffset]::FromUnixTimeSeconds($global:handoffTestNow - $Age).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                version = @("STICK:1"); deleted = $false; ignored = $false; invalid = $false; globalVersion = @("STICK:1"); globalDeleted = $false
+            }
+            foreach ($key in $Changes.Keys) { $evidence[$key] = $Changes[$key] }
+            return [pscustomobject]$evidence
+        }
+
+        function Write-HeldContract([object[]]$Evidence = @(), [bool]$Apply = $false, [bool]$AlsoTrashOnly = $false, [object[]]$Entries = @()) {
+            $held = [ordered]@{
+                schema = 1; nodeId = "a001"; writtenAt = [DateTimeOffset]::FromUnixTimeSeconds($global:handoffTestNow - 10).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                apply = $Apply; cluster = $false; quietMinutes = 10; entries = @($Entries); waiting = @(); notes = @()
+            }
+            if (-not $Apply -or $AlsoTrashOnly) { $held["trashOnly"] = $true }
+            if ($Evidence.Count) { $held["trashEvidence"] = @($Evidence) }
+            [System.IO.File]::WriteAllText($global:contractPath, (ConvertTo-Json -InputObject ([pscustomobject]$held) -Depth 10))
+        }
+
+        function Get-Awaiting { return (@((Get-Result).awaitingKeeperEvidence) | ForEach-Object { "$($_.folderId)/$($_.path) $($_.keeperDevice)" }) -join "|" }
+
+        function Initialize-DueCopy([string]$Name) {
+            New-TestNode $Name
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            $global:dueCopy = "$(Get-TrashDay)/videos/clip.mp4"
+            Set-PausedFolder $true
+            $global:handoffTestNow += 8 * 86400
+        }
+
+        function Get-KeptState { return "$(Test-Path -LiteralPath (Join-Path (Get-TrashRoot) ($global:dueCopy -replace '/', '\\'))) $((Get-Result).purged) $(Get-TrashKept)" }
+
+        $noEvidence = "its folder is paused here and no keeper evidence names it"
+        $stale = "its folder is paused here and the keeper evidence is stale"
+        $unheldVersion = "its keeper does not hold that version or a later one"
+        $unheld = "its keeper does not hold it, as its own index says"
+        $unreadable = "the keeper evidence cannot be read"
+        $refusals = @(
+            @{ what = "evidence over the age limit"; evidence = { New-Evidence @{} 301 }; reason = $stale }
+            @{ what = "evidence from ahead of this host's clock"; evidence = { New-Evidence @{} -71 }; reason = $stale }
+            @{ what = "evidence without a readable time"; evidence = { New-Evidence @{ observedAt = "yesterday" } }; reason = $stale }
+            @{ what = "evidence from a device that is not the recorded keeper"; evidence = { New-Evidence @{ keeperDevice = "OTHER-DEVICE" } }; reason = $noEvidence }
+            @{ what = "a keeper at another version"; evidence = { New-Evidence @{ version = @("OTHER:9") } }; reason = $unheldVersion }
+            @{ what = "a keeper at an older counter"; evidence = { New-Evidence @{ version = @("STICK:0") } }; reason = $unheldVersion }
+            @{ what = "a keeper that deleted it"; evidence = { New-Evidence @{ deleted = $true } }; reason = $unheld }
+            @{ what = "a keeper that ignores it"; evidence = { New-Evidence @{ ignored = $true } }; reason = $unheld }
+            @{ what = "a keeper whose entry is invalid"; evidence = { New-Evidence @{ invalid = $true } }; reason = $unheld }
+            @{ what = "the network's deletion"; evidence = { New-Evidence @{ globalDeleted = $true } }; reason = "the network has its deletion" }
+            @{ what = "a global version that does not descend"; evidence = { New-Evidence @{ globalVersion = @("OTHER:9") } }; reason = "the network no longer has its version or a later one" }
+            @{ what = "evidence with no version"; evidence = { $partial = New-Evidence; $partial.PSObject.Properties.Remove("version"); $partial }; reason = $unreadable }
+            @{ what = "evidence missing a flag"; evidence = { $partial = New-Evidence; $partial.PSObject.Properties.Remove("invalid"); $partial }; reason = $unreadable }
+            @{ what = "a flag that is not true or false"; evidence = { New-Evidence @{ deleted = "no" } }; reason = $unreadable }
+        )
+        foreach ($refusal in $refusals) {
+            It "keeps the copy for $($refusal.what)" {
+                Initialize-DueCopy "paused-refused"
+                Write-HeldContract @(& $refusal.evidence)
+                Invoke-TestHandoff
+                Get-KeptState | Should Be "True 0 $($global:dueCopy): $($refusal.reason)"
+                Get-Awaiting | Should Be "videos/clip.mp4 $keeperDevice"
+            }
+        }
+
+        It "keeps the copy without evidence and asks the dashboard for it" {
+            Initialize-DueCopy "paused-without"
+            Write-HeldContract
+            Invoke-TestHandoff
+            Get-KeptState | Should Be "True 0 $($global:dueCopy): $noEvidence"
+            Get-Awaiting | Should Be "videos/clip.mp4 $keeperDevice"
+        }
+
+        It "keeps the copy while the keeper is not connected, and still asks" {
+            Initialize-DueCopy "paused-unconnected"
+            $global:fakeConnections = [pscustomobject]@{ connections = [pscustomobject]@{ $keeperDevice = [pscustomobject]@{ connected = $false } } }
+            Write-HeldContract @(New-Evidence)
+            Invoke-TestHandoff
+            Get-KeptState | Should Be "True 0 $($global:dueCopy): its keeper is not connected to this node"
+            Get-Awaiting | Should Be "videos/clip.mp4 $keeperDevice"
+        }
+
+        It "never takes evidence on a contract that may move files, and asks for none" {
+            Initialize-DueCopy "paused-applying"
+            Write-HeldContract @(New-Evidence) $true
+            Invoke-TestHandoff
+            Get-KeptState | Should Be "True 0 $($global:dueCopy): its index entry cannot be read"
+            Get-Awaiting | Should Be ""
+        }
+
+        It "takes no evidence from a trash-only contract that also says apply" {
+            Initialize-DueCopy "paused-both"
+            Write-HeldContract @(New-Evidence) $true $true
+            Invoke-TestHandoff
+            Get-KeptState | Should Be "True 0 $($global:dueCopy): its index entry cannot be read"
+            Get-Awaiting | Should Be ""
+        }
+
+        It "takes no evidence from a trash-only contract that names a file" {
+            Initialize-DueCopy "paused-naming"
+            Write-HeldContract @(New-Evidence) $true $true @(New-Entry "other.mp4")
+            Invoke-TestHandoff
+            Get-KeptState | Should Be "True 0 $($global:dueCopy): its index entry cannot be read"
+            Get-Awaiting | Should Be ""
+        }
+
+        It "does not shorten the 7 days" {
+            Initialize-DueCopy "paused-young"
+            $global:handoffTestNow -= 5 * 86400
+            Write-HeldContract @(New-Evidence)
+            Invoke-TestHandoff
+            "$(Test-Path -LiteralPath (Join-Path (Get-TrashRoot) ($global:dueCopy -replace '/', '\\'))) $((Get-Result).purged)" | Should Be "True 0"
+        }
+
+        It "goes by the node's own index for a folder not paused here, whatever the evidence says" {
+            Initialize-DueCopy "paused-not"
+            Set-PausedFolder $false
+            Set-IndexEntry "clip.mp4" 5 "STICK:1" @([pscustomobject]@{ id = "OTHER-DEVICE"; fromTemporary = $false })
+            Write-HeldContract @(New-Evidence)
+            Invoke-TestHandoff
+            Get-KeptState | Should Be "True 0 $($global:dueCopy): its keeper does not hold it, as this node sees it"
+            Get-Awaiting | Should Be ""
+        }
+
+        It "goes by the node's own index when the folder's config cannot be read" {
+            Initialize-DueCopy "paused-unknown"
+            $global:fakeFolders.Remove("videos")
+            Write-HeldContract @(New-Evidence)
+            Invoke-TestHandoff
+            Get-KeptState | Should Be "True 0 $($global:dueCopy): its index entry cannot be read"
+        }
+
+        It "empties the copy on the recorded keeper's own index at that version, moving nothing" {
+            Initialize-DueCopy "paused-held"
+            Write-HeldContract @(New-Evidence)
+            Invoke-TestHandoff
+            $result = Get-Result
+            "$(Get-KeptState) $($null -eq $result.refused) $(@($result.results).Count) $($result.trashBytes) [$(Get-Awaiting)]" | Should Be "False 1  True 0 0 []"
+        }
+
+        It "empties the copy on the keeper's own index at a later version" {
+            Initialize-DueCopy "paused-later"
+            Write-HeldContract @(New-Evidence @{ version = @("STICK:1", "KEEPER:2"); globalVersion = @("STICK:2", "KEEPER:2") })
+            Invoke-TestHandoff
+            (Get-Result).purged | Should Be 1
+        }
+
+        It "reports an empty list when no copy waits" {
+            New-TestNode "paused-nothing"
+            Write-Contract @()
+            Invoke-TestHandoff
+            (Get-Content -Raw -LiteralPath $global:resultPath) | Should Match '"awaitingKeeperEvidence"\s*:\s*\[\s*\]'
+        }
     }
 
     It "never follows a manifest line outside the trash or through a link" {

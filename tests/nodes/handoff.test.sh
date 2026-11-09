@@ -62,6 +62,8 @@ case "$method ${request%%\?*}" in
         cat "$FAKE/folders/$(decode "${request##*/}").json" 2> /dev/null || exit 22 ;;
     "GET /rest/db/file")
         folder=$(parameter folder) file=$(parameter file)
+        [ "$(jq -r '.paused // false' "$FAKE/folders/$folder.json")" = false ] || exit 22
+        [ ! -e "$FAKE/index-not-json" ] || { echo not-json; exit 0; }
         record=$FAKE/files/$folder/$(key_of "$file").json
         [ -f "$record" ] || exit 22
         if grep -Fxq -- "/$file" "$FAKE/ignored/$folder" 2> /dev/null; then
@@ -578,6 +580,172 @@ jq -n --arg device "$keeper_device" '{local: {size: 9, version: ["STICK:1", "KEE
     > "$FAKE/files/videos/$(printf '%s' clip.mp4 | sha256sum | cut -c1-16).json"
 run_now=$((now + 8 * 86400)) run_handoff
 check "a keeper's later edit, descending from the recorded version, counts as held, so it is emptied" "no 1" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+
+new_node garbage
+contract "$(entry clip.mp4)"
+run_handoff
+touch "$FAKE/index-not-json"
+written_now=$((now + 8 * 86400)) contract
+run_now=$((now + 8 * 86400)) run_handoff
+check "an index answer that is not JSON keeps the copy" "yes 0" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+rm -f "$FAKE/index-not-json"
+
+echo "a paused folder's trash needs the keeper's own index"
+evidence() {   # [jq filter applied to good evidence]: observed ten seconds before $written_now
+    jq -cn --arg device "$keeper_device" --arg observed "$(date -u -d "@$((${written_now:-$now} - 10))" +%FT%TZ)" \
+        '{folderId: "videos", path: "clip.mp4", keeperDevice: $device, observedAt: $observed, version: ["STICK:1"], deleted: false, ignored: false, invalid: false, globalVersion: ["STICK:1"], globalDeleted: false} '"${1:+| $1}"
+}
+held_contract_with() {   # <evidence json>...: the held contract carrying that evidence
+    held_contract
+    jq --slurpfile evidence <(printf '%s\n' "$@") '.trashEvidence = $evidence' "$scratch/contract.json" > "$scratch/c.new" && mv "$scratch/c.new" "$scratch/contract.json"
+}
+set_paused() { jq --argjson paused "$1" '.paused = $paused' "$FAKE/folders/videos.json" > "$scratch/f.new" && mv "$scratch/f.new" "$FAKE/folders/videos.json"; }
+awaiting_of() { jq -r '[.awaitingKeeperEvidence[]? | "\(.folderId)/\(.path) \(.keeperDevice)"] | join("|")' "$scratch/result.json"; }
+due=$((now + 8 * 86400))
+kept_for() { echo "yes 0 $trash_day/videos/clip.mp4: $1"; }
+state_of_trash() { echo "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json") $(trash_kept)"; }
+new_node pausedtrash
+contract "$(entry clip.mp4)"
+run_handoff
+set_paused true
+sed -i '/^apply = /d' "$root/.storage/node.toml"
+
+written_now=$due held_contract
+run_now=$due run_handoff
+check "without evidence the copy stays, named as waiting for it" "$(kept_for "its folder is paused here and no keeper evidence names it")" "$(state_of_trash)"
+check "and the result asks the dashboard for the keeper's index" "videos/clip.mp4 $keeper_device" "$(awaiting_of)"
+written_now=$due held_contract_with "$(written_now=$((due - 301 + 10)) evidence)"
+run_now=$due run_handoff
+check "evidence over the age limit is stale" "$(kept_for "its folder is paused here and the keeper evidence is stale")" "$(state_of_trash)"
+written_now=$due held_contract_with "$(written_now=$((due + 71)) evidence)"
+run_now=$due run_handoff
+check "evidence from ahead of this host's clock is stale" "$(kept_for "its folder is paused here and the keeper evidence is stale")" "$(state_of_trash)"
+written_now=$due held_contract_with "$(written_now=$due evidence '.observedAt = "yesterday"')"
+run_now=$due run_handoff
+check "evidence without a readable time is stale" "$(kept_for "its folder is paused here and the keeper evidence is stale")" "$(state_of_trash)"
+written_now=$due held_contract_with "$(written_now=$due evidence '.keeperDevice = "OTHER-DEVICE"')"
+run_now=$due run_handoff
+check "evidence from a device that is not the recorded keeper counts for nothing" "$(kept_for "its folder is paused here and no keeper evidence names it")" "$(state_of_trash)"
+echo '{"connections": {"KEEPER-DEVICE": {"connected": false}}}' > "$FAKE/connections.json"
+written_now=$due held_contract_with "$(written_now=$due evidence)"
+run_now=$due run_handoff
+check "a keeper not connected to this node keeps the copy" "$(kept_for "its keeper is not connected to this node")" "$(state_of_trash)"
+check "while the dashboard is still asked" "videos/clip.mp4 $keeper_device" "$(awaiting_of)"
+rm -f "$FAKE/connections.json"
+written_now=$due held_contract_with "$(written_now=$due evidence '.version = ["OTHER:9"]')"
+run_now=$due run_handoff
+check "a keeper at another version keeps the copy" "$(kept_for "its keeper does not hold that version or a later one")" "$(state_of_trash)"
+written_now=$due held_contract_with "$(written_now=$due evidence '.version = ["STICK:0"]')"
+run_now=$due run_handoff
+check "a keeper at an older counter keeps the copy" "$(kept_for "its keeper does not hold that version or a later one")" "$(state_of_trash)"
+written_now=$due held_contract_with "$(written_now=$due evidence '.deleted = true')"
+run_now=$due run_handoff
+check "a keeper that deleted it keeps the copy" "$(kept_for "its keeper does not hold it, as its own index says")" "$(state_of_trash)"
+written_now=$due held_contract_with "$(written_now=$due evidence '.ignored = true')"
+run_now=$due run_handoff
+check "a keeper that ignores it keeps the copy" "$(kept_for "its keeper does not hold it, as its own index says")" "$(state_of_trash)"
+written_now=$due held_contract_with "$(written_now=$due evidence '.invalid = true')"
+run_now=$due run_handoff
+check "a keeper whose entry is invalid keeps the copy" "$(kept_for "its keeper does not hold it, as its own index says")" "$(state_of_trash)"
+written_now=$due held_contract_with "$(written_now=$due evidence '.globalDeleted = true')"
+run_now=$due run_handoff
+check "the network's deletion keeps the copy" "$(kept_for "the network has its deletion")" "$(state_of_trash)"
+written_now=$due held_contract_with "$(written_now=$due evidence '.globalVersion = ["OTHER:9"]')"
+run_now=$due run_handoff
+check "a global version that does not descend keeps the copy" "$(kept_for "the network no longer has its version or a later one")" "$(state_of_trash)"
+written_now=$due held_contract_with "$(written_now=$due evidence 'del(.version)')"
+run_now=$due run_handoff
+check "evidence that cannot be read keeps the copy" "$(kept_for "the keeper evidence cannot be read")" "$(state_of_trash)"
+written_now=$due held_contract_with "$(written_now=$due evidence 'del(.invalid)')"
+run_now=$due run_handoff
+check "evidence missing a flag keeps the copy" "$(kept_for "the keeper evidence cannot be read")" "$(state_of_trash)"
+written_now=$due contract
+jq --argjson evidence "[$(written_now=$due evidence)]" '.trashEvidence = $evidence' "$scratch/contract.json" > "$scratch/c.new" && mv "$scratch/c.new" "$scratch/contract.json"
+printf 'apply = true\n' >> "$root/.storage/node.toml"
+run_now=$due run_handoff
+check "an applying contract never takes evidence" "$(kept_for "its index entry cannot be read")" "$(state_of_trash)"
+check "and asks for none" "" "$(awaiting_of)"
+sed -i '/^apply = /d' "$root/.storage/node.toml"
+written_now=$((now + 3 * 86400)) held_contract_with "$(written_now=$((now + 3 * 86400)) evidence)"
+run_now=$((now + 3 * 86400)) run_handoff
+check "evidence does not shorten the 7 days" "yes 0" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+set_paused false
+index_entry clip.mp4 5 STICK:1 '[{"id": "OTHER-DEVICE", "fromTemporary": false}]'
+written_now=$due held_contract_with "$(written_now=$due evidence)"
+run_now=$due run_handoff
+check "a folder not paused here goes by its own index, whatever the evidence says" "$(kept_for "its keeper does not hold it, as this node sees it")" "$(state_of_trash)"
+check "and the dashboard is not asked" "" "$(awaiting_of)"
+mv "$FAKE/folders/videos.json" "$scratch/folder.json"
+written_now=$due held_contract_with "$(written_now=$due evidence)"
+run_now=$due run_handoff
+check "a folder whose config cannot be read goes by its own index" "yes 0" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+mv "$scratch/folder.json" "$FAKE/folders/videos.json"
+set_paused true
+index_entry clip.mp4 5
+written_now=$due held_contract_with "$(written_now=$due evidence)"
+run_now=$due run_handoff
+check "evidence of the recorded keeper at that version empties it" "no 1 " "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json") $(awaiting_of)"
+check "and the run is no refusal, and moved nothing" "none 0" "$(refusal) $(jq '.results | length' "$scratch/result.json")"
+new_node pausedlater
+contract "$(entry clip.mp4)"
+run_handoff
+set_paused true
+written_now=$due held_contract_with "$(written_now=$due evidence '.version = ["STICK:1", "KEEPER:2"] | .globalVersion = ["STICK:2", "KEEPER:2"]')"
+run_now=$due run_handoff
+check "evidence of a later version empties it too" "no 1" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+
+echo "evidence needs a strictly held contract and a strict time"
+due_paused_copy() {   # <node name>: a copy in the trash, its folder paused here, due at $due
+    new_node "$1"
+    contract "$(entry clip.mp4)"
+    run_handoff
+    set_paused true
+}
+good_evidence_contract() {   # the held contract with good evidence, written for $due
+    written_now=$due held_contract_with "$(written_now=$due evidence)"
+}
+reshape_contract() { jq "$1" "$scratch/contract.json" > "$scratch/c.new" && mv "$scratch/c.new" "$scratch/contract.json"; }
+index_unreadable="its index entry cannot be read"
+
+due_paused_copy strictapply
+good_evidence_contract
+reshape_contract '.apply = true'
+run_now=$due run_handoff
+check "a trash-only contract that also says apply takes no evidence" "$(kept_for "$index_unreadable")" "$(state_of_trash)"
+check "and asks for none" "" "$(awaiting_of)"
+due_paused_copy strictentries
+good_evidence_contract
+reshape_contract ".apply = true | .entries = [$(entry other.mp4)]"
+run_now=$due run_handoff
+check "a trash-only contract that names a file takes no evidence" "$(kept_for "$index_unreadable")" "$(state_of_trash)"
+due_paused_copy strictmissing
+good_evidence_contract
+reshape_contract 'del(.apply)'
+run_now=$due run_handoff
+check "a contract that does not say apply = false takes no evidence" "$(kept_for "$index_unreadable")" "$(state_of_trash)"
+
+observed_seconds=$((due - 10))
+lenient_index=0
+for lenient_time in "@$observed_seconds" "$(date -u -d "@$observed_seconds" '+%F %T')Z" "$(date -u -d "@$observed_seconds" +%FT%T)" now ""; do
+    lenient_index=$((lenient_index + 1))
+    due_paused_copy "lenient$lenient_index"
+    written_now=$due held_contract_with "$(written_now=$due evidence ".observedAt = \"$lenient_time\"")"
+    run_now=$due run_handoff
+    check "an observedAt of '$lenient_time' is not a time" "$(kept_for "its folder is paused here and the keeper evidence is stale")" "$(state_of_trash)"
+done
+strict_index=0
+for strict_time in "$(date -u -d "@$observed_seconds" +%FT%T).123456789Z" "$(date -u -d "@$observed_seconds" +%FT%T)+00:00"; do
+    strict_index=$((strict_index + 1))
+    due_paused_copy "strict$strict_index"
+    written_now=$due held_contract_with "$(written_now=$due evidence ".observedAt = \"$strict_time\"")"
+    run_now=$due run_handoff
+    check "an observedAt of '$strict_time' is one" "no 1" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+done
+due_paused_copy lenientcontract
+good_evidence_contract
+reshape_contract ".writtenAt = \"@$((due - 10))\""
+run_now=$due run_handoff
+check "a contract time that is not strict refuses the run and keeps the copy" "the contract has no time it was written yes 0" "$(refusal) $(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
 
 echo "a manifest line never reaches outside the trash"
 new_node manifest

@@ -100,6 +100,16 @@ class ParseTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "unknown section 'paths'"):
             parse(with_changes(paths={"pc": {}}))
 
+    def test_ignores_the_layout_sections_of_the_dashboard(self):
+        layout = parse(with_changes(nodes={"e001": {"name": "stick"}}, bands={"high": {"from": 50}}))
+        self.assertEqual(set(layout.devices), {"pc", "array"})
+
+    def test_a_typo_of_a_dashboard_section_is_still_refused(self):
+        for section in ("node", "band", "Nodes", "BANDS"):
+            with self.subTest(section=section):
+                with self.assertRaisesRegex(ConfigError, f"unknown section '{section}'"):
+                    parse(with_changes(**{section: {}}))
+
     def test_rejects_bad_versions(self):
         with self.assertRaisesRegex(ConfigError, 'folders."Videos": versions_days'):
             parse(with_changes(folders={"Videos": {"category": "archive", "versions_days": 0}}))
