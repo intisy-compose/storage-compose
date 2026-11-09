@@ -661,6 +661,11 @@ export function saveNodePolicy(nodeId: string, body: NodePolicyBody): Promise<Sa
   return sendWrite(`api/nodes/${encodeURIComponent(nodeId)}/policy`, "PUT", body);
 }
 
+/** Resumes the folders the layered sync's record names for the node; `confirm` is the node's name, typed. */
+export function resumeStopPauses(nodeId: string, confirm: string): Promise<SaveResult<{ resumed: string[]; forgotten: string[] }>> {
+  return sendWrite(`api/nodes/${encodeURIComponent(nodeId)}/layered/resume`, "PUT", { confirm });
+}
+
 /** `confirm` is the node's name, typed, to turn apply on. */
 export function setNodeApply(nodeId: string, body: NodePolicyApplyBody): Promise<SaveResult<{ saved: LayoutSaveResult }>> {
   return sendWrite(`api/nodes/${encodeURIComponent(nodeId)}/policy/apply`, "PUT", body);

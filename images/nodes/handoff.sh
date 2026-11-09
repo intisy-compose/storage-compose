@@ -68,10 +68,11 @@ write_result() {   # [refusal]
     [ -f "$contract" ] && written_at=$(jq -r '.writtenAt? // "" | strings' "$contract" 2> /dev/null)
     jq -n --arg nodeId "$node_id" --arg contractWrittenAt "$written_at" --arg finishedAt "$(date -u -d "@$(now)" +%FT%TZ)" \
         --arg refused "${1:-}" --argjson purged "$purged" --slurpfile results "$work/results" --slurpfile trash "$work/trash" \
-        --rawfile notes "$work/notes" \
+        --rawfile notes "$work/notes" --argjson trashBytes "${trash_bytes:-null}" \
         '{schema: 1, nodeId: $nodeId, contractWrittenAt: $contractWrittenAt, finishedAt: $finishedAt,
           refused: (if $refused == "" then null else $refused end), results: $results, trash: ($trash | unique_by(.trash)),
-          notes: ($notes | split("\n") | map(select(. != ""))), purged: $purged}' > "$result.new" \
+          notes: ($notes | split("\n") | map(select(. != ""))), purged: $purged}
+          + (if $trashBytes == null then {} else {trashBytes: $trashBytes} end)' > "$result.new" \
         && mv -f "$result.new" "$result"
 }
 
@@ -630,7 +631,7 @@ contract_problem() {
     jq -e '.schema == 1' "$contract" > /dev/null || { echo "the contract is not schema 1"; return; }
     jq -e --arg id "$node_id" '.nodeId == $id' "$contract" > /dev/null || { echo "the contract names another node"; return; }
     jq -e '.cluster == false' "$contract" > /dev/null || { echo "the contract is the cluster's, which never hands off"; return; }
-    jq -e '.apply == true' "$contract" > /dev/null || { echo "the contract is not in apply mode"; return; }
+    jq -e '.apply == true or (.trashOnly == true and .entries == [])' "$contract" > /dev/null || { echo "the contract is not in apply mode"; return; }
     jq -e '.entries | type == "array"' "$contract" > /dev/null || { echo "the contract has no list of entries"; return; }
     contract_age_problem
 }
@@ -652,7 +653,6 @@ main() {
     flock -n 9 || { log "another hand-off run holds the lock; this run does nothing"; exit 0; }
     printf '%s %s\n' "$$" "$(date -u +%FT%TZ)" > "$root_real/.storage/handoff.lock"
     [ "$(node_value id)" = "$node_id" ] || refuse_whole "the node file is not node $node_id's"
-    [ "$(node_value apply)" = true ] || refuse_whole "the node file does not say apply = true"
     [ "$(node_value kind)" != array ] || refuse_whole "an array never hands off"
     [ "$node_id" != "$cluster_id" ] || refuse_whole "the cluster never hands off"
     run_start=$(now)
@@ -660,19 +660,28 @@ main() {
     local problem
     problem=$(contract_problem)
     [ -z "$problem" ] || refuse_whole "$problem"
+    # A held trash-only contract names no file and only empties the trash under its own checks, so it needs no apply in the node file.
+    if jq -e '.apply == true' "$contract" > /dev/null; then
+        [ "$(node_value apply)" = true ] || refuse_whole "the node file does not say apply = true"
+    fi
     trash_root=$root_real/.storage/handoff-trash
     manifest=$trash_root/manifest.jsonl
     pending_file=$root_real/.storage/handoff-pending.jsonl
     mkdir -p -- "$trash_root" && [ ! -L "$trash_root" ] || refuse_whole "the trash folder cannot be made"
     [ ! -L "$pending_file" ] || refuse_whole "the pending file is a link"
     touch -- "$pending_file" || refuse_whole "the pending file cannot be made"
-    quarantine_pending
-    local folder path
-    while IFS=$'\t' read -r folder path; do
-        [ -n "$folder" ] && hand_off_folder "$folder" "$path"
-    done < <(folders_of_run)
+    if jq -e '.apply == true' "$contract" > /dev/null; then
+        quarantine_pending
+        local folder path
+        while IFS=$'\t' read -r folder path; do
+            [ -n "$folder" ] && hand_off_folder "$folder" "$path"
+        done < <(folders_of_run)
+    else
+        note "the contract holds every hand-off: only the trash is emptied"
+    fi
     purge_trash
     report_unlisted
+    trash_bytes=$(json_lines "$manifest" | jq -s --slurpfile kept "$work/trash" '[$kept[].trash] as $held | map(select(.trash as $t | $held | index($t) | not) | .size | numbers) | add // 0')
     write_result
 }
 

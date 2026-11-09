@@ -13,6 +13,7 @@ import { nodePolicyRoutes } from "../src/routes/nodePolicy.js";
 import { type LayoutNode, type SetupLayout, parseLayout, readCommittedLayout } from "../src/setupRepo.js";
 import type { SyncthingClient } from "../src/syncthing.js";
 import { FakeSyncthing, clientOf } from "./fakeFolderSyncthing.js";
+import { memoryLayeredPauses } from "../src/layeredPauses.js";
 import { askRoutes, git, layoutRepos } from "./layoutRepos.js";
 
 const folderNode = `[node]
@@ -278,6 +279,43 @@ admitted = true
     assert.match((answer.body as { error: string }).error, /act on p53's dashboard/);
     assert.equal((await askRoutes(routes(), "GET", "/api/nodes/c3d4/policy/preview?threshold=10")).status, 409);
     assert.equal(git(repos.remote, "rev-parse", "main"), head);
+  });
+
+  it("enabled alone is committed from any host, for a node this host does not run, so a node can be stopped and let rejoin from anywhere", async () => {
+    const stop = await askRoutes(routes(), "PUT", "/api/nodes/5784/policy", { base: version(), enabled: false });
+    assert.equal(stop.status, 200);
+    assert.equal(parseLayout(remoteLayout()).nodes.find((entry) => entry.id === "5784")?.enabled, false);
+    assert.equal(git(repos.remote, "log", "-1", "--format=%s", "main"), "feat(layout): disabled for private-array");
+
+    const rejoin = await askRoutes(routes(), "PUT", "/api/nodes/5784/policy", { base: version(), enabled: true });
+    assert.equal(rejoin.status, 200);
+    assert.equal(parseLayout(remoteLayout()).nodes.find((entry) => entry.id === "5784")?.enabled, true);
+
+    const head = git(repos.remote, "rev-parse", "main");
+    assert.equal((await askRoutes(routes(), "PUT", "/api/nodes/5784/policy", { base: version(), enabled: false, threshold: 10 })).status, 404, "with any other field it is the node's own host's edit");
+    assert.equal((await askRoutes(routes(), "PUT", "/api/nodes/c3d4/policy", { base: version(), enabled: false })).status, 404, "a node the layout does not list");
+    assert.equal(git(repos.remote, "rev-parse", "main"), head);
+  });
+
+  it("resumes by hand the folders the layered sync paused, with the node's name typed, and forgets each", async () => {
+    const syncthing = new FakeSyncthing();
+    syncthing.folders = [{ id: "documents", paused: true }, { id: "videos", paused: false }, { id: "music", paused: true }];
+    const pauses = memoryLayeredPauses({ a1b2: { documents: { at: "t", size: null }, videos: { at: "t", size: null } } });
+    const withPauses = () =>
+      nodePolicyRoutes({ repository: repos.ours, resolve: async () => ({ ...local, client: clientOf(syncthing) }), configured: async () => new Set(), localSize: async () => ({ files: 0, bytes: 0 }), pauses });
+
+    const refused = await askRoutes(withPauses(), "PUT", "/api/nodes/a1b2/layered/resume", { confirm: "PC" });
+    assert.equal(refused.status, 400);
+    assert.deepEqual(syncthing.writes(), []);
+
+    const answer = await askRoutes(withPauses(), "PUT", "/api/nodes/a1b2/layered/resume", { confirm: "pc" });
+    assert.equal(answer.status, 200);
+    assert.deepEqual(answer.body, { resumed: ["documents"], forgotten: ["videos"] });
+    assert.deepEqual(syncthing.folders.map((folder) => `${folder.id} ${folder.paused}`), ["documents false", "videos false", "music true"], "a folder it did not pause stays paused");
+    assert.deepEqual(pauses.marks, {});
+
+    pauses.corrupt = true;
+    assert.equal((await askRoutes(withPauses(), "PUT", "/api/nodes/a1b2/layered/resume", { confirm: "pc" })).status, 409);
   });
 
   it("apply is never changed with the other fields", async () => {

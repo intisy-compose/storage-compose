@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { HandoffResult, LayeredHandoff } from "../src/api/types.js";
+import type { HandoffResult } from "../src/api/types.js";
 import { LayoutRound } from "../src/applyLayout.js";
 import { folderLayered } from "../src/folderLayered.js";
 import type { HandoffContract, HandoffPublisher } from "../src/handoffFeed.js";
 import type { LocalInstance } from "../src/instanceResolver.js";
+import { nodePlan } from "../src/nodePlan.js";
+import { carriedLayoutPaths } from "../src/reconcileNode.js";
 import { parseLayout } from "../src/setupRepo.js";
+import type { NodeSpace } from "../src/spacePlan.js";
 import { layeredNodeText } from "../ui/src/folderDetail.js";
-import { FakeSyncthing, clientOf } from "./fakeFolderSyncthing.js";
+import { clientOf, onPlan } from "./fakeFolderSyncthing.js";
 
 const layout = parseLayout(`[devices.pc]
 id = "PC-ID"
@@ -87,27 +90,30 @@ describe("a folder on each node, from the layout", () => {
 describe("Activity for hand-offs and space", () => {
   it("enters each new executor run's hand-offs once per folder, and each change of the space state", async () => {
     const recorded: string[] = [];
-    const nodeLayout = parseLayout(`[devices.pc]\nid = "LAPTOP-ID"\nroot = "/data"\n[nodes.a1b2]\nname = "pc"\ndevice = "pc"\nthreshold = 50\nadmitted = true\napply = true\n`);
-    const instance: LocalInstance = { kind: "local", nodeId: "a1b2", name: "pc", client: clientOf(new FakeSyncthing()), root: "/data", os: "linux", threshold: 50, source: "registry" };
+    const nodeLayout = parseLayout(`[devices.pc]\nid = "LAPTOP-ID"\nroot = "/data"\n[folders.Videos]\npriority = 60\n[folders.Work]\npriority = 80\n[nodes.a1b2]\nname = "pc"\ndevice = "pc"\nthreshold = 50\nadmitted = true\napply = true\n`);
+    const plan = nodePlan(nodeLayout, "a1b2", carriedLayoutPaths(nodeLayout, "a1b2", new Set(["videos", "work"])));
+    assert.ok(plan);
+    const instance: LocalInstance = { kind: "local", nodeId: "a1b2", name: "pc", client: clientOf(onPlan(plan)), root: "/data", os: "linux", threshold: 50, source: "registry" };
     let finishedAt = "2026-11-06T10:00:00Z";
-    let space: LayeredHandoff["space"] = { state: "fits", threshold: 50, neededBytes: 1, availableBytes: 9 };
+    let disk: NodeSpace = { totalBytes: 1000, freeBytes: 900 };
     const result = (): HandoffResult => ({ schema: 1, nodeId: "a1b2", contractWrittenAt: "", finishedAt, refused: null, results: [{ folderId: "videos", path: "a", outcome: "moved", reason: "" }, { folderId: "videos", path: "b", outcome: "moved", reason: "" }, { folderId: "music", path: "c", outcome: "released", reason: "" }], trash: [], notes: [], purged: 0 });
     const contract: HandoffContract = { schema: 1, nodeId: "a1b2", writtenAt: "", apply: true, cluster: false, quietMinutes: 10, entries: [], waiting: [], notes: [] };
     const publisher: HandoffPublisher = {
       publish: async () => 0,
       clear: async () => {},
-      last: () => ({ contract, space: space && { ...space, handoffAllowed: true } }),
+      last: () => ({ contract, space: null }),
       result: async () => result(),
     };
-    const round = new LayoutRound({ layout: async () => nodeLayout, instances: async () => [instance], handoffFiles: { ensure: async () => null }, handoffs: publisher, record: (_nodeId, _folderId, text) => recorded.push(text), readBackDelaysMs: [] });
+    const space = { space: async () => disk, sizes: async () => ({ globalBytes: 100, localBytes: 0 }) };
+    const round = new LayoutRound({ layout: async () => nodeLayout, instances: async () => [instance], handoffFiles: { ensure: async () => null }, handoffs: publisher, space, record: (_nodeId, _folderId, text) => !/layered sync changed folder/.test(text) && recorded.push(text), readBackDelaysMs: [] });
     await round.run();
     assert.deepEqual(recorded, [], "the run already there when the dashboard starts is not entered again");
     finishedAt = "2026-11-06T10:01:00Z";
     await round.run();
     await round.run();
-    space = { state: "raised", threshold: 80, neededBytes: 1, availableBytes: 9 };
+    disk = { totalBytes: 1000, freeBytes: 250 };
     await round.run();
-    space = { state: "fits", threshold: 50, neededBytes: 1, availableBytes: 9 };
+    disk = { totalBytes: 1000, freeBytes: 900 };
     await round.run();
     assert.deepEqual(recorded, ["pc: handed off 2 files of videos", "pc: released back into sync 1 file of music", "pc: threshold raised from 50 to 80 for space", "pc: fits at its threshold 50 again"]);
   });

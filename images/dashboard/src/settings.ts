@@ -89,6 +89,8 @@ export const connectionsFile = `${statusDirectory}/connections.json`;
 export const hostAgentConnectionsFile = process.env.HOST_AGENT_CONNECTIONS_FILE ?? "/host-agent-connections/connections.json";
 /** Each node's hand-off contract and its executor's result, for the nodes service's executors. */
 export const handoffDirectory = `${statusDirectory}/handoff`;
+/** The folders the layered sync paused, by node, so only its own pauses are ever resumed. */
+export const layeredPausesFile = `${statusDirectory}/layered/paused.json`;
 /** @implNote The host agent's status folder is mounted read-only, so its nodes' contracts have a writable mount of their own, as its connections do. */
 export const hostAgentHandoffDirectory = process.env.HOST_AGENT_HANDOFF_DIRECTORY ?? "/host-agent-handoff";
 export const hostAgentSyncthingHost = process.env.HOST_AGENT_SYNCTHING_HOST ?? "host.docker.internal";

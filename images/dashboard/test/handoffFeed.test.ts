@@ -23,6 +23,7 @@ import type { LocalInstance } from "../src/instanceResolver.js";
 import { requestHandler } from "../src/routes.js";
 import { handoffRoutes } from "../src/routes/handoff.js";
 import { nodePlan } from "../src/nodePlan.js";
+import type { SpaceDecision } from "../src/spacePlan.js";
 import { type SetupLayout, parseLayout } from "../src/setupRepo.js";
 import type { SyncthingClient } from "../src/syncthing.js";
 
@@ -180,7 +181,7 @@ describe("the hand-off contract", () => {
     const reads = network();
     const contract = await decideHandoffContract(inputFor(parseLayout(layoutText(false)), reads));
 
-    assert.equal(contract.apply, false);
+    assert.deepEqual([contract.apply, contract.trashOnly], [false, undefined], "a node that only reports gets no trash-only contract: its executor runs nothing");
     assert.deepEqual(contract.entries, []);
     assert.equal(reads.calls, 0);
   });
@@ -228,11 +229,34 @@ describe("the hand-off contract", () => {
     assert.deepEqual(contract.entries, []);
   });
 
-  it("hands nothing off while the node's space is unknown", async () => {
+  it("holds everything while the node's space cannot be read: the contract is not in apply mode, so not even a pending path moves", async () => {
     const contract = await decideHandoffContract(inputFor(parseLayout(layoutText()), network({ stick: { space: null } })));
 
-    assert.deepEqual(contract.entries, []);
-    assert.match(contract.notes.join(" "), /space/);
+    assert.deepEqual([contract.apply, contract.entries], [false, []]);
+    assert.match(contract.notes.join(" "), /space cannot be read/);
+  });
+
+  it("holds everything while the round's space decision is stopped or unknown, or the node is not enabled", async () => {
+    const decided = (state: "stopped" | "unknown") => ({ decision: { state, threshold: 80, neededBytes: 1, availableBytes: 0, handoffAllowed: false, pullAllowed: false } });
+    const cases: [string, HandoffInput, RegExp][] = [
+      ["stopped", inputFor(parseLayout(layoutText()), network(), "b001", { decided: decided("stopped") }), /space decision is stopped/],
+      ["unknown", inputFor(parseLayout(layoutText()), network(), "b001", { decided: decided("unknown") }), /space decision is unknown/],
+      ["no decision", inputFor(parseLayout(layoutText()), network(), "b001", { decided: { decision: null } }), /space cannot be read/],
+      ["disabled", inputFor(parseLayout(layoutText().replace("apply     = true", "apply     = true\nenabled   = false")), network()), /stick is not enabled/],
+    ];
+    for (const [name, input, note] of cases) {
+      const contract = await decideHandoffContract(input);
+      assert.deepEqual([contract.apply, contract.trashOnly, contract.entries, contract.waiting], [false, true, [], []], name);
+      assert.match(contract.notes.join(" "), note, name);
+    }
+  });
+
+  it("decides with the round's decision when it allows hand-offs, without reading the space again", async () => {
+    const reads = network({ stick: { space: null } });
+    const contract = await decideHandoffContract(inputFor(parseLayout(layoutText()), reads, "b001", { decided: { decision: { state: "fits", threshold: 80, neededBytes: 0, availableBytes: 1, handoffAllowed: true, pullAllowed: true } } }));
+
+    assert.equal(contract.apply, true);
+    assert.equal(contract.entries.length, 1);
   });
 
   it("waits for a keeper whose Syncthing does not answer", async () => {
@@ -247,6 +271,18 @@ describe("the hand-off contract", () => {
       const contract = await decideHandoffContract(inputFor(parseLayout(layoutText()), network({ laptop })));
       assert.deepEqual(contract.entries, [], JSON.stringify(laptop));
     }
+  });
+
+  it("takes each keeper's state and threshold from its own space decision this round", async () => {
+    const decision = (state: SpaceDecision["state"], threshold: number): SpaceDecision => ({ state, threshold, neededBytes: 0, availableBytes: 0, handoffAllowed: state === "fits" || state === "raised", pullAllowed: state === "fits" || state === "raised" });
+    const withKeeper = (space: SpaceDecision | null) => inputFor(parseLayout(layoutText()), network(), "b001", { keeperSpace: (nodeId) => (nodeId === "a002" ? space : null) });
+
+    assert.equal((await decideHandoffContract(withKeeper(decision("fits", 20)))).entries.length, 1);
+    assert.equal((await decideHandoffContract(withKeeper(null))).entries.length, 1, "a keeper whose space is not known still confirms what it already holds");
+    const stopped = await decideHandoffContract(withKeeper(decision("stopped", 20)));
+    assert.deepEqual([stopped.entries, stopped.waiting.map((entry) => entry.reason)], [[], ["not-confirmed"]], "a stopped keeper is paused, so it confirms nothing");
+    const raised = await decideHandoffContract(withKeeper(decision("raised", 50)));
+    assert.deepEqual([raised.entries, raised.waiting.map((entry) => entry.reason)], [[], ["keeper-offline"]], "raised past Videos, the laptop keeps it no more; only the cluster does");
   });
 
   it("waits for a file changed within the quiet period", async () => {

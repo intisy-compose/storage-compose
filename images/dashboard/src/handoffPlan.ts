@@ -19,7 +19,8 @@ export interface LocalFile {
 /** The record a hand-off is confirmed against; taken first, because once ignored the node's own entry reads size 0 and no hash (phase 0). */
 export type HandoffCandidate = LocalFile;
 
-export type KeeperState = "ok" | "degraded" | "stopped" | "frozen";
+/** `full`: the cluster does not fit with its headroom, so it takes on no file as a keeper until it does. */
+export type KeeperState = "ok" | "degraded" | "stopped" | "frozen" | "full";
 
 /** A keeper's own `/rest/db/file` `local` entry. */
 export interface KeeperFileEntry {
@@ -54,7 +55,7 @@ export interface KeeperReport {
   folders: Record<string, KeeperFolderReport>;
 }
 
-export type WaitingReason = "changed" | "held" | "no-keeper" | "keeper-offline" | "not-confirmed";
+export type WaitingReason = "changed" | "held" | "no-keeper" | "keeper-offline" | "keeper-full" | "not-confirmed";
 
 export type ConfirmedHandoff = HandoffCandidate & { keeper: string };
 export type WaitingHandoff = HandoffCandidate & { reason: WaitingReason };
@@ -230,8 +231,9 @@ function decideOne(judgement: Judgement, candidate: HandoffCandidate, current: L
     return report !== undefined && confirms(report, candidate, judgement.entryAt);
   });
   if (keeper) return { ...candidate, keeper: keeper.id };
-  const anyOnline = keepers.some((node) => judgement.reports.has(node.id));
-  return { ...candidate, reason: anyOnline ? "not-confirmed" : "keeper-offline" };
+  const online = keepers.map((node) => judgement.reports.get(node.id)).filter((report): report is KeeperReport => report !== undefined);
+  if (online.length === 0) return { ...candidate, reason: "keeper-offline" };
+  return { ...candidate, reason: online.every((report) => report.state === "full") ? "keeper-full" : "not-confirmed" };
 }
 
 function fileKey(file: Pick<LocalFile, "folderId" | "path">): string {
