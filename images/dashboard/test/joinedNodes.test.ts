@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { type JoinedRound, LayoutRound, mountedHandoffFiles, nodeHandoffFiles } from "../src/applyLayout.js";
 import { handoffPublisher, syncthingHandoffReads } from "../src/handoffFeed.js";
 import type { JoinedDevice, JoinRecords } from "../src/join.js";
-import { type JoinedNodeReport, answerJoinedNode, joinedDeviceIdOf, joinedNodeInfos } from "../src/joinedNodes.js";
+import { type JoinedNodeReport, answerJoinedNode, forgetHeardNodes, joinedDeviceIdOf, joinedNodeInfos } from "../src/joinedNodes.js";
+import type { RequestError } from "../src/http.js";
 import type { JoinedOp } from "../src/joinedClient.js";
 import { fileLayeredPauses } from "../src/layeredPauses.js";
 import { parseLayout, type SetupLayout } from "../src/setupRepo.js";
@@ -54,11 +55,11 @@ const caller: WhoIs = { nodeName: "stick-host", loginName: "finn", tags: [], add
 const now = new Date("2026-11-08T12:00:00Z");
 
 function folderReport(id: string, path: string, type = "sendreceive") {
-  return { id, path, type, paused: false, devices: [stickId], ignores: [], status: { globalBytes: 100, localBytes: 100, needBytes: 0, state: "idle", stateChanged: "2026-11-08T11:00:00Z", remoteSequence: { X: 1 } } };
+  return { id, path, type, paused: false, devices: [stickId], versioning: { type: "" }, ignores: [] as string[] | null, status: { globalBytes: 100, localBytes: 100, needBytes: 0, state: "idle", stateChanged: "2026-11-08T11:00:00Z", remoteSequence: { X: 1 } } };
 }
 
 function report(overrides: Partial<JoinedNodeReport> = {}): JoinedNodeReport {
-  return { schema: 1, name: "stick", kind: "drive", threshold: 50, root: "/media/stick", os: "linux", deviceId: stickId, knownDevices: [stickId, otherId], folders: [folderReport("essential", "/media/stick/Essential")], files: [], space: { totalBytes: 1000, freeBytes: 900 }, result: null, ...overrides };
+  return { schema: 1, name: "stick", kind: "drive", threshold: 50, root: "/media/stick", os: "linux", deviceId: stickId, knownDevices: [stickId, otherId], folders: [folderReport("essential", "/media/stick/Essential")], files: [], space: { totalBytes: 1000, freeBytes: 900 }, result: null, listingProblems: [], ...overrides };
 }
 
 function round(layout: SetupLayout | null, committedApply = true): LayoutRound {
@@ -159,6 +160,65 @@ describe("a joined device's report", () => {
   });
 });
 
+describe("what a report could not read", () => {
+  const applying = () => dependencies(parseLayout(layoutText({ apply: true })));
+  const unknownIgnores = () => report({ folders: [{ ...folderReport("essential", "/media/stick/Essential"), ignores: null }] });
+
+  it("plans no overwrite of a .stignore it could not read, so the device's own lines stay", async () => {
+    const answer = await answerJoinedNode(applying(), ["100.64.0.5"], "b001", unknownIgnores());
+
+    assert.deepEqual(answer.ops, [], "nothing at all is written while one folder's list is unknown");
+  });
+
+  it("refuses a folder report without its versioning, which would read as no versioning and be replaced", async () => {
+    const { versioning: _left, ...withoutVersioning } = folderReport("essential", "/media/stick/Essential");
+    await assert.rejects(answerJoinedNode(applying(), ["100.64.0.5"], "b001", report({ folders: [withoutVersioning as never] })), /unreadable folder/);
+  });
+
+  it("carries a listing the device could not make, as a problem of the node", async () => {
+    const answer = await answerJoinedNode(applying(), ["100.64.0.5"], "b001", report({ listingProblems: ["archive: the listing is too large"] }));
+
+    assert.ok(answer.problems.includes("archive: the listing is too large"));
+  });
+});
+
+describe("whose node it is", () => {
+  it("is nobody's when the layout lists it with no device, or with one it does not have", async () => {
+    for (const device of ["", "gone"]) {
+      await assert.rejects(answerJoinedNode(dependencies(parseLayout(layoutText({ device }))), ["100.64.0.5"], "b001", report()), /no node b001/, `device "${device}"`);
+    }
+  });
+
+  it("an unlisted id stays with its first claimant, and a second device learns nothing and changes nothing", async () => {
+    const layout = parseLayout(layoutText());
+    const otherRecord: JoinedDevice = { ...record, name: "other", syncthingDeviceId: otherId, tailnetName: "other-host" };
+    const otherCaller = { ...caller, nodeName: "other-host" } as WhoIs;
+    const both: JoinRecords = { all: async () => ({ stick: record, other: otherRecord }), put: async () => undefined };
+    const first = await answerJoinedNode({ ...dependencies(layout), records: both }, ["100.64.0.5"], "aaa1", report());
+    assert.equal(first.contract, null, "an unlisted node has no contract and no round");
+
+    await assert.rejects(answerJoinedNode({ ...dependencies(layout), records: both, admit: async () => otherCaller }, ["100.64.0.6"], "aaa1", report({ deviceId: otherId, name: "other" })), /no node aaa1/);
+    assert.equal(joinedDeviceIdOf("aaa1"), stickId);
+  });
+
+  it("keeps no result of a node the layout does not list", async () => {
+    const dependenciesOfRun = dependencies(parseLayout(layoutText()));
+    const result = { schema: 1, nodeId: "aaa2", contractWrittenAt: "", finishedAt: "2026-11-08T12:00:00Z", refused: null, results: [], trash: [], notes: [], purged: 0 };
+    await answerJoinedNode(dependenciesOfRun, ["100.64.0.5"], "aaa2", report({ result: result as never }));
+
+    assert.equal(existsSync(join(dependenciesOfRun.resultDirectory, "aaa2.result.json")), false);
+  });
+
+  it("hears at most a bounded number of nodes, keeping those it has", async () => {
+    forgetHeardNodes();
+    const layout = parseLayout(layoutText());
+    for (let index = 0; index < 256; index++) await answerJoinedNode(dependencies(layout), ["100.64.0.5"], (0xa000 + index).toString(16), report());
+    await assert.rejects(answerJoinedNode(dependencies(layout), ["100.64.0.5"], "aabb", report()), (error: RequestError) => error.status === 429);
+    assert.equal(joinedDeviceIdOf("a0ff"), stickId);
+    forgetHeardNodes();
+  });
+});
+
 describe("a node the layout does not know yet", () => {
   it("stays pending: it is heard for Requests and gets an empty plan and no contract moves", async () => {
     const layout = parseLayout(layoutText()).nodes.length ? parseLayout(layoutText().replace('[nodes.b001]', '[nodes.dead]')) : null;
@@ -167,7 +227,7 @@ describe("a node the layout does not know yet", () => {
     assert.equal(answer.apply, false);
     assert.deepEqual(answer.ops, []);
     assert.equal(answer.admitted, false);
-    assert.deepEqual(answer.contract?.entries ?? [], []);
+    assert.equal(answer.contract, null);
     assert.ok(joinedNodeInfos(now).some((info) => info.nodeId === "b001" && info.name === "stick" && info.source === "joined"));
     assert.equal(joinedDeviceIdOf("b001"), stickId);
   });

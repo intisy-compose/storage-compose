@@ -10,6 +10,8 @@ $joinedReportFilesLimit = 200
 $joinedOpTimeoutMilliseconds = 5000
 $lastJoinedLayered = [datetime]::MinValue
 $joinedLayeredProblems = @{}
+$joinedListingProblems = @{}
+$joinedWithdrawals = @{}
 
 function Get-PolicyFilePath([string]$Folder, [string]$NodeId) { return Join-Path $Folder "$NodeId.policy.json" }
 function Get-ListRequestPath([string]$Folder, [string]$NodeId) { return Join-Path $Folder "$NodeId.lists.json" }
@@ -171,7 +173,7 @@ The folder must already be the one Syncthing has inside the node's root, with no
 #>
 function New-HandoffList($Node, [string]$Path) {
     $rootFull = [System.IO.Path]::GetFullPath($Node.root).TrimEnd('\')
-    $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    try { $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\') } catch { return @{ problem = "the folder is not inside the node's root" } }
     if ($full -cne $Path.TrimEnd('\') -or -not (Test-IsInsideFolder $rootFull $full)) { return @{ problem = "the folder is not inside the node's root" } }
     $current = $rootFull
     foreach ($segment in @($full.Substring($rootFull.Length).Trim('\') -split '\\')) {
@@ -212,18 +214,48 @@ function Invoke-SyncthingApiBody($Instance, [string]$Method, [string]$Path, $Bod
     return Invoke-RestMethod -Method $Method -Uri $uri -Headers @{ "X-API-Key" = $Instance.apiKey } -ContentType "application/json" -Body ([System.Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $Body -Depth 12 -Compress))) -TimeoutSec 10 -UseBasicParsing
 }
 
-function ConvertTo-BrowseFiles($Entries, [string]$Prefix = "") {
-    foreach ($entry in @($Entries)) {
-        if (-not $entry) { continue }
-        $path = $(if ($Prefix) { "$Prefix/$($entry.name)" } else { "$($entry.name)" })
-        if ($entry.PSObject.Properties["children"] -and $entry.children) { ConvertTo-BrowseFiles $entry.children $path }
-        elseif ($entry.type -in @("FILE_INFO_TYPE_FILE", "file")) { [pscustomobject]@{ path = $path; modified = "$($entry.modTime)" } }
-    }
-}
-
 function Test-ModifiedIsQuiet([string]$Modified) {
     try { $at = [DateTimeOffset]::Parse($Modified, [Globalization.CultureInfo]::InvariantCulture).ToUnixTimeSeconds() } catch { return $false }
     return (Get-HandoffNow) - $at -ge $handoffQuietMinutes * 60
+}
+
+function Get-BrowseLevel($Instance, [string]$FolderId, [string]$Prefix) {
+    $path = "/rest/db/browse?folder=$(Get-HandoffUri $FolderId)&levels=0"
+    if ($Prefix) { $path += "&prefix=$(Get-HandoffUri $Prefix)" }
+    return @(Invoke-SyncthingApi $Instance "Get" $path)
+}
+
+function Test-ReportBudgetIsSpent([System.Diagnostics.Stopwatch]$Clock) { return $Clock.Elapsed.TotalSeconds -ge $script:joinedReportBudgetSeconds }
+
+function Add-SettledFile($Instance, [string]$FolderId, [string]$Relative, [string]$Modified, $Files) {
+    if (-not (Test-ModifiedIsQuiet $Modified)) { return }
+    try { $entry = (Get-HandoffFileReport $Instance $FolderId $Relative).local } catch { return }
+    if ($entry) { $Files.Add([pscustomobject][ordered]@{ folderId = $FolderId; path = $Relative; modified = $Modified; entry = $entry }) }
+}
+
+<#
+.NOTES
+One directory level per request, so a wide folder costs many small answers instead of one that takes the whole
+budget to parse: Invoke-RestMethod on 5.1 parsed a 25 MB answer in 4.4 s (measured). A listing that fails or
+that the budget cuts short is said in the report's listingProblems, since a folder too large to list must never
+read as empty; nothing of it is offered until a report gets through.
+#>
+function Add-FolderFiles($Instance, [string]$FolderId, [System.Diagnostics.Stopwatch]$Clock, $Files, $Problems) {
+    $directories = New-Object System.Collections.Generic.Queue[string]
+    $directories.Enqueue("")
+    while ($directories.Count -gt 0) {
+        if ($Files.Count -ge $joinedReportFilesLimit) { return }
+        if (Test-ReportBudgetIsSpent $Clock) { $Problems.Add("$FolderId`: the listing ran out of its time with $($directories.Count) directories unread"); return }
+        $prefix = $directories.Dequeue()
+        try { $entries = Get-BrowseLevel $Instance $FolderId $prefix } catch { $Problems.Add("$FolderId`: it could not be listed: $($_.Exception.Message)"); return }
+        foreach ($entry in @($entries | Where-Object { $_ })) {
+            if ($Files.Count -ge $joinedReportFilesLimit) { return }
+            if (Test-ReportBudgetIsSpent $Clock) { $Problems.Add("$FolderId`: the listing ran out of its time with $($directories.Count) directories unread"); return }
+            $relative = $(if ($prefix) { "$prefix/$($entry.name)" } else { "$($entry.name)" })
+            if ($entry.type -in @("FILE_INFO_TYPE_DIRECTORY", "directory")) { $directories.Enqueue($relative); continue }
+            if ($entry.type -in @("FILE_INFO_TYPE_FILE", "file")) { Add-SettledFile $Instance $FolderId $relative "$($entry.modTime)" $Files }
+        }
+    }
 }
 
 <#
@@ -231,26 +263,26 @@ function Test-ModifiedIsQuiet([string]$Modified) {
 Only send-only folders, the only ones that can hand off, and at most $joinedReportFilesLimit files a
 report; a folder of a hundred thousand files is reported over many rounds, as the dashboard's own batch does.
 #>
-function Get-ReportFiles($Instance, [object[]]$Folders, [System.Diagnostics.Stopwatch]$Clock) {
+function Get-ReportFiles($Instance, [object[]]$Folders, [System.Diagnostics.Stopwatch]$Clock, $Problems) {
     $files = New-Object System.Collections.Generic.List[object]
     foreach ($folder in @($Folders | Where-Object { $_.type -eq "sendonly" })) {
-        if ($files.Count -ge $joinedReportFilesLimit -or $Clock.Elapsed.TotalSeconds -ge $joinedReportBudgetSeconds) { break }
-        try { $listed = @(ConvertTo-BrowseFiles (Invoke-SyncthingApi $Instance "Get" "/rest/db/browse?folder=$(Get-HandoffUri $folder.id)")) } catch { continue }
-        foreach ($item in $listed) {
-            if ($files.Count -ge $joinedReportFilesLimit -or $Clock.Elapsed.TotalSeconds -ge $joinedReportBudgetSeconds) { break }
-            if (-not (Test-ModifiedIsQuiet $item.modified)) { continue }
-            try { $entry = (Get-HandoffFileReport $Instance $folder.id $item.path).local } catch { continue }
-            if ($entry) { $files.Add([pscustomobject][ordered]@{ folderId = $folder.id; path = $item.path; modified = $item.modified; entry = $entry }) }
-        }
+        if ($files.Count -ge $joinedReportFilesLimit) { break }
+        Add-FolderFiles $Instance "$($folder.id)" $Clock $files $Problems
     }
-    return ,$files.ToArray()
+    return $files.ToArray()
 }
 
-function Get-ReportFolder($Instance, $Config) {
+<#
+.NOTES
+A read past the budget is unknown, as a failed one is, so the dashboard decides unknown and hands nothing off.
+#>
+function Get-ReportFolder($Instance, $Config, [System.Diagnostics.Stopwatch]$Clock) {
     $ignores = $null
     $status = $null
-    try { $ignores = @((Invoke-SyncthingApi $Instance "Get" "/rest/db/ignores?folder=$(Get-HandoffUri $Config.id)").ignore) } catch { }
-    try { $status = Invoke-SyncthingApi $Instance "Get" "/rest/db/status?folder=$(Get-HandoffUri $Config.id)" } catch { }
+    if (-not (Test-ReportBudgetIsSpent $Clock)) {
+        try { $ignores = @((Invoke-SyncthingApi $Instance "Get" "/rest/db/ignores?folder=$(Get-HandoffUri $Config.id)").ignore | Where-Object { $null -ne $_ }) } catch { }
+        try { $status = Invoke-SyncthingApi $Instance "Get" "/rest/db/status?folder=$(Get-HandoffUri $Config.id)" } catch { }
+    }
     return [pscustomobject][ordered]@{
         id = "$($Config.id)"; path = "$($Config.path)"; type = "$($Config.type)"; label = "$($Config.label)"; paused = [bool]$Config.paused
         devices = @($Config.devices | ForEach-Object { "$($_.deviceID)" }); versioning = $Config.versioning; ignores = $ignores; status = $status
@@ -272,12 +304,14 @@ A report covers what Syncthing says now. A read that fails leaves its part out (
 function Get-JoinedNodeReport($Instance, $Node, [string]$ResultPath) {
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     $configured = @(Invoke-SyncthingApi $Instance "Get" "/rest/config/folders")
-    $folders = @($configured | ForEach-Object { Get-ReportFolder $Instance $_ })
     $known = @(Invoke-SyncthingApi $Instance "Get" "/rest/config/devices" | ForEach-Object { "$($_.deviceID)" })
+    $folders = @($configured | ForEach-Object { Get-ReportFolder $Instance $_ $clock })
+    $problems = New-Object System.Collections.Generic.List[string]
     return [pscustomobject][ordered]@{
         schema = 1; name = "$($Node.name)"; kind = "$($Node.kind)"; threshold = [int]$Node.threshold; root = "$($Node.root)"; os = "windows"
-        deviceId = "$($Instance.deviceId)"; knownDevices = $known; folders = $folders; files = @(Get-ReportFiles $Instance $configured $clock)
+        deviceId = "$($Instance.deviceId)"; knownDevices = $known; folders = $folders; files = @(Get-ReportFiles $Instance $configured $clock $problems)
         space = Get-NodeSpaceReport $Node; result = $(if ([System.IO.File]::Exists($ResultPath)) { Read-AgentJson $ResultPath } else { $null })
+        listingProblems = @($problems)
     }
 }
 
@@ -361,9 +395,31 @@ function Invoke-JoinedOps($Instance, $Node, $Answer) {
     }
 }
 
+<#
+.NOTES
+A withdrawal that fails (a lock, a full disk) is kept and retried every round, so one node's failure never costs
+another its withdrawal and the node itself does not keep apply past the next round that can write it.
+#>
+function Invoke-JoinedWithdrawal($Node) {
+    try {
+        Remove-NodeFileApply $Node.root | Out-Null
+        $script:joinedWithdrawals.Remove($Node.id)
+    } catch {
+        if (-not $script:joinedWithdrawals.ContainsKey($Node.id)) { Write-WatcherLog "node $($Node.id): apply could not be taken out of its node file, retried each round: $_" }
+        $script:joinedWithdrawals[$Node.id] = $Node
+    }
+}
+
 function Set-JoinedNodeFile($Node, $Answer) {
     if ($Answer.nodeFile -and $Answer.nodeFile.action -eq "follow") { Set-NodeFilePolicy $Node.root $Answer.nodeFile.policy | Out-Null }
-    else { Remove-NodeFileApply $Node.root | Out-Null }
+    else { Invoke-JoinedWithdrawal $Node }
+}
+
+function Write-JoinedListingProblems($Node, $Problems) {
+    $text = @($Problems) -join "; "
+    if ($text -ceq "$($script:joinedListingProblems[$Node.id])") { return }
+    if ($text) { Write-WatcherLog "node $($Node.id): what it reported is incomplete: $text" }
+    $script:joinedListingProblems[$Node.id] = $text
 }
 
 <#
@@ -377,17 +433,20 @@ function Update-JoinedNodeLayered($Node, [string]$HandoffFolder, [double]$Timeou
     $resultPath = Join-Path $HandoffFolder "$($Node.id).result.json"
     try {
         $report = Get-JoinedNodeReport $instance $Node $resultPath
+        Write-JoinedListingProblems $Node $report.listingProblems
         $text = Invoke-DashboardReport $Node.dashboard $Node.id (ConvertTo-Json -InputObject $report -Depth 12 -Compress) $TimeoutSeconds
         $answer = ConvertFrom-Json $text
         if (-not $answer -or $answer.schema -ne 1 -or $answer.nodeId -cne $Node.id) { throw "the answer is not this node's" }
     } catch {
-        Remove-NodeFileApply $Node.root | Out-Null
+        Invoke-JoinedWithdrawal $Node
         Write-JoinedLayeredProblem $Node "no answer, apply withdrawn until it comes back: $_"
         return
     }
     Write-JoinedLayeredProblem $Node ""
     Set-JoinedNodeFile $Node $answer
-    if ($answer.contract) { Write-JsonFile (Join-Path $HandoffFolder "$($Node.id).json") $answer.contract }
+    $kept = Join-Path $HandoffFolder "$($Node.id).json"
+    if ($answer.contract) { Write-JsonFile $kept $answer.contract }
+    elseif ([System.IO.File]::Exists($kept)) { [System.IO.File]::Delete($kept) }
     Invoke-JoinedOps $instance $Node $answer
 }
 
@@ -397,6 +456,7 @@ Once a minute, for each joined node whose Syncthing runs, the whole round bounde
 like the connections fetch; a node not asked in time is asked next minute.
 #>
 function Update-JoinedLayered([object[]]$Nodes) {
+    foreach ($id in @($script:joinedWithdrawals.Keys)) { Invoke-JoinedWithdrawal $script:joinedWithdrawals[$id] }
     if (@($Nodes).Count -eq 0 -or ((Get-Now) - $script:lastJoinedLayered).TotalSeconds -lt $joinedLayeredIntervalSeconds) { return }
     if (-not (Test-StackFolderExists)) { return }
     $script:lastJoinedLayered = Get-Now
@@ -406,6 +466,10 @@ function Update-JoinedLayered([object[]]$Nodes) {
     foreach ($node in @($Nodes)) {
         $left = $joinedFetchBudgetSeconds - $clock.Elapsed.TotalSeconds
         if ($left -le 1) { break }
-        Update-JoinedNodeLayered $node $folder $left
+        try { Update-JoinedNodeLayered $node $folder $left }
+        catch {
+            Write-WatcherLog "node $($node.id): its layered round failed: $_"
+            Invoke-JoinedWithdrawal $node
+        }
     }
 }

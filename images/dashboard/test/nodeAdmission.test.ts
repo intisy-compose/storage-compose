@@ -141,6 +141,13 @@ describe("admitting a node through the setup repo", () => {
     assert.deepEqual(waitingAdmissions(remote(), [info("9f9f", "made-offline")], "storage"), [], "admitted once, it no longer waits anywhere");
   });
 
+  it("a node admitted once cannot be approved again, even from the current layout, and keeps what it was admitted at", async () => {
+    const answer = await askRoutes(routes(), "PUT", "/api/nodes/9f9f/admission", { base: version(), answer: "accept", threshold: 20 });
+    assert.equal(answer.status, 409);
+    assert.match((answer.body as { error: string }).error, /already admitted/);
+    assert.equal(remote().nodes.find((entry) => entry.id === "9f9f")?.threshold, 80);
+  });
+
   it("refusing records it, so the node no longer waits", async () => {
     nodes.set("f005", info("f005", "lost-stick"));
     const answer = await askRoutes(routes(), "PUT", "/api/nodes/f005/admission", { base: version(), answer: "refuse" });

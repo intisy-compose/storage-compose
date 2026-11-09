@@ -197,6 +197,69 @@ check_match "kept changes without the node file's apply are dropped" "does not s
 check "and leave config.xml as it was" "sendonly" "$(grep -o '<folder id="documents"[^>]*' /data/.storage/syncthing/config.xml | sed -n 's/.* type="\([a-z]*\)".*/\1/p')"
 
 
+
+echo "The layered sync's bounds and escapes:"
+layout_script=/usr/local/lib/storage-join/storage-layout
+restarts() { grep -c "restart storage-syncthing.service" /run/fake-systemd/calls; }
+my_id="$(device_api /rest/system/status | jq -r .myID)"
+failing='{"schema":1,"nodeId":"'"$file_node_id"'","apply":true,"nodeFile":{"action":"follow","policy":{"threshold":60,"assigned":[],"access":"open"}},"contract":null,"ops":[{"op":"addFolder","id":"never","label":"x","path":"/elsewhere/again","type":"sendonly","devices":[],"ignores":[]}]}'
+answer_with "$failing"
+before=$(restarts)
+check "a failing change restarts once: exit code" 0 "$(tick)"
+wait_api
+first=$(restarts)
+check "and the restart was made" $((before + 1)) "$first"
+check "the same change does not restart again: exit code" 0 "$(tick)"
+second=$(restarts)
+check "no second restart for the same change" "$first" "$second"
+check_match "says so once" "already tried" "$(cat /tmp/tick.out)"
+check "a third round: exit code" 0 "$(tick)"
+check "still no restart" "$second" "$(restarts)"
+check "and says nothing more" "0" "$(grep -c 'already tried' /tmp/tick.out)"
+STORAGE_LAYOUT_NOW=$(( $(date +%s) + 2000 )) tick > /dev/null
+check "after the back-off it is tried again" $((second + 1)) "$(restarts)"
+wait_api
+
+mkdir -p /tmp/stubs
+printf '#!/bin/sh\ncp /data/.storage/syncthing/layered-ops.json /tmp/kept.json\n' > /tmp/stubs/systemctl
+chmod +x /tmp/stubs/systemctl
+cp "/usr/local/lib/storage-join/handoff.sh" /tmp/handoff.keep
+printf '#!/bin/bash\nsleep 60\n' > /usr/local/lib/storage-join/handoff.sh
+slow='{"schema":1,"nodeId":"'"$file_node_id"'","apply":true,"nodeFile":{"action":"follow","policy":{"threshold":60,"assigned":[],"access":"open"}},"contract":{"schema":1,"nodeId":"'"$file_node_id"'","apply":false,"cluster":false,"entries":[]},"ops":[{"op":"paused","folderId":"documents","paused":false}]}'
+answer_with "$slow"
+started=$(date +%s)
+PATH=/tmp/stubs:$PATH STORAGE_LAYOUT_HANDOFF_SECONDS=2 tick > /dev/null
+ended=$(date +%s)
+cp /tmp/handoff.keep /usr/local/lib/storage-join/handoff.sh
+check "a hand-off past its limit is cut off" true "$([[ $((ended - started)) -lt 20 ]] && echo true || echo false)"
+kept_at=$(jq -r .keptAt /tmp/kept.json)
+check "the kept changes carry the time the dashboard answered, not the end of the run" true "$([[ $((kept_at - started)) -le 1 ]] && echo true || echo false)"
+
+answer_with '{"schema":1,"nodeId":"'"$file_node_id"'","apply":false,"nodeFile":{"action":"withdraw","reason":"x"},"ops":[],"contract":null}'
+echo '{"schema":1}' > "/data/.storage/syncthing/handoff/$file_node_id.json"
+check "an answer with no contract: exit code" 0 "$(tick)"
+check "deletes the kept one" false "$([[ -f "/data/.storage/syncthing/handoff/$file_node_id.json" ]] && echo true || echo false)"
+
+mkdir -p /tmp/fake/.storage/syncthing
+printf '[node]\nid = "abcd"\nname = "x"\nkind = "drive"\nthreshold = 5\n' > /tmp/fake/.storage/node.toml
+printf '<configuration>\n<options></options>\n</configuration>\n' > /tmp/fake/.storage/syncthing/config.xml
+sourced() { bash -c "source $layout_script; syncthing_home=/tmp/fake/.storage/syncthing; root=/tmp/fake; gui=http://x; $1"; }
+sourced 'follow_policy "$(cat /tmp/policy.json)"' < /dev/null 2> /dev/null; true
+printf '%s' '{"threshold":10,"assigned":["a\"b"],"access":"o\"pen"}' > /tmp/policy.json
+sourced 'follow_policy "$(cat /tmp/policy.json)"'
+check 'an access value is escaped into TOML' 'access = "o\"pen"' "$(sed -n '/^access/p' /tmp/fake/.storage/node.toml)"
+printf '%s' '{"threshold":"not a number","assigned":[],"access":"open"}' > /tmp/policy.json
+sourced 'follow_policy "$(cat /tmp/policy.json)"'
+check 'a threshold that is no number changes nothing' 'threshold = 10' "$(sed -n '/^threshold/p' /tmp/fake/.storage/node.toml)"
+printf '%s' '{"op":"addDevice","deviceId":"X\"Y&Z","name":"a<b"}' > /tmp/op.json
+sourced 'work_dir=$(mktemp -d); write_programs; apply_op "$(cat /tmp/op.json)"'
+check_match 'an id and a name are escaped into config.xml' 'id="X&quot;Y&amp;Z" name="a&lt;b"' "$(cat /tmp/fake/.storage/syncthing/config.xml)"
+printf '%s' '{"op":"type","folderId":"documents","type":"some\"thing"}' > /tmp/op.json
+check 'a type it does not know is refused' 1 "$(sourced 'work_dir=$(mktemp -d); write_programs; apply_op "$(cat /tmp/op.json)"' > /dev/null 2>&1; echo $?)"
+report_stub='api() { case $1 in */db/browse*) printf "%s" "$BROWSE_ANSWER";; */db/file*) printf "{\"local\":{\"type\":\"FILE_INFO_TYPE_FILE\"}}";; esac; }; listing_problems=/tmp/listing.txt; : > "$listing_problems"'
+BROWSE_ANSWER='[{"name":"a","type":"FILE_INFO_TYPE_FILE","modTime":"not a date"}]' check "a modification time that does not parse counts as not settled" "" "$(BROWSE_ANSWER='[{"name":"a","type":"FILE_INFO_TYPE_FILE","modTime":"not a date"}]' sourced "$report_stub; report_files docs 5")"
+check "a listing that failed is said" "docs: it could not be listed" "$(BROWSE_ANSWER='not json' sourced "$report_stub; report_files docs 5"; cat /tmp/listing.txt)"
+
 echo "The connections step at every start:"
 entry="/tmp/dashboard/connections/$node_id.json"
 mkdir -p /tmp/dashboard/connections
@@ -409,6 +472,7 @@ check "and lists it once" 'paths = ["files", "more", "outer/in", "node2"]' "$(ca
 echo "Leaving:"
 check "leaving: exit code" 0 "$(bash "$join" --leave > /tmp/leave.out 2>&1; echo $?)"
 check_match "says what it did" "left; the timer, the unit and the steps are gone" "$(cat /tmp/leave.out)"
+check_match "it stopped the tick service too" "stop storage-layout.service" "$(cat /run/fake-systemd/calls)"
 check "the node file is gone" "false" "$([[ -f /data/.storage/node.toml ]] && echo true || echo false)"
 check "the units are gone" "false" "$([[ -f /etc/systemd/system/storage-layout.timer || -f /etc/systemd/system/storage-layout.service || -f /etc/systemd/system/storage-syncthing.service ]] && echo true || echo false)"
 check "the steps are gone" "false" "$([[ -e /usr/local/lib/storage-join ]] && echo true || echo false)"

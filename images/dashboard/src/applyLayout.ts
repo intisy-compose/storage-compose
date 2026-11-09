@@ -162,6 +162,12 @@ export class LayoutRound {
     recordLayered(states);
   }
 
+  /** A host decision older than a keeper report may be counts for nothing in a joined device's round: the keeper reads as offline. */
+  private hasFreshDecision(nodeId: string): boolean {
+    const decision = lastRoundDecision(nodeId);
+    return decision !== null && (this.clock().getTime() - decision.at) / 1000 <= keeperReportMaxAgeSeconds;
+  }
+
   private keepDecisions(prepared: ReadonlyMap<string, Prepared>, first: ReadonlyMap<string, SpaceDecision | null>): void {
     const at = this.clock().getTime();
     for (const [nodeId, entry] of prepared) if (entry.kind === "planned") roundDecisions.set(nodeId, { first: first.get(nodeId) ?? null, final: entry.decision, at });
@@ -176,13 +182,15 @@ export class LayoutRound {
    * decisions.
    */
   async joinedRound(instance: LocalInstance): Promise<JoinedRound> {
-    const [layout, committed, locals] = await Promise.all([this.dependencies.layout(), (this.dependencies.committedLayout?.() ?? Promise.resolve(null)).catch(() => null), this.dependencies.instances().catch(() => [])]);
+    this.joinedReconciled.delete(instance.nodeId);
+    const [layout, committed, every] = await Promise.all([this.dependencies.layout(), (this.dependencies.committedLayout?.() ?? Promise.resolve(null)).catch(() => null), this.dependencies.instances().catch(() => [])]);
     const nodeFile = nodeFileAction(committed, instance.nodeId);
     if (!layout) {
       await this.clearHandoffs(instance, null);
       return { nodeFile, state: null, contract: this.dependencies.handoffs?.last?.(instance.nodeId)?.contract ?? null, reconcile: null };
     }
     const gated = withCommittedApply(layout, committed);
+    const locals = every.filter((local) => this.hasFreshDecision(local.nodeId));
     const instances = [instance, ...locals];
     const prepared = new Map<string, Prepared>([[instance.nodeId, await this.prepare(gated, instance)]]);
     const known = new Map(locals.map((local) => [local.nodeId, lastRoundDecision(local.nodeId)?.first ?? null] as const));

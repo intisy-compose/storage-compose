@@ -599,6 +599,28 @@ describe("keepers of another host, through their dashboard", () => {
   });
 });
 
+describe("a joined device's round and this host's last decisions", () => {
+  it("counts a local keeper only while this host's decision about it is fresh", async () => {
+    let now = new Date("2026-11-05T12:00:00.000Z");
+    const layout = parseLayout(layoutText(true, 20));
+    const keeperSyncthing = onPlan(nodePlan(layout, "a002", carriedLayoutPaths(layout, "a002", new Set(["documents", "documents-old"]))) as NodePlan);
+    const keeper = instanceOf(keeperSyncthing, "a002");
+    const reads: SpaceReads = {
+      space: async (instance) => (instance.source === "joined" ? { totalBytes: 1000, freeBytes: 50 } : { totalBytes: 10_000, freeBytes: 9_000 }),
+      sizes: async () => ({ globalBytes: 100, localBytes: 100, needBytes: 0 }),
+      completion: async (instance) => (instance.source === "joined" ? 0 : 100),
+    };
+    const round = roundOf(() => layout, [keeper], [], { space: reads, pauses: memoryLayeredPauses(), now: () => now });
+    await round.run();
+    const joined = (): LocalInstance => ({ ...instanceOf(nodeAtTwenty()), source: "joined" });
+
+    assert.equal((await round.joinedRound(joined())).state?.space?.state, "raised", "the keeper's decision is a minute old at most");
+
+    now = new Date(now.getTime() + 121_000);
+    assert.equal((await round.joinedRound(joined())).state?.space?.state, "stopped", "a decision past the report limit counts for nothing");
+  });
+});
+
 describe("keepers by their own decision", () => {
   it("two nodes that both keep a folder and are both short of space never drop it on the word of the other", async () => {
     const both = layoutText(true, 20).replace("threshold = 0\nadmitted  = true", "threshold = 20\nadmitted  = true\napply     = true");

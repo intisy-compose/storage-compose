@@ -21,7 +21,7 @@ $stackFolder = Join-Path $scratch "stack"
 $stickVhdx = Join-Path $scratch "seed-stick.vhdx"
 $hostVhdx = Join-Path $scratch "seed-host.vhdx"
 $keeperVhdx = Join-Path $scratch "seed-keeper.vhdx"
-$testVolumeLabels = @("seedstick", "seedhost", "seedkeeper")
+$testVhdxPaths = @($stickVhdx, $hostVhdx, $keeperVhdx)
 $script:passed = 0
 $script:failed = 0
 
@@ -31,8 +31,8 @@ function Set-SyncthingFirewallRule($Node, $Ports) { }
 function Remove-NetFirewallRule { }
 function Remove-SyncthingFirewallRules { }
 
-# Only this test's own volumes: without this the agent's scan would find a real node on the host's drives and start its Syncthing with the test's ports.
-function Get-VolumeRoots { return @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and $_.FileSystemLabel -in $testVolumeLabels } | ForEach-Object { "$($_.DriveLetter):\" } | Sort-Object) }
+# Only this test's own VHDX volumes: anything else would be a real node on the host's drives.
+function Get-VolumeRoots { return @(Get-VhdxVolumeRoots $testVhdxPaths) }
 
 function Test-Expectation([string]$What, $Expected, $Actual) {
     if ("$Expected" -eq "$Actual") { Write-Host "  PASS $What`: $Actual" -ForegroundColor Green; $script:passed++ }
@@ -80,6 +80,8 @@ try {
     Write-TestNodeFile $hostRoot "d1e2" "seed-host" "drive"
     $keeperRoot = New-TestVolume $keeperVhdx "seedkeeper"
     Write-TestNodeFile $keeperRoot "abcd" "seed-keeper" "drive"
+
+    Assert-VhdxVolumeRoots (Get-VolumeRoots) $testVhdxPaths 3
 
     $config = [pscustomobject]@{
         stackFolder = $stackFolder; projectName = "storage-agent-test"; userSid = "S-1-5-21-0"; passThrough = "none"

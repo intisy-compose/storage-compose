@@ -384,6 +384,57 @@ Describe "the hand-off executor" {
         } finally { $script:handoffRunSeconds = 20 }
     }
 
+    It "reads a large file sharing it with other readers, while writers stay out" {
+        New-TestNode "sharing"
+        $path = Join-Path $global:folder "clip.mp4"
+        $reader = [System.IO.File]::Open($path, "Open", "Read", "ReadWrite")
+        try { $stream = Open-HandoffHashStream $path } finally { $reader.Dispose() }
+        try { { [System.IO.File]::Open($path, "Open", "Write", "ReadWrite") } | Should Throw } finally { $stream.Dispose() }
+    }
+
+    It "still counts a reader as open before it ignores a file hashed in the background" {
+        New-TestNode "backgroundopen"
+        $script:handoffRunSeconds = 0
+        try {
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            Wait-HashJobs
+            $reader = [System.IO.File]::Open((Join-Path $global:folder "clip.mp4"), "Open", "Read", "ReadWrite")
+            try { Write-Contract @(New-Entry "clip.mp4"); Invoke-TestHandoff } finally { $reader.Dispose() }
+            "$(Get-Outcome 'clip.mp4') $(Get-ListedCount 'clip.mp4')" | Should Be "refused 0"
+            Get-Reason "clip.mp4" | Should Be "it is open"
+        } finally { $script:handoffRunSeconds = 20; Stop-HandoffHashJobs }
+    }
+
+    It "gives up on a hash that runs past its limit" {
+        New-TestNode "timeout"
+        $script:handoffRunSeconds = 0
+        $script:handoffHashJobSeconds = 0
+        try {
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            $script:handoffHashJobs.Count | Should Be 1
+            Start-Sleep -Milliseconds 50
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            "$(Get-Outcome 'clip.mp4') $($script:handoffHashJobs.Count)" | Should Be "refused 0"
+            Get-Reason "clip.mp4" | Should Match "took longer than"
+        } finally { $script:handoffRunSeconds = 20; $script:handoffHashJobSeconds = 21600; $script:handoffHashGaveUp = @{}; Stop-HandoffHashJobs }
+    }
+
+    It "stops a background hash whose file has left the contract" {
+        New-TestNode "leftcontract"
+        $script:handoffRunSeconds = 0
+        try {
+            Write-Contract @(New-Entry "clip.mp4")
+            Invoke-TestHandoff
+            $script:handoffHashJobs.Count | Should Be 1
+            Write-Contract @()
+            Invoke-TestHandoff
+            $script:handoffHashJobs.Count | Should Be 0
+        } finally { $script:handoffRunSeconds = 20; Stop-HandoffHashJobs }
+    }
+
     It "starts a new background hash when the version changed under the old one" {
         New-TestNode "backgroundchange"
         $script:handoffRunSeconds = 0

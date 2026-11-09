@@ -49,6 +49,7 @@ function answerOf(body: unknown): NodeAdmissionBody["answer"] {
  */
 export function admitted(text: string, info: LocalNodeInfo, deviceId: string, threshold: number): string {
   const layout = parseLayout(text);
+  if (layout.nodes.find((node) => node.id === info.nodeId)?.admitted) throw new RequestError(409, `${info.name} is already admitted`);
   const known = layout.devices.find((device) => device.id === deviceId);
   if (!known && layout.devices.some((device) => device.name === info.name)) throw new RequestError(409, `the layout has a device ${info.name} with another Syncthing ID; give the node another name or fix the layout by hand`);
   const withDevice = known ? text : upsertDevice(text, info.name, deviceId, info.root);
@@ -61,6 +62,7 @@ export function admitted(text: string, info: LocalNodeInfo, deviceId: string, th
 /** The layout with the refusal recorded on the node's entry, which keeps it off Requests until it is taken back in the layout. */
 export function refused(text: string, info: LocalNodeInfo, at: Date): string {
   const entry = parseLayout(text).nodes.find((node) => node.id === info.nodeId);
+  if (entry?.admitted) throw new RequestError(409, `${info.name} is already admitted`);
   return editNodePolicy(text, info.nodeId, { admitted: false, refused: at.toISOString() }, entry ? undefined : { name: info.name, device: "" });
 }
 

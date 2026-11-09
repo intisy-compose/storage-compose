@@ -46,6 +46,25 @@ function Remove-TestVolume([string]$Path) {
     Remove-Item -Force -LiteralPath $Path
 }
 
+<#
+.NOTES
+The roots of exactly these VHDX files, each on a File Backed Virtual disk: nothing else on the host can appear,
+so a test that hands this to the agent's scan can never find one of the machine's real nodes.
+#>
+function Get-VhdxVolumeRoots([string[]]$VhdxPaths) {
+    foreach ($path in $VhdxPaths) {
+        $image = Get-DiskImage -ImagePath $path -ErrorAction SilentlyContinue
+        if (-not ($image -and $image.Attached)) { continue }
+        $disk = $image | Get-Disk
+        if ($disk.BusType -ne "File Backed Virtual") { continue }
+        $disk | Get-Partition | Where-Object { $_.DriveLetter -and [int][char]$_.DriveLetter -ne 0 } | ForEach-Object { "$($_.DriveLetter):\" }
+    }
+}
+
+function Assert-VhdxVolumeRoots([string[]]$Roots, [string[]]$VhdxPaths, [int]$Expected) {
+    if (@($Roots).Count -ne $Expected) { throw "expected $Expected test volumes on $($VhdxPaths -join ', '), found $(@($Roots).Count): $($Roots -join ', '); nothing was started" }
+}
+
 function Write-TestNodeFile([string]$Folder, [string]$Id, [string]$Name, [string]$Kind) {
     New-Item -ItemType Directory -Force -Path (Join-Path $Folder ".storage") | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $Folder ".storage\node.toml"), "[node]`nid = `"$Id`"`nname = `"$Name`"`nkind = `"$Kind`"`nthreshold = 80`nassigned = []`n")

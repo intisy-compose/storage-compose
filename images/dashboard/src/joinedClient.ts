@@ -68,7 +68,7 @@ export class ReportClient extends SyncthingClient {
     super({ url: "http://joined-report", apiKey: "" });
     for (const folder of report.folders) {
       this.settings.set(folder.id, { id: folder.id, label: folder.label ?? folder.id, path: folder.path, type: folder.type, paused: folder.paused, devices: folder.devices.map((deviceID) => ({ deviceID })), versioning: folder.versioning } as unknown as SyncthingFolderSettings);
-      this.ignoreLines.set(folder.id, folder.ignores ?? []);
+      if (folder.ignores !== null) this.ignoreLines.set(folder.id, folder.ignores);
     }
   }
 
@@ -89,7 +89,7 @@ export class ReportClient extends SyncthingClient {
     const folder = /^\/config\/folders\/([^/?]+)$/.exec(path);
     if (folder) return this.folderSetting(decodeURIComponent(folder[1]), path);
     const folderId = queryOf(path).get("folder") ?? "";
-    if (path.startsWith("/db/ignores")) return { ignore: this.ignoreLines.get(folderId) ?? [] };
+    if (path.startsWith("/db/ignores")) return this.reportedIgnores(folderId, path);
     if (path.startsWith("/db/browse")) return this.reportedTree(folderId);
     if (path.startsWith("/db/status")) return this.status(folderId, path);
     if (path.startsWith("/db/file")) return this.reportedFile(folderId, queryOf(path).get("file") ?? "", path);
@@ -100,6 +100,13 @@ export class ReportClient extends SyncthingClient {
     const settings = this.settings.get(id);
     if (!settings) throw refusal(path);
     return settings;
+  }
+
+  /** @implNote A list the device could not read is a refusal, as a missing status is: read as empty, the reconciler would overwrite the device's own lines. */
+  private reportedIgnores(folderId: string, path: string): { ignore: string[] } {
+    const lines = this.ignoreLines.get(folderId);
+    if (!lines) throw refusal(path);
+    return { ignore: lines };
   }
 
   private reportedTree(folderId: string): { name: string; type: string; modTime: string }[] {

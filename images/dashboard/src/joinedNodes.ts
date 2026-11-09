@@ -31,6 +31,8 @@ export interface JoinedNodeReport extends ReportedDevice {
   os: "linux" | "windows";
   space: { totalBytes: number; freeBytes: number } | null;
   result: HandoffResult | null;
+  /** What the device could not list, shown as a problem of the node. */
+  listingProblems?: string[];
 }
 
 export interface JoinedNodeAnswer {
@@ -77,6 +79,7 @@ function isEntry(value: unknown): value is IndexEntry {
 function folderOf(value: unknown): JoinedFolderReport {
   const folder = value as Partial<JoinedFolderReport> | null;
   if (typeof folder !== "object" || folder === null || !isText(folder.id, 256) || !isText(folder.path) || !isText(folder.type, 32) || typeof folder.paused !== "boolean" || !isTextList(folder.devices)) fail("has an unreadable folder");
+  if (typeof folder.versioning !== "object" || folder.versioning === null) fail("has an unreadable folder");
   if (folder.ignores !== null && !isTextList(folder.ignores)) fail(`has unreadable ignore lines for ${folder.id}`);
   if (folder.status !== null && (typeof folder.status !== "object" || Array.isArray(folder.status))) fail(`has an unreadable status for ${folder.id}`);
   return folder as JoinedFolderReport;
@@ -105,7 +108,8 @@ export function parseJoinedReport(body: unknown): JoinedNodeReport {
   if (typeof report !== "object" || report === null || report.schema !== joinedLayeredSchema) fail("is not schema 1");
   if (!isText(report.name, 64) || !isDeviceName(report.name) || !isText(report.deviceId, 128) || !isText(report.root) || !isText(report.kind, 16) || !isCount(report.threshold) || (report.os !== "linux" && report.os !== "windows")) fail("has an unreadable identity");
   if (!isTextList(report.knownDevices) || !Array.isArray(report.folders) || report.folders.length > maxFolders || !Array.isArray(report.files) || report.files.length > maxFiles) fail("has unreadable lists");
-  return { schema: report.schema, name: report.name, kind: report.kind, threshold: report.threshold, root: report.root, os: report.os, deviceId: report.deviceId, knownDevices: report.knownDevices, folders: report.folders.map(folderOf), files: report.files.map(fileOf), space: spaceOf(report.space), result: resultOf(report.result) };
+  if (report.listingProblems !== undefined && !isTextList(report.listingProblems)) fail("has unreadable lists");
+  return { schema: report.schema, name: report.name, kind: report.kind, threshold: report.threshold, root: report.root, os: report.os, deviceId: report.deviceId, knownDevices: report.knownDevices, folders: report.folders.map(folderOf), files: report.files.map(fileOf), space: spaceOf(report.space), result: resultOf(report.result), listingProblems: report.listingProblems ?? [] };
 }
 
 /** What this dashboard last heard from each joined node, for Requests and its admission. */
@@ -114,7 +118,31 @@ const heard = new Map<string, { report: JoinedNodeReport; at: number }>();
 /** A report older than this no longer puts a node on Requests: the device has stopped reporting. */
 const heardMaxAgeMs = 15 * 60_000;
 
+/** More joined nodes than any tree of devices has; a claimant past it is refused and those already heard stay. */
+const heardLimit = 256;
+
+function forgetExpired(now: Date): void {
+  for (const [nodeId, entry] of heard) if (now.getTime() - entry.at > heardMaxAgeMs) heard.delete(nodeId);
+}
+
+/** @implNote Only an id the layout does not list can be claimed: another device's claim on it answers as for a node of no one, so nothing it reported can be read or replaced. */
+function claimUnlisted(nodeId: string, report: JoinedNodeReport, now: Date): void {
+  forgetExpired(now);
+  const claimed = heard.get(nodeId);
+  if (claimed && claimed.report.deviceId !== report.deviceId) throw new RequestError(404, `no node ${nodeId} of the calling device`);
+}
+
+function isRoomFor(nodeId: string): boolean {
+  return heard.has(nodeId) || heard.size < heardLimit;
+}
+
+export function forgetHeardNodes(): void {
+  heard.clear();
+}
+
 export function joinedNodeWasHeard(nodeId: string, report: JoinedNodeReport, now: Date): void {
+  forgetExpired(now);
+  if (!isRoomFor(nodeId)) throw new RequestError(429, "too many joined nodes are being reported at once; ask again later");
   heard.set(nodeId, { report, at: now.getTime() });
 }
 
@@ -133,9 +161,14 @@ export async function joinedNodeOwner(dependencies: { admit: (addresses: string[
   const records = Object.values(await dependencies.records.all());
   const owner = caller?.nodeName ? records.find((device) => device.tailnetName === caller.nodeName && device.syncthingDeviceId === report.deviceId) : undefined;
   const listed = layout?.nodes.find((node) => node.id === nodeId);
-  const listedDevice = listed?.device ? layout?.devices.find((device) => device.name === listed.device) : undefined;
-  if (!owner || (listedDevice && listedDevice.id !== report.deviceId)) throw new RequestError(404, `no node ${nodeId} of the calling device`);
+  const listedDevice = listed ? layout?.devices.find((device) => device.name === listed.device) : undefined;
+  if (!owner || (listed && listedDevice?.id !== report.deviceId)) throw new RequestError(404, `no node ${nodeId} of the calling device`);
   return owner;
+}
+
+/** A node the layout does not list: heard for Requests, and no round, no contract and no file, so an id any joined device can claim touches nothing. */
+function pendingAnswer(nodeId: string, report: JoinedNodeReport, now: Date): JoinedNodeAnswer {
+  return { schema: joinedLayeredSchema, nodeId, writtenAt: now.toISOString(), admitted: false, apply: false, nodeFile: { action: "withdraw", reason: "the layout does not list it" }, threshold: report.threshold, effectiveThreshold: null, ops: [], drift: [], problems: [...(report.listingProblems ?? [])], contract: null };
 }
 
 export function joinedInstance(nodeId: string, report: JoinedNodeReport): LocalInstance {
@@ -214,7 +247,7 @@ async function answerOf(round: JoinedRound, report: JoinedNodeReport, nodeId: st
     effectiveThreshold: round.state?.effectiveThreshold ?? null,
     ops,
     drift: round.state?.drift ?? [],
-    problems: round.state?.problems ?? [],
+    problems: [...(round.state?.problems ?? []), ...(report.listingProblems ?? [])],
     contract: round.contract,
   };
 }
@@ -222,13 +255,18 @@ async function answerOf(round: JoinedRound, report: JoinedNodeReport, nodeId: st
 /**
  * Answers a joined device's report with its plan, its node file's policy and its hand-off contract.
  * @implNote Only a joined device of this tailnet, for a node that is its own; a node the layout does not list yet is heard for Requests
- * and gets an empty answer, which is how a stick made offline waits for the first online host to commit it.
+ * and gets an empty answer with no contract, which is how a stick made offline waits for the first online host to commit it.
  */
 export async function answerJoinedNode(dependencies: JoinedLayeredDependencies, addresses: string[], nodeId: string, body: unknown): Promise<JoinedNodeAnswer> {
   const now = dependencies.now?.() ?? new Date();
   const report = parseJoinedReport(body);
   const layout = await dependencies.layout();
   await joinedNodeOwner(dependencies, addresses, nodeId, report, layout);
+  if (!layout?.nodes.some((node) => node.id === nodeId)) {
+    claimUnlisted(nodeId, report, now);
+    joinedNodeWasHeard(nodeId, report, now);
+    return pendingAnswer(nodeId, report, now);
+  }
   joinedNodeWasHeard(nodeId, report, now);
   if (report.result) await keepResult(dependencies.resultDirectory ?? handoffDirectory, nodeId, report.result).catch(() => undefined);
   const instance = joinedInstance(nodeId, report);
@@ -236,6 +274,6 @@ export async function answerJoinedNode(dependencies: JoinedLayeredDependencies, 
   const round = await dependencies.round.joinedRound(instance);
   const closed = new Set((layout?.devices ?? []).filter((device) => layout?.nodes.some((node) => node.access === "closed" && node.device === device.name)).map((device) => device.id));
   const answer = await answerOf(round, report, nodeId, client, closed, now);
-  if (round.state) recordJoinedLayered(nodeId, report.deviceId, round.state);
+  if (round.state) recordJoinedLayered(nodeId, report.deviceId, { ...round.state, problems: answer.problems });
   return answer;
 }

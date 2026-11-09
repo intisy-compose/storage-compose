@@ -17,9 +17,13 @@ function Invoke-SyncthingApi($Instance, [string]$Method, [string]$Path) {
     $global:apiCalls += "$Method $Path"
     if ($Path -eq "/rest/config/folders") { return @($global:fakeConfig.folders) }
     if ($Path -eq "/rest/config/devices") { return @($global:fakeConfig.devices | ForEach-Object { [pscustomobject]@{ deviceID = $_ } }) }
-    if ($Path -like "/rest/db/ignores*") { return [pscustomobject]@{ ignore = @("#own line") } }
+    if ($Path -like "/rest/db/ignores*") { if ($global:noIgnoreFile) { return [pscustomobject]@{ ignore = $null } }; return [pscustomobject]@{ ignore = @("#own line") } }
     if ($Path -like "/rest/db/status*") { return [pscustomobject]@{ globalBytes = 10; localBytes = 10; needBytes = 0; state = "idle"; stateChanged = "2026-01-01T00:00:00Z"; remoteSequence = [pscustomobject]@{ X = 1 } } }
-    if ($Path -like "/rest/db/browse*") { return @([pscustomobject]@{ name = "sub"; type = "FILE_INFO_TYPE_DIRECTORY"; children = @([pscustomobject]@{ name = "old.mp4"; type = "FILE_INFO_TYPE_FILE"; modTime = "2026-01-01T00:00:00Z" }, [pscustomobject]@{ name = "new.mp4"; type = "FILE_INFO_TYPE_FILE"; modTime = "2026-11-08T17:59:50Z" }) }) }
+    if ($Path -like "/rest/db/browse*") {
+        if ($global:browseFails) { throw "the listing failed" }
+        if ($Path -match 'prefix=sub') { return @([pscustomobject]@{ name = "old.mp4"; type = "FILE_INFO_TYPE_FILE"; modTime = "2026-01-01T00:00:00Z" }, [pscustomobject]@{ name = "new.mp4"; type = "FILE_INFO_TYPE_FILE"; modTime = "2026-11-08T17:59:50Z" }) }
+        return @([pscustomobject]@{ name = "sub"; type = "FILE_INFO_TYPE_DIRECTORY" })
+    }
     if ($Path -like "/rest/db/file*") { return [pscustomobject]@{ local = [pscustomobject]@{ type = "FILE_INFO_TYPE_FILE"; version = @("S:1"); size = 5; numBlocks = 1; blocksHash = "h"; modified = "x"; deleted = $false; ignored = $false; invalid = $false } } }
     if ($Path -eq "/rest/config/defaults/folder") { return [pscustomobject]@{ id = ""; label = ""; path = ""; type = "sendreceive"; devices = @() } }
     if ($Path -like "/rest/config/folders/*") { return [pscustomobject]@{ path = (Join-Path $global:root "Essential") } }
@@ -43,6 +47,11 @@ function New-TestRoot([string]$Name, [string]$NodeFileText = "[node]`nid = `"d1e
     $global:fakeConfig = [pscustomobject]@{ folders = @(); devices = @("DEVICE-ID") }
     $global:apiCalls = @()
     $global:writes = @()
+    $global:noIgnoreFile = $false
+    $global:browseFails = $false
+    $script:joinedReportBudgetSeconds = 8
+    $script:joinedWithdrawals = @{}
+    $script:joinedListingProblems = @{}
 }
 
 function Read-TestNodeFile { return [System.IO.File]::ReadAllText((Join-Path $global:root ".storage\node.toml")) }
@@ -113,6 +122,7 @@ Describe "the hand-off list on a Windows node" {
         (New-HandoffList $global:node $folder).ContainsKey("problem") | Should Be $false
         [System.IO.File]::ReadAllText((Join-Path $folder ".stignore-handoff")) | Should Be "/kept`n"
         (New-HandoffList $global:node (Join-Path $scratch "outside")).problem | Should Be "the folder is not inside the node's root"
+        (New-HandoffList $global:node "C:\in|valid").problem | Should Be "the folder is not inside the node's root"
     }
 
     It "answers the dashboard's request, a list per folder" {
@@ -137,10 +147,79 @@ Describe "a joined node's report and answer" {
         @($report.knownDevices) -join "," | Should Be "DEVICE-ID,OTHER"
         $report.folders[0].id | Should Be "archive"
         $report.folders[0].ignores[0] | Should Be "#own line"
-        $report.files.Count | Should Be 1
-        $report.files[0].path | Should Be "sub/old.mp4"
+        @($report.files).Count | Should Be 1
+        @($report.files)[0].path | Should Be "sub/old.mp4"
         $report.space.totalBytes | Should BeGreaterThan 0
         $report.result | Should Be $null
+    }
+
+    function New-SendOnlyConfig { return [pscustomobject]@{ id = "archive"; label = "Archive"; path = (Join-Path $global:root "Essential"); type = "sendonly"; paused = $false; devices = @([pscustomobject]@{ deviceID = "DEVICE-ID" }); versioning = [pscustomobject]@{ type = "" } } }
+
+    It "reads no .stignore as no lines, never as a null line, and an unread one as unknown" {
+        New-TestRoot "noignore"
+        $global:noIgnoreFile = $true
+        $global:fakeConfig = [pscustomobject]@{ folders = @(New-SendOnlyConfig); devices = @("DEVICE-ID") }
+        $report = Get-JoinedNodeReport $global:instance $global:node (Join-Path $scratch "absent.json")
+        (ConvertTo-Json -InputObject $report.folders[0].ignores -Compress) | Should Be "[]"
+    }
+
+    It "lists one directory level at a time and stops at its budget, saying what it could not list" {
+        New-TestRoot "budget"
+        $global:fakeConfig = [pscustomobject]@{ folders = @(New-SendOnlyConfig); devices = @("DEVICE-ID") }
+        $report = Get-JoinedNodeReport $global:instance $global:node (Join-Path $scratch "absent.json")
+        @($report.files).Count | Should Be 1
+        @($global:apiCalls | Where-Object { $_ -like "*browse*" -and $_ -notlike "*levels=0*" }).Count | Should Be 0
+        $script:joinedReportBudgetSeconds = 0
+        $global:apiCalls = @()
+        $report = Get-JoinedNodeReport $global:instance $global:node (Join-Path $scratch "absent.json")
+        @($report.files).Count | Should Be 0
+        $report.folders[0].status | Should Be $null
+        (@($report.listingProblems) -join " ") | Should Match "ran out of its time"
+    }
+
+    It "tells a listing that failed from an empty folder" {
+        New-TestRoot "listfails"
+        $global:browseFails = $true
+        $global:fakeConfig = [pscustomobject]@{ folders = @(New-SendOnlyConfig); devices = @("DEVICE-ID") }
+        function Write-WatcherLog($Message) { $global:logged = @($global:logged) + $Message }
+        $global:logged = @()
+        $report = Get-JoinedNodeReport $global:instance $global:node (Join-Path $scratch "absent.json")
+        (@($report.listingProblems) -join " ") | Should Match "archive: it could not be listed"
+        Write-JoinedListingProblems $global:node $report.listingProblems
+        Write-JoinedListingProblems $global:node $report.listingProblems
+        @($global:logged | Where-Object { $_ -like "*could not be listed*" }).Count | Should Be 1
+    }
+
+    It "does not let a failed withdrawal on one node take another's, and retries it" {
+        New-TestRoot "withdrawa" "[node]`nid = `"d1e2`"`nname = `"stick`"`nkind = `"folder`"`nthreshold = 80`nassigned = []`napply = true`n"
+        $first = $global:node
+        $firstRoot = $global:root
+        New-TestRoot "withdrawb" "[node]`nid = `"beef`"`nname = `"other`"`nkind = `"folder`"`nthreshold = 80`nassigned = []`napply = true`n"
+        $second = [pscustomobject]@{ id = "beef"; name = "other"; kind = "folder"; threshold = 80; root = $global:root; dashboard = "https://dash" }
+        $secondInstance = [pscustomobject]@{ nodeId = "beef"; node = $second; ports = [pscustomobject]@{ gui = 1 }; apiKey = "key"; state = "running"; deviceId = "OTHER" }
+        $script:syncthingInstances = @{ d1e2 = [pscustomobject]@{ nodeId = "d1e2"; node = $first; ports = [pscustomobject]@{ gui = 1 }; apiKey = "key"; state = "running"; deviceId = "DEVICE-ID" }; beef = $secondInstance }
+        function Invoke-DashboardReport { throw "unreachable" }
+        function Write-WatcherLog($Message) { }
+        $stack = Join-Path $scratch "stack"
+        New-Item -ItemType Directory -Force -Path $stack | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $stack "docker-compose.yml"), "name: x")
+        $script:agentConfig = [pscustomobject]@{ stackFolder = $stack }
+        $script:lastJoinedLayered = [datetime]::MinValue
+        $firstLock = [System.IO.File]::Open((Join-Path $firstRoot ".storage\node.toml"), "Open", "Read", "None")
+        try { Update-JoinedLayered @($first, $second) } finally { $firstLock.Dispose() }
+        [System.IO.File]::ReadAllText((Join-Path $global:root ".storage\node.toml")).Contains("apply") | Should Be $false
+        [System.IO.File]::ReadAllText((Join-Path $firstRoot ".storage\node.toml")).Contains("apply") | Should Be $true
+        $script:lastJoinedLayered = Get-Now
+        Update-JoinedLayered @($first, $second)
+        [System.IO.File]::ReadAllText((Join-Path $firstRoot ".storage\node.toml")).Contains("apply") | Should Be $false
+    }
+
+    It "deletes the kept contract when the answer holds none, so an old one is never run" {
+        New-TestRoot "nullcontract"
+        [System.IO.File]::WriteAllText((Join-Path $global:handoffFolder "d1e2.json"), "{}")
+        function Invoke-DashboardReport { return '{"schema":1,"nodeId":"d1e2","apply":false,"nodeFile":{"action":"withdraw","reason":"x"},"ops":[],"contract":null}' }
+        Update-JoinedNodeLayered $global:node $global:handoffFolder 1
+        Test-Path -LiteralPath (Join-Path $global:handoffFolder "d1e2.json") | Should Be $false
     }
 
     It "applies nothing unless the dashboard says apply and the node file, followed first, says it too" {

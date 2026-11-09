@@ -13,6 +13,8 @@ set -u
 
 readonly UNIT_NAME="storage-syncthing.service"
 readonly OPS_MAX_AGE_SECONDS=300
+readonly RESTART_BACKOFF_SECONDS=1800
+readonly HANDOFF_RUN_SECONDS=${STORAGE_LAYOUT_HANDOFF_SECONDS:-240}
 readonly FILES_LIMIT=200
 readonly QUIET_MINUTES=${HANDOFF_QUIET_MINUTES:-10}
 readonly HANDOFF_LIST=.stignore-handoff
@@ -71,7 +73,8 @@ replace_node_file() {   # <new text file>
 edit_node_keys() {   # <remove keys, space separated> <lines to add, newline separated>
     local new
     new=$(mktemp "$(dirname "$(node_file)")/.node-edit.XXXXXX") || return 1
-    awk -v remove=" $1 " -v add="$2" '
+    AWK_REMOVE=" $1 " AWK_ADD=$2 awk '
+        BEGIN { remove = ENVIRON["AWK_REMOVE"]; add = ENVIRON["AWK_ADD"] }
         function flush_add() { if (!added && add != "") { print add; added = 1 } }
         /^[[:space:]]*\[/ {
             if (in_node) flush_add()
@@ -103,11 +106,13 @@ withdraw_apply() {
 
 follow_policy() {   # <policy object>
     may_edit_node_file || return 0
-    local policy=$1 lines assigned
-    assigned=$(jq -c '.assigned // []' <<< "$policy" | sed 's/,/, /g')
-    lines="threshold = $(jq -r '.threshold' <<< "$policy")
+    local policy=$1 lines assigned threshold access
+    threshold=$(jq -er '.threshold | numbers' <<< "$policy" 2> /dev/null) || { log "the policy's threshold is no number; the node file stays"; return 0; }
+    assigned=$(jq -c '.assigned // [] | map(tostring)' <<< "$policy" | sed 's/,/, /g')
+    access=$(jq -c '.access | tostring' <<< "$policy")
+    lines="threshold = $threshold
 assigned = $assigned
-access = \"$(jq -r '.access' <<< "$policy")\"
+access = $access
 apply = true"
     edit_node_keys "threshold assigned access apply" "$lines"
 }
@@ -125,26 +130,36 @@ report_folder() {   # <config object>
 
 # Up to FILES_LIMIT settled files of a send-only folder, the only ones that can hand off.
 report_files() {   # <folder id> <limit>
-    local folder=$1 limit=$2 count=0 item path modified age entry
+    local folder=$1 limit=$2 count=0 item path modified modified_seconds age entry listing
+    listing=$(mktemp) || return 0
+    if ! api "/rest/db/browse?folder=$(uri "$folder")" > "$listing" 2> /dev/null || ! jq -e 'type == "array" or . == null' "$listing" > /dev/null 2>&1; then
+        printf '%s: it could not be listed\n' "$folder" >> "$listing_problems"
+        rm -f "$listing"
+        return 0
+    fi
     while IFS= read -r item; do
         [ "$count" -lt "$limit" ] || break
         path=$(jq -r .path <<< "$item")
         modified=$(jq -r .modified <<< "$item")
-        age=$(( $(now) - $(date -d "$modified" +%s 2> /dev/null || echo 0) ))
+        modified_seconds=$(date -d "$modified" +%s 2> /dev/null) || continue
+        age=$(( $(now) - modified_seconds ))
         [ "$age" -ge $((QUIET_MINUTES * 60)) ] || continue
         entry=$(api "/rest/db/file?folder=$(uri "$folder")&file=$(uri "$path")" | jq -c '.local // empty' 2> /dev/null) || continue
         [ -n "$entry" ] || continue
         jq -cn --arg folderId "$folder" --arg path "$path" --arg modified "$modified" --argjson entry "$entry" '{folderId: $folderId, path: $path, modified: $modified, entry: $entry}'
         count=$((count + 1))
-    done < <(api "/rest/db/browse?folder=$(uri "$folder")" 2> /dev/null | jq -c '
+    done < <(jq -c '
         def files($prefix): .[]? | ($prefix + .name) as $path | if (.children // null) != null then (.children | files($path + "/")) elif .type == "FILE_INFO_TYPE_FILE" then {path: $path, modified: .modTime} else empty end;
-        files("")' 2> /dev/null)
+        files("")' "$listing" 2> /dev/null)
+    rm -f "$listing"
 }
 
 # The whole report in a temporary file, as one JSON object; every part this device cannot read is left out,
 # which the dashboard decides as "unknown" and hands nothing off.
 write_report() {   # <file>
     local folders files=() folder config_id remaining device_id devices space size avail name kind threshold
+    listing_problems=$1.problems
+    : > "$listing_problems"
     folders=$(api /rest/config/folders) || return 1
     device_id=$(api /rest/system/status | jq -r .myID) || return 1
     devices=$(api /rest/config/devices | jq -c '[.[].deviceID]') || return 1
@@ -164,10 +179,12 @@ write_report() {   # <file>
     [ ! -f "$result_file" ] || result=$(jq -c . "$result_file" 2> /dev/null) || result=null
     printf '%s\n' "${folder_reports[@]}" | jq -cs '.' > "$1.folders"
     printf '%s\n' "${files[@]+"${files[@]}"}" | jq -cs 'map(select(type == "object"))' > "$1.files"
+    local problems
+    problems=$(jq -Rs 'split("\n") | map(select(length > 0))' "$listing_problems")
     jq -n --arg name "$name" --arg kind "$kind" --argjson threshold "${threshold:-0}" --arg root "$root" --arg deviceId "$device_id" --argjson knownDevices "$devices" \
-        --argjson space "$space" --argjson result "${result:-null}" --slurpfile folders "$1.folders" --slurpfile files "$1.files" \
-        '{schema: 1, name: $name, kind: $kind, threshold: $threshold, root: $root, os: "linux", deviceId: $deviceId, knownDevices: $knownDevices, folders: $folders[0], files: $files[0], space: $space, result: $result}' > "$1"
-    rm -f "$1.folders" "$1.files"
+        --argjson space "$space" --argjson result "${result:-null}" --argjson listingProblems "$problems" --slurpfile folders "$1.folders" --slurpfile files "$1.files" \
+        '{schema: 1, name: $name, kind: $kind, threshold: $threshold, root: $root, os: "linux", deviceId: $deviceId, knownDevices: $knownDevices, folders: $folders[0], files: $files[0], space: $space, result: $result, listingProblems: $listingProblems}' > "$1"
+    rm -f "$1.folders" "$1.files" "$listing_problems"
 }
 
 ask_dashboard() {   # <report file> <answer file>
@@ -186,22 +203,61 @@ run_handoff() {   # <contract file>
     mkdir -p "$probe_dir"
     HANDOFF_PROBE_INTERVAL_SECONDS=2 bash "$step_folder/handoff-probe.sh" "$probe_dir" &
     probe_pid=$!
-    HANDOFF_API_KEY=$(api_key) HANDOFF_OPEN_SNAPSHOT="$probe_dir/open.txt" as_user "$owner" bash "$step_folder/handoff.sh" "$node" "$root" "$gui" - "$contract" "$result_file"
+    HANDOFF_API_KEY=$(api_key) HANDOFF_OPEN_SNAPSHOT="$probe_dir/open.txt" as_user "$owner" bash "$step_folder/handoff.sh" "$node" "$root" "$gui" - "$contract" "$result_file" \
+        || log "the hand-off run ended with $? (a run past ${HANDOFF_RUN_SECONDS} s is cut off; its pending paths are picked up next round)"
     kill "$probe_pid" 2> /dev/null
     wait "$probe_pid" 2> /dev/null
 }
 
-# runuser keeps the environment, so the key stays off the command line.
+# runuser and timeout keep the environment, so the key stays off the command line.
 as_user() {   # <user> <command...>
     local user=$1
     shift
-    if [ "$(id -un)" = "$user" ]; then "$@"; else runuser -u "$user" -- "$@"; fi
+    if [ "$(id -un)" = "$user" ]; then timeout --kill-after=10 "$HANDOFF_RUN_SECONDS" "$@"
+    else timeout --kill-after=10 "$HANDOFF_RUN_SECONDS" runuser -u "$user" -- "$@"; fi
 }
 
-keep_ops() {   # <answer file>
+keep_ops() {   # <answer file> <when the dashboard answered>
     local ops
     ops=$(ops_file)
-    jq -c --arg now "$(now)" '{keptAt: ($now | tonumber), ops: .ops}' "$1" > "$ops.new" && own "$ops.new" && mv -f "$ops.new" "$ops"
+    jq -c --arg at "$2" '{keptAt: ($at | tonumber), ops: .ops}' "$1" > "$ops.new" && own "$ops.new" && mv -f "$ops.new" "$ops"
+}
+
+restart_record() { printf '%s/layered-restart.json' "$syncthing_home"; }
+
+# The same changes, tried and still asked for, are retried only after RESTART_BACKOFF_SECONDS, so a change that fails
+# does not restart Syncthing every minute; a different change restarts at once.
+restart_is_due() {   # <signature>
+    local signature=$1 file last at told age
+    file=$(restart_record)
+    if [ -f "$file" ]; then
+        last=$(jq -r '.signature // ""' "$file" 2> /dev/null)
+        at=$(jq -r '.at // 0' "$file" 2> /dev/null)
+        told=$(jq -r '.told // false' "$file" 2> /dev/null)
+        age=$(( $(now) - at ))
+        if [ "$last" = "$signature" ] && [ "$age" -lt "$RESTART_BACKOFF_SECONDS" ]; then
+            if [ "$told" != true ]; then
+                log "these changes were already tried $age s ago and are still asked for; not restarting again before $RESTART_BACKOFF_SECONDS s have passed"
+                jq '.told = true' "$file" > "$file.new" && mv -f "$file.new" "$file"
+            fi
+            return 1
+        fi
+    fi
+    jq -cn --arg signature "$signature" --argjson at "$(now)" '{signature: $signature, at: $at, told: false}' > "$file.new" && mv -f "$file.new" "$file"
+    own "$file"
+}
+
+apply_the_answer() {   # <answer file> <when the dashboard answered>
+    local signature
+    if ! jq -e '.apply == true and (.ops | length) > 0' "$1" > /dev/null || [ "$(node_value apply)" != true ]; then
+        rm -f "$(restart_record)"
+        return 0
+    fi
+    signature=$(jq -cS '.ops' "$1" | sha256sum | cut -d' ' -f1)
+    restart_is_due "$signature" || return 0
+    keep_ops "$1" "$2"
+    log "restarting $UNIT_NAME to apply $(jq '.ops | length' "$1") change(s)"
+    systemctl restart "$UNIT_NAME" || log "$UNIT_NAME did not restart"
 }
 
 tick() {
@@ -209,7 +265,7 @@ tick() {
     result_file="$(handoff_folder)/$node.result.json"
     mkdir -p "$(handoff_folder)"
     own "$(handoff_folder)"
-    local work report answer
+    local work report answer answered_at
     work=$(mktemp -d) || exit 1
     report=$work/report.json
     answer=$work/answer.json
@@ -219,35 +275,35 @@ tick() {
         rm -rf "$work"
         return 0
     fi
+    answered_at=$(now)
     if jq -e '.nodeFile.action == "follow"' "$answer" > /dev/null; then follow_policy "$(jq -c '.nodeFile.policy' "$answer")" || true
     else withdraw_apply; fi
     if jq -e '.contract != null' "$answer" > /dev/null; then
         jq '.contract' "$answer" > "$work/contract.json" && own "$work/contract.json" && mv -f "$work/contract.json" "$(handoff_folder)/$node.json"
+    else
+        rm -f "$(handoff_folder)/$node.json"
     fi
     run_handoff "$(handoff_folder)/$node.json"
-    if jq -e '.apply == true and (.ops | length) > 0' "$answer" > /dev/null && [ "$(node_value apply)" = true ]; then
-        keep_ops "$answer"
-        log "restarting $UNIT_NAME to apply $(jq '.ops | length' "$answer") change(s)"
-        systemctl restart "$UNIT_NAME" || log "$UNIT_NAME did not restart"
-    fi
+    apply_the_answer "$answer" "$answered_at"
     rm -rf "$work"
 }
 
 xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"; }
 
 # Each op edits config.xml with one pass over it, in the order given.
-edit_config() {   # <awk program as a file> [awk arguments...]
+edit_config() {   # <awk program as a file>, its values in AWK_* so awk reads them without escape processing
     local program=$1 edited config=$syncthing_home/config.xml
-    shift
     edited=$(mktemp "$syncthing_home/.config.XXXXXX") || return 1
-    if awk "$@" -f "$program" "$config" > "$edited" && grep -q '</configuration>' "$edited"; then
+    if awk -f "$program" "$config" > "$edited" && grep -q '</configuration>' "$edited"; then
         cmp -s "$edited" "$config" || { chmod --reference="$config" "$edited" 2> /dev/null; mv -f "$edited" "$config"; return 0; }
     fi
     rm -f "$edited"
 }
 
+xml_value() { printf '%s' "$1" | xml_escape; }
+
 folder_path() {   # <folder id>: its path in config.xml, xml-unescaped
-    awk -v wanted="$1" '/<folder / { id = $0; sub(/.* id="/, "", id); sub(/".*/, "", id); if (id == wanted) { path = $0; sub(/.* path="/, "", path); sub(/".*/, "", path); print path; exit } }' "$syncthing_home/config.xml" \
+    AWK_WANTED=$(xml_value "$1") awk 'BEGIN { wanted = ENVIRON["AWK_WANTED"] } /<folder / { id = $0; sub(/.* id="/, "", id); sub(/".*/, "", id); if (id == wanted) { path = $0; sub(/.* path="/, "", path); sub(/".*/, "", path); print path; exit } }' "$syncthing_home/config.xml" \
         | sed -e "s/&apos;/'/g" -e 's/&quot;/"/g' -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g'
 }
 
@@ -293,7 +349,7 @@ config_program() {   # <op>: prints the program name; each lives in its own file
 
 write_programs() {
     cat > "$work_dir/set-folder-attr.awk" << 'AWK'
-# set-folder-attr: id, attr, value
+BEGIN { wanted = ENVIRON["AWK_WANTED"]; attr = ENVIRON["AWK_ATTR"]; value = ENVIRON["AWK_VALUE"] }
 /<folder / {
     id = $0; sub(/.* id="/, "", id); sub(/".*/, "", id)
     if (id == wanted) { pattern = " " attr "=\"[^\"]*\""; sub(pattern, " " attr "=\"" value "\"") }
@@ -301,14 +357,14 @@ write_programs() {
 { print }
 AWK
     cat > "$work_dir/set-folder-child.awk" << 'AWK'
-# set-folder-child: id, name, value (a whole element line)
+BEGIN { wanted = ENVIRON["AWK_WANTED"]; name = ENVIRON["AWK_NAME"]; value = ENVIRON["AWK_VALUE"] }
 /<folder / { id = $0; sub(/.* id="/, "", id); sub(/".*/, "", id); inside = (id == wanted); seen = 0 }
 inside && index($0, "<" name ">") && !seen { indent = $0; sub(/<.*/, "", indent); print indent value; seen = 1; next }
 /<\/folder>/ { inside = 0 }
 { print }
 AWK
     cat > "$work_dir/set-folder-block.awk" << 'AWK'
-# set-folder-block: id, name, text (a single line replacing the element <name ...>...</name>)
+BEGIN { wanted = ENVIRON["AWK_WANTED"]; name = ENVIRON["AWK_NAME"]; text = ENVIRON["AWK_TEXT"] }
 /<folder / { id = $0; sub(/.* id="/, "", id); sub(/".*/, "", id); inside = (id == wanted) }
 inside && !done && $0 ~ "<" name "[ >]" {
     indent = $0; sub(/<.*/, "", indent); print indent text; done = 1
@@ -320,7 +376,7 @@ skipping { if ($0 ~ "</" name ">") { skipping = 0; inside = 0 } next }
 { print }
 AWK
     cat > "$work_dir/set-folder-devices.awk" << 'AWK'
-# set-folder-devices: id, lines (newline separated <device .../> elements for this folder)
+BEGIN { wanted = ENVIRON["AWK_WANTED"]; lines = ENVIRON["AWK_TEXT"] }
 /<folder / { id = $0; sub(/.* id="/, "", id); sub(/".*/, "", id); inside = (id == wanted); added = 0 }
 inside && /<device / {
     if (!added) { indent = $0; sub(/<.*/, "", indent); n = split(lines, list, "\n"); for (i = 1; i <= n; i++) print indent list[i]; added = 1 }
@@ -332,6 +388,7 @@ skipping { if ($0 ~ /<\/device>/) skipping = 0; next }
 { print }
 AWK
     cat > "$work_dir/insert-before-end.awk" << 'AWK'
+BEGIN { text = ENVIRON["AWK_TEXT"] }
 /<\/configuration>/ { n = split(text, list, "\n"); for (i = 1; i <= n; i++) print "    " list[i] }
 { print }
 AWK
@@ -343,31 +400,36 @@ versioning_text() {   # <versioning object>
 }
 
 folder_device_elements() {   # <device ids JSON>
-    jq -r '.[] | "<device id=\"\(.)\" introducedBy=\"\"><encryptionPassword></encryptionPassword></device>"' <<< "$1"
+    jq -r '.[] | "<device id=\"\(. | @html)\" introducedBy=\"\"><encryptionPassword></encryptionPassword></device>"' <<< "$1"
 }
 
 apply_op() {   # <op object>
-    local op=$1 kind folder id value path
+    local op=$1 kind folder id value path type
     kind=$(jq -r .op <<< "$op")
-    folder=$(jq -r '.folderId // empty' <<< "$op")
+    folder=$(xml_value "$(jq -r '.folderId // empty' <<< "$op")")
     case $kind in
-        type) edit_config "$(config_program set-folder-attr)" -v wanted="$folder" -v attr=type -v value="$(jq -r .type <<< "$op" | xml_escape)" ;;
-        paused) edit_config "$(config_program set-folder-child)" -v wanted="$folder" -v name=paused -v value="<paused>$(jq -r .paused <<< "$op")</paused>" ;;
-        versioning) edit_config "$(config_program set-folder-block)" -v wanted="$folder" -v name=versioning -v text="$(versioning_text "$(jq -c .versioning <<< "$op")")" ;;
-        devices) edit_config "$(config_program set-folder-devices)" -v wanted="$folder" -v lines="$(folder_device_elements "$(jq -c .devices <<< "$op")")" ;;
+        type)
+            type=$(jq -r .type <<< "$op")
+            case $type in sendreceive | sendonly | receiveonly | receiveencrypted) ;; *) log "type $type is not one this step writes"; return 1 ;; esac
+            AWK_WANTED=$folder AWK_ATTR=type AWK_VALUE=$type edit_config "$(config_program set-folder-attr)" ;;
+        paused)
+            value=$(jq -r 'if .paused == true then "true" else "false" end' <<< "$op")
+            AWK_WANTED=$folder AWK_NAME=paused AWK_VALUE="<paused>$value</paused>" edit_config "$(config_program set-folder-child)" ;;
+        versioning) AWK_WANTED=$folder AWK_NAME=versioning AWK_TEXT="$(versioning_text "$(jq -c .versioning <<< "$op")")" edit_config "$(config_program set-folder-block)" ;;
+        devices) AWK_WANTED=$folder AWK_TEXT="$(folder_device_elements "$(jq -c .devices <<< "$op")")" edit_config "$(config_program set-folder-devices)" ;;
         ignores)
-            path=$(folder_path "$folder")
+            path=$(folder_path "$(jq -r .folderId <<< "$op")")
             [ -n "$path" ] || { log "no folder $folder in config.xml"; return 1; }
             write_ignores "$path" "$(jq -c .lines <<< "$op")" ;;
         ensureList)
-            path=$(folder_path "$folder")
+            path=$(folder_path "$(jq -r .folderId <<< "$op")")
             [ -n "$path" ] || { log "no folder $folder in config.xml"; return 1; }
             ensure_list "$path" ;;
         addDevice)
-            id=$(jq -r .deviceId <<< "$op")
-            grep -q "<device id=\"$id\"" "$syncthing_home/config.xml" && return 0
+            id=$(jq -r .deviceId <<< "$op" | xml_escape)
+            grep -qF "<device id=\"$id\"" "$syncthing_home/config.xml" && return 0
             value=$(jq -r '.name' <<< "$op" | xml_escape)
-            edit_config "$(config_program insert-before-end)" -v text="<device id=\"$id\" name=\"$value\" compression=\"metadata\" introducer=\"false\" skipIntroductionRemovals=\"false\" introducedBy=\"\"><address>dynamic</address></device>" ;;
+            AWK_TEXT="<device id=\"$id\" name=\"$value\" compression=\"metadata\" introducer=\"false\" skipIntroductionRemovals=\"false\" introducedBy=\"\"><address>dynamic</address></device>" edit_config "$(config_program insert-before-end)" ;;
         addFolder) add_folder "$op" ;;
         *) log "unknown change $kind"; return 1 ;;
     esac
@@ -375,18 +437,18 @@ apply_op() {   # <op object>
 
 add_folder() {   # <op object>
     local op=$1 id path escaped_path label type devices
-    id=$(jq -r .id <<< "$op")
+    id=$(jq -r .id <<< "$op" | xml_escape)
     path=$(jq -r .path <<< "$op")
     inside_root "$path" || { log "folder $id: $path is not inside the node's root"; return 1; }
-    grep -q "<folder id=\"$id\"" "$syncthing_home/config.xml" && return 0
+    grep -qF "<folder id=\"$id\"" "$syncthing_home/config.xml" && return 0
     write_folder_ignores "$path" "$(jq -c .ignores <<< "$op")" || return 1
     escaped_path=$(printf '%s' "$path" | xml_escape)
     label=$(jq -r .label <<< "$op" | xml_escape)
     type=$(jq -r .type <<< "$op" | xml_escape)
     devices=$(folder_device_elements "$(jq -c .devices <<< "$op")")
-    edit_config "$(config_program insert-before-end)" -v text="<folder id=\"$id\" label=\"$label\" path=\"$escaped_path\" type=\"$type\">
+    AWK_TEXT="<folder id=\"$id\" label=\"$label\" path=\"$escaped_path\" type=\"$type\">
 $devices
-</folder>"
+</folder>" edit_config "$(config_program insert-before-end)"
 }
 
 # A kept change is applied only soon after the tick that kept it, under this node file's own apply.

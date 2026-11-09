@@ -323,6 +323,7 @@ unit_path_exists() { [[ -e "$unit_dir/$1" ]]; }
 
 remove_units() {
     if unit_path_exists "$TIMER_NAME"; then systemctl disable --now "$TIMER_NAME" 2> /dev/null || true; fi
+    if unit_path_exists "$TICK_SERVICE_NAME"; then systemctl stop "$TICK_SERVICE_NAME" 2> /dev/null || true; fi
     if unit_path_exists "$UNIT_NAME"; then systemctl disable --now "$UNIT_NAME" 2> /dev/null || true; fi
     rm -f "$unit_dir/$TIMER_NAME" "$unit_dir/$TICK_SERVICE_NAME" "$unit_dir/$UNIT_NAME"
     systemctl daemon-reload 2> /dev/null || true
