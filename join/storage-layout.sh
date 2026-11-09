@@ -288,8 +288,7 @@ record_restart() {   # <signature>
 
 # Waits for the API after a restart, so the hand-off run that follows has a Syncthing to check against.
 wait_for_gui() {
-    local tries
-    for tries in $(seq 1 30); do api /rest/system/status > /dev/null 2>&1 && return 0; sleep 2; done
+    for _ in $(seq 1 30); do api /rest/system/status > /dev/null 2>&1 && return 0; sleep 2; done
     return 1
 }
 

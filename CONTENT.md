@@ -432,7 +432,7 @@ run. On Windows the joined-mode agent does the same through the node's own Synct
 while the dashboard says `apply` and the node file, which follows the committed, pushed layout, says `apply = true`; a dashboard that does not
 answer takes `apply` out of the node file until it answers again. A planned folder the device lacks is added
 send-only, and turns send-receive once its size is known and the space rule allows it. A stick made offline
-stays pending, listed on Requests of the first online host that hears it, with an empty plan, until that host
+stays pending, listed on Requests of the first online host that hears it with the device reporting it, one row per claiming device, and an empty plan, until that host
 commits it. Reports of keepers on other hosts are read through their dashboards (`GET /api/layered/keepers`) with an
 age in seconds; one older than the keeper limit counts for nothing.
 
