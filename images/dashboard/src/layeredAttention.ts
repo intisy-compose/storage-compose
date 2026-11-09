@@ -44,10 +44,6 @@ function waitingWarnings(node: StorageNode, waiting: HandoffWaitingView[], now: 
   });
 }
 
-function isTooLarge(outcome: HandoffOutcome): boolean {
-  return outcome.outcome === "refused" && /too large to hash/.test(outcome.reason);
-}
-
 const snapshotProblem = /the open-file snapshot[^;)]*/;
 
 function outcomeGroupWarnings(node: StorageNode, outcomes: HandoffOutcome[], kind: "handoff-refused" | "handoff-pending", text: (count: string, label: string, first: HandoffOutcome) => string): Warning[] {
@@ -66,7 +62,7 @@ function resultWarnings(node: StorageNode, state: LayeredState): Warning[] {
   if (!result) return [];
   const warnings: Warning[] = [];
   if (result.refused && state.mode === "apply" && !isHeldRefusal(state, result.refused)) warnings.push(warning({ id: `handoff-refused:${node.id}`, level: "warning", kind: "handoff-refused", text: `${node.name}: the hand-off executor refused the whole contract: ${result.refused}`, nodeId: node.id }));
-  const refused = result.results.filter((outcome) => outcome.outcome === "refused" && !isTooLarge(outcome) && !snapshotProblem.test(outcome.reason));
+  const refused = result.results.filter((outcome) => outcome.outcome === "refused" && !snapshotProblem.test(outcome.reason));
   warnings.push(...outcomeGroupWarnings(node, refused, "handoff-refused", (count, label, first) => `${node.name}: the hand-off of ${count} in ${label} was refused (${first.path}: ${first.reason})`));
   const pending = result.results.filter((outcome) => outcome.outcome === "ignored-not-moved" && !snapshotProblem.test(outcome.reason));
   warnings.push(...outcomeGroupWarnings(node, pending, "handoff-pending", (count, label, first) => `${node.name}: ${count} in ${label} ignored but not moved yet (${first.path}: ${first.reason}); each is retried, and released after 10 tries`));
@@ -76,9 +72,7 @@ function resultWarnings(node: StorageNode, state: LayeredState): Warning[] {
     if (outcome.outcome === "unsynced-at-handed-off-path")
       warnings.push(warning({ id: `handoff-unsynced:${node.id}:${outcome.folderId}:${outcome.path}`, level: "warning", kind: "handoff-unsynced", text: `${node.name}: ${outcome.path} in ${label} is a new file at a handed-off path; it is on this node only, since the hand-off's ignore line keeps it out of sync; move or rename it to sync it`, ...at }));
     if (outcome.outcome === "deferred")
-      warnings.push(warning({ id: `handoff-deferred:${node.id}:${outcome.folderId}:${outcome.path}`, level: "info", kind: "handoff-deferred", text: `${node.name}: ${outcome.path} in ${label} could not be hashed within the host agent's round; it is hashed again next round`, ...at }));
-    if (isTooLarge(outcome))
-      warnings.push(warning({ id: `handoff-deferred:${node.id}:${outcome.folderId}:${outcome.path}`, level: "warning", kind: "handoff-deferred", text: `${node.name}: ${outcome.path} in ${label} is too large to hash within the host agent's round, so it is not handed off and stays on the node`, ...at }));
+      warnings.push(warning({ id: `handoff-deferred:${node.id}:${outcome.folderId}:${outcome.path}`, level: "info", kind: "handoff-deferred", text: `${node.name}: ${outcome.path} in ${label} is being hashed outside the host agent's round; it is handed off once that is done`, ...at }));
     if (outcome.outcome === "in-trash-unlisted" && outcome.trash)
       warnings.push(warning({ id: `handoff-trash:${node.id}:${outcome.trash}`, level: "error", kind: "handoff-trash", text: `${node.name}: ${outcome.trash} is in the hand-off trash outside its manifest and is never emptied (${outcome.reason}); check it by hand`, ...at }));
   }

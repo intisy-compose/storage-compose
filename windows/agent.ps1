@@ -22,6 +22,7 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot "networks.ps1")
 . (Join-Path $PSScriptRoot "dashboard-entry.ps1")
 . (Join-Path $PSScriptRoot "handoff.ps1")
+. (Join-Path $PSScriptRoot "layered.ps1")
 
 $agentRoundSeconds = 5
 $nodeScanIntervalSeconds = 60
@@ -621,6 +622,8 @@ function Invoke-JoinedRound {
     Update-JoinedConnections $found.nodes
     Save-AgentState
     Write-Heartbeat (Get-Heartbeat (New-JoinedStatus) $script:hasJoinedNodes $null "running" $binaryProblem)
+    Update-JoinedLayered $found.nodes
+    Invoke-HandoffRound
 }
 
 function Invoke-StackRound($PassState, [bool]$VolumeChanged) {
@@ -638,7 +641,14 @@ function Invoke-StackRound($PassState, [bool]$VolumeChanged) {
     Update-DockerBackendRules $isRunning
     Save-AgentState
     Write-Heartbeat (Get-Heartbeat $status $isActive $PassState "running" $binaryProblem)
-    if ($isActive) { Invoke-HandoffRound }
+    if ($isActive) { Update-StackLayered; Invoke-HandoffRound }
+}
+
+function Update-StackLayered {
+    $folder = Get-AgentHandoffFolder $script:agentConfig.stackFolder
+    if (-not [System.IO.Directory]::Exists($folder)) { return }
+    Update-NodeFilesFromPolicies $script:foundNodes.nodes $folder
+    Update-HandoffListRequests $script:foundNodes.nodes $folder
 }
 
 <#
@@ -650,6 +660,7 @@ cannot delete itself.
 #>
 function Remove-AgentTraces($PassState) {
     Write-WatcherLog "$(Get-RemovalReason); removing the agent"
+    Stop-HandoffHashJobs
     Stop-AllNodeInstances "the agent is removing itself"
     Remove-SyncthingFirewallRules
     if ($PassState) { Remove-AllDisks $PassState }
@@ -777,6 +788,7 @@ function Start-Agent {
         if ($wait.stopRequested) { break }
         $volumeChanged = $wait.volumeChanged
     }
+    Stop-HandoffHashJobs
     Stop-AllNodeInstances "the service is stopping"
     $script:agentStateChanged = $true
     Save-AgentState

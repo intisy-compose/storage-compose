@@ -22,11 +22,11 @@ start() {
     user="$(unit_value "$1" User)"
     environment="$(unit_value "$1" Environment)"
     command="$(unit_value "$1" ExecStart)"
-    step="$(unit_value "$1" ExecStartPre)"
-    if [[ -n "$step" ]]; then
+    while IFS= read -r step; do
+        [[ -n "$step" ]] || continue
         # shellcheck disable=SC2086
         env $environment su-exec "$user" ${step#-} >> "$state_dir/$1.pre.log" 2>&1 || [[ "$step" == -* ]] || return 1
-    fi
+    done < <(sed -n 's/^ExecStartPre=//p' "$unit_dir/$1")
     # shellcheck disable=SC2086
     env $environment su-exec "$user" $command > "$state_dir/$1.log" 2>&1 &
     echo $! > "$state_dir/$1.pid"
@@ -51,7 +51,8 @@ for argument in "$@"; do
 done
 case "${arguments[0]}" in
     is-active) is_active "${arguments[1]}" || { $quiet || echo inactive; exit 3; } ;;
-    enable) [[ "${arguments[1]}" == now ]] && start "${arguments[2]}" ;;
+    enable) [[ "${arguments[1]}" != now || "${arguments[2]}" == *.timer ]] || start "${arguments[2]}" ;;
+    disable) [[ "${arguments[1]}" != now ]] || stop "${arguments[2]}" ;;
     start) start "${arguments[1]}" ;;
     restart) stop "${arguments[1]}"; start "${arguments[1]}" ;;
     stop) stop "${arguments[1]}" ;;

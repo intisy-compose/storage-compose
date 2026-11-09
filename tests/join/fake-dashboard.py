@@ -4,6 +4,8 @@ It admits the caller into a real Syncthing (the "storage" peer), shares two fold
 answers with that peer, as the real dashboard does. A name in REFUSED gets 403, a name it knows
 with another device ID gets 409. Every request is appended to requests.jsonl in the state folder.
 GET /api/connections/node/<id> answers connections/<id>.json of the state folder as it is, else 404.
+POST /api/layered/node/<id> records the report in layered.jsonl and answers layered/<id>.json as it is,
+else 404 (a dashboard that has nothing for the node).
 """
 import json
 import sys
@@ -55,6 +57,22 @@ def handler_for(peer: Peer, state: Path, known: dict):
             self.wfile.write(text)
 
         def do_POST(self):
+            layered_prefix = "/api/layered/node/"
+            if self.path.startswith(layered_prefix):
+                node = self.path[len(layered_prefix):]
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                with open(state / "layered.jsonl", "a") as log:
+                    log.write(json.dumps(body) + "\n")
+                answer = state / "layered" / f"{node}.json"
+                if not answer.is_file():
+                    return self.answer(404, {"error": "no such node"})
+                text = answer.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(text)))
+                self.end_headers()
+                self.wfile.write(text)
+                return
             if self.path != "/api/join":
                 return self.answer(404, {"error": "not found"})
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")

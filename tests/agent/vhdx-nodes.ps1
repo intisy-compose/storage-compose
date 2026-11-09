@@ -20,6 +20,7 @@ $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "agent-vhdx-$([guid]::New
 $stackFolder = Join-Path $scratch "stack"
 $driveVhdx = Join-Path $scratch "drive-node.vhdx"
 $stickVhdx = Join-Path $scratch "stick.vhdx"
+$testVolumeLabels = @("agentdrive", "agentstick")
 $script:passed = 0
 $script:failed = 0
 
@@ -28,6 +29,9 @@ function Get-TailnetAddress { return $null }
 function Set-SyncthingFirewallRule($Node, $Ports) { }
 function Remove-NetFirewallRule { }
 function Remove-SyncthingFirewallRules { }
+
+# Only this test's own volumes: without this the agent's scan would find a real node on the host's drives and start its Syncthing with the test's ports.
+function Get-VolumeRoots { return @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and $_.FileSystemLabel -in $testVolumeLabels } | ForEach-Object { "$($_.DriveLetter):\" } | Sort-Object) }
 
 function Test-Expectation([string]$What, $Expected, $Actual) {
     if ("$Expected" -eq "$Actual") { Write-Host "  PASS $What`: $Actual" -ForegroundColor Green; $script:passed++ }
