@@ -52,7 +52,7 @@ admitted  = true
 const layout = parseLayout(layoutText);
 const now = new Date("2026-11-05T12:00:00Z");
 const anHourAgo = "2026-11-05T11:00:00Z";
-const fits: SpaceDecision = { state: "fits", threshold: 80, neededBytes: 0, availableBytes: 1, handoffAllowed: true };
+const fits: SpaceDecision = { state: "fits", threshold: 80, neededBytes: 0, availableBytes: 1, handoffAllowed: true, pullAllowed: true };
 
 function file(path: string, overrides: Partial<LocalFile> = {}): LocalFile {
   return { folderId: "videos", path, type: "FILE_INFO_TYPE_FILE", version: ["STICK:3"], size: 1200, blocksHash: "hash-a", modified: anHourAgo, ...overrides };
@@ -212,6 +212,18 @@ describe("a confirmed hand-off", () => {
     }
     const disabled = parseLayout(layoutText.replace("threshold = 0\nadmitted  = true", "threshold = 0\nadmitted  = true\nenabled   = false"));
     assert.deepEqual(decide([keeper("c1c1")], [clip], disabled).confirmed, []);
+  });
+
+  it("does not count a cluster short of space: the file waits for it as full, and another keeper still confirms", () => {
+    const decision = decide([keeper("c1c1", {}, { state: "full" })]);
+    assert.deepEqual(decision.confirmed, []);
+    assert.equal(decision.waiting[0].reason, "keeper-full");
+
+    const keepingLaptop = parseLayout(layoutText.replace("threshold = 50\nadmitted  = true", "threshold = 20\nadmitted  = true"));
+    const both = decide([keeper("c1c1", {}, { state: "full" }), keeper("a002")], [clip], keepingLaptop);
+    assert.deepEqual(both.confirmed.map((entry) => entry.keeper), ["a002"]);
+    const stillWaiting = decide([keeper("c1c1", {}, { state: "full" }), keeper("a002", { version: ["STICK:2"] })], [clip], keepingLaptop);
+    assert.equal(stillWaiting.waiting[0].reason, "not-confirmed", "a keeper that only lacks the version is no full one");
   });
 
   it("does not count a keeper on the handing node's own device", () => {

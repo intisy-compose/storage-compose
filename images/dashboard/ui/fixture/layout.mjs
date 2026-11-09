@@ -127,7 +127,7 @@ export function layeredFixture(nodeId) {
       mode: "apply", threshold: 50, effectiveThreshold: 50, drift: [{ folderId: "archive", label: "Archive", field: "type", text: "send only to send and receive", written: false, held: "turning send-receive waits for the space rule" }],
       missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: 3, problems: [], failed: null, checkedAt: ago(30_000),
       handoff: {
-        writtenAt: ago(30_000), entries: 1, waiting: [{ folderId: "pictures", path: "2019/beach.jpg", reason: "keeper-offline", since: ago(30 * hour) }], notes: [],
+        writtenAt: ago(30_000), apply: true, entries: 1, waiting: [{ folderId: "pictures", path: "2019/beach.jpg", reason: "keeper-offline", since: ago(30 * hour) }], notes: [],
         space: { state: "raised", threshold: 80, neededBytes: 9e11, availableBytes: 8e11 },
         result: { schema: 1, nodeId: "17aa", contractWrittenAt: ago(60_000), finishedAt: ago(40_000), refused: null, purged: 0, notes: [], trash: [{ trash: "2026-10-20/pictures/old.jpg", folderId: "pictures", path: "old.jpg", reason: "its recorded keeper is not connected" }], results: [{ folderId: "pictures", path: "new.jpg", outcome: "unsynced-at-handed-off-path", reason: "newer than its hand-off" }] },
       },

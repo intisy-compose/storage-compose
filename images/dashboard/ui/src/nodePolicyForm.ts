@@ -183,6 +183,30 @@ function policyFields(policy: LayoutNodeView, draft: PolicyDraft, formId: string
   );
 }
 
+/** What stopping a node or letting it rejoin does, said before the click. */
+export function enabledText(policy: Pick<LayoutNodeView, "name" | "enabled">): string {
+  return policy.enabled
+    ? `${policy.name} is enabled. Stopping it pauses its folders on its own host and hands nothing off; what it holds stays on it.`
+    : `${policy.name} is stopped: its folders are paused and nothing is handed off. Rejoining resumes them, and what it gathered meanwhile syncs.`;
+}
+
+async function sendEnabled(policy: LayoutNodeView, draft: PolicyDraft): Promise<void> {
+  const base = appState.layout?.version;
+  if (!base) return done(policy, draft, { text: "The layout is not read yet.", tone: "bad" });
+  draft.busy = true;
+  requestRender();
+  const answer = await saveNodePolicy(policy.id, { base, enabled: !policy.enabled });
+  if (!answer.ok) return done(policy, draft, { text: `Not changed: ${answer.message}`, tone: "bad" });
+  done(policy, draft, savedText(answer.value.saved.message, answer.value.saved.pushed));
+}
+
+/** @implNote A node on another host is stopped or let rejoin from here by `enabled` alone, the one policy field any host commits. */
+function enabledSwitch(policy: LayoutNodeView, draft: PolicyDraft): HTMLElement {
+  const toggle = button(policy.enabled ? `Stop ${policy.name}` : `Let ${policy.name} rejoin`, () => void sendEnabled(policy, draft), policy.enabled ? "button danger" : "button");
+  toggle.disabled = draft.busy;
+  return element("div", { className: "apply-switch" }, element("p", {}, enabledText(policy)), toggle);
+}
+
 /** @implNote Turning apply on lets the node move files into its trash once keepers confirm them, so it takes the node's name typed, for this one node. */
 function applySection(policy: LayoutNodeView, draft: PolicyDraft, formId: string): HTMLElement {
   if (policy.apply) {
@@ -226,12 +250,19 @@ function applySection(policy: LayoutNodeView, draft: PolicyDraft, formId: string
 export function nodePolicySection(node: StorageNode): HTMLElement | null {
   const policy = appState.layout?.nodes.find((entry) => entry.id === node.id);
   if (!policy) return null;
-  if (!node.local) return section("Layered policy", element("p", { className: "muted" }, `Threshold ${policy.threshold}; edited on ${node.host}'s dashboard.`));
   const draft = draftOf(policy);
   const waiting = pendingNotices.get(policy.id);
   if (waiting) {
     draft.notice = waiting;
     pendingNotices.delete(policy.id);
+  }
+  if (!node.local) {
+    return section(
+      "Layered policy",
+      element("p", { className: "muted" }, `Threshold ${policy.threshold}; edited on ${node.host}'s dashboard, except whether it is enabled.`),
+      enabledSwitch(policy, draft),
+      draft.notice ? element("p", { className: `notice tone-text-${draft.notice.tone}` }, draft.notice.text) : null,
+    );
   }
   const formId = `node-policy-${policy.id}`;
   registerForm(formId);

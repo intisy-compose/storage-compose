@@ -5,6 +5,8 @@ import { type NodePlan, handoffIgnoreLines, nodePlan } from "../src/nodePlan.js"
 import { type HandoffFiles, type ReconcileOptions, carriedLayoutPaths, ignoreBlockBegin, ignoreBlockEnd, layoutDeviceIds, managedIgnoreLines, reconcileNode } from "../src/reconcileNode.js";
 import { saveIgnores } from "../src/routes/folderIgnores.js";
 import { parseLayout } from "../src/setupRepo.js";
+import type { SpaceDecision } from "../src/spacePlan.js";
+import { memoryLayeredPauses } from "../src/layeredPauses.js";
 import { type FakeSyncthing, type SyncthingObject, clientOf, folderOf, keeperId, onPlan, ownId, phoneId, versioningOf } from "./fakeFolderSyncthing.js";
 
 const layoutText = `
@@ -58,6 +60,10 @@ function options(overrides: Partial<ReconcileOptions> = {}): ReconcileOptions {
 }
 
 const configured = ["documents", "documents-old"];
+
+function decision(state: SpaceDecision["state"], threshold: number): SpaceDecision {
+  return { state, threshold, neededBytes: 0, availableBytes: 0, handoffAllowed: state === "fits" || state === "raised", pullAllowed: state === "fits" || state === "raised" };
+}
 
 describe("reconciling a node with its plan", () => {
   it("finds nothing to change on a node that has its plan", async () => {
@@ -138,7 +144,7 @@ describe("reconciling a node with its plan", () => {
     assert.equal(syncthing.writes().filter((sent) => sent.path.includes("documents-old"))[0], first);
   });
 
-  it("holds a folder turning send-receive until the space rule, and writes its ignores and versioning", async () => {
+  it("holds a folder turning send-receive while no space decision is made, and writes its ignores and versioning", async () => {
     const below = planOf(configured);
     const syncthing = onPlan(below);
     const above = planOf(configured, 20);
@@ -150,22 +156,50 @@ describe("reconciling a node with its plan", () => {
     const old = result.folders.find((folder) => folder.folderId === "documents-old");
     const type = old?.changes.find((change) => change.field === "type");
     assert.equal(type?.written, false);
-    assert.equal(type?.held, "turning send-receive waits for the space rule");
+    assert.equal(type?.held, "turning send-receive waits until the node's space can be read");
     assert.deepEqual(old?.written.sort(), ["ignores", "versioning"]);
   });
 
-  it("holds the type-up in report mode too, and while the ignores are held", async () => {
+  it("turns a folder send-receive, last, once the space decision fits at the plan's threshold", async () => {
+    const syncthing = onPlan(planOf(configured));
+    syncthing.ignores.set("documents-old", []);
+    const above = planOf(configured, 20);
+
+    const result = await reconcileNode(instanceOf(syncthing), above, options({ space: decision("fits", 20) }));
+
+    assert.equal(folderOf(syncthing, "documents-old").type, "sendreceive");
+    const writes = syncthing.writes().filter((sent) => sent.path.includes("documents-old"));
+    assert.deepEqual(writes.at(-1)?.body, { type: "sendreceive" }, "the type comes after the ignores and the versioning");
+    assert.deepEqual(result.folders.find((folder) => folder.folderId === "documents-old")?.written, ["ignores", "versioning", "type"]);
+  });
+
+  it("holds the type-up while the space decision is unknown, stopped, or made at another threshold", async () => {
+    const above = planOf(configured, 20);
+    const cases: [ReturnType<typeof decision>, RegExp][] = [
+      [decision("unknown", 20), /every folder the node keeps has a size/],
+      [decision("stopped", 20), /does not fit even at its top priority/],
+      [decision("raised", 50), /made at threshold 20, not at the space decision's 50/],
+    ];
+    for (const [space, held] of cases) {
+      const syncthing = onPlan(planOf(configured));
+      const result = await reconcileNode(instanceOf(syncthing), above, options({ space }));
+      const type = result.folders.find((folder) => folder.folderId === "documents-old")?.changes.find((change) => change.field === "type");
+      assert.match(type?.held ?? "", held, space.state);
+      assert.equal(folderOf(syncthing, "documents-old").type, "sendonly");
+    }
+  });
+
+  it("holds the type-up in report mode while space allows nothing, and while the ignores are held even when it does", async () => {
     const syncthing = onPlan(planOf(configured));
     syncthing.ignores.set("documents-old", []);
     const above = planOf(configured, 20);
 
     const reported = await reconcileNode(instanceOf(syncthing), above, options({ apply: false }));
-    const applied = await reconcileNode(instanceOf(syncthing), above, options({ handoffFiles: { ensure: async () => "not mounted" } }));
+    const applied = await reconcileNode(instanceOf(syncthing), above, options({ space: decision("fits", 20), handoffFiles: { ensure: async () => "not mounted" } }));
 
-    for (const result of [reported, applied]) {
-      const type = result.folders.find((folder) => folder.folderId === "documents-old")?.changes.find((change) => change.field === "type");
-      assert.equal(type?.held, "turning send-receive waits for the space rule");
-    }
+    const typeOf = (result: typeof reported) => result.folders.find((folder) => folder.folderId === "documents-old")?.changes.find((change) => change.field === "type");
+    assert.equal(typeOf(reported)?.held, "turning send-receive waits until the node's space can be read");
+    assert.equal(typeOf(applied)?.held, "the ignore block is held, so turning send-receive waits for it");
     assert.equal(folderOf(syncthing, "documents-old").type, "sendonly");
   });
 
@@ -549,5 +583,111 @@ describe("what a node carries", () => {
 
   it("lists the layout's device IDs", () => {
     assert.deepEqual([...layoutDeviceIds(layout)].sort(), [keeperId, ownId]);
+  });
+});
+
+function pausedPlan(plan: NodePlan): NodePlan {
+  return { ...plan, folders: plan.folders.map((folder) => ({ ...folder, paused: true })) };
+}
+
+const marked = (...ids: string[]) => ({ a001: Object.fromEntries(ids.map((id) => [id, { at: "2026-11-05T11:00:00.000Z", size: null }])) });
+
+describe("pausing a stopped node and resuming it", () => {
+  const stopped = "laptop-data does not fit even at its top priority";
+
+  it("records each pause with its size before writing it, pauses every folder first, and holds every other change", async () => {
+    const syncthing = onPlan(planOf(configured));
+    const pauses = memoryLayeredPauses();
+    const recordedBeforeWrite: boolean[] = [];
+    syncthing.onRequest = (method, path) => {
+      if (method === "PATCH" && path.startsWith("/config/folders/")) recordedBeforeWrite.push(decodeURIComponent(path.split("/").pop() ?? "") in (pauses.marks.a001 ?? {}));
+    };
+    const sizes = { documents: { globalBytes: 7, localBytes: 7, needBytes: 0 } };
+
+    const result = await reconcileNode(instanceOf(syncthing), pausedPlan(planOf(configured, 20)), options({ space: decision("stopped", 20), stopped, pauses, sizes }));
+
+    for (const id of configured) assert.equal(folderOf(syncthing, id).paused, true, id);
+    assert.deepEqual(recordedBeforeWrite, [true, true], "each pause is recorded before its PATCH");
+    assert.deepEqual(Object.keys(pauses.marks.a001).sort(), configured);
+    assert.equal(pauses.marks.a001.documents.size?.globalBytes, 7, "the size is kept, as a paused folder reports none");
+    assert.deepEqual(syncthing.writes().map((sent) => JSON.stringify(sent.body)), ['{"paused":true}', '{"paused":true}'], "nothing but the pause is written");
+    const type = result.folders.find((folder) => folder.folderId === "documents-old")?.changes.find((change) => change.field === "type");
+    assert.deepEqual([type?.written, type?.held], [false, stopped]);
+  });
+
+  it("resumes only the folders it paused, and only when the round lets it", async () => {
+    for (const resumeHeld of [null, "a resume waits for a space decision that lets the node pull (it is unknown)"]) {
+      const syncthing = onPlan(planOf(configured));
+      for (const id of configured) folderOf(syncthing, id).paused = true;
+      const pauses = memoryLayeredPauses(marked("documents"));
+
+      const result = await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses, resumeHeld }));
+
+      assert.equal(folderOf(syncthing, "documents").paused, resumeHeld !== null, String(resumeHeld));
+      assert.equal(folderOf(syncthing, "documents-old").paused, true, "paused by someone else, and no drift");
+      assert.deepEqual(Object.keys(pauses.marks.a001 ?? {}), resumeHeld ? ["documents"] : []);
+      assert.deepEqual(result.folders.map((folder) => `${folder.folderId} ${folder.changes.map((change) => `${change.field}:${change.held ?? ""}`).join(",")}`), [`documents paused:${resumeHeld ?? ""}`]);
+    }
+  });
+
+  it("holds every resume when no round says otherwise", async () => {
+    const syncthing = onPlan(planOf(configured));
+    folderOf(syncthing, "documents").paused = true;
+    const result = await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses: memoryLayeredPauses(marked("documents")) }));
+    assert.match(result.folders[0].changes[0].held ?? "", /waits for a space decision/);
+    assert.equal(folderOf(syncthing, "documents").paused, true);
+  });
+
+  it("drops a record whose folder is neither paused nor to be paused, so a person's later pause is never resumed", async () => {
+    const syncthing = onPlan(planOf(configured));
+    const pauses = memoryLayeredPauses(marked("documents"));
+
+    await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses, resumeHeld: null }));
+    assert.deepEqual(pauses.marks, {}, "a crash between the record and the PATCH leaves a record of a folder never paused");
+
+    folderOf(syncthing, "documents").paused = true;
+    await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses, resumeHeld: null }));
+    assert.equal(folderOf(syncthing, "documents").paused, true, "the person's pause stays");
+  });
+
+  it("still pauses over a record it cannot read, and then resumes nothing on a guess", async () => {
+    const syncthing = onPlan(planOf(configured));
+    const pauses = memoryLayeredPauses(marked("documents-old"));
+    pauses.corrupt = true;
+
+    await reconcileNode(instanceOf(syncthing), pausedPlan(planOf(configured)), options({ stopped, pauses }));
+    assert.ok(configured.every((id) => folderOf(syncthing, id).paused === true));
+
+    const unreadable = memoryLayeredPauses(marked("documents", "documents-old"));
+    unreadable.corrupt = true;
+    const result = await reconcileNode(instanceOf(syncthing), planOf(configured), options({ pauses: unreadable, resumeHeld: null }));
+    assert.ok(configured.every((id) => folderOf(syncthing, id).paused === true));
+    assert.deepEqual(result.folders, []);
+  });
+
+  it("writes no pause without a record of its pauses, and nothing in report mode", async () => {
+    const unrecorded = onPlan(planOf(configured));
+    const held = await reconcileNode(instanceOf(unrecorded), pausedPlan(planOf(configured)), options({ stopped }));
+    assert.equal(held.folders[0].changes[0].held, "this host keeps no record of the folders it pauses");
+    assert.deepEqual(unrecorded.writes(), []);
+
+    const reporting = onPlan(planOf(configured));
+    const pauses = memoryLayeredPauses();
+    const reported = await reconcileNode(instanceOf(reporting), pausedPlan(planOf(configured)), options({ apply: false, stopped, pauses }));
+    assert.equal(reported.folders[0].changes[0].text, `pause the folder: ${stopped}`);
+    assert.deepEqual([reporting.writes(), pauses.marks], [[], {}]);
+  });
+
+  it("never pauses an array, whose freeze (C-24) pauses its own folders: a held stop writes nothing and resumes no freeze", async () => {
+    const syncthing = onPlan(planOf(configured));
+    folderOf(syncthing, "documents").paused = true;
+    const pauses = memoryLayeredPauses();
+
+    const result = await reconcileNode(instanceOf(syncthing, "array"), pausedPlan(planOf(configured)), options({ stopped, pauses }));
+    await reconcileNode(instanceOf(syncthing, "array"), planOf(configured), options({ pauses, resumeHeld: null }));
+
+    assert.deepEqual([syncthing.writes(), pauses.marks], [[], {}]);
+    assert.equal(folderOf(syncthing, "documents").paused, true, "the freeze's pause is left to its guard");
+    assert.match(result.folders.find((folder) => folder.folderId === "documents-old")?.held ?? "", /type the folder ID/);
   });
 });

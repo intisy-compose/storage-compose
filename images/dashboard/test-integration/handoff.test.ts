@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { LayoutRound } from "../src/applyLayout.js";
 import { type HandoffContract, type HandoffReads, handoffPublisher, readHandoffContract, syncthingHandoffReads } from "../src/handoffFeed.js";
@@ -13,44 +12,20 @@ import { handoffIgnoreFile } from "../src/nodePlan.js";
 import type { HandoffFiles } from "../src/reconcileNode.js";
 import { type SetupLayout, parseLayout } from "../src/setupRepo.js";
 import { SyncthingClient } from "../src/syncthing.js";
+import { type ExecutorResult, buildExecutorImage, inPeer, runExecutor as runExecutorOn, writeNodeFile as writeNodeFileOn } from "./executor.js";
 import { type Peer, type PeerName, type Peers, completion, ensureEmptyFile, fileExists, fileReport, folderState, readFile, request, scan, startPeers, stopPeers, waitUntil, writeFile } from "./peers.js";
 
 const run = promisify(execFile);
 const root = "/var/syncthing/folders";
 const folder = "archive";
-const executorScript = fileURLToPath(new URL("../../../../images/nodes/handoff.sh", import.meta.url));
-const probeScript = fileURLToPath(new URL("../../../../images/nodes/handoff-probe.sh", import.meta.url));
-const executorImage = "storage-nodes-tests:local";
-const executorDockerfile = `FROM debian:trixie-slim
-RUN apt-get update \\
-    && apt-get install -y --no-install-recommends jq=1.7.1-6+deb13u4 curl=8.14.1-2+deb13u7 \\
-    && rm -rf /var/lib/apt/lists/*
-`;
 const nodeIds: Record<PeerName, string> = { stick: "e001", keeper: "e002", other: "e003" };
 
 let peers: Peers;
 let scratch: string;
 
-interface ExecutorResult {
-  refused: string | null;
-  results: { folderId: string; path: string; outcome: string; reason: string; trash?: string }[];
-  purged: number;
-}
-
-function dockerBuild(dockerfile: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("docker", ["build", "--quiet", "-t", executorImage, "-"], { stdio: ["pipe", "ignore", "pipe"] });
-    let errorText = "";
-    child.stderr.on("data", (chunk: Buffer) => { errorText += chunk.toString(); });
-    child.on("error", reject);
-    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`docker build: exit ${code} ${errorText}`))));
-    child.stdin.end(dockerfile);
-  });
-}
-
 before(async () => {
   scratch = mkdtempSync(join(tmpdir(), "layered-handoff-"));
-  await dockerBuild(executorDockerfile);
+  await buildExecutorImage();
   peers = await startPeers();
 });
 
@@ -115,6 +90,7 @@ async function layoutRound(apply: boolean, instances: Peer[] = [peers.stick, pee
     instances: async () => instances.map(instanceOf),
     handoffFiles: stickFiles(),
     handoffs: handoffPublisher(reads, () => scratch),
+    space: reads,
     record: () => {},
     readBackDelaysMs: [],
   }).run();
@@ -123,13 +99,8 @@ async function layoutRound(apply: boolean, instances: Peer[] = [peers.stick, pee
   return contract;
 }
 
-async function inPeer(peer: Peer, script: string, ...args: string[]): Promise<string> {
-  const { stdout } = await run("docker", ["exec", "-u", "1000:1000", peer.container, "sh", "-c", script, "sh", ...args]);
-  return stdout;
-}
-
 async function writeNodeFile(apply: boolean): Promise<void> {
-  await inPeer(peers.stick, 'mkdir -p "$1/.storage" && printf "%s\\n" "[node]" "id = \\"e001\\"" "name = \\"stick\\"" "kind = \\"drive\\"" "threshold = 50" "apply = $2" > "$1/.storage/node.toml"', root, String(apply));
+  await writeNodeFileOn(peers.stick, root, "e001", apply);
 }
 
 /** A file on the stick, modified `minutesAgo` before now so the quiet period is past, sent to both keepers. */
@@ -142,19 +113,8 @@ async function seed(name: string, content: string, minutesAgo = 20): Promise<voi
   }
 }
 
-/**
- * The executor in a container that shares the stick's volume and network, as the nodes service shares its node's, with the open-file probe
- * beside it in the same container, which sees no other container's processes.
- */
-async function runExecutor(environment: Record<string, string> = {}): Promise<ExecutorResult> {
-  const variables = Object.entries({ HANDOFF_IGNORE_WAIT_SECONDS: "30", HANDOFF_OPEN_SNAPSHOT: "/tmp/probe/open.txt", HANDOFF_PROBE_INTERVAL_SECONDS: "1", ...environment }).flatMap(([name, value]) => ["-e", `${name}=${value}`]);
-  await run("docker", [
-    "run", "--rm", "--network", `container:${peers.stick.container}`, "--volumes-from", peers.stick.container,
-    "-u", "1000:1000", "-v", `${scratch}:/handoff`, "-v", `${executorScript}:/handoff.sh:ro`, "-v", `${probeScript}:/handoff-probe.sh:ro`, ...variables, executorImage,
-    "bash", "-c", 'mkdir -p /tmp/probe && { bash /handoff-probe.sh /tmp/probe & } && bash /handoff.sh "$@"', "executor",
-    "e001", root, "http://127.0.0.1:8384", peers.stick.apiKey, "/handoff/e001.json", "/handoff/e001.result.json",
-  ], { env: { ...process.env, MSYS_NO_PATHCONV: "1" } });
-  return JSON.parse(readFileSync(join(scratch, "e001.result.json"), "utf8")) as ExecutorResult;
+function runExecutor(environment: Record<string, string> = {}): Promise<ExecutorResult> {
+  return runExecutorOn(peers.stick, scratch, "e001", root, environment);
 }
 
 async function putFolder(peer: Peer, type: string): Promise<void> {
