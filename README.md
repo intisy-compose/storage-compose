@@ -190,6 +190,25 @@ admission stays committed but unpushed, so the dashboard never pushes a hand com
 pull, and under Applied a `connections.toml` that does not parse, with the profile still applied in
 its place; saving the form writes a valid profile over it.
 
+## Layered sync: space, stop and rejoin
+
+Each node in the layout's `[nodes.<id>]` keeps 10 % of itself free. Every layout round decides each node's space: it fits at its
+threshold, its threshold is raised so what it keeps fits (the folders the raise drops turn send-only and hand off to a keeper),
+or it does not fit even at its top priority and is stopped. A folder turns send-receive only while the node fits on what is on it
+now. A stopped node has every folder paused and hands nothing off; it resumes once a round decides it fits and may pull again, on
+the sizes recorded with the pause only with a 25 % margin (the next round decides again on the live sizes). Only the pauses the
+layered sync made are resumed, never one a person or an array's freeze made; one recorded without a size, and a stop whose trash cannot
+empty because its folders are paused, need the typed resume on the node page. The cluster cannot raise: when it does not fit it confirms no new hand-off and says so in Attention and through ntfy.
+
+**`enabled = false` together with `apply = true` now pauses every folder of the node**, and committing `enabled = true` again
+lets it rejoin; any host may commit `enabled` alone, from the node's page. A node that only reports (`apply = false`) is paused by
+nothing. While a node is held (stopped, not enabled, or its space unknown) its hand-off contract is trash-only: it moves nothing, and its
+trash still empties once due, without the node file's `apply`, except from a paused folder, whose index cannot be read until it resumes.
+
+A folder counts toward a node's space only once Syncthing reports its index (`remoteSequence` in `/rest/db/status`, which Syncthing
+2.1.6 does). **A Syncthing that does not report `remoteSequence` makes every node `unknown`**: nothing turns send-receive, nothing
+is handed off and no stop resumes by itself.
+
 ## drive-sync
 
 `tools/drive-sync` applies the device list in `data/drive-sync.toml` to a device's own Syncthing:
