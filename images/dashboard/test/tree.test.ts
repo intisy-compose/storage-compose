@@ -75,11 +75,39 @@ function wait(milliseconds: number): Promise<void> {
 }
 
 let delayedAnswers = 0;
+const finishDelays = new Set<() => void>();
+
+/**
+ * A delay a test ends with `releaseDelayedAnswers`, so what returned before the release cannot have waited for the answer, however loaded the machine is.
+ * @implNote The delay runs out by itself so that a listing that does wait fails on `assertStillDelayed` instead of hanging the suite. The release also zeroes the fake's delays: reads that follow the released one must not be held in turn.
+ */
+const heldUntilReleasedMs = 60_000;
+
+function releasableWait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      finishDelays.delete(finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    finishDelays.add(finish);
+  });
+}
+
+function releaseDelayedAnswers(instance: { errorsDelayMs?: number; browseDelayMs?: number; statusDelayMs?: number; delayMs?: number }): void {
+  for (const key of ["errorsDelayMs", "browseDelayMs", "statusDelayMs", "delayMs"] as const) if (instance[key] !== undefined) instance[key] = 0;
+  for (const finish of [...finishDelays]) finish();
+}
+
+async function assertStillDelayed(what: string): Promise<void> {
+  await until(() => delayedAnswers > 0, `${what} to be asked and held`);
+}
 
 async function delayed(milliseconds: number, answer: () => void): Promise<void> {
   delayedAnswers += 1;
   try {
-    if (milliseconds) await wait(milliseconds);
+    if (milliseconds) await releasableWait(milliseconds);
     answer();
   } finally {
     delayedAnswers -= 1;
@@ -332,12 +360,12 @@ describe("tree listing of one node", () => {
     await treeListing(node.nodeId, "Documents", 1, sources());
     instance.folders[0].errors = ["Recipes\\cake\\session.lock"];
     instance.folders[0].status = { sequence: 999_001 };
-    instance.errorsDelayMs = 3000;
-    const started = Date.now();
+    instance.errorsDelayMs = heldUntilReleasedMs;
     const during = await treeListing(node.nodeId, "Documents", 1, sources());
-    assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
+    await assertStillDelayed("the slow lists");
     assert.equal(stateOf(during.entries.find((entry) => entry.name === "Taxes")).status, "failed");
     assert.equal(stateOf(during.entries.find((entry) => entry.name === "Recipes")).status, "in-sync");
+    releaseDelayedAnswers(instance);
     await until(async () => {
       const listing = await treeListing(node.nodeId, "Documents", 1, sources());
       return stateOf(listing.entries.find((entry) => entry.name === "Recipes")).status === "failed";
@@ -348,10 +376,12 @@ describe("tree listing of one node", () => {
   });
 
   it("a first read of the lists that takes too long shows its rows as still being read with a note", async () => {
-    instance.errorsDelayMs = 2000;
+    instance.errorsDelayMs = heldUntilReleasedMs;
     const listing = await treeListing(node.nodeId, "Documents", 1, sources({ firstListsWaitMs: 800 }));
+    await assertStillDelayed("the slow lists");
     assert.deepEqual(stateOf(listing.entries.find((entry) => entry.name === "Recipes")), { status: "unknown", detail: "still being read" });
     assert.ok(listing.notes.some((note) => note.includes("still being read")), listing.notes.join("; "));
+    releaseDelayedAnswers(instance);
     await until(() => delayedAnswers === 0, "the slow lists");
   });
 
@@ -364,9 +394,7 @@ describe("tree listing of one node", () => {
       listing.notes.join("; "),
     );
     const readsBefore = errorsRequests;
-    const started = Date.now();
     const again = await treeListing(node.nodeId, "Documents", 1, sources());
-    assert.ok(Date.now() - started < 1000, `${Date.now() - started} ms`);
     assert.equal(stateOf(again.entries.find((entry) => entry.name === "Recipes")).status, "unknown");
     assert.equal(errorsRequests, readsBefore, "the failed read is not tried again on every listing");
   });
@@ -381,32 +409,33 @@ describe("tree listing of one node", () => {
   });
 
   it("a folder status that takes too long shows the folder as still being read instead of waiting for it", async () => {
-    instance.statusDelayMs = 2000;
-    const started = Date.now();
+    instance.statusDelayMs = heldUntilReleasedMs;
     const listing = await treeListing(node.nodeId, "", 1, sources({ firstListsWaitMs: 300 }));
-    assert.ok(Date.now() - started < 1500, `${Date.now() - started} ms`);
+    await assertStillDelayed("the slow status");
     assert.deepEqual(stateOf(listing.entries.find((entry) => entry.name === "Documents")), { status: "unknown", detail: "still being read" });
+    releaseDelayedAnswers(instance);
     await until(() => delayedAnswers === 0, "the slow status");
   });
 
   it("a slow folder status and slow lists share one wait, not one each", async () => {
     instance.folders = instance.folders.filter((folder) => folder.id === "documents");
-    instance.statusDelayMs = 1000;
-    instance.errorsDelayMs = 3000;
+    instance.statusDelayMs = 1500;
+    instance.errorsDelayMs = heldUntilReleasedMs;
     const started = Date.now();
-    const listing = await treeListing(node.nodeId, "Documents", 1, sources({ firstListsWaitMs: 1200 }));
-    assert.ok(Date.now() - started < 1900, `${Date.now() - started} ms, where a wait for the status and then one for the lists takes 2200`);
+    const listing = await treeListing(node.nodeId, "Documents", 1, sources({ firstListsWaitMs: 3000 }));
+    assert.ok(Date.now() - started < 4000, `${Date.now() - started} ms, where a wait for the status and then one for the lists takes 4500`);
     assert.deepEqual(stateOf(listing.entries.find((entry) => entry.name === "Recipes")), { status: "unknown", detail: "still being read" });
+    releaseDelayedAnswers(instance);
     await until(() => delayedAnswers === 0, "the slow status and lists");
   });
 
   it("a first browse that takes too long lists nothing yet and says the contents are still being read", async () => {
-    instance.browseDelayMs = 2000;
-    const started = Date.now();
+    instance.browseDelayMs = heldUntilReleasedMs;
     const listing = await treeListing(node.nodeId, "Documents", 1, sources({ firstListsWaitMs: 300 }));
-    assert.ok(Date.now() - started < 1500, `${Date.now() - started} ms`);
+    await assertStillDelayed("the slow browse");
     assert.ok(!listing.entries.some((entry) => entry.name === "Recipes"));
     assert.ok(listing.notes.includes("Documents: its contents on pc are still being read"), listing.notes.join("; "));
+    releaseDelayedAnswers(instance);
     await until(() => delayedAnswers === 0, "the slow browse");
     const browsesBefore = browseRequests.length;
     const later = await treeListing(node.nodeId, "Documents", 1, sources());
@@ -685,25 +714,25 @@ describe("tree listing of all nodes", () => {
 
   it("a slow node shows unknown without holding up the others", async () => {
     const nodes = threeNodes();
-    instances.get(`private-array-${round}`)!.delayMs = 3000;
-    const started = Date.now();
-    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes, { nodeWaitMs: 150 }));
-    assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
+    instances.get(`private-array-${round}`)!.delayMs = heldUntilReleasedMs;
+    const listing = await allNodesListing("Documents", 1, "all", allSources(nodes, { nodeWaitMs: 1500 }));
+    await assertStillDelayed("the slow node");
     const taxes = listing.entries.find((entry) => entry.name === "Taxes");
     assert.equal(stateOn(taxes, nodes[0].nodeId)?.status, "failed");
     assert.deepEqual(stateOn(taxes, nodes[1].nodeId), { status: "unknown", detail: "still being read" });
     assert.ok(listing.notes.includes("private-array is still being read"), listing.notes.join("; "));
     assert.ok(!listing.notes.some((note) => note.includes("not answering")), listing.notes.join("; "));
+    releaseDelayedAnswers(instances.get(`private-array-${round}`)!);
     await until(() => delayedAnswers === 0, "the slow node's answers");
   });
 
   it("a slow supplying read is cut at the listing budget", async () => {
     const nodes = threeNodes();
-    instances.get(`pc-${round}`)!.browseDelayMs = 3000;
-    const started = Date.now();
+    instances.get(`pc-${round}`)!.browseDelayMs = heldUntilReleasedMs;
     const listing = await allNodesListing("Documents", 1, "all", allSources(nodes, { listingBudgetMs: 200 }));
-    assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
+    await assertStillDelayed("the slow browse");
     assert.ok(listing.notes.includes("pc is still reading Documents"), listing.notes.join("; "));
+    releaseDelayedAnswers(instances.get(`pc-${round}`)!);
     await until(() => delayedAnswers === 0, "the slow browse");
     const browsesBefore = browseRequests.length;
     const later = await allNodesListing("Documents", 1, "all", allSources(nodes));

@@ -45,6 +45,8 @@ class FakeSyncthing {
   /** `/rest/system/status` answers 500 while set, or only after `statusDelayMs`. */
   statusFails = false;
   statusDelayMs = 0;
+  /** Sends every status answer still waiting out `statusDelayMs`. */
+  answerHeldStatuses: () => void = () => undefined;
   readonly server: Server;
 
   constructor() {
@@ -59,7 +61,13 @@ class FakeSyncthing {
           response.writeHead(500);
           return response.end("status unreadable");
         }
-        return void setTimeout(() => reply({ myID: pcDevice, startTime: this.startTime }), this.statusDelayMs);
+        const answer = () => reply({ myID: pcDevice, startTime: this.startTime });
+        const timer = setTimeout(answer, this.statusDelayMs);
+        this.answerHeldStatuses = () => {
+          clearTimeout(timer);
+          answer();
+        };
+        return;
       }
       if (url.pathname === "/rest/config/devices") return reply([{ deviceID: arrayDevice, name: "private-array", addresses: [] }]);
       if (url.pathname === "/rest/config/folders") return reply([{ id: "documents", label: "Documents", path: "/x", type: "sendreceive", paused: false, devices: [] }]);
@@ -553,13 +561,12 @@ describe("file changes", () => {
 
   it("a slow start time read is cut short and the change poll goes on", async () => {
     const { fake, feed } = await instance("pc", "pc");
-    fake.statusDelayMs = 5_000;
+    fake.statusDelayMs = 60_000;
     const log = new ActivityLog(100);
-    const started = Date.now();
     feedsFor(log, { startTimeTimeoutMs: 100 }).reconcile([feed]);
     fake.emitDisk(diskChange("LocalChangeDetected", "slow.txt", pcShort));
     await until(() => changes(log).length === 1, "the change despite the slow status");
-    assert.ok(Date.now() - started < 3_000, `${Date.now() - started} ms, where waiting for the status takes 5000`);
+    fake.answerHeldStatuses();
   });
 
   it("a folder removed from the node's configuration takes its change buffer with it", async () => {
