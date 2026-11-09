@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -13,9 +13,14 @@ import {
   type IndexEntry,
   decideHandoffContract,
   emptyContract,
+  handoffContractFile,
   handoffContractSchema,
+  handoffPublisher,
+  handoffResultFile,
   modifiedSecondsOf,
   readHandoffContract,
+  readHandoffResult,
+  rotatedBatch,
   writeHandoffContract,
 } from "../src/handoffFeed.js";
 import { hostAllowlist } from "../src/http.js";
@@ -94,6 +99,7 @@ class FakeReads implements HandoffReads {
   calls = 0;
   readonly entryReads = new Map<string, number>();
   changeOnSecondRead: { nodeId: string; folderId: string; path: string; to: IndexEntry } | null = null;
+  readonly globalEntries = new Map<string, IndexEntry>();
 
   constructor(readonly nodes: Record<string, FakeNode>) {}
 
@@ -116,6 +122,11 @@ class FakeReads implements HandoffReads {
     const change = this.changeOnSecondRead;
     if (change && count >= 2 && change.nodeId === instance.nodeId && change.folderId === folderId && change.path === path) return change.to;
     return node.files[folderId]?.[path] ?? null;
+  }
+
+  async fileReport(instance: LocalInstance, folderId: string, path: string) {
+    const local = this.node(instance).files[folderId]?.[path];
+    return local ? { local, global: this.globalEntries.get(path) ?? local } : null;
   }
 
   async completion(instance: LocalInstance, folderId: string) {
@@ -358,6 +369,117 @@ describe("the hand-off contract", () => {
 
     assert.deepEqual(contract.entries, []);
     assert.equal(reads.calls, 0);
+  });
+});
+
+describe("a held contract's keeper evidence for a paused folder's trash", () => {
+  const stopped = { decision: { state: "stopped" as const, threshold: 80, neededBytes: 1, availableBytes: 0, handoffAllowed: false, pullAllowed: false } };
+  const awaitingClip = { folderId: "videos", path: "clip.mp4", keeperDevice: "LAPTOP-ID" };
+  const heldInput = (reads: HandoffReads, overrides: Partial<HandoffInput> = {}, layout = layoutText()) => inputFor(parseLayout(layout), reads, "b001", { decided: stopped, trashAwaiting: [awaitingClip], ...overrides });
+
+  it("carries the recorded keeper's own index, and the contract still holds everything", async () => {
+    const reads = network();
+    reads.globalEntries.set("clip.mp4", entry({ version: ["STICK:3", "LAPTOP:1"] }));
+
+    const contract = await decideHandoffContract(heldInput(reads));
+
+    assert.deepEqual([contract.apply, contract.trashOnly, contract.entries], [false, true, []]);
+    assert.deepEqual(contract.trashEvidence, [{ folderId: "videos", path: "clip.mp4", keeperDevice: "LAPTOP-ID", observedAt: now.toISOString(), version: ["STICK:3"], deleted: false, ignored: false, invalid: false, globalVersion: ["STICK:3", "LAPTOP:1"], globalDeleted: false }]);
+  });
+
+  it("passes what the keeper's index says, its deletion included, for the executor to judge", async () => {
+    const reads = network({ laptop: { files: { videos: { "clip.mp4": entry({ deleted: true, ignored: true, invalid: true }) } }, completion: {} } });
+    reads.globalEntries.set("clip.mp4", entry({ deleted: true }));
+
+    const [evidence] = (await decideHandoffContract(heldInput(reads))).trashEvidence ?? [];
+
+    assert.deepEqual([evidence.deleted, evidence.ignored, evidence.invalid, evidence.globalDeleted], [true, true, true, true]);
+  });
+
+  it("is carried by a node that is not enabled as well", async () => {
+    const layout = layoutText().replace("apply     = true", "apply     = true\nenabled   = false");
+
+    const contract = await decideHandoffContract(heldInput(network(), { decided: undefined }, layout));
+
+    assert.deepEqual([contract.trashOnly, contract.trashEvidence?.length], [true, 1]);
+  });
+
+  it("is never on a contract that may move files", async () => {
+    const decided = { decision: { state: "fits" as const, threshold: 80, neededBytes: 0, availableBytes: 1, handoffAllowed: true, pullAllowed: true } };
+
+    const contract = await decideHandoffContract(heldInput(network(), { decided }));
+
+    assert.equal(contract.apply, true);
+    assert.equal(contract.trashEvidence, undefined);
+  });
+
+  it("is never for a node that only reports", async () => {
+    const reads = network();
+
+    const contract = await decideHandoffContract(heldInput(reads, {}, layoutText(false)));
+
+    assert.deepEqual([contract.trashOnly, contract.trashEvidence], [undefined, undefined]);
+    assert.equal(reads.calls, 0);
+  });
+
+  it("comes only from the recorded keeper, on another device, enabled and still keeping the folder", async () => {
+    const cases: [string, Partial<HandoffInput>, string][] = [
+      ["a device no node of this host has", { trashAwaiting: [{ ...awaitingClip, keeperDevice: "STRANGER-ID" }] }, layoutText()],
+      ["the node's own device", { trashAwaiting: [{ ...awaitingClip, keeperDevice: "STICK-ID" }] }, layoutText()],
+      ["no recorded keeper", { trashAwaiting: [{ ...awaitingClip, keeperDevice: "" }] }, layoutText()],
+      ["a keeper of another host", { instances: [instance("b001")] }, layoutText()],
+      ["a disabled keeper", {}, layoutText().replace("threshold = 20", "threshold = 20\nenabled   = false")],
+      ["a keeper that no longer keeps the folder", {}, layoutText().replace("threshold = 20", "threshold = 50")],
+    ];
+    for (const [name, overrides, layout] of cases) {
+      const contract = await decideHandoffContract(heldInput(network(), overrides, layout));
+
+      assert.equal(contract.trashEvidence, undefined, name);
+      assert.equal(contract.trashOnly, true, name);
+    }
+  });
+
+  it("is not given by a keeper that is stopped, frozen or degraded, and is by one that is only full", async () => {
+    for (const state of ["stopped", "frozen", "degraded"] as const) {
+      const contract = await decideHandoffContract(heldInput(network({ laptop: { state } })));
+      assert.equal(contract.trashEvidence, undefined, state);
+    }
+    const full = await decideHandoffContract(heldInput(network({ laptop: { state: "full" } })));
+    assert.equal(full.trashEvidence?.length, 1);
+    const spaceStopped = await decideHandoffContract(heldInput(network(), { keeperSpace: () => ({ state: "stopped", threshold: 80, neededBytes: 1, availableBytes: 0, handoffAllowed: false, pullAllowed: false }) }));
+    assert.equal(spaceStopped.trashEvidence, undefined);
+  });
+
+  it("is simply absent for a keeper that cannot be read or has no such path, and the others still come", async () => {
+    const unreadable = await decideHandoffContract(heldInput(network({ laptop: { fails: true } })));
+    assert.equal(unreadable.trashEvidence, undefined);
+
+    const reads = network();
+    const contract = await decideHandoffContract(heldInput(reads, { trashAwaiting: [{ ...awaitingClip, path: "missing.mp4" }, awaitingClip] }));
+    assert.deepEqual(contract.trashEvidence?.map((evidence) => evidence.path), ["clip.mp4"]);
+  });
+
+  it("rotates through the awaited copies, so ones that never pass cannot keep the rest out", () => {
+    assert.deepEqual(rotatedBatch([1, 2, 3], 0, 5), { batch: [1, 2, 3], next: 0 });
+    assert.deepEqual(rotatedBatch([1, 2, 3, 4, 5], 0, 2), { batch: [1, 2], next: 2 });
+    assert.deepEqual(rotatedBatch([1, 2, 3, 4, 5], 2, 2), { batch: [3, 4], next: 4 });
+    assert.deepEqual(rotatedBatch([1, 2, 3, 4, 5], 4, 2), { batch: [5, 1], next: 1 });
+  });
+
+  it("is asked for by the executor's last result, and the publisher hands it to the contract", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "trash-evidence-"));
+    try {
+      writeFileSync(handoffResultFile(directory, "b001"), JSON.stringify({ schema: 1, nodeId: "b001", results: [], trash: [], awaitingKeeperEvidence: [awaitingClip, { folderId: "videos" }, 7] }));
+      const stick = instance("b001");
+
+      assert.deepEqual((await readHandoffResult(handoffResultFile(directory, "b001")))?.awaitingKeeperEvidence, [awaitingClip], "only well-formed lines are taken");
+      await handoffPublisher(network(), () => directory, () => now).publish({ layout: parseLayout(layoutText()), nodeId: "b001", localFolders: new Set(["Videos", "Work"]), instance: stick, instances: [stick, instance("a002")], decided: stopped });
+
+      const contract = await readHandoffContract(handoffContractFile(directory, "b001"));
+      assert.deepEqual(contract?.trashEvidence?.map((evidence) => evidence.path), ["clip.mp4"]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

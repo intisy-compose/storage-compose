@@ -21,7 +21,7 @@ import { handoffDirectory, handoffSettings, hostAgentHandoffDirectory, hostAgent
 import type { LayoutNode, SetupLayout } from "./setupRepo.js";
 import { SyncthingRefusal } from "./syncthing.js";
 import { type FolderSize, type FolderSizes, type NodeSpace, type SpaceDecision, effectiveThreshold } from "./spacePlan.js";
-import type { HandoffResult } from "./api/types.js";
+import type { AwaitingKeeperEvidence, HandoffResult } from "./api/types.js";
 
 export const handoffContractSchema = 1;
 
@@ -77,6 +77,26 @@ export interface HandoffContract {
    * trash under its own keeper check, so a held node can free the space its hand-offs left in the trash.
    */
   trashOnly?: boolean;
+  /** Only on a held contract: what the recorded keeper's own index says of copies whose folder is paused on the node. */
+  trashEvidence?: TrashKeeperEvidence[];
+}
+
+/**
+ * The recorded keeper's own `/rest/db/file` for one trash copy, read on this host. The folder is paused on the node, whose Syncthing then
+ * answers no index read, so this stands in for its availability and global version; the executor decides from these fields.
+ */
+export interface TrashKeeperEvidence {
+  folderId: string;
+  path: string;
+  keeperDevice: string;
+  /** When the read returned, on this host's clock; the executor refuses evidence as old as a contract it would refuse. */
+  observedAt: string;
+  version: string[];
+  deleted: boolean;
+  ignored: boolean;
+  invalid: boolean;
+  globalVersion: string[];
+  globalDeleted: boolean;
 }
 
 /** A node's own `/rest/db/file` `local` entry, or a keeper's. */
@@ -92,11 +112,18 @@ export interface IndexEntry {
   invalid: boolean;
 }
 
+export interface KeeperFileReport {
+  local: IndexEntry;
+  global: IndexEntry;
+}
+
 /** What deciding a contract reads from this host's Syncthing instances, and nothing else: it never writes to any. */
 export interface HandoffReads {
   /** Every file of the folder's tree with its modification time, as `/rest/db/browse` lists it. */
   files(instance: LocalInstance, folderId: string): Promise<{ path: string; modified: string }[]>;
   entry(instance: LocalInstance, folderId: string, path: string): Promise<IndexEntry | null>;
+  /** A keeper's own and global entry of one path; null when it has no such path, a refusal when its folder is paused. */
+  fileReport(instance: LocalInstance, folderId: string, path: string): Promise<KeeperFileReport | null>;
   completion(instance: LocalInstance, folderId: string): Promise<number>;
   sizes(instance: LocalInstance, folderId: string): Promise<FolderSize>;
   /** Null when the node's space cannot be read. */
@@ -123,6 +150,8 @@ export interface HandoffInput {
   keeperSpace?: (nodeId: string) => SpaceDecision | null;
   /** The keepers read through other hosts' dashboards, each with an age of its own; a round without it counts only this host's. */
   relayed?: RelayedReads;
+  /** The due trash copies of paused folders the node's executor last asked about; each gets a read of its keeper on a held contract. */
+  trashAwaiting?: AwaitingKeeperEvidence[];
 }
 
 const isoTime = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
@@ -311,6 +340,59 @@ export function held(contract: HandoffContract, note: string): HandoffContract {
   return { ...contract, apply: false, trashOnly: true, notes: [`hand-offs are held: ${note}`] };
 }
 
+/** A keeper short of space still holds what it has; a degraded one may have lost the drive a file was on, a stopped or frozen one is not answering for it. */
+function keeperStateMayVouch(state: KeeperState): boolean {
+  return state === "ok" || state === "full";
+}
+
+/** A keeper of this host that may vouch for the copy: the recorded device, enabled, on another device than the node, keeping the folder. */
+function vouchingKeeper(input: HandoffInput, awaiting: AwaitingKeeperEvidence): LocalInstance | null {
+  const handingDevice = deviceOfNode(input.layout, input.nodeId);
+  if (awaiting.keeperDevice === "" || awaiting.keeperDevice === handingDevice) return null;
+  return input.instances.find((instance) => instance.nodeId !== input.nodeId
+    && deviceOfNode(input.layout, instance.nodeId) === awaiting.keeperDevice
+    && input.layout.nodes.some((node) => node.id === instance.nodeId && node.enabled)
+    && keepsFolder(input.layout, instance.nodeId, awaiting.folderId)) ?? null;
+}
+
+async function keeperStateFor(input: HandoffInput, keeper: LocalInstance): Promise<KeeperState> {
+  return keeperSpaceState(input.keeperSpace?.(keeper.nodeId) ?? null) ?? input.reads.keeperState(keeper);
+}
+
+/** @implNote A keeper that cannot be read, paused folder included, gives no evidence: the executor then keeps the copy. */
+async function evidenceFor(input: HandoffInput, awaiting: AwaitingKeeperEvidence): Promise<TrashKeeperEvidence | null> {
+  const keeper = vouchingKeeper(input, awaiting);
+  if (!keeper) return null;
+  try {
+    if (!keeperStateMayVouch(await keeperStateFor(input, keeper))) return null;
+    const report = await input.reads.fileReport(keeper, awaiting.folderId, awaiting.path);
+    if (!report) return null;
+    return {
+      folderId: awaiting.folderId,
+      path: awaiting.path,
+      keeperDevice: awaiting.keeperDevice,
+      observedAt: input.now().toISOString(),
+      version: [...report.local.version],
+      deleted: report.local.deleted,
+      ignored: report.local.ignored,
+      invalid: report.local.invalid,
+      globalVersion: [...report.global.version],
+      globalDeleted: report.global.deleted,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function heldWithEvidence(input: HandoffInput, contract: HandoffContract, note: string): Promise<HandoffContract> {
+  const evidence: TrashKeeperEvidence[] = [];
+  for (const awaiting of input.trashAwaiting ?? []) {
+    const found = await evidenceFor(input, awaiting);
+    if (found) evidence.push(found);
+  }
+  return { ...held(contract, note), ...(evidence.length ? { trashEvidence: evidence } : {}) };
+}
+
 /** A round's contract with the space decision it rests on, null when none was made. */
 export interface HandoffRound {
   contract: HandoffContract;
@@ -331,13 +413,13 @@ export async function decideHandoffRound(input: HandoffInput): Promise<HandoffRo
   const node = input.layout.nodes.find((entry) => entry.id === input.nodeId);
   const plan = node ? nodePlan(input.layout, input.nodeId, input.localFolders) : null;
   const contract = emptyContract(input.nodeId, node?.apply ?? false, plan?.cluster ?? false, input.now(), quietMinutes);
-  if (node?.apply && !node.enabled && !plan?.cluster) return { contract: held(contract, `${node.name} is not enabled`), space: input.decided?.decision ?? null };
+  if (node?.apply && !node.enabled && !plan?.cluster) return { contract: await heldWithEvidence(input, contract, `${node.name} is not enabled`), space: input.decided?.decision ?? null };
   if (!node || !plan || !node.apply || plan.cluster || plan.problems.length || !plan.admitted) return { contract, space: null };
   let space: SpaceDecision | null = null;
   try {
     const placed = await plannedForSpace(input, plan);
     space = placed.decision;
-    if ("note" in placed) return { contract: held(contract, placed.note), space };
+    if ("note" in placed) return { contract: await heldWithEvidence(input, contract, placed.note), space };
     const handing = placed.plan.folders.filter((folder) => folder.handsOff);
     const own = await ownRecords(input, handing, quietMinutes);
     const candidates = handoffCandidates(input.layout, placed.plan, own.files, placed.decision, input.now(), quietMinutes);
@@ -383,12 +465,21 @@ export function handoffResultFile(directory: string, nodeId: string): string {
   return join(directory, `${nodeId}.result.json`);
 }
 
+function isAwaiting(value: unknown): value is AwaitingKeeperEvidence {
+  const awaiting = value as AwaitingKeeperEvidence | null;
+  return typeof awaiting === "object" && awaiting !== null && typeof awaiting.folderId === "string" && typeof awaiting.path === "string" && typeof awaiting.keeperDevice === "string";
+}
+
+function awaitingOf(value: unknown): AwaitingKeeperEvidence[] {
+  return Array.isArray(value) ? value.filter(isAwaiting) : [];
+}
+
 /** The executor's last result, null while there is none or it is not one this dashboard reads. */
 export async function readHandoffResult(path: string): Promise<HandoffResult | null> {
   try {
     const result = JSON.parse(await readFile(path, "utf8")) as HandoffResult;
     if (result?.schema !== 1 || !Array.isArray(result.results) || !Array.isArray(result.trash)) return null;
-    return { ...result, notes: Array.isArray(result.notes) ? result.notes : [], refused: typeof result.refused === "string" ? result.refused : null };
+    return { ...result, notes: Array.isArray(result.notes) ? result.notes : [], refused: typeof result.refused === "string" ? result.refused : null, awaitingKeeperEvidence: awaitingOf(result.awaitingKeeperEvidence) };
   } catch {
     return null;
   }
@@ -439,16 +530,22 @@ async function keeperStateOf(instance: LocalInstance): Promise<KeeperState> {
   return status.state === "degraded" ? "degraded" : "ok";
 }
 
+async function fileAnswer(instance: LocalInstance, folderId: string, path: string): Promise<{ local?: IndexEntry; global?: IndexEntry } | null> {
+  try {
+    return await callSyncthing(instance, (client) => client.request<{ local?: IndexEntry; global?: IndexEntry } | null>("GET", `/db/file?${query(folderId, path)}`));
+  } catch (error) {
+    if (error instanceof SyncthingRefusal && error.status === 404) return null;
+    throw error;
+  }
+}
+
 /** The reads of each instance's own Syncthing, as the layout round makes them. */
 export const syncthingHandoffReads: HandoffReads = {
   files: async (instance, folderId) => browsedFiles(await callSyncthing(instance, (client) => client.request<BrowseEntry[] | null>("GET", `/db/browse?${query(folderId)}`))),
-  entry: async (instance, folderId, path) => {
-    try {
-      return (await callSyncthing(instance, (client) => client.request<{ local?: IndexEntry } | null>("GET", `/db/file?${query(folderId, path)}`)))?.local ?? null;
-    } catch (error) {
-      if (error instanceof SyncthingRefusal && error.status === 404) return null;
-      throw error;
-    }
+  entry: async (instance, folderId, path) => (await fileAnswer(instance, folderId, path))?.local ?? null,
+  fileReport: async (instance, folderId, path) => {
+    const answer = await fileAnswer(instance, folderId, path);
+    return answer?.local && answer.global ? { local: answer.local, global: answer.global } : null;
   },
   completion: async (instance, folderId) => (await callSyncthing(instance, (client) => client.request<{ completion: number }>("GET", `/db/completion?${query(folderId)}`))).completion,
   sizes: async (instance, folderId) => {
@@ -491,6 +588,13 @@ export interface HandoffPublisher {
   clear(nodeId: string, instance: LocalInstance, apply: boolean, held?: string | null): Promise<void>;
 }
 
+/** The next `size` items after `offset`, wrapping, so copies that never pass cannot keep the others from being read. */
+export function rotatedBatch<Item>(items: readonly Item[], offset: number, size: number): { batch: Item[]; next: number } {
+  if (items.length <= size) return { batch: [...items], next: 0 };
+  const start = offset % items.length;
+  return { batch: [...items, ...items].slice(start, start + size), next: (start + size) % items.length };
+}
+
 const published = new Map<string, HandoffContract>();
 const publishedSpace = new Map<string, SpaceDecision | null>();
 
@@ -505,6 +609,13 @@ export function handoffPublisher(
   now: () => Date = () => new Date(),
   quietMinutes = handoffSettings.quietMinutes,
 ): HandoffPublisher {
+  const awaitingOffsets = new Map<string, number>();
+  const trashAwaitingFor = async (instance: LocalInstance): Promise<AwaitingKeeperEvidence[]> => {
+    const result = await readHandoffResult(handoffResultFile(directoryOf(instance), instance.nodeId));
+    const { batch, next } = rotatedBatch(result?.awaitingKeeperEvidence ?? [], awaitingOffsets.get(instance.nodeId) ?? 0, handoffBatchSize);
+    awaitingOffsets.set(instance.nodeId, next);
+    return batch;
+  };
   const write = async (instance: LocalInstance, contract: HandoffContract, space: SpaceDecision | null) => {
     await writeHandoffContract(handoffContractFile(directoryOf(instance), contract.nodeId), contract);
     published.set(contract.nodeId, contract);
@@ -512,7 +623,7 @@ export function handoffPublisher(
   };
   return {
     publish: async (context) => {
-      const round = await decideHandoffRound({ ...context, reads, now, quietMinutes });
+      const round = await decideHandoffRound({ ...context, reads, now, quietMinutes, trashAwaiting: await trashAwaitingFor(context.instance) });
       await write(context.instance, round.contract, round.space);
       return round.contract.apply ? round.contract.entries.length + round.contract.waiting.length : null;
     },

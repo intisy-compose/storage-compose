@@ -400,6 +400,12 @@ export interface HandoffTrashEntry {
 }
 
 /** `<node id>.result.json`, the executor's last run. */
+export interface AwaitingKeeperEvidence {
+  folderId: string;
+  path: string;
+  keeperDevice: string;
+}
+
 export interface HandoffResult {
   schema: number;
   nodeId: string;
@@ -411,6 +417,8 @@ export interface HandoffResult {
   trash: HandoffTrashEntry[];
   notes: string[];
   purged: number;
+  /** Copies due to leave the trash whose folder is paused on the node, each waiting for the recorded keeper's own index. */
+  awaitingKeeperEvidence?: AwaitingKeeperEvidence[];
   /** Bytes the manifest's copies still hold in the trash, which leave the node once due; absent from a run that was refused whole. */
   trashBytes?: number;
 }

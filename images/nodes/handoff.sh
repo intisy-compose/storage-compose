@@ -9,7 +9,8 @@
 # removed again only while its file is still there and was never moved (it changed, or the retries
 # ran out), which brings the file back into normal sync. A moved path's line is never removed. Nothing
 # is deleted except what this script moved into the trash, once it is HANDOFF_TRASH_DAYS old and a
-# keeper still holds its version. It never asks Syncthing to override, revert or delete anything. Open
+# keeper still holds its version; a folder paused here answers no index reads, so a held contract's keeper
+# evidence stands in for its own index. It never asks Syncthing to override, revert or delete anything. Open
 # files are read from the handoff-probe sidecar's snapshot (HANDOFF_OPEN_SNAPSHOT), never from /proc here.
 # Needs bash, jq, curl, flock and GNU coreutils (mv --no-copy, split --filter, basenc).
 set -u
@@ -50,11 +51,13 @@ trap 'rm -rf "$work"' EXIT
 : > "$work/results"
 : > "$work/notes"
 : > "$work/trash"
+: > "$work/awaiting"
 contract=$work/contract.json
 purged=0
 snapshot_loaded=
 snapshot_problem=
 declare -A open_files=()
+declare -A paused_folders=()
 
 record() {   # <folder id> <path> <outcome> <reason> [trash path]
     jq -cn --arg folderId "$1" --arg path "$2" --arg outcome "$3" --arg reason "$4" --arg trash "${5:-}" \
@@ -69,11 +72,11 @@ write_result() {   # [refusal]
     local written_at=
     [ -f "$contract" ] && written_at=$(jq -r '.writtenAt? // "" | strings' "$contract" 2> /dev/null)
     jq -n --arg nodeId "$node_id" --arg contractWrittenAt "$written_at" --arg finishedAt "$(date -u -d "@$(now)" +%FT%TZ)" \
-        --arg refused "${1:-}" --argjson purged "$purged" --slurpfile results "$work/results" --slurpfile trash "$work/trash" \
+        --arg refused "${1:-}" --argjson purged "$purged" --slurpfile results "$work/results" --slurpfile trash "$work/trash" --slurpfile awaiting "$work/awaiting" \
         --rawfile notes "$work/notes" --argjson trashBytes "${trash_bytes:-null}" \
         '{schema: 1, nodeId: $nodeId, contractWrittenAt: $contractWrittenAt, finishedAt: $finishedAt,
           refused: (if $refused == "" then null else $refused end), results: $results, trash: ($trash | unique_by(.trash)),
-          notes: ($notes | split("\n") | map(select(. != ""))), purged: $purged}
+          notes: ($notes | split("\n") | map(select(. != ""))), purged: $purged, awaitingKeeperEvidence: $awaiting}
           + (if $trashBytes == null then {} else {trashBytes: $trashBytes} end)' > "$result.new" \
         && mv -f "$result.new" "$result"
 }
@@ -552,25 +555,79 @@ report_strays() {
     done < <(sed -n "$((offset + 1)),$((offset + stray_limit))p" "$folder_real/$handoff_list")
 }
 
+# A version descends from the recorded one when every recorded counter is at least as large in it, so a
+# keeper's later edit still holds the content handed off.
+descends_filter='def counters: map(split(":") | {(.[0]): (.[1] | tonumber? // -1)}) | add // {};
+    def descends_from($recorded): counters as $later | [$recorded | counters | to_entries[] | select(($later[.key] // -1) < .value)] | length == 0;'
+
+# Only a held contract may let keeper evidence stand in for the node's own index, and only for a folder this
+# node's own Syncthing says is paused: a read that fails for any other reason must keep the copy.
+load_paused_folders() {
+    jq -e '.trashOnly == true' "$contract" > /dev/null || return 0
+    local folder config
+    while IFS= read -r folder; do
+        config=$(api_get "/rest/config/folders/$(uri "$folder")") || continue
+        [ "$(jq -r '.paused == true' <<< "$config" 2> /dev/null)" = true ] && paused_folders[$folder]=1
+    done < <(json_lines "$manifest" | jq -r '.folderId | strings' | sort -u)
+}
+
+evidence_of() {   # <manifest line>: the contract's evidence from the line's own recorded keeper, or nothing
+    jq -c --argjson line "$1" 'first(.trashEvidence[]? | select(.folderId == $line.folderId and .path == $line.path and .keeperDevice == $line.keeperDevice)) // empty' "$contract"
+}
+
+# Why the evidence is not recent enough to stand for "the keeper holds it now", or nothing.
+evidence_age_problem() {   # <evidence json>
+    local observed age
+    observed=$(date -d "$(jq -r '.observedAt // ""' <<< "$1")" +%s 2> /dev/null) || { echo stale; return; }
+    age=$(( $(now) - observed ))
+    [ "$age" -le "$contract_max_age" ] && [ "$age" -ge $(( -contract_max_ahead )) ] || echo stale
+}
+
+# Why the keeper's own index, as the dashboard read it, does not show the line's version or a later one. Prints
+# ok on success, so an answer jq cannot read is a problem like any other.
+evidence_verdict() {   # <manifest line> <evidence json>
+    jq -r --argjson line "$1" "$descends_filter"'
+        if ((.version | type) != "array" or (.globalVersion | type) != "array" or ([.deleted, .ignored, .invalid, .globalDeleted] | map(type) | unique) != ["boolean"]) then "the keeper evidence cannot be read"
+        elif .globalDeleted then "the network has its deletion"
+        elif (.globalVersion | descends_from($line.version) | not) then "the network no longer has its version or a later one"
+        elif .deleted or .ignored or .invalid then "its keeper does not hold it, as its own index says"
+        elif (.version | descends_from($line.version) | not) then "its keeper does not hold that version or a later one"
+        else "ok" end' <<< "$2" 2> /dev/null
+}
+
+evidence_problem() {   # <manifest line>: why the evidence does not stand in for the node's paused index, or nothing
+    local evidence verdict
+    evidence=$(evidence_of "$1")
+    [ -n "$evidence" ] || { echo "its folder is paused here and no keeper evidence names it"; return; }
+    [ -z "$(evidence_age_problem "$evidence")" ] || { echo "its folder is paused here and the keeper evidence is stale"; return; }
+    verdict=$(evidence_verdict "$1" "$evidence")
+    [ "$verdict" = ok ] || echo "${verdict:-the keeper evidence cannot be read}"
+}
+
 # Why the recorded keeper may no longer hold the manifest line's version, or nothing. It must be connected to
 # this node now (a keeper last seen hours ago may have lost the file since), be in the path's availability
-# not from a temporary file, and the global version must be the recorded one or descend from it (every
-# counter at least as large), not deleted: a keeper's later edit still holds the content handed off.
+# not from a temporary file, and the global version must be the recorded one or descend from it, not deleted.
 keeper_problem() {   # <manifest line>
-    local line=$1 report device
+    local line=$1 report device verdict
     jq -e '.version | arrays | length > 0' <<< "$line" > /dev/null 2>&1 || { echo "no version was recorded with it"; return; }
     device=$(jq -r '.keeperDevice // "" | strings' <<< "$line")
     [ -n "$device" ] || { echo "no keeper was recorded with it"; return; }
     [ -n "${connections+set}" ] || connections=$(api_get /rest/system/connections 2> /dev/null || echo '{}')
     jq -e --arg device "$device" '.connections[$device].connected == true' <<< "$connections" > /dev/null 2>&1 || { echo "its keeper is not connected to this node"; return; }
+    if [ -n "${paused_folders[$(field "$line" .folderId)]:-}" ]; then evidence_problem "$line"; return; fi
     report=$(api_get "/rest/db/file?folder=$(uri "$(field "$line" .folderId)")&file=$(uri "$(field "$line" .path)")") || { echo "its index entry cannot be read"; return; }
-    jq -r --argjson line "$line" --arg device "$device" '
-        def counters: map(split(":") | {(.[0]): (.[1] | tonumber? // -1)}) | add // {};
-        (.global.version // [] | counters) as $global
-        | if (.global.deleted // false) then "the network has its deletion"
-          elif ([$line.version | counters | to_entries[] | select(($global[.key] // -1) < .value)] | length) > 0 then "the network no longer has its version or a later one"
-          elif ([.availability[]? | select(.id == $device and (.fromTemporary | not))] | length) == 0 then "its keeper does not hold it, as this node sees it"
-          else empty end' <<< "$report"
+    verdict=$(jq -r --argjson line "$line" --arg device "$device" "$descends_filter"'
+        if (.global.deleted // false) then "the network has its deletion"
+        elif (.global.version // [] | descends_from($line.version) | not) then "the network no longer has its version or a later one"
+        elif ([.availability[]? | select(.id == $device and (.fromTemporary | not))] | length) == 0 then "its keeper does not hold it, as this node sees it"
+        else "ok" end' <<< "$report" 2> /dev/null)
+    [ "$verdict" = ok ] || echo "${verdict:-its index entry cannot be read}"
+}
+
+# Tells the dashboard which due copies of a paused folder need the keeper's own index read for them.
+ask_for_evidence() {   # <manifest line>
+    [ -n "${paused_folders[$(field "$1" .folderId)]:-}" ] || return 0
+    jq -c '{folderId, path, keeperDevice}' <<< "$1" >> "$work/awaiting"
 }
 
 # The result lists a kept copy once per run; the log says it again only when the reason changes or a day passed.
@@ -591,6 +648,7 @@ purge_trash() {
     local line moved relative target directory problem
     [ -f "$manifest" ] && [ ! -L "$manifest" ] || return 0
     : > "$work/kept"
+    load_paused_folders
     while IFS= read -r line; do
         moved=$(jq -r '.movedAt | numbers' <<< "$line" 2> /dev/null)
         relative=$(jq -r '.trash | strings' <<< "$line" 2> /dev/null)
@@ -610,6 +668,7 @@ purge_trash() {
         fi
         problem=$(keeper_problem "$line")
         if [ -n "$problem" ]; then
+            ask_for_evidence "$line"
             kept_in_trash "$relative" "$line" "$problem" >> "$work/kept"
             continue
         fi
