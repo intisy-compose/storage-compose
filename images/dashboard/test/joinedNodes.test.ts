@@ -69,7 +69,7 @@ function round(layout: SetupLayout | null, committedApply = true): LayoutRound {
     instances: async () => [],
     committedLayout: async () => (layout ? { layout: { ...layout, nodes: layout.nodes.map((node) => ({ ...node, apply: committedApply && node.apply })) }, pushed: true } : null),
     handoffFiles: nodeHandoffFiles(mountedHandoffFiles([]), mountedHandoffFiles([])),
-    handoffs: handoffPublisher({ files: async () => [], entry: async () => null, completion: async () => 0, sizes: async () => ({ globalBytes: 0, localBytes: 0 }), space: async () => null, keeperState: async () => "ok" }, () => directory),
+    handoffs: handoffPublisher({ files: async () => [], entry: async () => null, fileReport: async () => null, completion: async () => 0, sizes: async () => ({ globalBytes: 0, localBytes: 0 }), space: async () => null, keeperState: async () => "ok" }, () => directory),
     pauses: fileLayeredPauses(join(directory, "paused.json")),
     space: syncthingHandoffReads,
     record: () => undefined,
