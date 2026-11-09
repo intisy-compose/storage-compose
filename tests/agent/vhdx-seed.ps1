@@ -3,7 +3,7 @@
 .SYNOPSIS
 A stick as an offline seed on real volumes, in this shell: a VHDX stick node at threshold 80 holding the essential
 folder seeds a VHDX host node over this device (loopback) with no tailnet, and the rest arrives once a third
-Syncthing standing in for a keeper is reachable. The agent's own loop runs the two volumes' Syncthings; Docker is
+volume's node, standing in for a keeper, is made reachable to it. The agent's own loop runs the two volumes' Syncthings; Docker is
 faked as a running stack and the firewall is faked; the ports are moved away from the agent's own. Needs an admin
 shell (diskpart); leaves nothing behind.
 #>
@@ -16,18 +16,14 @@ $repository = Split-Path (Split-Path $PSScriptRoot)
 
 $syncthingGuiPortBase = 18480
 $syncthingListenPortBase = 32150
-$keeperGuiPort = 18495
-$keeperListenPort = 32165
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "agent-seed-$([guid]::NewGuid())"
 $stackFolder = Join-Path $scratch "stack"
 $stickVhdx = Join-Path $scratch "seed-stick.vhdx"
 $hostVhdx = Join-Path $scratch "seed-host.vhdx"
-$keeperHome = Join-Path $scratch "keeper"
-$keeperFolders = Join-Path $scratch "keeper-data"
-$testVolumeLabels = @("seedstick", "seedhost")
+$keeperVhdx = Join-Path $scratch "seed-keeper.vhdx"
+$testVolumeLabels = @("seedstick", "seedhost", "seedkeeper")
 $script:passed = 0
 $script:failed = 0
-$keeperProcess = $null
 
 function Get-StackContainers { return ,@([pscustomobject]@{ id = "c0"; state = "running" }) }
 function Get-TailnetAddress { return $null }
@@ -74,18 +70,6 @@ function Add-Folder($Published, [string]$Id, [string]$Path, [string[]]$Devices) 
     Invoke-Api $Published "Put" "/rest/config/folders/$Id" ([pscustomobject]@{ id = $Id; label = $Id; path = $Path; type = "sendreceive"; devices = @($Devices | ForEach-Object { [pscustomobject]@{ deviceID = $_ } }); rescanIntervalS = 3600; fsWatcherEnabled = $false }) | Out-Null
 }
 
-function Start-KeeperSyncthing {
-    New-Item -ItemType Directory -Force -Path $keeperHome, $keeperFolders | Out-Null
-    & $SyncthingPath generate --home=$keeperHome --no-port-probing 2>&1 | Out-Null
-    $script:keeperProcess = Start-Process -FilePath $SyncthingPath -ArgumentList @("serve", "--home=$keeperHome", "--no-browser", "--no-restart", "--gui-address=127.0.0.1:$keeperGuiPort") -PassThru -WindowStyle Hidden
-    $config = Join-Path $keeperHome "config.xml"
-    $key = ([xml](Get-Content -Raw -LiteralPath $config)).configuration.gui.apikey
-    $published = [pscustomobject]@{ syncthing = [pscustomobject]@{ guiPort = $keeperGuiPort; apiKey = $key } }
-    Wait-Until { (Invoke-Api $published "Get" "/rest/system/status").myID } 45 | Out-Null
-    Invoke-Api $published "Patch" "/rest/config/options" ([pscustomobject]@{ listenAddresses = @("tcp://127.0.0.1:$keeperListenPort"); globalAnnounceEnabled = $false; localAnnounceEnabled = $false; relaysEnabled = $false; natEnabled = $false; urAccepted = -1 }) | Out-Null
-    return $published
-}
-
 try {
     New-Item -ItemType Directory -Force -Path $stackFolder | Out-Null
     Set-Content -Path (Join-Path $stackFolder "docker-compose.yml") -Value "name: storage-compose"
@@ -94,6 +78,8 @@ try {
     Write-TestNodeFile $stickRoot "5a1c" "seed-stick" "drive"
     $hostRoot = New-TestVolume $hostVhdx "seedhost"
     Write-TestNodeFile $hostRoot "d1e2" "seed-host" "drive"
+    $keeperRoot = New-TestVolume $keeperVhdx "seedkeeper"
+    Write-TestNodeFile $keeperRoot "abcd" "seed-keeper" "drive"
 
     $config = [pscustomobject]@{
         stackFolder = $stackFolder; projectName = "storage-agent-test"; userSid = "S-1-5-21-0"; passThrough = "none"
@@ -102,10 +88,10 @@ try {
     Initialize-Agent $config
 
     Write-Host "The agent runs both volumes' Syncthings, with no tailnet:" -ForegroundColor Cyan
-    Invoke-RoundsUntil { @((Read-TestHeartbeat).nodes | Where-Object { $_.syncthing.state -eq "running" }).Count -eq 2 } 90 | Out-Null
+    Invoke-RoundsUntil { @((Read-TestHeartbeat).nodes | Where-Object { $_.syncthing.state -eq "running" }).Count -eq 3 } 120 | Out-Null
     $stick = Get-Node "5a1c"
     $hostNode = Get-Node "d1e2"
-    Test-Expectation "both nodes run" 2 @((Read-TestHeartbeat).nodes | Where-Object { $_.syncthing.state -eq "running" }).Count
+    Test-Expectation "the three nodes run" 3 @((Read-TestHeartbeat).nodes | Where-Object { $_.syncthing.state -eq "running" }).Count
     $stickId = (Invoke-Api $stick "Get" "/rest/system/status").myID
     $hostId = (Invoke-Api $hostNode "Get" "/rest/system/status").myID
 
@@ -122,22 +108,25 @@ try {
     Test-Expectation "nothing of the archive is on the stick" $false (Test-Path -LiteralPath (Join-Path $stickRoot "Archive"))
 
     Write-Host "The rest arrives once a keeper is reachable:" -ForegroundColor Cyan
-    $keeper = Start-KeeperSyncthing
+    $keeper = Get-Node "abcd"
     $keeperId = (Invoke-Api $keeper "Get" "/rest/system/status").myID
     Add-Peer $keeper $hostId "seed-host" $hostNode.syncthing.listenPort
-    Add-Peer $hostNode $keeperId "keeper" $keeperListenPort
-    Add-Folder $keeper "archive" (Join-Path $keeperFolders "Archive") @($keeperId, $hostId)
+    Add-Peer $hostNode $keeperId "keeper" $keeper.syncthing.listenPort
+    Add-Folder $keeper "archive" (Join-Path $keeperRoot "Archive") @($keeperId, $hostId)
     Add-Folder $hostNode "archive" (Join-Path $hostRoot "Archive") @($hostId, $keeperId)
-    [System.IO.File]::WriteAllText((Join-Path $keeperFolders "Archive\old.mkv"), "the keeper's copy")
+    [System.IO.File]::WriteAllText((Join-Path $keeperRoot "Archive\old.mkv"), "the keeper's copy")
     Invoke-Api $keeper "Post" "/rest/db/scan?folder=archive" | Out-Null
     $arrived = Wait-Until { Test-Path -LiteralPath (Join-Path $hostRoot "Archive\old.mkv") } 60
     Test-Expectation "the rest arrived from the keeper" $true $arrived
     Test-Expectation "with its content" "the keeper's copy" $(if ($arrived) { [System.IO.File]::ReadAllText((Join-Path $hostRoot "Archive\old.mkv")) } else { "" })
+} catch {
+    Write-Host "  FAIL the run stopped: $_" -ForegroundColor Red
+    $script:failed++
 } finally {
-    if ($keeperProcess) { Stop-Process -Id $keeperProcess.Id -Force -ErrorAction SilentlyContinue }
     Stop-AllNodeInstances "test cleanup"
     Remove-TestVolume $stickVhdx
     Remove-TestVolume $hostVhdx
+    Remove-TestVolume $keeperVhdx
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $scratch
 }
 Write-Host ""
