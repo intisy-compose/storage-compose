@@ -149,6 +149,37 @@ function inputFor(layout: SetupLayout, reads: HandoffReads, nodeId = "b001", ove
   return { layout, nodeId, localFolders: new Set(["Videos", "Work"]), instance: instance(nodeId), instances: [instance("b001"), instance("a002")], reads, now: () => now, ...overrides };
 }
 
+describe("a keeper read through a peer dashboard", () => {
+  const relayedInput = (relayed: HandoffInput["relayed"], withLocal = false): HandoffInput => {
+    const layout = parseLayout(layoutText());
+    const fileEntry = entry();
+    const reads = new FakeReads({
+      b001: { files: { videos: { "clip.mp4": fileEntry } }, completion: {}, state: "ok", space: roomy },
+      c1c1: { files: { videos: { "clip.mp4": entry() } }, completion: { videos: 100 }, state: "ok", space: roomy },
+    });
+    const stick = instance("b001");
+    return { layout, nodeId: "b001", localFolders: new Set(["Videos", "Work"]), instance: stick, instances: withLocal ? [stick, instance("c1c1")] : [stick], reads, now: () => now, relayed };
+  };
+  const relayedReport = (overrides: object = {}) => ({ nodeId: "c1c1", online: true, state: "ok", observedAt: now.toISOString(), ageSeconds: 4, effectiveThreshold: 0, folders: { videos: { completion: 100, files: { "clip.mp4": { type: "FILE_INFO_TYPE_FILE", version: ["STICK:3"], size: 1200, blocksHash: "hash-a", deleted: false, ignored: false, invalid: false } } } }, decision: null, ...overrides });
+
+  it("confirms a file its peer's keeper reports at the same version while the report is fresh", async () => {
+    const contract = await decideHandoffContract(relayedInput(async () => [relayedReport()] as never));
+    assert.deepEqual(contract.entries.map((candidate) => candidate.path), ["clip.mp4"]);
+    assert.equal(contract.entries[0].keeper, "c1c1");
+  });
+
+  it("waits offline for a stale relay", async () => {
+    const contract = await decideHandoffContract(relayedInput(async () => [relayedReport({ ageSeconds: 200 })] as never));
+    assert.deepEqual(contract.entries, []);
+    assert.equal(contract.waiting[0]?.reason, "keeper-offline");
+  });
+
+  it("takes a node this host reads itself from its own read, whatever a relay says", async () => {
+    const contract = await decideHandoffContract(relayedInput(async () => [relayedReport({ state: "frozen" })] as never, true));
+    assert.deepEqual(contract.entries.map((candidate) => candidate.path), ["clip.mp4"], "its own read confirms");
+  });
+});
+
 describe("the hand-off contract", () => {
   it("records each confirmed file's version, size, block count, hash and modification time with its keeper", async () => {
     const contract = await decideHandoffContract(inputFor(parseLayout(layoutText()), network()));

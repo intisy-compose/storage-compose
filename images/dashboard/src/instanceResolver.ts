@@ -21,6 +21,8 @@ export type LocalInstance = {
   threshold: number;
   /** An array takes folders only under the stricter rules of `arrayConfirmProblem` and `acceptFolderDefaults`. */
   source: LocalNodeSource;
+  /** On a joined device: its disk as its own report gave it, since this host cannot read it. */
+  reportedSpace?: { totalBytes: number; freeBytes: number } | null;
 };
 
 /** A node of another host, read through that host's dashboard; `dashboardUrl` is null for a device no dashboard reported. */

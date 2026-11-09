@@ -14,6 +14,7 @@ import type { FolderSize } from "../src/spacePlan.js";
 import { memoryLayeredPauses } from "../src/layeredPauses.js";
 import type { Notification } from "../src/notifyOutbox.js";
 import { fileNotifiedState } from "../src/notifiedState.js";
+import type { RelayedReport } from "../src/keeperRelay.js";
 import { FakeSyncthing, clientOf, folderOf, onPlan } from "./fakeFolderSyncthing.js";
 
 function layoutText(apply: boolean, threshold = 50): string {
@@ -567,6 +568,34 @@ describe("a stop holds until a decision lets the node pull", () => {
       await roundOf(() => parseLayout(layoutText(false, 20)), [instanceOf(nodeAtTwenty())], [], { space: { space: async () => ({ totalBytes: 1000, freeBytes: 900 }), sizes: async () => statusOf(overrides) } }).run();
       assert.equal(layeredStateOf("a001")?.space?.state, state, JSON.stringify(overrides));
     }
+  });
+});
+
+describe("keepers of another host, through their dashboard", () => {
+  const short: SpaceReads = {
+    space: async () => ({ totalBytes: 1000, freeBytes: 50 }),
+    sizes: async () => ({ globalBytes: 100, localBytes: 100, needBytes: 0 }),
+    completion: async () => 0,
+  };
+  const report = (overrides: object = {}): RelayedReport => ({ nodeId: "a002", online: true, state: "ok", observedAt: "2026-11-05T12:00:00.000Z", ageSeconds: 3, effectiveThreshold: 0, folders: { "documents-old": { completion: 100, files: {} } }, decision: { state: "fits", threshold: 0 }, ...overrides } as RelayedReport);
+  const state = async (relayed: RelayedReport[]) => {
+    const syncthing = nodeAtTwenty();
+    await roundOf(() => parseLayout(layoutText(true, 20)), [instanceOf(syncthing)], [], { space: short, pauses: memoryLayeredPauses(), relayed: async () => relayed }).run();
+    return layeredStateOf("a001")?.space?.state;
+  };
+
+  it("counts for what a raise frees while its report is fresh, healthy and whole", async () => {
+    assert.equal(await state([report()]), "raised");
+  });
+
+  it("counts for nothing when its report is stale, it is not ok, or its own decision would drop the folder", async () => {
+    assert.equal(await state([report({ ageSeconds: 300 })]), "stopped", "a stale report counts for nothing");
+    assert.equal(await state([report({ observedAt: "2026-11-05T11:50:00.000Z" })]), "stopped");
+    assert.equal(await state([report({ state: "frozen" })]), "stopped");
+    assert.equal(await state([report({ decision: null })]), "stopped", "no decision of its own");
+    assert.equal(await state([report({ decision: { state: "raised", threshold: 80 } })]), "stopped", "it drops Old itself");
+    assert.equal(await state([report({ folders: { "documents-old": { completion: 99, files: {} } } })]), "stopped");
+    assert.equal(await state([report({ nodeId: "dead" })]), "stopped", "a node the layout does not list");
   });
 });
 

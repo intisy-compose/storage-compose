@@ -127,6 +127,20 @@ describe("admitting a node through the setup repo", () => {
     assert.match((answer.body as { error: string }).error, /a device pc with another Syncthing ID/);
   });
 
+  it("a stick made offline stays pending until the first online host commits it, and a host acting on the old layout is refused", async () => {
+    nodes.set("9f9f", { ...info("9f9f", "made-offline"), source: "joined" });
+    const base = version();
+    assert.equal(waitingAdmissions(remote(), [{ ...info("9f9f", "made-offline"), source: "joined" }], "storage").length, 1);
+
+    const first = await askRoutes(routes(), "PUT", "/api/nodes/9f9f/admission", { base, answer: "accept", threshold: 80 });
+    assert.equal(first.status, 200);
+    const second = await askRoutes(routes(), "PUT", "/api/nodes/9f9f/admission", { base, answer: "accept", threshold: 50 });
+    assert.equal(second.status, 409);
+
+    assert.deepEqual([remote().nodes.find((entry) => entry.id === "9f9f")?.threshold, remote().nodes.find((entry) => entry.id === "9f9f")?.admitted], [80, true]);
+    assert.deepEqual(waitingAdmissions(remote(), [info("9f9f", "made-offline")], "storage"), [], "admitted once, it no longer waits anywhere");
+  });
+
   it("refusing records it, so the node no longer waits", async () => {
     nodes.set("f005", info("f005", "lost-stick"));
     const answer = await askRoutes(routes(), "PUT", "/api/nodes/f005/admission", { base: version(), answer: "refuse" });

@@ -47,9 +47,11 @@ export interface KeeperReport {
   state: KeeperState;
   /**
    * When the deciding host read the keeper, ISO 8601, stamped by that host from its own clock as the read returns.
-   * @implNote Never a value carried over from a peer, whose clock may differ, and never a relayed report stamped on arrival, which would hide how old the peer's copy was: a report read only through a peer would need an age in seconds measured there, which this field does not carry.
+   * @implNote Never a value carried over from a peer, whose clock may differ; a relayed report stamps the moment this host asked, and its `ageSeconds` says how old the peer's reads were when it answered.
    */
   observedAt: string;
+  /** On a report relayed through a peer dashboard: how old its reads were when the peer answered, in seconds, measured on the peer's own clock; never a time the peer stamped. */
+  ageSeconds?: number;
   /** The keeper's threshold after any raise for space; never below its committed one. */
   effectiveThreshold: number;
   folders: Record<string, KeeperFolderReport>;
@@ -162,9 +164,13 @@ function isUnchanged(candidate: HandoffCandidate, current: LocalFile | undefined
   return current !== undefined && isComparable(current) && current.type === candidate.type && sameVersion(candidate.version, current.version) && candidate.size === current.size && candidate.blocksHash === current.blocksHash;
 }
 
-function isFresh(report: KeeperReport, now: Date, maxAgeSeconds: number): boolean {
+/** @implNote A relayed report's age adds to the time since this host asked, so a peer's cached or slow read counts for its whole age; a bad age counts for nothing. */
+export function isReportFresh(report: KeeperReport, now: Date, maxAgeSeconds: number): boolean {
   const observed = Date.parse(report.observedAt);
-  return Number.isFinite(observed) && Math.abs(now.getTime() - observed) <= maxAgeSeconds * 1000;
+  if (!Number.isFinite(observed)) return false;
+  const relayedAge = report.ageSeconds ?? 0;
+  if (!Number.isFinite(relayedAge) || relayedAge < 0) return false;
+  return Math.abs(now.getTime() - observed) / 1000 + relayedAge <= maxAgeSeconds;
 }
 
 /** A keeper folder's entries by path key, built once per folder report. */
@@ -248,7 +254,7 @@ function reportsByNode(keepers: KeeperReport[], handingId: string, now: Date, ma
   const counts = new Map<string, number>();
   for (const report of keepers) counts.set(report.nodeId, (counts.get(report.nodeId) ?? 0) + 1);
   const twice = [...counts].filter(([, count]) => count > 1).map(([nodeId]) => nodeId);
-  const usable = keepers.filter((report) => !twice.includes(report.nodeId) && report.nodeId !== handingId && report.online && isFresh(report, now, maxAgeSeconds));
+  const usable = keepers.filter((report) => !twice.includes(report.nodeId) && report.nodeId !== handingId && report.online && isReportFresh(report, now, maxAgeSeconds));
   return {
     reports: new Map(usable.map((report) => [report.nodeId, report])),
     notes: twice.map((nodeId) => `two keeper reports for node ${nodeId}; both were dropped, so it counts as offline`),

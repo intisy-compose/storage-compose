@@ -16,6 +16,7 @@ import {
 } from "./handoffPlan.js";
 import { type LocalInstance, callSyncthing } from "./instanceResolver.js";
 import { type NodePlan, type PlannedFolder, keepsFolder, nodePlan } from "./nodePlan.js";
+import type { RelayQuery, RelayedReads } from "./keeperRelay.js";
 import { handoffDirectory, handoffSettings, hostAgentHandoffDirectory, hostAgentHeartbeatFile } from "./settings.js";
 import type { LayoutNode, SetupLayout } from "./setupRepo.js";
 import { SyncthingRefusal } from "./syncthing.js";
@@ -120,6 +121,8 @@ export interface HandoffInput {
   decided?: { decision: SpaceDecision | null };
   /** Each node's space decision this round; a keeper's own says whether it is full or stopped, and the threshold it keeps at. */
   keeperSpace?: (nodeId: string) => SpaceDecision | null;
+  /** The keepers read through other hosts' dashboards, each with an age of its own; a round without it counts only this host's. */
+  relayed?: RelayedReads;
 }
 
 const isoTime = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
@@ -191,7 +194,7 @@ function keeperEntryOf(entry: IndexEntry | null): KeeperFileEntry | null {
  * @implNote An unknown or unread decision takes nothing out: a confirmation is of bytes the keeper already holds, and only a known
  * shortage is a reason to stop making it the holder of more files.
  */
-function keeperSpaceState(space: SpaceDecision | null): KeeperState | null {
+export function keeperSpaceState(space: SpaceDecision | null): KeeperState | null {
   if (space?.state === "full") return "full";
   if (space?.state === "stopped") return "stopped";
   return null;
@@ -199,8 +202,7 @@ function keeperSpaceState(space: SpaceDecision | null): KeeperState | null {
 
 /**
  * A keeper's report on the candidates of the folders it keeps, read straight from its Syncthing on this host.
- * @implNote `observedAt` is stamped from this host's clock once every read has returned, as `KeeperReport` asks; a keeper of another
- * host is not read at all, since a report relayed through its dashboard would carry no age of its own.
+ * @implNote `observedAt` is stamped from this host's clock once every read has returned, as `KeeperReport` asks.
  */
 async function keeperReport(input: HandoffInput, keeper: LocalInstance, node: LayoutNode, candidates: LocalFile[]): Promise<KeeperReport | null> {
   try {
@@ -223,6 +225,20 @@ async function keeperReport(input: HandoffInput, keeper: LocalInstance, node: La
   }
 }
 
+function relayQueries(candidates: LocalFile[]): RelayQuery[] {
+  const byFolder = new Map<string, string[]>();
+  for (const candidate of candidates) byFolder.set(candidate.folderId, [...(byFolder.get(candidate.folderId) ?? []), candidate.path]);
+  return [...byFolder].map(([folderId, paths]) => ({ folderId, paths }));
+}
+
+/** @implNote A node this host reads itself is taken from its own read only, so a slower relay cannot change a local answer. */
+async function relayedReports(input: HandoffInput, candidates: LocalFile[]): Promise<KeeperReport[]> {
+  if (!input.relayed) return [];
+  const local = new Set(input.instances.map((instance) => instance.nodeId));
+  const reports = await input.relayed(relayQueries(candidates)).catch(() => []);
+  return reports.filter((report) => !local.has(report.nodeId));
+}
+
 async function keeperReports(input: HandoffInput, candidates: LocalFile[]): Promise<KeeperReport[]> {
   const reports: KeeperReport[] = [];
   for (const keeper of input.instances.filter((candidate) => candidate.nodeId !== input.nodeId)) {
@@ -231,7 +247,7 @@ async function keeperReports(input: HandoffInput, candidates: LocalFile[]): Prom
     const report = await keeperReport(input, keeper, node, candidates);
     if (report) reports.push(report);
   }
-  return reports;
+  return [...reports, ...(await relayedReports(input, candidates))];
 }
 
 /** The node's own entries once more, after the keepers were read, so a file changed meanwhile is caught by `confirmedHandoffs`. */
@@ -399,6 +415,7 @@ function query(folderId: string, path?: string): string {
 
 /** @implNote A space read through the host agent's heartbeat for a Windows node, `statfs` of its root for one whose files this host mounts. */
 async function nodeSpace(instance: LocalInstance): Promise<NodeSpace | null> {
+  if (instance.source === "joined") return instance.reportedSpace ?? null;
   if (instance.os === "windows") {
     const entry = agentEntries(await readHeartbeat(hostAgentHeartbeatFile)).find((candidate) => candidate.id === instance.nodeId);
     const { size, used } = entry?.space ?? { size: null, used: null };
@@ -457,6 +474,7 @@ export interface PublishContext {
   decided?: { decision: SpaceDecision | null };
   /** Each node's space decision this round, for the keepers. */
   keeperSpace?: (nodeId: string) => SpaceDecision | null;
+  relayed?: RelayedReads;
 }
 
 export interface HandoffPublisher {

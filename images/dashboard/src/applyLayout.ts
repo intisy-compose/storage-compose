@@ -3,7 +3,11 @@ import { lstat, open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { HandoffWaitingView, LayeredChange, LayeredHandoff, LayeredSpace, LayeredState } from "./api/types.js";
 import { recordDashboardActivity } from "./eventFeed.js";
-import { type HandoffPublisher, type HandoffWaiting, handoffPublisher, syncthingHandoffReads } from "./handoffFeed.js";
+import { agentHandoffFiles, agentNodeFiles } from "./agentFiles.js";
+import { type HandoffContract, type HandoffPublisher, type HandoffWaiting, handoffPublisher, syncthingHandoffReads } from "./handoffFeed.js";
+import { isReportFresh, keeperReportMaxAgeSeconds } from "./handoffPlan.js";
+import { ReportClient } from "./joinedClient.js";
+import { type RelayedReads, type RelayedReport, type RoundDecision, relayedKeepers } from "./keeperRelay.js";
 import { type LocalInstance, callSyncthing, defaultReadBackDelaysMs, localInstances } from "./instanceResolver.js";
 import { layeredStateOf, recordLayered } from "./layeredDrift.js";
 import { type LayeredPauses, type PauseMark, fileLayeredPauses } from "./layeredPauses.js";
@@ -11,7 +15,7 @@ import { type NotifiedState, fileNotifiedState, memoryNotifiedState } from "./no
 import { type Notification, queueNotification } from "./notifyOutbox.js";
 import { type NodePlan, handoffIgnoreFile, keepsFolder, nodePlan } from "./nodePlan.js";
 import { type HandoffFiles, type NodeReconcile, carriedLayoutPaths, reconcileNode } from "./reconcileNode.js";
-import { layeredPausesFile, nodeVolumesDirectory, statusDirectory, storageRoot } from "./settings.js";
+import { hostAgentHandoffDirectory, layeredPausesFile, nodeVolumesDirectory, peerDashboards, statusDirectory, storageRoot } from "./settings.js";
 import { type LayoutNode, type SetupLayout, blockedNodeIds, readCommittedLayout, readLayout } from "./setupRepo.js";
 import { followLayout, nodeFilePath, withdrawApply } from "./nodeFile.js";
 import { type FolderSize, type FolderSizes, type NodeSpace, type ReleasableBytes, type SpaceDecision, effectiveThreshold, spaceAllowsPull } from "./spacePlan.js";
@@ -47,6 +51,8 @@ export interface LayoutRoundDependencies {
   notify?: (notification: Notification) => Promise<void>;
   /** What was last notified, kept across restarts; a round without it keeps it in memory. */
   notified?: NotifiedState;
+  /** The keepers of other hosts, read through their dashboards with an age of their own; a round without them counts only this host's keepers. */
+  relayed?: RelayedReads;
   /** Enters one written change in Activity. */
   record: (nodeId: string, folderId: string | null, text: string) => void;
   readBackDelaysMs?: readonly number[];
@@ -71,6 +77,13 @@ function nodeOnlyText(entry: NodeReconcile["nodeOnlyIgnores"][number]): string {
 
 function emptyState(mode: LayeredState["mode"], threshold: number, checkedAt: string): LayeredState {
   return { mode, threshold, effectiveThreshold: threshold, drift: [], missing: [], unplanned: [], unknownDevices: [], nodeOnlyIgnores: [], pendingHandoffs: null, problems: [], failed: null, checkedAt, space: null, stopped: null, pausedByStop: [], pauseHeld: null, trashBytes: 0, handoff: null };
+}
+
+/** Each node's decisions from this host's last layout round, for the relay and for a joined device's round. */
+const roundDecisions = new Map<string, RoundDecision>();
+
+export function lastRoundDecision(nodeId: string): RoundDecision | null {
+  return roundDecisions.get(nodeId) ?? null;
 }
 
 function spaceView(decision: SpaceDecision | null): LayeredSpace | null {
@@ -134,7 +147,8 @@ export class LayoutRound {
       const gated = withCommittedApply(layout, committed);
       const prepared = new Map<string, Prepared>();
       for (const instance of instances) prepared.set(instance.nodeId, await this.prepare(gated, instance));
-      await this.decideAll(gated, instances, prepared);
+      const first = await this.decideAll(gated, instances, prepared);
+      this.keepDecisions(prepared, first);
       const spaces = new Map([...prepared].flatMap(([nodeId, entry]) => (entry.kind === "planned" ? [[nodeId, entry.decision] as const] : [])));
       for (const instance of instances) {
         const state = await this.nodeState(gated, instance, instances, prepared.get(instance.nodeId) as Prepared, spaces);
@@ -146,6 +160,39 @@ export class LayoutRound {
       }
     }
     recordLayered(states);
+  }
+
+  private keepDecisions(prepared: ReadonlyMap<string, Prepared>, first: ReadonlyMap<string, SpaceDecision | null>): void {
+    const at = this.clock().getTime();
+    for (const [nodeId, entry] of prepared) if (entry.kind === "planned") roundDecisions.set(nodeId, { first: first.get(nodeId) ?? null, final: entry.decision, at });
+  }
+
+  /** What the round last reconciled for a joined device, read back by its answer. */
+  private readonly joinedReconciled = new Map<string, { plan: NodePlan; decision: SpaceDecision | null; layout: SetupLayout; stopped: boolean }>();
+
+  /**
+   * One joined device's own round, run when its report arrives: the same preparation, space decision, reconciliation and contract as a node
+   * of this host, its reads and writes going through the device's report, with this host's last round standing in for the local keepers'
+   * decisions.
+   */
+  async joinedRound(instance: LocalInstance): Promise<JoinedRound> {
+    const [layout, committed, locals] = await Promise.all([this.dependencies.layout(), (this.dependencies.committedLayout?.() ?? Promise.resolve(null)).catch(() => null), this.dependencies.instances().catch(() => [])]);
+    const nodeFile = nodeFileAction(committed, instance.nodeId);
+    if (!layout) {
+      await this.clearHandoffs(instance, null);
+      return { nodeFile, state: null, contract: this.dependencies.handoffs?.last?.(instance.nodeId)?.contract ?? null, reconcile: null };
+    }
+    const gated = withCommittedApply(layout, committed);
+    const instances = [instance, ...locals];
+    const prepared = new Map<string, Prepared>([[instance.nodeId, await this.prepare(gated, instance)]]);
+    const known = new Map(locals.map((local) => [local.nodeId, lastRoundDecision(local.nodeId)?.first ?? null] as const));
+    await this.decideAll(gated, instances, prepared, known);
+    const finals = new Map(locals.map((local) => [local.nodeId, lastRoundDecision(local.nodeId)?.final ?? null] as const));
+    const entry = prepared.get(instance.nodeId) as Prepared;
+    if (entry.kind === "planned") finals.set(instance.nodeId, entry.decision);
+    const state = await this.nodeState(gated, instance, instances, entry, finals);
+    if (state) this.recordHandoffActivity(instance, state, await this.handoffView(instance, state.checkedAt));
+    return { nodeFile, state, contract: this.dependencies.handoffs?.last?.(instance.nodeId)?.contract ?? null, reconcile: this.joinedReconciled.get(instance.nodeId) ?? null };
   }
 
   /** The executor run and the space state each node's last Activity entries were made for, so each is entered once. */
@@ -213,7 +260,7 @@ export class LayoutRound {
     const publisher = this.dependencies.handoffs;
     if (!publisher) return null;
     try {
-      return await publisher.publish({ layout, nodeId: instance.nodeId, localFolders, instance, instances, decided: { decision }, keeperSpace: (nodeId) => spaces.get(nodeId) ?? null });
+      return await publisher.publish({ layout, nodeId: instance.nodeId, localFolders, instance, instances, decided: { decision }, keeperSpace: (nodeId) => spaces.get(nodeId) ?? null, relayed: this.dependencies.relayed });
     } catch (error) {
       console.error(`layered sync: no hand-off contract written for ${instance.nodeId}: ${reasonOf(error)}`);
       return null;
@@ -274,7 +321,7 @@ export class LayoutRound {
    * @implNote The first pass counts no keeper at all, so a keeper that only fits by dropping the folder onto this node is never counted: two
    * nodes short of space never drop a folder on each other's word, and a keeper's final decision keeps at least what its first one did.
    */
-  private async keeperHolds(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], first: ReadonlyMap<string, SpaceDecision | null>, folderId: string): Promise<boolean> {
+  private async keeperHolds(layout: SetupLayout, instance: LocalInstance, instances: LocalInstance[], first: ReadonlyMap<string, SpaceDecision | null>, folderId: string, relayed: (folderId: string) => Promise<RelayedReport[]>): Promise<boolean> {
     const completion = this.dependencies.space?.completion;
     const own = layout.nodes.find((node) => node.id === instance.nodeId);
     if (!completion || !own) return false;
@@ -284,12 +331,33 @@ export class LayoutRound {
       if (!keepsByDecision(layout, node.id, folderId, first.get(node.id) ?? null)) continue;
       if (((await completion(keeper, folderId).catch(() => 0)) ?? 0) >= 100) return true;
     }
-    return false;
+    const local = new Set(instances.map((keeper) => keeper.nodeId));
+    return (await relayed(folderId)).some((report) => this.relayHolds(layout, own, report, local, folderId));
+  }
+
+  /** @implNote The same test as a local keeper's, on a report that must also be fresh and in a healthy state; its decision is its host's first pass, which counted no keeper. */
+  private relayHolds(layout: SetupLayout, own: LayoutNode, report: RelayedReport, local: ReadonlySet<string>, folderId: string): boolean {
+    const node = layout.nodes.find((entry) => entry.id === report.nodeId);
+    if (!node || local.has(node.id) || node.id === own.id || node.device === own.device || !node.enabled) return false;
+    if (report.state !== "ok" || !isReportFresh(report, this.clock(), keeperReportMaxAgeSeconds)) return false;
+    return keepsByDecision(layout, node.id, folderId, report.decision) && (report.folders[folderId]?.completion ?? 0) >= 100;
+  }
+
+  /** One read per folder of a round, however many nodes ask: a raise looks at the same folder from every node that could drop it. */
+  private relayedHoldings(): (folderId: string) => Promise<RelayedReport[]> {
+    const relayed = this.dependencies.relayed;
+    const known = new Map<string, Promise<RelayedReport[]>>();
+    return (folderId) => {
+      if (!relayed) return Promise.resolve([]);
+      if (!known.has(folderId)) known.set(folderId, relayed([{ folderId, paths: [] }]).catch(() => []));
+      return known.get(folderId) as Promise<RelayedReport[]>;
+    };
   }
 
   /** Each planned node's final decision: its own space with what keepers of the first pass hold of the folders a raise would drop. */
-  private async decideAll(layout: SetupLayout, instances: LocalInstance[], prepared: Map<string, Prepared>): Promise<void> {
-    const first = new Map<string, SpaceDecision | null>();
+  private async decideAll(layout: SetupLayout, instances: LocalInstance[], prepared: Map<string, Prepared>, known: ReadonlyMap<string, SpaceDecision | null> = new Map()): Promise<Map<string, SpaceDecision | null>> {
+    const first = new Map<string, SpaceDecision | null>(known);
+    const relayed = this.relayedHoldings();
     for (const [nodeId, entry] of prepared) {
       if (entry.kind !== "planned") continue;
       first.set(nodeId, entry.inputs ? effectiveThreshold(entry.plan, entry.inputs.sizes, entry.inputs.space, {}, entry.inputs.trashBytes) : null);
@@ -301,11 +369,12 @@ export class LayoutRound {
       for (const folder of entry.plan.folders) {
         const size = entry.inputs.sizes[folder.id];
         if (!size || folder.local || folder.keptBy === "assigned") continue;
-        if (await this.keeperHolds(layout, instance, instances, first, folder.id)) releasable[folder.id] = heldInSync(size);
+        if (await this.keeperHolds(layout, instance, instances, first, folder.id, relayed)) releasable[folder.id] = heldInSync(size);
       }
       entry.decision = effectiveThreshold(entry.plan, entry.inputs.sizes, entry.inputs.space, releasable, entry.inputs.trashBytes);
       entry.resumeDecision = entry.inputs.recorded.size ? effectiveThreshold(entry.plan, withMargin(entry.inputs.sizes, entry.inputs.recorded), entry.inputs.space, releasable, entry.inputs.trashBytes) : entry.decision;
     }
+    return first;
   }
 
   private clock(): Date {
@@ -375,6 +444,7 @@ export class LayoutRound {
         onWritten: (folderId, text) => this.dependencies.record(instance.nodeId, folderId, text),
         readBackDelaysMs: this.dependencies.readBackDelaysMs ?? defaultReadBackDelaysMs,
       });
+      if (instance.source === "joined") this.joinedReconciled.set(instance.nodeId, { plan, decision, layout, stopped: stopped !== null });
       const pendingHandoffs = await this.publishHandoffs(layout, instance, instances, localFolders, decision, spaces);
       const pauseHeld = stopped && node.apply ? heldPause(result) : null;
       await this.notifyPauses(instance, result, stopped, pauseHeld);
@@ -496,7 +566,7 @@ function resumeReason(node: LayoutNode, decision: SpaceDecision | null, plan: No
 }
 
 /** Whether a node's own decision keeps the folder: it fits, or a raise still keeps it; never stopped, full, unknown or undecided. */
-function keepsByDecision(layout: SetupLayout, nodeId: string, folderId: string, decision: SpaceDecision | null): boolean {
+function keepsByDecision(layout: SetupLayout, nodeId: string, folderId: string, decision: Pick<SpaceDecision, "state" | "threshold"> | null): boolean {
   if (!decision || (decision.state !== "fits" && decision.state !== "raised")) return false;
   return keepsFolder(layout, nodeId, folderId, decision.threshold);
 }
@@ -627,6 +697,14 @@ export function withCommittedApply(layout: SetupLayout, committed: CommittedLayo
   };
 }
 
+/** What a joined device's own round produced for its answer. */
+export interface JoinedRound {
+  nodeFile: NodeFileAction;
+  state: LayeredState | null;
+  contract: HandoffContract | null;
+  reconcile: { plan: NodePlan; decision: SpaceDecision | null; layout: SetupLayout; stopped: boolean } | null;
+}
+
 /** Brings a node file to the committed policy, or takes its `apply` line out; each answers whether it wrote. */
 export interface NodeFiles {
   follow(instance: LocalInstance, policy: LayoutNode): Promise<boolean>;
@@ -635,8 +713,8 @@ export interface NodeFiles {
 
 /**
  * The node files this host may write: a Linux drive or folder node whose root lies where this host mounts the nodes' files.
- * @implNote An array's node file describes its membership and `followLayout` and `withdrawApply` never rewrite one; a Windows node's is the
- * host agent's to write (phase 6), so it waits, and with it every Windows node's hand-off.
+ * @implNote An array's node file describes its membership and `followLayout` and `withdrawApply` never rewrite one; a Windows node's goes
+ * through `agentNodeFiles`.
  */
 export function mountedNodeFiles(roots: readonly string[]): NodeFiles {
   const pathOf = async (instance: LocalInstance): Promise<string | null> => {
@@ -669,15 +747,36 @@ export async function pullThenReconcile<Report>(connections: { run: () => Promis
   }
 }
 
+/** The list on a joined device is one of its own ops, on a Windows node the host agent's, on a Linux node this host mounts. */
+export function nodeHandoffFiles(mounted: HandoffFiles, agent: HandoffFiles): HandoffFiles {
+  return {
+    ensure: async (instance, folder) => {
+      if (instance.source === "joined") return (instance.client as unknown as ReportClient).ensureList(folder.id);
+      return instance.os === "windows" ? agent.ensure(instance, folder) : mounted.ensure(instance, folder);
+    },
+  };
+}
+
+/** A Windows node's file is the host agent's to change, every other this host's where it mounts it. */
+function nodeFilesOfHost(): NodeFiles {
+  const mounted = mountedNodeFiles([storageRoot, nodeVolumesDirectory]);
+  const agent = agentNodeFiles(hostAgentHandoffDirectory);
+  return {
+    follow: (instance, policy) => (instance.os === "windows" && instance.source === "host-agent" ? agent.follow(instance, policy) : mounted.follow(instance, policy)),
+    withdraw: (instance) => (instance.os === "windows" && instance.source === "host-agent" ? agent.withdraw(instance) : mounted.withdraw(instance)),
+  };
+}
+
 export const layoutRound = new LayoutRound({
   layout: () => readLayout(),
   instances: () => localInstances(),
-  handoffFiles: mountedHandoffFiles([storageRoot, nodeVolumesDirectory]),
+  handoffFiles: nodeHandoffFiles(mountedHandoffFiles([storageRoot, nodeVolumesDirectory]), agentHandoffFiles(hostAgentHandoffDirectory)),
   handoffs: handoffPublisher(),
-  nodeFiles: mountedNodeFiles([storageRoot, nodeVolumesDirectory]),
+  nodeFiles: nodeFilesOfHost(),
   committedLayout: () => readCommittedLayout(),
   space: syncthingHandoffReads,
   pauses: fileLayeredPauses(layeredPausesFile),
+  relayed: (queries) => relayedKeepers(peerDashboards, queries),
   notified: fileNotifiedState(`${statusDirectory}/layered/notified.json`),
   notify: (notification) => queueNotification(`${statusDirectory}/outbox`, notification),
   record: (nodeId, folderId, text) => recordDashboardActivity(nodeId, folderId, text),

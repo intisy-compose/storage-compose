@@ -1,6 +1,7 @@
 import type { NodeAdmission, NodeAdmissionBody } from "../api/types.js";
 import { RequestError, readBody, sendJson } from "../http.js";
 import { type LocalNodeInfo, callSyncthing, findLocalNode } from "../instanceResolver.js";
+import { joinedDeviceIdOf, joinedNodeInfos } from "../joinedNodes.js";
 import { checkedLayout, editNodePolicy, layoutVersion, validPriority } from "../layoutEdit.js";
 import type { AnyRoute } from "../routeTypes.js";
 import { setupRepoDirectory } from "../settings.js";
@@ -65,8 +66,13 @@ export function refused(text: string, info: LocalNodeInfo, at: Date): string {
 
 const liveSources: AdmissionSources = {
   repository: setupRepoDirectory,
-  findNode: (nodeId) => findLocalNode(nodeId),
+  findNode: async (nodeId) => (await findLocalNode(nodeId)) ?? joinedNodeInfos(new Date()).find((info) => info.nodeId === nodeId) ?? null,
   deviceId: async (info) => {
+    if (info.source === "joined") {
+      const deviceId = joinedDeviceIdOf(info.nodeId);
+      if (!deviceId) throw new RequestError(409, `${info.name} has not reported lately, so its device ID is not known here`);
+      return deviceId;
+    }
     if (!info.instance) throw new RequestError(503, `${info.name}'s Syncthing is not answering, so its device ID cannot be read`);
     return callSyncthing(info.instance, (client) => client.myId());
   },
