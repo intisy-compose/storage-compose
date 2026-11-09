@@ -424,9 +424,16 @@ recover_moving() {   # <entry json>
     fi
 }
 
+iso_time='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$'
+
+# GNU date also takes now, @seconds, relative phrases and an empty string, none of which say when anything happened.
+unix_seconds_of() {   # <RFC 3339 time>
+    [[ $1 =~ $iso_time ]] && date -d "$1" +%s 2> /dev/null
+}
+
 contract_age_problem() {
     local written age
-    written=$(date -d "$(jq -r '.writtenAt // ""' "$contract")" +%s 2> /dev/null) || { echo "the contract has no time it was written"; return; }
+    written=$(unix_seconds_of "$(jq -r '.writtenAt // ""' "$contract")") || { echo "the contract has no time it was written"; return; }
     age=$(( $(now) - written ))
     [ "$age" -le "$contract_max_age" ] || { echo "the contract is $age s old, more than $contract_max_age s"; return; }
     [ "$age" -ge $(( -contract_max_ahead )) ] || echo "the contract was written $(( -age )) s ahead of this host's clock"
@@ -563,7 +570,7 @@ descends_filter='def counters: map(split(":") | {(.[0]): (.[1] | tonumber? // -1
 # Only a held contract may let keeper evidence stand in for the node's own index, and only for a folder this
 # node's own Syncthing says is paused: a read that fails for any other reason must keep the copy.
 load_paused_folders() {
-    jq -e '.trashOnly == true' "$contract" > /dev/null || return 0
+    jq -e '.apply == false and .trashOnly == true and .entries == []' "$contract" > /dev/null || return 0
     local folder config
     while IFS= read -r folder; do
         config=$(api_get "/rest/config/folders/$(uri "$folder")") || continue
@@ -578,7 +585,7 @@ evidence_of() {   # <manifest line>: the contract's evidence from the line's own
 # Why the evidence is not recent enough to stand for "the keeper holds it now", or nothing.
 evidence_age_problem() {   # <evidence json>
     local observed age
-    observed=$(date -d "$(jq -r '.observedAt // ""' <<< "$1")" +%s 2> /dev/null) || { echo stale; return; }
+    observed=$(unix_seconds_of "$(jq -r '.observedAt // ""' <<< "$1")") || { echo stale; return; }
     age=$(( $(now) - observed ))
     [ "$age" -le "$contract_max_age" ] && [ "$age" -ge $(( -contract_max_ahead )) ] || echo stale
 }

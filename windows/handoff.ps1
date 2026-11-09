@@ -740,7 +740,7 @@ Only a held contract may let keeper evidence stand in for the node's own index, 
 this node's own Syncthing says is paused: a read that fails for any other reason must keep the copy.
 #>
 function Set-RunPausedFolders($Run, $Instance) {
-    if (-not (Test-IsTrashOnlyContract $Run.contract)) { return }
+    if ($Run.contract.apply -isnot [bool] -or $Run.contract.apply -or -not (Test-IsTrashOnlyContract $Run.contract)) { return }
     foreach ($folderId in @(Read-HandoffLines $Run.manifest | ForEach-Object { "$($_.folderId)" } | Sort-Object -Unique)) {
         try { $config = Invoke-SyncthingApi $Instance "Get" "/rest/config/folders/$(Get-HandoffUri $folderId)" } catch { continue }
         if ($config.PSObject.Properties["paused"] -and $config.paused -eq $true) { [void]$Run.pausedFolders.Add($folderId) }

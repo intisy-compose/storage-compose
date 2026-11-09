@@ -819,12 +819,12 @@ Describe "the hand-off executor" {
             return [pscustomobject]$evidence
         }
 
-        function Write-HeldContract([object[]]$Evidence = @(), [bool]$Apply = $false) {
+        function Write-HeldContract([object[]]$Evidence = @(), [bool]$Apply = $false, [bool]$AlsoTrashOnly = $false, [object[]]$Entries = @()) {
             $held = [ordered]@{
                 schema = 1; nodeId = "a001"; writtenAt = [DateTimeOffset]::FromUnixTimeSeconds($global:handoffTestNow - 10).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-                apply = $Apply; cluster = $false; quietMinutes = 10; entries = @(); waiting = @(); notes = @()
+                apply = $Apply; cluster = $false; quietMinutes = 10; entries = @($Entries); waiting = @(); notes = @()
             }
-            if (-not $Apply) { $held["trashOnly"] = $true }
+            if (-not $Apply -or $AlsoTrashOnly) { $held["trashOnly"] = $true }
             if ($Evidence.Count) { $held["trashEvidence"] = @($Evidence) }
             [System.IO.File]::WriteAllText($global:contractPath, (ConvertTo-Json -InputObject ([pscustomobject]$held) -Depth 10))
         }
@@ -893,6 +893,22 @@ Describe "the hand-off executor" {
         It "never takes evidence on a contract that may move files, and asks for none" {
             Initialize-DueCopy "paused-applying"
             Write-HeldContract @(New-Evidence) $true
+            Invoke-TestHandoff
+            Get-KeptState | Should Be "True 0 $($global:dueCopy): its index entry cannot be read"
+            Get-Awaiting | Should Be ""
+        }
+
+        It "takes no evidence from a trash-only contract that also says apply" {
+            Initialize-DueCopy "paused-both"
+            Write-HeldContract @(New-Evidence) $true $true
+            Invoke-TestHandoff
+            Get-KeptState | Should Be "True 0 $($global:dueCopy): its index entry cannot be read"
+            Get-Awaiting | Should Be ""
+        }
+
+        It "takes no evidence from a trash-only contract that names a file" {
+            Initialize-DueCopy "paused-naming"
+            Write-HeldContract @(New-Evidence) $true $true @(New-Entry "other.mp4")
             Invoke-TestHandoff
             Get-KeptState | Should Be "True 0 $($global:dueCopy): its index entry cannot be read"
             Get-Awaiting | Should Be ""

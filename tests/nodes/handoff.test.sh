@@ -694,6 +694,59 @@ written_now=$due held_contract_with "$(written_now=$due evidence '.version = ["S
 run_now=$due run_handoff
 check "evidence of a later version empties it too" "no 1" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
 
+echo "evidence needs a strictly held contract and a strict time"
+due_paused_copy() {   # <node name>: a copy in the trash, its folder paused here, due at $due
+    new_node "$1"
+    contract "$(entry clip.mp4)"
+    run_handoff
+    set_paused true
+}
+good_evidence_contract() {   # the held contract with good evidence, written for $due
+    written_now=$due held_contract_with "$(written_now=$due evidence)"
+}
+reshape_contract() { jq "$1" "$scratch/contract.json" > "$scratch/c.new" && mv "$scratch/c.new" "$scratch/contract.json"; }
+index_unreadable="its index entry cannot be read"
+
+due_paused_copy strictapply
+good_evidence_contract
+reshape_contract '.apply = true'
+run_now=$due run_handoff
+check "a trash-only contract that also says apply takes no evidence" "$(kept_for "$index_unreadable")" "$(state_of_trash)"
+check "and asks for none" "" "$(awaiting_of)"
+due_paused_copy strictentries
+good_evidence_contract
+reshape_contract ".apply = true | .entries = [$(entry other.mp4)]"
+run_now=$due run_handoff
+check "a trash-only contract that names a file takes no evidence" "$(kept_for "$index_unreadable")" "$(state_of_trash)"
+due_paused_copy strictmissing
+good_evidence_contract
+reshape_contract 'del(.apply)'
+run_now=$due run_handoff
+check "a contract that does not say apply = false takes no evidence" "$(kept_for "$index_unreadable")" "$(state_of_trash)"
+
+observed_seconds=$((due - 10))
+lenient_index=0
+for lenient_time in "@$observed_seconds" "$(date -u -d "@$observed_seconds" '+%F %T')Z" "$(date -u -d "@$observed_seconds" +%FT%T)" now ""; do
+    lenient_index=$((lenient_index + 1))
+    due_paused_copy "lenient$lenient_index"
+    written_now=$due held_contract_with "$(written_now=$due evidence ".observedAt = \"$lenient_time\"")"
+    run_now=$due run_handoff
+    check "an observedAt of '$lenient_time' is not a time" "$(kept_for "its folder is paused here and the keeper evidence is stale")" "$(state_of_trash)"
+done
+strict_index=0
+for strict_time in "$(date -u -d "@$observed_seconds" +%FT%T).123456789Z" "$(date -u -d "@$observed_seconds" +%FT%T)+00:00"; do
+    strict_index=$((strict_index + 1))
+    due_paused_copy "strict$strict_index"
+    written_now=$due held_contract_with "$(written_now=$due evidence ".observedAt = \"$strict_time\"")"
+    run_now=$due run_handoff
+    check "an observedAt of '$strict_time' is one" "no 1" "$(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+done
+due_paused_copy lenientcontract
+good_evidence_contract
+reshape_contract ".writtenAt = \"@$((due - 10))\""
+run_now=$due run_handoff
+check "a contract time that is not strict refuses the run and keeps the copy" "the contract has no time it was written yes 0" "$(refusal) $(in_trash clip.mp4) $(jq .purged "$scratch/result.json")"
+
 echo "a manifest line never reaches outside the trash"
 new_node manifest
 mkdir -p "$scratch/beyond" "$root/.storage/handoff-trash"

@@ -399,13 +399,13 @@ export interface HandoffTrashEntry {
   reason: string;
 }
 
-/** `<node id>.result.json`, the executor's last run. */
 export interface AwaitingKeeperEvidence {
   folderId: string;
   path: string;
   keeperDevice: string;
 }
 
+/** `<node id>.result.json`, the executor's last run. */
 export interface HandoffResult {
   schema: number;
   nodeId: string;
