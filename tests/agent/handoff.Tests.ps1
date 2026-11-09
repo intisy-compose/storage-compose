@@ -413,7 +413,7 @@ Describe "the hand-off executor" {
         $shell = [powershell]::Create()
         $shell.Runspace = $space
         [void]$shell.AddScript("[System.Threading.Thread]::Sleep(8000)")
-        $script:handoffHashJobs[$Key] = [pscustomobject]@{ shell = $shell; space = $space; handle = $shell.BeginInvoke(); startedAt = Get-Date; absent = 0 }
+        $script:handoffHashJobs[$Key] = [pscustomobject]@{ shell = $shell; space = $space; handle = $shell.BeginInvoke(); startedAt = Get-Date; path = (Join-Path $global:folder "clip.mp4"); size = 5; modifiedSeconds = $global:handoffTestNow - 3600 }
     }
     function Get-TestHashKey { return "$([System.IO.Path]::GetFullPath($global:root))|videos|clip.mp4|STICK:1|5|$($global:handoffTestNow - 3600)" }
 
@@ -446,25 +446,43 @@ Describe "the hand-off executor" {
         } finally { $script:handoffRunSeconds = 20; $script:handoffHashJobSeconds = 21600; $script:handoffHashGaveUp = @{}; Stop-HandoffHashJobs }
     }
 
-    It "stops a background hash only after its file has been out of the contract for several rounds" {
-        New-TestNode "leftcontract"
-        $script:handoffRunSeconds = 0
-        $script:handoffHashJobAbsentRounds = 2
+    It "keeps a background hash through any number of rounds without its entry, while the file is the one it reads" {
+        New-TestNode "keptjob"
         New-StallingHashJob (Get-TestHashKey)
         try {
-            Write-Contract @()
-            Invoke-TestHandoff
+            foreach ($round in 1..7) { Write-Contract @(); Invoke-TestHandoff }
             $script:handoffHashJobs.Count | Should Be 1
-            Write-Contract @(New-Entry "clip.mp4")
-            Invoke-TestHandoff
-            $script:handoffHashJobs.Count | Should Be 1
-            Write-Contract @()
-            Invoke-TestHandoff
-            $script:handoffHashJobs.Count | Should Be 1
+        } finally { Stop-HandoffHashJobs }
+    }
+
+    It "stops a background hash out of the contract once its file changed or is gone" {
+        New-TestNode "changedjob"
+        New-StallingHashJob (Get-TestHashKey)
+        try {
+            Set-OldTime (Join-Path $global:folder "clip.mp4") ($global:handoffTestNow - 100)
             Write-Contract @()
             Invoke-TestHandoff
             $script:handoffHashJobs.Count | Should Be 0
-        } finally { $script:handoffRunSeconds = 20; $script:handoffHashJobAbsentRounds = 5; Stop-HandoffHashJobs }
+        } finally { Stop-HandoffHashJobs }
+        New-TestNode "gonejob"
+        New-StallingHashJob (Get-TestHashKey)
+        try {
+            Remove-Item -LiteralPath (Join-Path $global:folder "clip.mp4")
+            Write-Contract @()
+            Invoke-TestHandoff
+            $script:handoffHashJobs.Count | Should Be 0
+        } finally { Stop-HandoffHashJobs }
+    }
+
+    It "stops a background hash out of the contract at its limit, and gives that version up" {
+        New-TestNode "limitjob"
+        New-StallingHashJob (Get-TestHashKey)
+        $script:handoffHashJobSeconds = 0
+        try {
+            Write-Contract @()
+            Invoke-TestHandoff
+            "$($script:handoffHashJobs.Count) $($script:handoffHashGaveUp.ContainsKey((Get-TestHashKey)))" | Should Be "0 True"
+        } finally { $script:handoffHashJobSeconds = 21600; $script:handoffHashGaveUp = @{}; Stop-HandoffHashJobs }
     }
 
     It "starts a new background hash when the version changed under the old one" {

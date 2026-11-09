@@ -9,7 +9,8 @@ import { type Notice, appState } from "./state.js";
 export function admissionText(admission: NodeAdmission): string {
   const where = admission.listed ? "the layout lists it, not admitted yet" : "the layout does not list it yet";
   const claim = admission.claimedBy ? `, reported by the device ${admission.claimedBy.deviceName}` : "";
-  return `${admission.name} (${admission.nodeId}) on ${admission.host}${claim}: ${where}; its node file suggests threshold ${admission.threshold}. Admitting commits admitted = true at the threshold confirmed here, so other nodes may share with it, and apply = false: it only reports until apply is turned on for it.`;
+  const refusal = admission.claimedBy ? ` Refusing refuses the id ${admission.nodeId} for every device that reports it, not only for ${admission.claimedBy.deviceName}.` : "";
+  return `${admission.name} (${admission.nodeId}) on ${admission.host}${claim}: ${where}; its node file suggests threshold ${admission.threshold}. Admitting commits admitted = true at the threshold confirmed here, so other nodes may share with it, and apply = false: it only reports until apply is turned on for it.${refusal}`;
 }
 
 const busy = new Set<string>();

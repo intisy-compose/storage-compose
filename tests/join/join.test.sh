@@ -266,12 +266,23 @@ printf '#!/bin/sh\nexit 1\n' > /tmp/stubs/systemctl
 failing2='{"schema":1,"nodeId":"'"$file_node_id"'","apply":true,"nodeFile":{"action":"follow","policy":{"threshold":60,"assigned":[],"access":"open"}},"contract":null,"ops":[{"op":"paused","folderId":"documents-github","paused":false}]}'
 rm -f /data/.storage/syncthing/layered-restart.json
 answer_with "$failing2"
+printf '#!/bin/sh\necho attempt >> /tmp/attempts\nexit 1\n' > /tmp/stubs/systemctl
+: > /tmp/attempts
+attempts() { wc -l < /tmp/attempts | tr -d ' '; }
 PATH=/tmp/stubs:$PATH tick > /dev/null
-check "a restart that failed locks nothing out" false "$([[ -f /data/.storage/syncthing/layered-restart.json ]] && echo true || echo false)"
-printf '#!/bin/sh\nexit 0\n' > /tmp/stubs/systemctl
+check "a failed restart is tried" 1 "$(attempts)"
+check "and recorded as failed" true "$(jq -r .failed /data/.storage/syncthing/layered-restart.json)"
 PATH=/tmp/stubs:$PATH tick > /dev/null
-check "and a restart that consumed nothing locks nothing out either" false "$([[ -f /data/.storage/syncthing/layered-restart.json ]] && echo true || echo false)"
-rm -f /data/.storage/syncthing/layered-ops.json
+check "it is not tried again every minute" 1 "$(attempts)"
+PATH=/tmp/stubs:$PATH STORAGE_LAYOUT_NOW=$(( $(date +%s) + 301 )) tick > /dev/null
+check "but soon after the short back-off, not the long one" 2 "$(attempts)"
+rm -f /data/.storage/syncthing/layered-restart.json /data/.storage/syncthing/layered-ops.json
+printf '#!/bin/sh\necho attempt >> /tmp/attempts\nexit 0\n' > /tmp/stubs/systemctl
+: > /tmp/attempts
+PATH=/tmp/stubs:$PATH tick > /dev/null
+PATH=/tmp/stubs:$PATH tick > /dev/null
+check "a restart that consumed nothing backs off the same way" 1 "$(attempts)"
+rm -f /data/.storage/syncthing/layered-restart.json /data/.storage/syncthing/layered-ops.json
 printf '#!/bin/sh\necho restart >> /tmp/order\nrm -f /data/.storage/syncthing/layered-ops.json\n' > /tmp/stubs/systemctl
 cp /usr/local/lib/storage-join/handoff.sh /tmp/handoff.keep
 printf '#!/bin/bash\necho handoff >> /tmp/order\n' > /usr/local/lib/storage-join/handoff.sh

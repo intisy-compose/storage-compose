@@ -14,6 +14,7 @@ set -u
 readonly UNIT_NAME="storage-syncthing.service"
 readonly OPS_MAX_AGE_SECONDS=300
 readonly RESTART_BACKOFF_SECONDS=1800
+readonly RESTART_FAILED_BACKOFF_SECONDS=300
 readonly HANDOFF_RUN_SECONDS=${STORAGE_LAYOUT_HANDOFF_SECONDS:-3600}
 readonly LISTING_SECONDS=120
 readonly FILES_LIMIT=200
@@ -203,7 +204,7 @@ write_report() {   # <file>
         remaining=$((FILES_LIMIT - ${#files[@]}))
     done < <(jq -r '.[] | select(.type == "sendonly") | .id' <<< "$folders")
     if [ -f "$(restart_record)" ] && [ "$(jq -r '.told // false' "$(restart_record)" 2> /dev/null)" = true ]; then
-        printf 'changes were already tried and are still asked for; retried after the back-off of %s s\n' "$RESTART_BACKOFF_SECONDS" >> "$listing_problems"
+        printf 'changes were already tried and are still asked for; they are tried again after a back-off\n' >> "$listing_problems"
     fi
     size=$(df -B1 --output=size "$root" | tail -n 1 | tr -d ' ')
     avail=$(df -B1 --output=avail "$root" | tail -n 1 | tr -d ' ')
@@ -262,16 +263,18 @@ restart_record() { printf '%s/layered-restart.json' "$syncthing_home"; }
 # The same changes, tried and still asked for, are retried only after RESTART_BACKOFF_SECONDS, so a change that fails
 # does not restart Syncthing every minute; a different change restarts at once.
 restart_is_due() {   # <signature>
-    local signature=$1 file last at told age
+    local signature=$1 file last at told age backoff
     file=$(restart_record)
     if [ -f "$file" ]; then
         last=$(jq -r '.signature // ""' "$file" 2> /dev/null)
         at=$(jq -r '.at // 0' "$file" 2> /dev/null)
         told=$(jq -r '.told // false' "$file" 2> /dev/null)
         age=$(( $(now) - at ))
-        if [ "$last" = "$signature" ] && [ "$age" -lt "$RESTART_BACKOFF_SECONDS" ]; then
+        backoff=$RESTART_BACKOFF_SECONDS
+        [ "$(jq -r '.failed // false' "$file" 2> /dev/null)" != true ] || backoff=$RESTART_FAILED_BACKOFF_SECONDS
+        if [ "$last" = "$signature" ] && [ "$age" -lt "$backoff" ]; then
             if [ "$told" != true ]; then
-                log "these changes were already tried $age s ago and are still asked for; not restarting again before $RESTART_BACKOFF_SECONDS s have passed"
+                log "these changes were already tried $age s ago and are still asked for; not restarting again before $backoff s have passed"
                 jq '.told = true' "$file" > "$file.new" && mv -f "$file.new" "$file"
             fi
             return 1
@@ -279,10 +282,10 @@ restart_is_due() {   # <signature>
     fi
 }
 
-record_restart() {   # <signature>
+record_restart() {   # <signature> <whether the restart failed>
     local file
     file=$(restart_record)
-    jq -cn --arg signature "$1" --argjson at "$(now)" '{signature: $signature, at: $at, told: false}' > "$file.new" && mv -f "$file.new" "$file"
+    jq -cn --arg signature "$1" --argjson at "$(now)" --argjson failed "$2" '{signature: $signature, at: $at, told: false, failed: $failed}' > "$file.new" && mv -f "$file.new" "$file"
     own "$file"
 }
 
@@ -304,13 +307,15 @@ apply_the_answer() {   # <answer file> <when the dashboard answered>
     log "restarting $UNIT_NAME to apply $(jq '.ops | length' "$1") change(s)"
     if ! systemctl restart "$UNIT_NAME"; then
         log "$UNIT_NAME did not restart"
+        record_restart "$signature" true
         return 0
     fi
     if [ -f "$(ops_file)" ]; then
         log "the restart did not take the changes up"
+        record_restart "$signature" true
         return 0
     fi
-    record_restart "$signature"
+    record_restart "$signature" false
     wait_for_gui || log "Syncthing did not answer after the restart"
 }
 

@@ -25,7 +25,6 @@ $handoffHashJobs = @{}
 $handoffHashStopping = @()
 $handoffHashGaveUp = @{}
 $handoffHashJobSeconds = 21600
-$handoffHashJobAbsentRounds = 5
 
 if (-not ("StorageCompose.HandoffNative" -as [type])) {
     Add-Type -Namespace StorageCompose -Name HandoffNative -MemberDefinition @'
@@ -593,7 +592,7 @@ writers out, and the file stays where it is with nothing written about it until 
 whose metadata and open checks catch a change since. One at a time per agent: the disk is read in order, not in
 parallel.
 #>
-function Start-HashJob([string]$Key, [string]$Path, [int64]$BlockSize) {
+function Start-HashJob([string]$Key, [string]$Path, [int64]$BlockSize, [int64]$Size, [int64]$ModifiedSeconds) {
     foreach ($other in @($script:handoffHashJobs.Keys | Where-Object { $_ -cne $Key })) { if ($script:handoffHashJobs[$other].handle.IsCompleted) { Remove-HashJob $other } }
     Clear-StoppedHashJobs
     if ($script:handoffHashJobs.Count -ge 1 -or @($script:handoffHashStopping).Count -ge 1) { return }
@@ -605,20 +604,32 @@ function Start-HashJob([string]$Key, [string]$Path, [int64]$BlockSize) {
     $shell = [powershell]::Create()
     $shell.Runspace = $space
     [void]$shell.AddScript($worker).AddArgument($Path).AddArgument($BlockSize)
-    $script:handoffHashJobs[$Key] = [pscustomobject]@{ shell = $shell; space = $space; handle = $shell.BeginInvoke(); startedAt = Get-Date; absent = 0 }
+    $script:handoffHashJobs[$Key] = [pscustomobject]@{ shell = $shell; space = $space; handle = $shell.BeginInvoke(); startedAt = Get-Date; path = $Path; size = $Size; modifiedSeconds = $ModifiedSeconds }
 }
 
 function Test-HashJobIsOverdue($Job) { return ((Get-Date) - $Job.startedAt).TotalSeconds -ge $script:handoffHashJobSeconds }
 
+function Test-HashJobFileIsTheSame($Job) {
+    if (-not [System.IO.File]::Exists($Job.path)) { return $false }
+    $info = [System.IO.FileInfo]::new($Job.path)
+    return $info.Length -eq [int64]$Job.size -and (Get-UnixSeconds $info.LastWriteTimeUtc) -eq [int64]$Job.modifiedSeconds
+}
+
+<#
+.NOTES
+An entry can be out of the contract for many rounds while its hash is still good, since a joined folder's files are
+reported a page at a time, so only the file decides: a job stops when its file changed or went, or at its limit.
+#>
 function Stop-HashJobsOutsideContract($Run) {
     $wanted = @($Run.contract.entries | ForEach-Object { Get-HashJobKey $Run "$($_.folderId)" $_ })
     $prefix = "$($Run.rootFull)|"
     Clear-StoppedHashJobs
-    foreach ($key in @($script:handoffHashJobs.Keys | Where-Object { $_.StartsWith($prefix) })) {
+    foreach ($key in @($script:handoffHashJobs.Keys | Where-Object { $_.StartsWith($prefix) -and $wanted -cnotcontains $_ })) {
         $job = $script:handoffHashJobs[$key]
-        if ($wanted -ccontains $key) { $job.absent = 0; continue }
-        $job.absent++
-        if ($job.absent -ge $script:handoffHashJobAbsentRounds) { Remove-HashJob $key }
+        if (-not (Test-HashJobFileIsTheSame $job)) { Remove-HashJob $key; continue }
+        if ((Test-HashJobIsDone $job) -or -not (Test-HashJobIsOverdue $job)) { continue }
+        Remove-HashJob $key
+        $script:handoffHashGaveUp[$key] = $true
     }
 }
 
@@ -667,7 +678,7 @@ function Get-HandoffHashBeforeIgnore($Run, [string]$FolderId, [string]$Folder, $
     if ($check.ContainsKey("open")) { return New-HandoffResultLine $FolderId $Entry.path "refused" "it is open" }
     if ($check.ContainsKey("problem")) { return New-HandoffResultLine $FolderId $Entry.path "refused" $check.problem }
     if (-not $check.ContainsKey("budget")) { return $null }
-    Start-HashJob $key (Get-HandoffPath $Folder $Entry.path) (Get-HandoffBlockSize ([int64]$Entry.size) ([int64]$Entry.numBlocks))
+    Start-HashJob $key (Get-HandoffPath $Folder $Entry.path) (Get-HandoffBlockSize ([int64]$Entry.size) ([int64]$Entry.numBlocks)) ([int64]$Entry.size) ([int64]$Entry.modifiedSeconds)
     return New-HashDeferredLine $FolderId $Entry
 }
 
