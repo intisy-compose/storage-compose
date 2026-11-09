@@ -86,9 +86,10 @@ describe("folder offers the layout causes", () => {
 
 describe("admitting a node through the setup repo", () => {
   let repos: ReturnType<typeof layoutRepos>;
+  const asked: string[] = [];
   const nodes = new Map([["d003", info("d003", "new-stick")], ["b001", info("b001", "stick")], ["e004", info("e004", "pc")]]);
   const routes = () =>
-    nodeAdmissionRoutes({ repository: repos.ours, findNode: async (nodeId) => nodes.get(nodeId) ?? null, deviceId: async (entry) => `${entry.nodeId.toUpperCase()}-ID`, now: () => new Date("2026-11-05T12:00:00.000Z") });
+    nodeAdmissionRoutes({ repository: repos.ours, findNode: async (nodeId, deviceId) => { asked.push(`${nodeId} ${deviceId}`); return nodes.get(nodeId) ?? null; }, deviceId: async (entry) => `${entry.nodeId.toUpperCase()}-ID`, now: () => new Date("2026-11-05T12:00:00.000Z") });
   const version = () => layoutVersion(readFileSync(join(repos.ours, "drive-sync.toml"), "utf8"));
   const remote = () => parseLayout(git(repos.remote, "show", "main:drive-sync.toml"));
 
@@ -139,6 +140,17 @@ describe("admitting a node through the setup repo", () => {
 
     assert.deepEqual([remote().nodes.find((entry) => entry.id === "9f9f")?.threshold, remote().nodes.find((entry) => entry.id === "9f9f")?.admitted], [80, true]);
     assert.deepEqual(waitingAdmissions(remote(), [info("9f9f", "made-offline")], "storage"), [], "admitted once, it no longer waits anywhere");
+  });
+
+  it("shows who claims a joined node and admits the device the person chose, refusing to guess between claims", async () => {
+    const claim = (deviceName: string, deviceId: string): LocalNodeInfo => ({ ...info("8e8e", "claimed"), source: "joined", claimedBy: { deviceId, deviceName } });
+    const waiting = waitingAdmissions(remote(), [claim("laptop", "LAPTOP-ID"), claim("squat", "SQUAT-ID")], "storage");
+    assert.deepEqual(waiting.map((entry) => [entry.nodeId, entry.claimedBy?.deviceName]), [["8e8e", "laptop"], ["8e8e", "squat"]]);
+
+    nodes.set("8e8e", claim("laptop", "LAPTOP-ID"));
+    const chosen = await askRoutes(routes(), "PUT", "/api/nodes/8e8e/admission", { base: version(), answer: "accept", threshold: 50, deviceId: "LAPTOP-ID" });
+    assert.equal(chosen.status, 200);
+    assert.equal(asked.at(-1), "8e8e LAPTOP-ID", "the route asks for that device's claim");
   });
 
   it("a node admitted once cannot be approved again, even from the current layout, and keeps what it was admitted at", async () => {

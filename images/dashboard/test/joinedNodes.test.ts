@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { type JoinedRound, LayoutRound, mountedHandoffFiles, nodeHandoffFiles } from "../src/applyLayout.js";
 import { handoffPublisher, syncthingHandoffReads } from "../src/handoffFeed.js";
 import type { JoinedDevice, JoinRecords } from "../src/join.js";
-import { type JoinedNodeReport, answerJoinedNode, forgetHeardNodes, joinedDeviceIdOf, joinedNodeInfos } from "../src/joinedNodes.js";
+import { type JoinedNodeReport, answerJoinedNode, forgetHeardNodes, joinedClaimFor, joinedDeviceIdOf, joinedNodeInfos } from "../src/joinedNodes.js";
 import type { RequestError } from "../src/http.js";
 import type { JoinedOp } from "../src/joinedClient.js";
 import { fileLayeredPauses } from "../src/layeredPauses.js";
@@ -189,16 +189,27 @@ describe("whose node it is", () => {
     }
   });
 
-  it("an unlisted id stays with its first claimant, and a second device learns nothing and changes nothing", async () => {
+  const devicesWith = (...names: JoinedDevice[]): JoinRecords => ({ all: async () => Object.fromEntries(names.map((device) => [device.name, device])), put: async () => undefined });
+  const otherRecord: JoinedDevice = { ...record, name: "other", syncthingDeviceId: otherId, tailnetName: "other-host" };
+  const otherCaller = { ...caller, nodeName: "other-host" } as WhoIs;
+
+  it("every device has its own claim on an unlisted id, so a squatter cannot keep the real owner out, and neither sees the other", async () => {
+    forgetHeardNodes();
     const layout = parseLayout(layoutText());
-    const otherRecord: JoinedDevice = { ...record, name: "other", syncthingDeviceId: otherId, tailnetName: "other-host" };
-    const otherCaller = { ...caller, nodeName: "other-host" } as WhoIs;
-    const both: JoinRecords = { all: async () => ({ stick: record, other: otherRecord }), put: async () => undefined };
+    const both = devicesWith(record, otherRecord);
     const first = await answerJoinedNode({ ...dependencies(layout), records: both }, ["100.64.0.5"], "aaa1", report());
     assert.equal(first.contract, null, "an unlisted node has no contract and no round");
 
-    await assert.rejects(answerJoinedNode({ ...dependencies(layout), records: both, admit: async () => otherCaller }, ["100.64.0.6"], "aaa1", report({ deviceId: otherId, name: "other" })), /no node aaa1/);
-    assert.equal(joinedDeviceIdOf("aaa1"), stickId);
+    const second = await answerJoinedNode({ ...dependencies(layout), records: both, admit: async () => otherCaller }, ["100.64.0.6"], "aaa1", report({ deviceId: otherId, name: "other" }));
+    assert.deepEqual([second.apply, second.ops, second.contract, second.drift], [false, [], null, []]);
+
+    const claims = joinedNodeInfos(now).filter((info) => info.nodeId === "aaa1").map((info) => [info.claimedBy?.deviceId, info.claimedBy?.deviceName]);
+    assert.deepEqual(claims.sort(), [[otherId, "other"], [stickId, "stick"]].sort());
+    assert.equal(joinedDeviceIdOf("aaa1", otherId), otherId);
+    assert.equal(joinedDeviceIdOf("aaa1"), null, "two devices claim it, so no one is taken for its device unnamed");
+    assert.throws(() => joinedClaimFor("aaa1", undefined, now), /more than one device claims/);
+    assert.equal(joinedClaimFor("aaa1", stickId, now)?.claimedBy?.deviceName, "stick");
+    forgetHeardNodes();
   });
 
   it("keeps no result of a node the layout does not list", async () => {
@@ -209,12 +220,15 @@ describe("whose node it is", () => {
     assert.equal(existsSync(join(dependenciesOfRun.resultDirectory, "aaa2.result.json")), false);
   });
 
-  it("hears at most a bounded number of nodes, keeping those it has", async () => {
+  it("caps a device's unlisted claims, for that device alone, and never a listed node", async () => {
     forgetHeardNodes();
     const layout = parseLayout(layoutText());
-    for (let index = 0; index < 256; index++) await answerJoinedNode(dependencies(layout), ["100.64.0.5"], (0xa000 + index).toString(16), report());
-    await assert.rejects(answerJoinedNode(dependencies(layout), ["100.64.0.5"], "aabb", report()), (error: RequestError) => error.status === 429);
-    assert.equal(joinedDeviceIdOf("a0ff"), stickId);
+    const both = devicesWith(record, otherRecord);
+    for (let index = 0; index < 16; index++) await answerJoinedNode({ ...dependencies(layout), records: both }, ["100.64.0.5"], (0xa000 + index).toString(16), report());
+    await assert.rejects(answerJoinedNode({ ...dependencies(layout), records: both }, ["100.64.0.5"], "aabb", report()), (error: RequestError) => error.status === 429);
+    assert.equal((await answerJoinedNode({ ...dependencies(layout), records: both }, ["100.64.0.5"], "b001", report())).admitted, true, "a listed node is heard whatever the claims");
+    assert.equal((await answerJoinedNode({ ...dependencies(layout), records: both, admit: async () => otherCaller }, ["100.64.0.6"], "aabb", report({ deviceId: otherId, name: "other" }))).admitted, false, "another device is not held back");
+    assert.equal(joinedDeviceIdOf("a000", stickId), stickId, "what was heard stays");
     forgetHeardNodes();
   });
 });
@@ -229,7 +243,8 @@ describe("a node the layout does not know yet", () => {
     assert.equal(answer.admitted, false);
     assert.equal(answer.contract, null);
     assert.ok(joinedNodeInfos(now).some((info) => info.nodeId === "b001" && info.name === "stick" && info.source === "joined"));
-    assert.equal(joinedDeviceIdOf("b001"), stickId);
+    assert.equal(joinedDeviceIdOf("b001", stickId), stickId);
+    assert.equal(joinedDeviceIdOf("b001"), stickId, "one claim, unnamed is that one");
   });
 
   it("is no longer listed once it has stopped reporting", () => {

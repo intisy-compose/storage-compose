@@ -22,8 +22,10 @@ $handoffRoundSeconds = 60
 $handoffListName = ".stignore-handoff"
 $lastHandoffRound = [datetime]::MinValue
 $handoffHashJobs = @{}
+$handoffHashStopping = @()
 $handoffHashGaveUp = @{}
 $handoffHashJobSeconds = 21600
+$handoffHashJobAbsentRounds = 5
 
 if (-not ("StorageCompose.HandoffNative" -as [type])) {
     Add-Type -Namespace StorageCompose -Name HandoffNative -MemberDefinition @'
@@ -559,12 +561,28 @@ function Get-HashJobKey($Run, [string]$FolderId, $Entry) { return "$($Run.rootFu
 
 function Test-HashJobIsDone($Job) { return $Job.handle.IsCompleted }
 
+function Close-HashJob($Job) { try { $Job.shell.Dispose(); $Job.space.Dispose() } catch { } }
+
+<#
+.NOTES
+A job still running is only asked to stop: a read blocked on a stalled disk would hold a synchronous Stop or Dispose,
+and with it the agent's round. It is disposed once it has stopped (Clear-StoppedHashJobs).
+#>
 function Remove-HashJob([string]$Key) {
     $job = $script:handoffHashJobs[$Key]
     if (-not $job) { return }
-    try { if (-not $job.handle.IsCompleted) { $job.shell.Stop() } } catch { }
-    try { $job.shell.Dispose(); $job.space.Dispose() } catch { }
     $script:handoffHashJobs.Remove($Key)
+    if ($job.handle.IsCompleted) { Close-HashJob $job; return }
+    try { [void]$job.shell.BeginStop($null, $null) } catch { }
+    $script:handoffHashStopping = @($script:handoffHashStopping) + $job
+}
+
+function Clear-StoppedHashJobs {
+    $still = @()
+    foreach ($job in @($script:handoffHashStopping)) {
+        if ($job.shell.InvocationStateInfo.State -in @("Stopped", "Completed", "Failed")) { Close-HashJob $job } else { $still += $job }
+    }
+    $script:handoffHashStopping = $still
 }
 
 <#
@@ -577,7 +595,8 @@ parallel.
 #>
 function Start-HashJob([string]$Key, [string]$Path, [int64]$BlockSize) {
     foreach ($other in @($script:handoffHashJobs.Keys | Where-Object { $_ -cne $Key })) { if ($script:handoffHashJobs[$other].handle.IsCompleted) { Remove-HashJob $other } }
-    if ($script:handoffHashJobs.Count -ge 1) { return }
+    Clear-StoppedHashJobs
+    if ($script:handoffHashJobs.Count -ge 1 -or @($script:handoffHashStopping).Count -ge 1) { return }
     $definition = (Get-Item function:\Get-StreamBlocksHash).Definition
     $opener = (Get-Item function:\Open-HandoffHashStream).Definition
     $worker = "param([string]`$Path, [int64]`$BlockSize)`nfunction Get-StreamBlocksHash {$definition}`nfunction Open-HandoffHashStream {$opener}`ntry { `$stream = Open-HandoffHashStream `$Path } catch { return [pscustomobject]@{ open = `$true; hash = `$null } }`ntry { return [pscustomobject]@{ open = `$false; hash = (Get-StreamBlocksHash `$stream `$BlockSize) } } finally { `$stream.Dispose() }"
@@ -586,7 +605,7 @@ function Start-HashJob([string]$Key, [string]$Path, [int64]$BlockSize) {
     $shell = [powershell]::Create()
     $shell.Runspace = $space
     [void]$shell.AddScript($worker).AddArgument($Path).AddArgument($BlockSize)
-    $script:handoffHashJobs[$Key] = [pscustomobject]@{ shell = $shell; space = $space; handle = $shell.BeginInvoke(); startedAt = Get-Date }
+    $script:handoffHashJobs[$Key] = [pscustomobject]@{ shell = $shell; space = $space; handle = $shell.BeginInvoke(); startedAt = Get-Date; absent = 0 }
 }
 
 function Test-HashJobIsOverdue($Job) { return ((Get-Date) - $Job.startedAt).TotalSeconds -ge $script:handoffHashJobSeconds }
@@ -594,7 +613,13 @@ function Test-HashJobIsOverdue($Job) { return ((Get-Date) - $Job.startedAt).Tota
 function Stop-HashJobsOutsideContract($Run) {
     $wanted = @($Run.contract.entries | ForEach-Object { Get-HashJobKey $Run "$($_.folderId)" $_ })
     $prefix = "$($Run.rootFull)|"
-    foreach ($key in @($script:handoffHashJobs.Keys | Where-Object { $_.StartsWith($prefix) -and $wanted -cnotcontains $_ })) { Remove-HashJob $key }
+    Clear-StoppedHashJobs
+    foreach ($key in @($script:handoffHashJobs.Keys | Where-Object { $_.StartsWith($prefix) })) {
+        $job = $script:handoffHashJobs[$key]
+        if ($wanted -ccontains $key) { $job.absent = 0; continue }
+        $job.absent++
+        if ($job.absent -ge $script:handoffHashJobAbsentRounds) { Remove-HashJob $key }
+    }
 }
 
 function Stop-HandoffHashJobs { foreach ($key in @($script:handoffHashJobs.Keys)) { Remove-HashJob $key } }
@@ -624,12 +649,12 @@ function Get-HandoffHashBeforeIgnore($Run, [string]$FolderId, [string]$Folder, $
     $key = Get-HashJobKey $Run $FolderId $Entry
     if ($script:handoffHashGaveUp.ContainsKey($key)) { return New-HashGaveUpLine $FolderId $Entry }
     if ($script:handoffHashJobs.ContainsKey($key)) {
-        if (Test-HashJobIsOverdue $script:handoffHashJobs[$key]) {
+        if (-not (Test-HashJobIsDone $script:handoffHashJobs[$key])) {
+            if (-not (Test-HashJobIsOverdue $script:handoffHashJobs[$key])) { return New-HashDeferredLine $FolderId $Entry }
             Remove-HashJob $key
             $script:handoffHashGaveUp[$key] = $true
             return New-HashGaveUpLine $FolderId $Entry
         }
-        if (-not (Test-HashJobIsDone $script:handoffHashJobs[$key])) { return New-HashDeferredLine $FolderId $Entry }
         $outcome = Get-HashJobOutcome $key
         if ($outcome -and $outcome.open) { return New-HandoffResultLine $FolderId $Entry.path "refused" "it is open" }
         if ($outcome -and $outcome.hash -ceq $Entry.blocksHash) {

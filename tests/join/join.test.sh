@@ -260,6 +260,43 @@ report_stub='api() { case $1 in */db/browse*) printf "%s" "$BROWSE_ANSWER";; */d
 BROWSE_ANSWER='[{"name":"a","type":"FILE_INFO_TYPE_FILE","modTime":"not a date"}]' check "a modification time that does not parse counts as not settled" "" "$(BROWSE_ANSWER='[{"name":"a","type":"FILE_INFO_TYPE_FILE","modTime":"not a date"}]' sourced "$report_stub; report_files docs 5")"
 check "a listing that failed is said" "docs: it could not be listed" "$(BROWSE_ANSWER='not json' sourced "$report_stub; report_files docs 5"; cat /tmp/listing.txt)"
 
+
+echo "Restarts, order and the report's listing:"
+printf '#!/bin/sh\nexit 1\n' > /tmp/stubs/systemctl
+failing2='{"schema":1,"nodeId":"'"$file_node_id"'","apply":true,"nodeFile":{"action":"follow","policy":{"threshold":60,"assigned":[],"access":"open"}},"contract":null,"ops":[{"op":"paused","folderId":"documents-github","paused":false}]}'
+rm -f /data/.storage/syncthing/layered-restart.json
+answer_with "$failing2"
+PATH=/tmp/stubs:$PATH tick > /dev/null
+check "a restart that failed locks nothing out" false "$([[ -f /data/.storage/syncthing/layered-restart.json ]] && echo true || echo false)"
+printf '#!/bin/sh\nexit 0\n' > /tmp/stubs/systemctl
+PATH=/tmp/stubs:$PATH tick > /dev/null
+check "and a restart that consumed nothing locks nothing out either" false "$([[ -f /data/.storage/syncthing/layered-restart.json ]] && echo true || echo false)"
+rm -f /data/.storage/syncthing/layered-ops.json
+printf '#!/bin/sh\necho restart >> /tmp/order\nrm -f /data/.storage/syncthing/layered-ops.json\n' > /tmp/stubs/systemctl
+cp /usr/local/lib/storage-join/handoff.sh /tmp/handoff.keep
+printf '#!/bin/bash\necho handoff >> /tmp/order\n' > /usr/local/lib/storage-join/handoff.sh
+: > /tmp/order
+chmod 666 /tmp/order
+contract_order='{"schema":1,"nodeId":"'"$file_node_id"'","apply":true,"nodeFile":{"action":"follow","policy":{"threshold":60,"assigned":[],"access":"open"}},"contract":{"schema":1,"nodeId":"'"$file_node_id"'","apply":false,"cluster":false,"entries":[]},"ops":[{"op":"paused","folderId":"documents","paused":false}]}'
+answer_with "$contract_order"
+PATH=/tmp/stubs:$PATH tick > /dev/null
+cp /tmp/handoff.keep /usr/local/lib/storage-join/handoff.sh
+check "the restart comes before the hand-off run" "restart handoff" "$(tr '\n' ' ' < /tmp/order | sed 's/ $//')"
+check "and only then the back-off is recorded" true "$([[ -f /data/.storage/syncthing/layered-restart.json ]] && echo true || echo false)"
+PATH=/tmp/stubs:$PATH tick > /dev/null
+PATH=/tmp/stubs:$PATH tick > /dev/null
+check_match "a suppressed restart is a problem of the node" '"listingProblems": \["[^]]*already tried' "$(tail -n 1 /tmp/dashboard/layered.jsonl)"
+rm -f /data/.storage/syncthing/layered-restart.json
+
+walk_stub='api() { case $1 in *prefix=sub*) printf "[{\"name\":\"b\",\"type\":\"FILE_INFO_TYPE_FILE\",\"modTime\":\"2026-01-01T00:00:00Z\"},{\"name\":\"c\",\"type\":\"FILE_INFO_TYPE_FILE\",\"modTime\":\"2026-01-01T00:00:00Z\"}]";; */db/browse*levels=0*) printf "[{\"name\":\"sub\",\"type\":\"FILE_INFO_TYPE_DIRECTORY\"}]";; */db/browse*) printf "[]";; */db/file*) printf "{\"local\":{\"type\":\"FILE_INFO_TYPE_FILE\"}}";; esac; }; listing_problems=/tmp/listing.txt; : > "$listing_problems"'
+rm -f /tmp/fake/.storage/syncthing/layered-cursor-*
+check "a listing walks one level at a time" "sub/b" "$(sourced "$walk_stub; report_files docs 1" | jq -r .path)"
+check "and the next report goes on from there" "sub/c" "$(sourced "$walk_stub; report_files docs 1" | jq -r .path)"
+check "a report past the end has nothing" "" "$(sourced "$walk_stub; report_files docs 1" | jq -r .path)"
+check "and the one after starts over" "sub/b" "$(sourced "$walk_stub; report_files docs 1" | jq -r .path)"
+ignores_stub='api() { case $1 in */db/ignores*) printf "{\"error\":\"could not be read\",\"ignore\":null}";; */db/status*) printf "{}";; esac; }'
+check "a list Syncthing says it could not read is unknown" "null" "$(sourced "$ignores_stub; report_folder '{\"id\":\"x\",\"path\":\"/p\",\"type\":\"sendonly\",\"label\":\"\",\"paused\":false,\"devices\":[],\"versioning\":{}}'" | jq -c .ignores)"
+
 echo "The connections step at every start:"
 entry="/tmp/dashboard/connections/$node_id.json"
 mkdir -p /tmp/dashboard/connections

@@ -8,7 +8,8 @@ import { type Notice, appState } from "./state.js";
 /** What accepting a node commits, in words, before the click. */
 export function admissionText(admission: NodeAdmission): string {
   const where = admission.listed ? "the layout lists it, not admitted yet" : "the layout does not list it yet";
-  return `${admission.name} (${admission.nodeId}) on ${admission.host}: ${where}; its node file suggests threshold ${admission.threshold}. Admitting commits admitted = true at the threshold confirmed here, so other nodes may share with it, and apply = false: it only reports until apply is turned on for it.`;
+  const claim = admission.claimedBy ? `, reported by the device ${admission.claimedBy.deviceName}` : "";
+  return `${admission.name} (${admission.nodeId}) on ${admission.host}${claim}: ${where}; its node file suggests threshold ${admission.threshold}. Admitting commits admitted = true at the threshold confirmed here, so other nodes may share with it, and apply = false: it only reports until apply is turned on for it.`;
 }
 
 const busy = new Set<string>();
@@ -16,21 +17,27 @@ const busy = new Set<string>();
 const thresholds = new Map<string, string>();
 let lastNotice: Notice | null = null;
 
+/** One row per claim, so two devices claiming one node id are answered apart. */
+function admissionKey(admission: NodeAdmission): string {
+  return `${admission.nodeId}-${admission.claimedBy?.deviceId ?? ""}`;
+}
+
 async function answer(admission: NodeAdmission, choice: "accept" | "refuse"): Promise<void> {
   const base = appState.layout?.version;
   if (!base) {
     lastNotice = { text: "The layout is not read yet.", tone: "bad" };
     return requestRender();
   }
-  const threshold = typedPriority(thresholds.get(admission.nodeId) ?? String(admission.threshold));
+  const threshold = typedPriority(thresholds.get(admissionKey(admission)) ?? String(admission.threshold));
   if (choice === "accept" && threshold === null) {
     lastNotice = { text: "The threshold is a whole number from 0 to 100.", tone: "bad" };
     return requestRender();
   }
-  busy.add(admission.nodeId);
+  busy.add(admissionKey(admission));
   requestRender();
-  const result = await answerAdmission(admission.nodeId, choice === "accept" ? { base, answer: choice, threshold: threshold as number } : { base, answer: choice });
-  busy.delete(admission.nodeId);
+  const claimed = admission.claimedBy ? { deviceId: admission.claimedBy.deviceId } : {};
+  const result = await answerAdmission(admission.nodeId, choice === "accept" ? { base, answer: choice, threshold: threshold as number, ...claimed } : { base, answer: choice, ...claimed });
+  busy.delete(admissionKey(admission));
   lastNotice = result.ok ? { text: `${admission.name}: ${choice === "accept" ? "admitted" : "refused"}, ${result.value.saved.message}.`, tone: result.value.saved.pushed ? "ok" : "warn" } : { text: `Not answered: ${result.message}`, tone: "bad" };
   requestRender();
 }
@@ -41,18 +48,19 @@ export function admissionNotice(): HTMLElement | null {
 
 /** One node waiting for admission, answered on its own host, where its node file is. */
 export function admissionEntry(admission: NodeAdmission): HTMLElement {
-  const isBusy = busy.has(admission.nodeId);
+  const key = admissionKey(admission);
+  const isBusy = busy.has(key);
   const isHere = appState.data?.host.name === admission.host;
   const accept = button("Admit", () => void answer(admission, "accept"), "button primary");
   const refuse = button("Refuse", () => void answer(admission, "refuse"), "button ghost");
   accept.disabled = refuse.disabled = isBusy || !appState.layout;
-  const formId = `admission-${admission.nodeId}`;
+  const formId = `admission-${key}`;
   registerForm(formId);
   const input = element("input", { attributes: { id: `${formId}-threshold`, type: "number", min: "0", max: "100", step: "1", "aria-label": `Threshold to admit ${admission.name} at` } });
   input.defaultValue = String(admission.threshold);
-  input.value = thresholds.get(admission.nodeId) ?? String(admission.threshold);
+  input.value = thresholds.get(key) ?? String(admission.threshold);
   input.disabled = isBusy;
-  input.addEventListener("input", () => thresholds.set(admission.nodeId, input.value));
+  input.addEventListener("input", () => thresholds.set(key, input.value));
   return element(
     "li",
     { className: "request-entry" },

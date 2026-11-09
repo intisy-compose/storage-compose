@@ -12,6 +12,7 @@ $lastJoinedLayered = [datetime]::MinValue
 $joinedLayeredProblems = @{}
 $joinedListingProblems = @{}
 $joinedWithdrawals = @{}
+$joinedReportCursors = @{}
 
 function Get-PolicyFilePath([string]$Folder, [string]$NodeId) { return Join-Path $Folder "$NodeId.policy.json" }
 function Get-ListRequestPath([string]$Folder, [string]$NodeId) { return Join-Path $Folder "$NodeId.lists.json" }
@@ -228,7 +229,6 @@ function Get-BrowseLevel($Instance, [string]$FolderId, [string]$Prefix) {
 function Test-ReportBudgetIsSpent([System.Diagnostics.Stopwatch]$Clock) { return $Clock.Elapsed.TotalSeconds -ge $script:joinedReportBudgetSeconds }
 
 function Add-SettledFile($Instance, [string]$FolderId, [string]$Relative, [string]$Modified, $Files) {
-    if (-not (Test-ModifiedIsQuiet $Modified)) { return }
     try { $entry = (Get-HandoffFileReport $Instance $FolderId $Relative).local } catch { return }
     if ($entry) { $Files.Add([pscustomobject][ordered]@{ folderId = $FolderId; path = $Relative; modified = $Modified; entry = $entry }) }
 }
@@ -238,36 +238,48 @@ function Add-SettledFile($Instance, [string]$FolderId, [string]$Relative, [strin
 One directory level per request, so a wide folder costs many small answers instead of one that takes the whole
 budget to parse: Invoke-RestMethod on 5.1 parsed a 25 MB answer in 4.4 s (measured). A listing that fails or
 that the budget cuts short is said in the report's listingProblems, since a folder too large to list must never
-read as empty; nothing of it is offered until a report gets through.
+read as empty; what was gathered before the cut is still offered, and the next report goes on from the cursor, so a
+folder with more settled files than a report holds is offered in full over many reports.
 #>
-function Add-FolderFiles($Instance, [string]$FolderId, [System.Diagnostics.Stopwatch]$Clock, $Files, $Problems) {
+function Add-FolderFiles($Instance, [string]$FolderId, [System.Diagnostics.Stopwatch]$Clock, $Files, $Problems, [int]$Slice) {
     $directories = New-Object System.Collections.Generic.Queue[string]
     $directories.Enqueue("")
+    $cursorKey = "$($Instance.nodeId)|$FolderId"
+    $skip = $(if ($script:joinedReportCursors.ContainsKey($cursorKey)) { [int]$script:joinedReportCursors[$cursorKey] } else { 0 })
+    $settled = 0
+    $added = 0
     while ($directories.Count -gt 0) {
-        if ($Files.Count -ge $joinedReportFilesLimit) { return }
-        if (Test-ReportBudgetIsSpent $Clock) { $Problems.Add("$FolderId`: the listing ran out of its time with $($directories.Count) directories unread"); return }
+        if ($added -ge $Slice) { $script:joinedReportCursors[$cursorKey] = $settled; return }
+        if (Test-ReportBudgetIsSpent $Clock) { $script:joinedReportCursors[$cursorKey] = $settled; $Problems.Add("$FolderId`: the listing ran out of its time with $($directories.Count) directories unread"); return }
         $prefix = $directories.Dequeue()
         try { $entries = Get-BrowseLevel $Instance $FolderId $prefix } catch { $Problems.Add("$FolderId`: it could not be listed: $($_.Exception.Message)"); return }
         foreach ($entry in @($entries | Where-Object { $_ })) {
-            if ($Files.Count -ge $joinedReportFilesLimit) { return }
-            if (Test-ReportBudgetIsSpent $Clock) { $Problems.Add("$FolderId`: the listing ran out of its time with $($directories.Count) directories unread"); return }
+            if ($added -ge $Slice) { $script:joinedReportCursors[$cursorKey] = $settled; return }
+            if (Test-ReportBudgetIsSpent $Clock) { $script:joinedReportCursors[$cursorKey] = $settled; $Problems.Add("$FolderId`: the listing ran out of its time with $($directories.Count) directories unread"); return }
             $relative = $(if ($prefix) { "$prefix/$($entry.name)" } else { "$($entry.name)" })
             if ($entry.type -in @("FILE_INFO_TYPE_DIRECTORY", "directory")) { $directories.Enqueue($relative); continue }
-            if ($entry.type -in @("FILE_INFO_TYPE_FILE", "file")) { Add-SettledFile $Instance $FolderId $relative "$($entry.modTime)" $Files }
+            if ($entry.type -notin @("FILE_INFO_TYPE_FILE", "file") -or -not (Test-ModifiedIsQuiet "$($entry.modTime)")) { continue }
+            $settled++
+            if ($settled -le $skip) { continue }
+            Add-SettledFile $Instance $FolderId $relative "$($entry.modTime)" $Files
+            $added++
         }
     }
+    $script:joinedReportCursors[$cursorKey] = 0
 }
 
 <#
 .NOTES
-Only send-only folders, the only ones that can hand off, and at most $joinedReportFilesLimit files a
-report; a folder of a hundred thousand files is reported over many rounds, as the dashboard's own batch does.
+Only send-only folders, the only ones that can hand off, and at most $joinedReportFilesLimit files a report,
+shared between the folders, so one folder cannot starve the others.
 #>
 function Get-ReportFiles($Instance, [object[]]$Folders, [System.Diagnostics.Stopwatch]$Clock, $Problems) {
     $files = New-Object System.Collections.Generic.List[object]
-    foreach ($folder in @($Folders | Where-Object { $_.type -eq "sendonly" })) {
+    $sending = @($Folders | Where-Object { $_.type -eq "sendonly" })
+    $slice = [math]::Min($joinedReportFilesLimit, [math]::Max(20, [int][math]::Floor($joinedReportFilesLimit / [math]::Max(1, $sending.Count))))
+    foreach ($folder in $sending) {
         if ($files.Count -ge $joinedReportFilesLimit) { break }
-        Add-FolderFiles $Instance "$($folder.id)" $Clock $files $Problems
+        Add-FolderFiles $Instance "$($folder.id)" $Clock $files $Problems ([math]::Min($slice, $joinedReportFilesLimit - $files.Count))
     }
     return $files.ToArray()
 }
@@ -280,7 +292,10 @@ function Get-ReportFolder($Instance, $Config, [System.Diagnostics.Stopwatch]$Clo
     $ignores = $null
     $status = $null
     if (-not (Test-ReportBudgetIsSpent $Clock)) {
-        try { $ignores = @((Invoke-SyncthingApi $Instance "Get" "/rest/db/ignores?folder=$(Get-HandoffUri $Config.id)").ignore | Where-Object { $null -ne $_ }) } catch { }
+        try {
+            $answer = Invoke-SyncthingApi $Instance "Get" "/rest/db/ignores?folder=$(Get-HandoffUri $Config.id)"
+            if ($answer.ignore -or -not ($answer.PSObject.Properties["error"] -and $answer.error)) { $ignores = @($answer.ignore | Where-Object { $null -ne $_ }) }
+        } catch { }
         try { $status = Invoke-SyncthingApi $Instance "Get" "/rest/db/status?folder=$(Get-HandoffUri $Config.id)" } catch { }
     }
     return [pscustomobject][ordered]@{
@@ -411,7 +426,7 @@ function Invoke-JoinedWithdrawal($Node) {
 }
 
 function Set-JoinedNodeFile($Node, $Answer) {
-    if ($Answer.nodeFile -and $Answer.nodeFile.action -eq "follow") { Set-NodeFilePolicy $Node.root $Answer.nodeFile.policy | Out-Null }
+    if ($Answer.nodeFile -and $Answer.nodeFile.action -eq "follow") { $script:joinedWithdrawals.Remove($Node.id); Set-NodeFilePolicy $Node.root $Answer.nodeFile.policy | Out-Null }
     else { Invoke-JoinedWithdrawal $Node }
 }
 

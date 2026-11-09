@@ -112,47 +112,78 @@ export function parseJoinedReport(body: unknown): JoinedNodeReport {
   return { schema: report.schema, name: report.name, kind: report.kind, threshold: report.threshold, root: report.root, os: report.os, deviceId: report.deviceId, knownDevices: report.knownDevices, folders: report.folders.map(folderOf), files: report.files.map(fileOf), space: spaceOf(report.space), result: resultOf(report.result), listingProblems: report.listingProblems ?? [] };
 }
 
-/** What this dashboard last heard from each joined node, for Requests and its admission. */
-const heard = new Map<string, { report: JoinedNodeReport; at: number }>();
+interface Heard {
+  nodeId: string;
+  report: JoinedNodeReport;
+  deviceName: string;
+  listed: boolean;
+  at: number;
+}
+
+/** What this dashboard last heard from each device about each node id, by node and device, for Requests and its admission. */
+const heard = new Map<string, Heard>();
 
 /** A report older than this no longer puts a node on Requests: the device has stopped reporting. */
 const heardMaxAgeMs = 15 * 60_000;
 
-/** More joined nodes than any tree of devices has; a claimant past it is refused and those already heard stay. */
-const heardLimit = 256;
+/** Unlisted ids one device may claim at a time: more than any device has nodes, and a flood stops at that device. */
+const unlistedClaimsPerDevice = 16;
 
 function forgetExpired(now: Date): void {
-  for (const [nodeId, entry] of heard) if (now.getTime() - entry.at > heardMaxAgeMs) heard.delete(nodeId);
+  for (const [key, entry] of heard) if (now.getTime() - entry.at > heardMaxAgeMs) heard.delete(key);
 }
 
-/** @implNote Only an id the layout does not list can be claimed: another device's claim on it answers as for a node of no one, so nothing it reported can be read or replaced. */
-function claimUnlisted(nodeId: string, report: JoinedNodeReport, now: Date): void {
+function claimKey(nodeId: string, deviceId: string): string {
+  return `${nodeId} ${deviceId}`;
+}
+
+/**
+ * A device's claim on a node id. Nodes the layout lists are always heard; each device has its own claim on an unlisted id, so a device that
+ * reports another's id first keeps no one out, and the person admitting it sees which device each claim is from.
+ */
+function hearClaim(nodeId: string, report: JoinedNodeReport, deviceName: string, listed: boolean, now: Date): void {
   forgetExpired(now);
-  const claimed = heard.get(nodeId);
-  if (claimed && claimed.report.deviceId !== report.deviceId) throw new RequestError(404, `no node ${nodeId} of the calling device`);
-}
-
-function isRoomFor(nodeId: string): boolean {
-  return heard.has(nodeId) || heard.size < heardLimit;
+  const key = claimKey(nodeId, report.deviceId);
+  if (!listed && !heard.has(key) && [...heard.values()].filter((entry) => !entry.listed && entry.report.deviceId === report.deviceId).length >= unlistedClaimsPerDevice) {
+    throw new RequestError(429, `this device already claims ${unlistedClaimsPerDevice} node ids the layout does not list; ask again later`);
+  }
+  heard.set(key, { nodeId, report, deviceName, listed, at: now.getTime() });
 }
 
 export function forgetHeardNodes(): void {
   heard.clear();
 }
 
-export function joinedNodeWasHeard(nodeId: string, report: JoinedNodeReport, now: Date): void {
-  forgetExpired(now);
-  if (!isRoomFor(nodeId)) throw new RequestError(429, "too many joined nodes are being reported at once; ask again later");
-  heard.set(nodeId, { report, at: now.getTime() });
+function claimsOf(nodeId: string): Heard[] {
+  return [...heard.values()].filter((entry) => entry.nodeId === nodeId);
 }
 
-/** The joined nodes heard from recently, as `waitingAdmissions` lists them; each has no local Syncthing to address. */
+function infoOf(entry: Heard): LocalNodeInfo {
+  const { nodeId, report, deviceName } = entry;
+  return { nodeId, source: "joined", name: report.name, root: report.root, os: report.os, threshold: report.threshold, present: true, remember: false, instance: null, claimedBy: { deviceId: report.deviceId, deviceName } };
+}
+
+/** Each claim heard recently, as `waitingAdmissions` lists them; each has no local Syncthing to address. */
 export function joinedNodeInfos(now: Date): LocalNodeInfo[] {
-  return [...heard].filter(([, entry]) => now.getTime() - entry.at <= heardMaxAgeMs).map(([nodeId, { report }]) => ({ nodeId, source: "joined", name: report.name, root: report.root, os: report.os, threshold: report.threshold, present: true, remember: false, instance: null }));
+  return [...heard.values()].filter((entry) => now.getTime() - entry.at <= heardMaxAgeMs).map(infoOf);
 }
 
-export function joinedDeviceIdOf(nodeId: string): string | null {
-  return heard.get(nodeId)?.report.deviceId ?? null;
+/** The device behind a claim; unnamed, only while one device claims the node. */
+export function joinedDeviceIdOf(nodeId: string, deviceId?: string): string | null {
+  const claims = claimsOf(nodeId);
+  if (deviceId !== undefined) return claims.some((entry) => entry.report.deviceId === deviceId) ? deviceId : null;
+  return claims.length === 1 ? claims[0].report.deviceId : null;
+}
+
+/** The claim an admission answers: the one of the named device, and a refusal to guess while several devices claim the node. */
+export function joinedClaimFor(nodeId: string, deviceId: string | undefined, now: Date): LocalNodeInfo | null {
+  const claims = claimsOf(nodeId).filter((entry) => now.getTime() - entry.at <= heardMaxAgeMs);
+  if (deviceId !== undefined) {
+    const named = claims.find((entry) => entry.report.deviceId === deviceId);
+    return named ? infoOf(named) : null;
+  }
+  if (claims.length > 1) throw new RequestError(409, `more than one device claims node ${nodeId}; answer for the device that really holds it`);
+  return claims.length === 1 ? infoOf(claims[0]) : null;
 }
 
 /** The caller's record, when the node really is its own: a node the layout gives another device, or a device ID not recorded for this caller, is no node of theirs. */
@@ -255,19 +286,16 @@ async function answerOf(round: JoinedRound, report: JoinedNodeReport, nodeId: st
 /**
  * Answers a joined device's report with its plan, its node file's policy and its hand-off contract.
  * @implNote Only a joined device of this tailnet, for a node that is its own; a node the layout does not list yet is heard for Requests
- * and gets an empty answer with no contract, which is how a stick made offline waits for the first online host to commit it.
+ * and gets an empty answer with no contract, each claiming device on its own, which is how a stick made offline waits for the first online host to commit it.
  */
 export async function answerJoinedNode(dependencies: JoinedLayeredDependencies, addresses: string[], nodeId: string, body: unknown): Promise<JoinedNodeAnswer> {
   const now = dependencies.now?.() ?? new Date();
   const report = parseJoinedReport(body);
   const layout = await dependencies.layout();
-  await joinedNodeOwner(dependencies, addresses, nodeId, report, layout);
-  if (!layout?.nodes.some((node) => node.id === nodeId)) {
-    claimUnlisted(nodeId, report, now);
-    joinedNodeWasHeard(nodeId, report, now);
-    return pendingAnswer(nodeId, report, now);
-  }
-  joinedNodeWasHeard(nodeId, report, now);
+  const owner = await joinedNodeOwner(dependencies, addresses, nodeId, report, layout);
+  const isListed = layout?.nodes.some((node) => node.id === nodeId) ?? false;
+  hearClaim(nodeId, report, owner.name, isListed, now);
+  if (!isListed) return pendingAnswer(nodeId, report, now);
   if (report.result) await keepResult(dependencies.resultDirectory ?? handoffDirectory, nodeId, report.result).catch(() => undefined);
   const instance = joinedInstance(nodeId, report);
   const client = instance.client as unknown as ReportClient;

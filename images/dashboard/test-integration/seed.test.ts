@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 import { nodePlan } from "../src/nodePlan.js";
 import { carriedLayoutPaths } from "../src/reconcileNode.js";
 import { type SetupLayout, parseLayout } from "../src/setupRepo.js";
-import { type Peers, fileExists, pauseDevice, readFile, resumeDevice, scan, shareFolder, startPeers, stopPeers, waitUntil, writeFile } from "./peers.js";
+import { type Peers, fileExists, pauseDevice, readFile, request, resumeDevice, scan, setIgnores, shareFolder, startPeers, stopPeers, waitUntil, writeFile } from "./peers.js";
 
 const root = "/var/syncthing/folders";
 const ids = { stick: "e001", keeper: "e002", other: "e003" };
@@ -69,6 +69,14 @@ test("a stick node at 80 keeps the essential folder only, a host node at 30 keep
   assert.deepEqual(planFolders(ids.stick), ["work"]);
   assert.deepEqual(planFolders(ids.other), ["archive", "work"]);
   assert.deepEqual(planFolders(ids.keeper), ["archive", "work"]);
+});
+
+test("a paused folder still answers its ignore lines", async () => {
+  await shareFolder("pausedlist", [{ peer: peers.stick, type: "sendreceive" }]);
+  await setIgnores(peers.stick, "pausedlist", ["#own", "/kept"]);
+  await request(peers.stick, "PATCH", "/rest/config/folders/pausedlist", { paused: true });
+  const answer = await request<{ ignore: string[] | null; error: string | null }>(peers.stick, "GET", "/rest/db/ignores?folder=pausedlist");
+  assert.deepEqual(answer, { ...answer, ignore: ["#own", "/kept"], error: null });
 });
 
 test("the stick seeds the host node while its keeper is unreachable, then the rest arrives once the keeper is back", async () => {

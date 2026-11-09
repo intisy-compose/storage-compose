@@ -115,6 +115,8 @@ export interface LocalNodeInfo {
   /** False for a registry entry that asks not to be remembered once it leaves. */
   remember: boolean;
   instance: LocalInstance | null;
+  /** On a joined device's report: the device that says it holds this node. */
+  claimedBy?: { deviceId: string; deviceName: string };
 }
 
 async function toInfo(local: LocalNode): Promise<LocalNodeInfo> {

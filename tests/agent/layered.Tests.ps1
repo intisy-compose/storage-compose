@@ -17,10 +17,11 @@ function Invoke-SyncthingApi($Instance, [string]$Method, [string]$Path) {
     $global:apiCalls += "$Method $Path"
     if ($Path -eq "/rest/config/folders") { return @($global:fakeConfig.folders) }
     if ($Path -eq "/rest/config/devices") { return @($global:fakeConfig.devices | ForEach-Object { [pscustomobject]@{ deviceID = $_ } }) }
-    if ($Path -like "/rest/db/ignores*") { if ($global:noIgnoreFile) { return [pscustomobject]@{ ignore = $null } }; return [pscustomobject]@{ ignore = @("#own line") } }
+    if ($Path -like "/rest/db/ignores*") { if ($global:ignoreError) { return [pscustomobject]@{ error = "could not be read"; ignore = $null } }; if ($global:noIgnoreFile) { return [pscustomobject]@{ ignore = $null } }; return [pscustomobject]@{ ignore = @("#own line") } }
     if ($Path -like "/rest/db/status*") { return [pscustomobject]@{ globalBytes = 10; localBytes = 10; needBytes = 0; state = "idle"; stateChanged = "2026-01-01T00:00:00Z"; remoteSequence = [pscustomobject]@{ X = 1 } } }
     if ($Path -like "/rest/db/browse*") {
         if ($global:browseFails) { throw "the listing failed" }
+        if ($global:browseNames) { return @($global:browseNames | ForEach-Object { [pscustomobject]@{ name = $_; type = "FILE_INFO_TYPE_FILE"; modTime = "2026-01-01T00:00:00Z" } }) }
         if ($Path -match 'prefix=sub') { return @([pscustomobject]@{ name = "old.mp4"; type = "FILE_INFO_TYPE_FILE"; modTime = "2026-01-01T00:00:00Z" }, [pscustomobject]@{ name = "new.mp4"; type = "FILE_INFO_TYPE_FILE"; modTime = "2026-11-08T17:59:50Z" }) }
         return @([pscustomobject]@{ name = "sub"; type = "FILE_INFO_TYPE_DIRECTORY" })
     }
@@ -49,6 +50,10 @@ function New-TestRoot([string]$Name, [string]$NodeFileText = "[node]`nid = `"d1e
     $global:writes = @()
     $global:noIgnoreFile = $false
     $global:browseFails = $false
+    $global:browseNames = $null
+    $global:ignoreError = $false
+    $script:joinedReportCursors = @{}
+    $script:joinedReportFilesLimit = 200
     $script:joinedReportBudgetSeconds = 8
     $script:joinedWithdrawals = @{}
     $script:joinedListingProblems = @{}
@@ -188,6 +193,33 @@ Describe "a joined node's report and answer" {
         Write-JoinedListingProblems $global:node $report.listingProblems
         Write-JoinedListingProblems $global:node $report.listingProblems
         @($global:logged | Where-Object { $_ -like "*could not be listed*" }).Count | Should Be 1
+    }
+
+    It "goes on from where the last report stopped, starting over at the end" {
+        New-TestRoot "cursor"
+        $global:browseNames = @("a.mp4", "b.mp4", "c.mp4")
+        $script:joinedReportFilesLimit = 2
+        $global:fakeConfig = [pscustomobject]@{ folders = @(New-SendOnlyConfig); devices = @("DEVICE-ID") }
+        $first = @((Get-JoinedNodeReport $global:instance $global:node (Join-Path $scratch "absent.json")).files | ForEach-Object { $_.path }) -join ","
+        $second = @((Get-JoinedNodeReport $global:instance $global:node (Join-Path $scratch "absent.json")).files | ForEach-Object { $_.path }) -join ","
+        $third = @((Get-JoinedNodeReport $global:instance $global:node (Join-Path $scratch "absent.json")).files | ForEach-Object { $_.path }) -join ","
+        "$first $second $third" | Should Be "a.mp4,b.mp4 c.mp4 a.mp4,b.mp4"
+    }
+
+    It "reads a list Syncthing could not read as unknown, never as empty" {
+        New-TestRoot "unreadablelist"
+        $global:ignoreError = $true
+        $global:fakeConfig = [pscustomobject]@{ folders = @(New-SendOnlyConfig); devices = @("DEVICE-ID") }
+        $report = Get-JoinedNodeReport $global:instance $global:node (Join-Path $scratch "absent.json")
+        $null -eq $report.folders[0].ignores | Should Be $true
+    }
+
+    It "clears a kept withdrawal once the dashboard says to follow, so apply does not flap" {
+        New-TestRoot "noflap"
+        $script:joinedWithdrawals["d1e2"] = $global:node
+        $answer = [pscustomobject]@{ schema = 1; nodeId = "d1e2"; apply = $true; nodeFile = [pscustomobject]@{ action = "follow"; policy = [pscustomobject]@{ threshold = 50; assigned = @(); access = "open" } }; ops = @(); contract = $null }
+        Set-JoinedNodeFile $global:node $answer
+        $script:joinedWithdrawals.ContainsKey("d1e2") | Should Be $false
     }
 
     It "does not let a failed withdrawal on one node take another's, and retries it" {

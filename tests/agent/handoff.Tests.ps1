@@ -118,6 +118,7 @@ function New-TestNode([string]$Name) {
     $global:moveBackFails = $false
     $global:moveGrows = $false
     $script:handoffPendingAttempts = 10
+    $script:handoffHashStopping = @()
     $global:apiRequests = @()
     $global:scans = @()
     $global:handoffTestNow = 1793872800
@@ -406,33 +407,64 @@ Describe "the hand-off executor" {
         } finally { $script:handoffRunSeconds = 20; Stop-HandoffHashJobs }
     }
 
-    It "gives up on a hash that runs past its limit" {
+    function New-StallingHashJob([string]$Key) {
+        $space = [runspacefactory]::CreateRunspace()
+        $space.Open()
+        $shell = [powershell]::Create()
+        $shell.Runspace = $space
+        [void]$shell.AddScript("[System.Threading.Thread]::Sleep(8000)")
+        $script:handoffHashJobs[$Key] = [pscustomobject]@{ shell = $shell; space = $space; handle = $shell.BeginInvoke(); startedAt = Get-Date; absent = 0 }
+    }
+    function Get-TestHashKey { return "$([System.IO.Path]::GetFullPath($global:root))|videos|clip.mp4|STICK:1|5|$($global:handoffTestNow - 3600)" }
+
+    It "gives up on a hash still running past its limit, without waiting for the disk" {
         New-TestNode "timeout"
+        New-StallingHashJob (Get-TestHashKey)
+        $script:handoffHashJobSeconds = 0
+        try {
+            Write-Contract @(New-Entry "clip.mp4")
+            $clock = [System.Diagnostics.Stopwatch]::StartNew()
+            Invoke-TestHandoff
+            $clock.Elapsed.TotalSeconds | Should BeLessThan 5
+            "$(Get-Outcome 'clip.mp4') $($script:handoffHashJobs.Count)" | Should Be "refused 0"
+            Get-Reason "clip.mp4" | Should Match "took longer than"
+        } finally { $script:handoffHashJobSeconds = 21600; $script:handoffHashGaveUp = @{} }
+    }
+
+    It "takes a finished hash whatever its age, and does not give up on it" {
+        New-TestNode "latefinish"
         $script:handoffRunSeconds = 0
         $script:handoffHashJobSeconds = 0
         try {
             Write-Contract @(New-Entry "clip.mp4")
             Invoke-TestHandoff
-            $script:handoffHashJobs.Count | Should Be 1
-            Start-Sleep -Milliseconds 50
+            Wait-HashJobs
+            $script:handoffRunSeconds = 20
             Write-Contract @(New-Entry "clip.mp4")
             Invoke-TestHandoff
-            "$(Get-Outcome 'clip.mp4') $($script:handoffHashJobs.Count)" | Should Be "refused 0"
-            Get-Reason "clip.mp4" | Should Match "took longer than"
+            "$(Get-Outcome 'clip.mp4') $($script:handoffHashGaveUp.Count)" | Should Be "moved 0"
         } finally { $script:handoffRunSeconds = 20; $script:handoffHashJobSeconds = 21600; $script:handoffHashGaveUp = @{}; Stop-HandoffHashJobs }
     }
 
-    It "stops a background hash whose file has left the contract" {
+    It "stops a background hash only after its file has been out of the contract for several rounds" {
         New-TestNode "leftcontract"
         $script:handoffRunSeconds = 0
+        $script:handoffHashJobAbsentRounds = 2
+        New-StallingHashJob (Get-TestHashKey)
         try {
+            Write-Contract @()
+            Invoke-TestHandoff
+            $script:handoffHashJobs.Count | Should Be 1
             Write-Contract @(New-Entry "clip.mp4")
             Invoke-TestHandoff
             $script:handoffHashJobs.Count | Should Be 1
             Write-Contract @()
             Invoke-TestHandoff
+            $script:handoffHashJobs.Count | Should Be 1
+            Write-Contract @()
+            Invoke-TestHandoff
             $script:handoffHashJobs.Count | Should Be 0
-        } finally { $script:handoffRunSeconds = 20; Stop-HandoffHashJobs }
+        } finally { $script:handoffRunSeconds = 20; $script:handoffHashJobAbsentRounds = 5; Stop-HandoffHashJobs }
     }
 
     It "starts a new background hash when the version changed under the old one" {

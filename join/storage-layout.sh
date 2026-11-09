@@ -14,7 +14,8 @@ set -u
 readonly UNIT_NAME="storage-syncthing.service"
 readonly OPS_MAX_AGE_SECONDS=300
 readonly RESTART_BACKOFF_SECONDS=1800
-readonly HANDOFF_RUN_SECONDS=${STORAGE_LAYOUT_HANDOFF_SECONDS:-240}
+readonly HANDOFF_RUN_SECONDS=${STORAGE_LAYOUT_HANDOFF_SECONDS:-3600}
+readonly LISTING_SECONDS=120
 readonly FILES_LIMIT=200
 readonly QUIET_MINUTES=${HANDOFF_QUIET_MINUTES:-10}
 readonly HANDOFF_LIST=.stignore-handoff
@@ -120,7 +121,7 @@ apply = true"
 report_folder() {   # <config object>
     local id ignores status
     id=$(jq -r .id <<< "$1")
-    ignores=$(api "/rest/db/ignores?folder=$(uri "$id")" | jq -c '.ignore // []' 2> /dev/null) || ignores=null
+    ignores=$(api "/rest/db/ignores?folder=$(uri "$id")" | jq -c 'if .error != null and .ignore == null then null else .ignore // [] end' 2> /dev/null) || ignores=null
     [ -n "$ignores" ] || ignores=null
     status=$(api "/rest/db/status?folder=$(uri "$id")" 2> /dev/null) || status=null
     [ -n "$status" ] || status=null
@@ -128,29 +129,55 @@ report_folder() {   # <config object>
         '{id, path, type, label, paused, devices: [.devices[].deviceID], versioning, ignores: $ignores, status: $status}' <<< "$1"
 }
 
-# Up to FILES_LIMIT settled files of a send-only folder, the only ones that can hand off.
+# Up to <limit> settled files of a send-only folder, the only ones that can hand off, walked one directory level per
+# request from where the last report stopped; a listing that fails or runs out of time is a problem of the node, and
+# what was gathered before it is still offered.
 report_files() {   # <folder id> <limit>
-    local folder=$1 limit=$2 count=0 item path modified modified_seconds age entry listing
+    local folder=$1 limit=$2 count=0 seen=0 skip=0 cursor item path name modified modified_seconds age entry listing prefix browse deadline=$((SECONDS + LISTING_SECONDS)) queue=("")
+    cursor="$syncthing_home/layered-cursor-$(printf '%s' "$folder" | sha256sum | cut -c1-16)"
+    [ ! -f "$cursor" ] || skip=$(cat "$cursor")
     listing=$(mktemp) || return 0
-    if ! api "/rest/db/browse?folder=$(uri "$folder")" > "$listing" 2> /dev/null || ! jq -e 'type == "array" or . == null' "$listing" > /dev/null 2>&1; then
-        printf '%s: it could not be listed\n' "$folder" >> "$listing_problems"
-        rm -f "$listing"
-        return 0
-    fi
-    while IFS= read -r item; do
-        [ "$count" -lt "$limit" ] || break
-        path=$(jq -r .path <<< "$item")
-        modified=$(jq -r .modified <<< "$item")
-        modified_seconds=$(date -d "$modified" +%s 2> /dev/null) || continue
-        age=$(( $(now) - modified_seconds ))
-        [ "$age" -ge $((QUIET_MINUTES * 60)) ] || continue
-        entry=$(api "/rest/db/file?folder=$(uri "$folder")&file=$(uri "$path")" | jq -c '.local // empty' 2> /dev/null) || continue
-        [ -n "$entry" ] || continue
-        jq -cn --arg folderId "$folder" --arg path "$path" --arg modified "$modified" --argjson entry "$entry" '{folderId: $folderId, path: $path, modified: $modified, entry: $entry}'
-        count=$((count + 1))
-    done < <(jq -c '
-        def files($prefix): .[]? | ($prefix + .name) as $path | if (.children // null) != null then (.children | files($path + "/")) elif .type == "FILE_INFO_TYPE_FILE" then {path: $path, modified: .modTime} else empty end;
-        files("")' "$listing" 2> /dev/null)
+    while [ "${#queue[@]}" -gt 0 ]; do
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            printf '%s: the listing ran out of its time with %s directories unread\n' "$folder" "${#queue[@]}" >> "$listing_problems"
+            echo "$seen" > "$cursor"
+            rm -f "$listing"
+            return 0
+        fi
+        prefix=${queue[0]}
+        queue=("${queue[@]:1}")
+        browse="/rest/db/browse?folder=$(uri "$folder")&levels=0"
+        [ -z "$prefix" ] || browse="$browse&prefix=$(uri "$prefix")"
+        if ! api "$browse" > "$listing" 2> /dev/null || ! jq -e 'type == "array" or . == null' "$listing" > /dev/null 2>&1; then
+            printf '%s: it could not be listed\n' "$folder" >> "$listing_problems"
+            rm -f "$listing"
+            return 0
+        fi
+        while IFS= read -r item; do
+            name=$(jq -r .name <<< "$item")
+            path=${prefix:+$prefix/}$name
+            case $(jq -r .type <<< "$item") in
+                FILE_INFO_TYPE_DIRECTORY) queue+=("$path"); continue ;;
+                FILE_INFO_TYPE_FILE) ;;
+                *) continue ;;
+            esac
+            modified=$(jq -r '.modTime // ""' <<< "$item")
+            modified_seconds=$(date -d "$modified" +%s 2> /dev/null) || continue
+            age=$(( $(now) - modified_seconds ))
+            [ "$age" -ge $((QUIET_MINUTES * 60)) ] || continue
+            seen=$((seen + 1))
+            [ "$seen" -gt "$skip" ] || continue
+            entry=$(api "/rest/db/file?folder=$(uri "$folder")&file=$(uri "$path")" | jq -c '.local // empty' 2> /dev/null) || continue
+            [ -z "$entry" ] || jq -cn --arg folderId "$folder" --arg path "$path" --arg modified "$modified" --argjson entry "$entry" '{folderId: $folderId, path: $path, modified: $modified, entry: $entry}'
+            count=$((count + 1))
+            if [ "$count" -ge "$limit" ]; then
+                echo "$seen" > "$cursor"
+                rm -f "$listing"
+                return 0
+            fi
+        done < <(jq -c '.[]?' "$listing" 2> /dev/null)
+    done
+    echo 0 > "$cursor"
     rm -f "$listing"
 }
 
@@ -165,12 +192,19 @@ write_report() {   # <file>
     devices=$(api /rest/config/devices | jq -c '[.[].deviceID]') || return 1
     local folder_reports=() line
     while IFS= read -r line; do folder_reports+=("$(report_folder "$line")"); done < <(jq -c '.[]' <<< "$folders")
+    local sending slice
+    sending=$(jq '[.[] | select(.type == "sendonly")] | length' <<< "$folders")
+    slice=$(( sending > 0 ? FILES_LIMIT / sending : FILES_LIMIT ))
+    [ "$slice" -ge 20 ] || slice=20
     remaining=$FILES_LIMIT
     while IFS= read -r config_id; do
         [ "$remaining" -gt 0 ] || break
-        mapfile -t -O "${#files[@]}" files < <(report_files "$config_id" "$remaining")
+        mapfile -t -O "${#files[@]}" files < <(report_files "$config_id" "$(( remaining < slice ? remaining : slice ))")
         remaining=$((FILES_LIMIT - ${#files[@]}))
     done < <(jq -r '.[] | select(.type == "sendonly") | .id' <<< "$folders")
+    if [ -f "$(restart_record)" ] && [ "$(jq -r '.told // false' "$(restart_record)" 2> /dev/null)" = true ]; then
+        printf 'changes were already tried and are still asked for; retried after the back-off of %s s\n' "$RESTART_BACKOFF_SECONDS" >> "$listing_problems"
+    fi
     size=$(df -B1 --output=size "$root" | tail -n 1 | tr -d ' ')
     avail=$(df -B1 --output=avail "$root" | tail -n 1 | tr -d ' ')
     space=$(jq -cn --argjson size "${size:-0}" --argjson avail "${avail:-0}" '{totalBytes: $size, freeBytes: $avail}') || space=null
@@ -243,8 +277,20 @@ restart_is_due() {   # <signature>
             return 1
         fi
     fi
-    jq -cn --arg signature "$signature" --argjson at "$(now)" '{signature: $signature, at: $at, told: false}' > "$file.new" && mv -f "$file.new" "$file"
+}
+
+record_restart() {   # <signature>
+    local file
+    file=$(restart_record)
+    jq -cn --arg signature "$1" --argjson at "$(now)" '{signature: $signature, at: $at, told: false}' > "$file.new" && mv -f "$file.new" "$file"
     own "$file"
+}
+
+# Waits for the API after a restart, so the hand-off run that follows has a Syncthing to check against.
+wait_for_gui() {
+    local tries
+    for tries in $(seq 1 30); do api /rest/system/status > /dev/null 2>&1 && return 0; sleep 2; done
+    return 1
 }
 
 apply_the_answer() {   # <answer file> <when the dashboard answered>
@@ -257,7 +303,16 @@ apply_the_answer() {   # <answer file> <when the dashboard answered>
     restart_is_due "$signature" || return 0
     keep_ops "$1" "$2"
     log "restarting $UNIT_NAME to apply $(jq '.ops | length' "$1") change(s)"
-    systemctl restart "$UNIT_NAME" || log "$UNIT_NAME did not restart"
+    if ! systemctl restart "$UNIT_NAME"; then
+        log "$UNIT_NAME did not restart"
+        return 0
+    fi
+    if [ -f "$(ops_file)" ]; then
+        log "the restart did not take the changes up"
+        return 0
+    fi
+    record_restart "$signature"
+    wait_for_gui || log "Syncthing did not answer after the restart"
 }
 
 tick() {
@@ -283,8 +338,8 @@ tick() {
     else
         rm -f "$(handoff_folder)/$node.json"
     fi
-    run_handoff "$(handoff_folder)/$node.json"
     apply_the_answer "$answer" "$answered_at"
+    run_handoff "$(handoff_folder)/$node.json"
     rm -rf "$work"
 }
 
